@@ -1,7 +1,7 @@
-# 팀원 연결 규약 v1 (합의용 초안)
+# 연결 규약 v1
 
-확정: LightGBM 모델을 전달받는다. 미정: 특징 필드·전처리·분석기 Python 함수 또는 CLI 방식.
-아래 JSON 구조는 연결 가능한 초기 구현이며, 팀 합의에 따라 버전을 올려 수정한다.
+확정: LightGBM native 모델을 전달받는다. 내장 분석기(`--extract`)는 feature-extractor의 feature를 `depbee-features-v1` 스키마로 낸다.
+아래 JSON 구조는 지금 구현과 일치한다. 필드를 바꿀 때는 팀 합의 후 `schema_version`을 올린다.
 
 ## 1. CLI → 분석기
 
@@ -10,13 +10,12 @@
 - `schema_version`: 현재 1
 - `request_id`: 두 lockfile 해시와 변경 목록의 결정적 식별자
 - `base_lock_sha256`, `head_lock_sha256`: 원본 lockfile 바이트 해시
-- `changes[]`: change_id, lockfile location, before/after의 name/version/resolved/integrity/link
-- `analyzable`: 현재 분석 가능한 기존 패키지의 버전 변경 여부
-- `reason`: 신규 추가·미지원·삭제의 구체적 이유
+- `changes[]`: change_id, lockfile location, kind(`updated`/`added`/`removed`), before/after의 name/version/resolved/integrity/link. 새로 추가된 의존성은 before가 null이다.
+- `analyzable`: 분석 대상 여부. 설치될 버전(after)이 npm 공식 registry의 semver 버전이고 integrity가 있으면 true다. 새로 추가된 의존성도 포함한다.
+- `reason`: 분석하지 않는 이유(삭제·미지원 출처 등)
 
 중첩 의존성은 경로별로 식별한다. alias는 name과 설치 경로를 구분한다.
-분석기는 `analyzable=true`인 항목만 처리하고 다운로드한 파일이 lockfile integrity와 일치하는지
-검증해야 한다. 예시의 가상 integrity를 실제 데이터로 사용하지 않는다.
+분석기는 `analyzable=true`인 항목만 처리하고, 다운로드한 버전이 lockfile integrity와 일치하는지 확인해야 한다. 예시의 가상 integrity를 실제 데이터로 사용하지 않는다.
 
 ## 2. 분석기 → CLI
 
@@ -24,44 +23,36 @@
 {
   "schema_version": 1,
   "request_id": "plan 명령이 반환한 값",
-  "analyzer_version": "team-analyzer-0.1",
-  "feature_schema": "team-features-v1",
+  "analyzer_version": "feature-extractor 0.1.0",
+  "feature_schema": "depbee-features-v1",
   "results": [
     {
       "change_id": "요청의 change_id",
       "status": "complete",
-      "features": {"feature_a": 1.0, "feature_b": 0.0},
+      "baseline_version": "비교 기준으로 쓴 버전",
+      "features": {"installScriptAdded": true, "updateType": "patch", "obfHexIdentRatioNew": null},
       "evidence": ["확인된 코드·설정 변화 요약"]
     }
   ]
 }
 ```
 
-feature_a/b는 예시일 뿐 실제 특징이 아니다. 실제 이름·단위·결측값 정책·전처리는 팀이 확정한다.
-값은 유한한 숫자만 허용하며 boolean·NaN·Infinity는 거부한다. 특징을 임의로 생략하거나 0으로
-채우지 않는다. `complete`는 분석기의 지원 범위를 정상 수행했다는 의미로 합의해야 한다.
+- feature 값은 숫자, true/false, 문자열, null만 쓴다. 어떤 feature가 어떤 자료형을 받는지는 모델 manifest가 정하고 추론기가 검사한다. 특징을 임의로 생략하거나 0으로 채우지 않는다.
+- `baseline_version`(선택)은 새 버전과 비교한 버전이다. 내장 분석기는 같은 release line의 직전 stable을 쓴다(README "동작 방식").
+- `evidence`는 문자열 배열이다. 패키지에서 온 문자열을 담을 수 있으므로 CLI가 출력할 때 제어 문자를 이스케이프한다.
+- 분석에 실패한 항목: `{"change_id":"...","status":"failed","error":"실패 이유"}`
+- 모델의 학습 범위 밖이라 분석하지 않은 항목: `{"change_id":"...","status":"unsupported","reason":"out_of_training_scope","error":"설명"}`. reason은 `out_of_training_scope`(새 버전이 pre-release 등), `no_baseline`(비교할 이전 stable 없음)을 쓴다.
+- 결과가 없는 항목도 CLI는 미완료로 처리한다.
 
-실패한 항목은 `{"change_id":"...","status":"failed","error":"실패 이유"}`로 전달한다.
-누락 항목도 CLI는 미완료로 처리한다. 현재 evidence는 문자열 배열이며 다음 버전에서
-파일·줄·변경 전후의 구조화된 근거로 확장할 수 있다.
-
-Python 함수 형태의 제안:
-
-```python
-def analyze(request: dict) -> dict:
-    # 팀원 분석기 호출과 결과 변환
-    ...
-```
-
-CLI 호출 규약을 선택하면 요청/응답 파일, timeout, 반환 코드부터 합의한다.
-현재 도구에는 외부 분석기 프로세스 실행 기능이 없다.
+다른 분석기를 붙일 때는 `contracts.Analyzer`의 `analyze(request) -> dict`를 구현하고, 결과는 `analysis.artifact.validate()`로 같은 검사를 거친다.
+외부 프로세스로 붙인다면 셸 문자열 조합 없이 argv·timeout·출력 한도를 둔다.
 
 ## 3. 모델 담당 → 추론 어댑터
 
 `models/<model-id>/` 아래 두 파일:
 
 1. `model.txt`: `Booster.save_model()`로 내보낸 native text 모델
-2. `manifest.json`: 아래 메타데이터
+2. `manifest.json`: 아래 메타데이터. `scripts/write_manifest.py`로 만든다.
 
 ```json
 {
@@ -70,32 +61,32 @@ CLI 호출 규약을 선택하면 요청/응답 파일, timeout, 반환 코드�
   "model_sha256": "model.txt 파일의 실제 SHA-256",
   "objective": "binary",
   "positive_class": "malicious",
-  "feature_schema": "team-features-v1",
-  "feature_names": ["feature_a", "feature_b"],
-  "threshold": 0.5
+  "feature_schema": "depbee-features-v1",
+  "feature_names": ["installScriptPresent", "...", "obfWhitespaceRatioChangedCode"],
+  "boolean_features": ["installScriptPresent", "installScriptAdded", "scriptEntryAdded", "newDependencyAdded"],
+  "categorical_features": {"updateType": ["major", "minor", "patch"]},
+  "nullable_features": ["obfHexIdentRatioNew", "..."],
+  "threshold": 0.5,
+  "note": "데이터 버전, 임계값 근거 등 자유 기록(선택)"
 }
 ```
 
-0.5는 구조 설명용 예시다. 실제 임계값은 모델 담당자가 검증 세트에서 정해 전달한다.
-양성 라벨 1이 악성이어야 한다. feature_names는 학습 시 모델에 저장된 순서·이름과 정확히 같아야 한다.
-현재 adapter는 이미 전처리된 수치 특징을 받는다. 별도 scaler·categorical 변환이 필요하면
-해당 변환과 버전을 규약에 먼저 추가한다. arbitrary Python 객체를 모델에 동봉하지 않는다.
+- 양성 라벨 1이 악성이어야 한다. `feature_names`는 모델에 저장된 이름·순서와 정확히 같아야 한다.
+- `boolean_features`(선택): true/false를 1/0으로 넣는다. 학습 CSV의 True/False와 같다.
+- `categorical_features`(선택): 값의 목록 내 위치가 범주 코드다. pandas로 학습한 모델은 범주 순서를 모델 파일에 저장하므로, 그 순서와 다르면 로딩을 거부한다. 목록에 없는 값은 학습 범위 밖으로 보고 점수를 내지 않는다.
+- `nullable_features`(선택): null을 LightGBM 결측값(NaN)으로 넣는다. 학습 데이터에서 계산할 대상이 없어 비어 있던 feature만 여기에 둔다. 나머지 feature의 null은 거부한다.
+- 임계값은 모델 담당자가 검증 세트에서 정해 전달한다. 학습 기본값 0.5를 쓰면 `note`에 검증 전이라고 적는다.
+- arbitrary Python 객체(pickle·joblib)를 모델에 동봉하지 않는다.
 
 SHA-256은 파일 변조·혼동 확인용이다. 모델은 신뢰하는 팀원과 보호된 경로를 통해 받아야 한다.
-모델 export 예시(학습 코드가 아니라 팀원 전달용):
-
-```python
-booster.save_model("model.txt")
-# feature_names = booster.feature_name()
-# model_sha256 = hashlib.sha256(Path("model.txt").read_bytes()).hexdigest()
-```
-
 모델과 함께 학습 데이터 범위, 분할 방법, 검증 결과, LightGBM 버전도 기록해 전달한다.
 
 ## 4. CLI → 사용자·CI
 
 보고서는 request_id, model_id, threshold, analyzer_version, scope, results를 포함한다.
 패키지 상태는 `flagged`, `not_flagged`, `incomplete`, `removed`다.
+점수가 나온 항목에는 `compared_version`(비교 기준 버전), `features`, `evidence`(추출된 사실), `explanation`(점수에 크게 작용한 feature 3개와 SHAP 기여도, log-odds 단위)이 있다. 추출된 사실과 모델 설명은 구분한다.
+`incomplete` 항목에는 `reason`과, 있으면 `detail`이 있다. 학습 범위 밖 입력은 `out_of_training_scope` 또는 `no_baseline`이다.
 하나라도 미완료면 전체 종료 코드 2, 그 외 위험이 있으면 1, 나머지는 0이다.
 위험과 미완료가 함께 있으면 보고서에 둘 다 남기고 2로 보류한다.
 입력/manifest 자체의 오류는 stderr의 error JSON과 종료 코드 2로 반환한다.
