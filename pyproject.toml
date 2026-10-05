@@ -12,6 +12,10 @@ dependencies = []
 
 [project.optional-dependencies]
 ml = ["lightgbm>=4.6,<5", "numpy>=1.26,<3"]
+# Private team repository; installing it needs GitHub access. Pinned to a reviewed commit.
+extract = [
+    "feature-extractor @ git+https://github.com/26-Capstone-Project-Team01/feature-extractor@c24761d26f44d93216e231462b5b1208d7a6a488",
+]
 dev = ["ruff>=0.12,<1", "build>=1.2,<2"]
 
 [project.scripts]

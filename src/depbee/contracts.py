@@ -14,6 +14,10 @@ class GuardError(ValueError):
     """An input or integration problem that must not become an allow result."""
 
 
+class OutOfScopeError(GuardError):
+    """Input the model was not trained on. Reported as incomplete and never scored."""
+
+
 def _unique_object(pairs: list) -> dict:
     result = {}
     for key, value in pairs:
@@ -66,4 +70,4 @@ class Predictor(Protocol):
     threshold: float
     model_id: str
 
-    def predict(self, features: dict[str, float]) -> float: ...
+    def predict(self, features: dict[str, object]) -> float: ...

@@ -114,12 +114,21 @@ class InputTests(Fixture):
         self.save_locks()
         self.assertEqual(scan(self.request(), None, None)["exit_code"], 2)
 
-    def test_added_is_not_silently_allowed(self):
+    def test_added_is_analyzed_not_silently_allowed(self):
         self.new["packages"]["node_modules/new"] = package()
         self.save_locks()
-        report = scan(self.request(), self.adapter(), FakePredictor())
+        added = [c for c in self.request()["changes"] if c["kind"] == "added"]
+        self.assertTrue(added[0]["analyzable"])
+        artifact = self.artifact()
+        artifact["results"] = [r for r in artifact["results"] if r["change_id"] != added[0]["change_id"]]
+        report = scan(self.request(), self.adapter(artifact), FakePredictor())
         self.assertEqual(report["exit_code"], 2)
-        self.assertIn("no_previous_version", [r.get("reason") for r in report["results"]])
+        self.assertIn("analysis_missing", [r.get("reason") for r in report["results"]])
+
+    def test_only_installed_version_source_is_checked(self):
+        self.old["packages"]["node_modules/example"]["resolved"] = "https://evil.test/a.tgz"
+        self.save_locks()
+        self.assertTrue(self.request()["changes"][0]["analyzable"])
 
     def test_removed_and_unchanged_need_no_model(self):
         self.new = copy.deepcopy(self.old)

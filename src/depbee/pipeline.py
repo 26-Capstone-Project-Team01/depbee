@@ -1,6 +1,13 @@
 """Orchestration independent of terminal, analyzer implementation, or ML framework."""
 
-from .contracts import SCHEMA_VERSION, Analyzer, GuardError, Predictor, finite_number
+from .contracts import (
+    SCHEMA_VERSION,
+    Analyzer,
+    GuardError,
+    OutOfScopeError,
+    Predictor,
+    finite_number,
+)
 
 
 def scan(request: dict, analyzer: Analyzer | None, predictor: Predictor | None) -> dict:
@@ -8,6 +15,7 @@ def scan(request: dict, analyzer: Analyzer | None, predictor: Predictor | None) 
     if artifact and predictor and artifact["feature_schema"] != predictor.feature_schema:
         raise GuardError("Analyzer feature_schema does not match model feature_schema")
     records = {r["change_id"]: r for r in artifact["results"]} if artifact else {}
+    explain = getattr(predictor, "explain", None)
     results = []
     for change in request["changes"]:
         item = {
@@ -29,9 +37,16 @@ def scan(request: dict, analyzer: Analyzer | None, predictor: Predictor | None) 
             item["reason"] = "analysis_missing"
         elif row["status"] == "failed":
             item.update(reason="analysis_failed", detail=row["error"])
+        elif row["status"] == "unsupported":
+            item.update(reason=row["reason"], detail=row["error"])
         elif predictor is None:
             item["reason"] = "model_missing"
         else:
+            item.update(
+                compared_version=row.get("baseline_version"),
+                features=row["features"],
+                evidence=row.get("evidence", []),
+            )
             try:
                 score = finite_number(predictor.predict(row["features"]), "model score")
                 if not 0 <= score <= 1:
@@ -39,10 +54,15 @@ def scan(request: dict, analyzer: Analyzer | None, predictor: Predictor | None) 
                 item.update(
                     status="flagged" if score >= predictor.threshold else "not_flagged",
                     score=score,
-                    evidence=row.get("evidence", []),
                 )
+                if explain:
+                    item["explanation"] = explain(row["features"])
+            except OutOfScopeError as exc:
+                item.update(reason="out_of_training_scope", detail=str(exc))
             except GuardError as exc:
-                item.update(reason="inference_failed", detail=str(exc))
+                item.update(
+                    status="incomplete", score=None, reason="inference_failed", detail=str(exc)
+                )
         results.append(item)
     incomplete = any(r["status"] == "incomplete" for r in results)
     flagged = any(r["status"] == "flagged" for r in results)

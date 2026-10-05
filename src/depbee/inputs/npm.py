@@ -49,20 +49,20 @@ def _snapshot(path: Path) -> tuple[dict, str]:
 def _unsupported(before: dict | None, after: dict | None) -> str | None:
     if after is None:
         return "removed"
-    if before is None:
-        return "no_previous_version"
-    if before["name"] != after["name"]:
+    if before is not None and before["name"] != after["name"]:
         return "package_identity_changed"
-    for entry in (before, after):
-        version = entry["version"]
-        if entry["link"] or not version or not VERSION.fullmatch(version):
-            return "workspace_or_non_registry_version"
-        source = urlparse(entry["resolved"] or "")
-        if source.scheme != "https" or source.netloc != "registry.npmjs.org":
-            return "unsupported_registry_source"
-        if not entry["integrity"]:
-            return "missing_integrity"
-    if before["version"] == after["version"]:
+    # The analyzer compares the installed version with its registry predecessor, not with the
+    # previous lock entry, so only the version that will be installed must be a registry tarball.
+    # Newly added dependencies are therefore analyzable too.
+    version = after["version"]
+    if after["link"] or not version or not VERSION.fullmatch(version):
+        return "workspace_or_non_registry_version"
+    source = urlparse(after["resolved"] or "")
+    if source.scheme != "https" or source.netloc != "registry.npmjs.org":
+        return "unsupported_registry_source"
+    if not after["integrity"]:
+        return "missing_integrity"
+    if before is not None and before["version"] == after["version"]:
         return "same_version_artifact_changed"
     return None
 
