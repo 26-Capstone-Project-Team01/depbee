@@ -9,12 +9,12 @@ import unittest
 import uuid
 from pathlib import Path
 
-from npm_update_guard.analysis.artifact import ArtifactAnalyzer
-from npm_update_guard.cli import main
-from npm_update_guard.contracts import GuardError, finite_number, read_json
-from npm_update_guard.inference.lightgbm import LightGBMPredictor
-from npm_update_guard.inputs.npm import build_request
-from npm_update_guard.pipeline import scan
+from depbee.analysis.artifact import ArtifactAnalyzer
+from depbee.cli import main
+from depbee.contracts import GuardError, finite_number, read_json
+from depbee.inference.lightgbm import LightGBMPredictor
+from depbee.inputs.npm import build_request
+from depbee.pipeline import scan
 
 
 def package(version="1.0.0"):

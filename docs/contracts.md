@@ -5,7 +5,7 @@
 
 ## 1. CLI → 분석기
 
-`npm-update-guard plan <project> --base-lock <path>`의 JSON을 그대로 전달한다.
+`depbee plan <project> --base-lock <path>`의 JSON을 그대로 전달한다.
 
 - `schema_version`: 현재 1
 - `request_id`: 두 lockfile 해시와 변경 목록의 결정적 식별자

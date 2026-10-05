@@ -1,7 +1,8 @@
-# npm-update-guard
+# depbee
 
 npm 프로젝트의 변경된 의존성 버전을 추출하고, 팀원이 만든 정적 분석기와
-학습된 LightGBM 모델을 연결하는 Python CLI입니다. 이름은 개발용 임시 이름입니다.
+학습된 LightGBM 모델을 연결하는 Python CLI입니다.
+이름은 dependency와 bee를 합친 것입니다.
 
 현재 구현된 범위는 lockfile 비교, 분석 요청 생성, 특징 JSON 검증,
 LightGBM native 모델 추론 어댑터, 텍스트·JSON 출력과 종료 코드 처리입니다.
@@ -29,7 +30,7 @@ LightGBM native 모델 추론 어댑터, 텍스트·JSON 출력과 종료 코드
 ## 구조
 
 ```text
-src/npm_update_guard/
+src/depbee/
   cli.py                 # 인자·터미널·JSON 출력·종료 코드
   contracts.py           # 팀 간 규약과 Analyzer/Predictor 인터페이스
   inputs/npm.py          # 대상 프로젝트와 기준 lockfile 비교
@@ -52,7 +53,7 @@ Python 3.11 이상, 로컬은 3.13을 권장합니다. PowerShell에서:
 ```powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev,ml]"
-.\.venv\Scripts\python.exe -m npm_update_guard --help
+.\.venv\Scripts\python.exe -m depbee --help
 ```
 
 활성화 스크립트나 PowerShell 실행 정책 변경 없이 실행할 수 있습니다.
@@ -64,14 +65,14 @@ macOS/Linux에서는 `python3 -m venv .venv`와 `.venv/bin/python`을 사용합�
 예시에는 패키지 코드가 없으며 URL·integrity도 가상 값입니다. 다운로드에 사용하지 마세요.
 
 ```powershell
-.\.venv\Scripts\python.exe -m npm_update_guard plan examples/project --base-lock examples/baseline/package-lock.json
-.\.venv\Scripts\python.exe -m npm_update_guard scan examples/project --base-lock examples/baseline/package-lock.json --format json
+.\.venv\Scripts\python.exe -m depbee plan examples/project --base-lock examples/baseline/package-lock.json
+.\.venv\Scripts\python.exe -m depbee scan examples/project --base-lock examples/baseline/package-lock.json --format json
 ```
 
 첫 명령은 변경된 버전 쌍과 `request_id`를 출력합니다.
 두 번째는 모델·분석 결과가 없으므로 `incomplete`, 종료 코드 `2`가 정상적인 예상 결과입니다.
 설치가 아직 안 된 환경에서는 `$env:PYTHONPATH = "$PWD/src"`를 설정한 후
-`python -m npm_update_guard ...`로 입력 처리와 미완료 결과를 확인할 수 있습니다.
+`python -m depbee ...`로 입력 처리와 미완료 결과를 확인할 수 있습니다.
 
 ## 팀원 결과물을 연결한 뒤
 
@@ -104,9 +105,9 @@ manifest의 정확한 구조는 [연결 규약](docs/contracts.md)을 따릅니�
 아래 명령의 경로는 실제 파일로 바꿔야 합니다. 중간의 분석기 실행은 아직 자동화되지 않았습니다.
 
 ```powershell
-.\.venv\Scripts\python.exe -m npm_update_guard plan C:/path/to/target --base-lock C:/path/to/base-package-lock.json --output artifacts/request-001.json
+.\.venv\Scripts\python.exe -m depbee plan C:/path/to/target --base-lock C:/path/to/base-package-lock.json --output artifacts/request-001.json
 # 팀원 분석기가 이 요청을 처리해 artifacts/analysis-001.json 생성
-.\.venv\Scripts\python.exe -m npm_update_guard scan C:/path/to/target --base-lock C:/path/to/base-package-lock.json --analysis artifacts/analysis-001.json --model-dir models/release-001 --output artifacts/report-001.json
+.\.venv\Scripts\python.exe -m depbee scan C:/path/to/target --base-lock C:/path/to/base-package-lock.json --analysis artifacts/analysis-001.json --model-dir models/release-001 --output artifacts/report-001.json
 ```
 
 `--output`은 기존 파일을 덮어쓰지 않습니다. 매 실행마다 새 이름을 사용합니다.
