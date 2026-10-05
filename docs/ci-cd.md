@@ -20,9 +20,9 @@ Action은 확인한 commit SHA로 고정했고 권한은 contents:read다.
 연결 후 사용할 명령 형태:
 
 ```sh
-npm-update-guard plan target --base-lock baseline/package-lock.json --output artifacts/request.json
+depbee plan target --base-lock baseline/package-lock.json --output artifacts/request.json
 # 이 사이에 팀원 분석기 어댑터가 필요하다.
-npm-update-guard scan target --base-lock baseline/package-lock.json --analysis artifacts/analysis.json --model-dir trusted-model --format json --output artifacts/report.json
+depbee scan target --base-lock baseline/package-lock.json --analysis artifacts/analysis.json --model-dir trusted-model --format json --output artifacts/report.json
 ```
 
 이 문서는 설계이며 바로 설치·차단을 수행하는 완성 workflow가 아니다.
