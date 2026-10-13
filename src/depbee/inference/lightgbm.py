@@ -126,14 +126,25 @@ class LightGBMPredictor:
             raise GuardError("Model score is outside [0, 1]")
         return score
 
-    def explain(self, features: dict[str, object], top: int = 3) -> list[dict]:
-        """Features that moved this score most, as LightGBM SHAP values in log-odds units."""
-        contributions = self._run(self._encode(features), pred_contrib=True)[0][:-1]
+    def explain(self, features: dict[str, object], top: int = 3) -> dict:
+        """Features that moved this score most, as LightGBM SHAP values in log-odds units.
+
+        ``base_value`` plus every feature's contribution is the score's log-odds, so the
+        features not listed are summed into ``others_sum`` to keep the explanation complete.
+        """
+        *contributions, base = self._run(self._encode(features), pred_contrib=True)[0]
         ranked = sorted(
             zip(self.feature_names, contributions, strict=True), key=lambda c: -abs(c[1])
         )
-        return [
-            {"feature": name, "value": features[name], "contribution": float(value)}
-            for name, value in ranked[:top]
-            if value != 0
-        ]
+        shown = [(name, value) for name, value in ranked[:top] if value != 0]
+        listed = {name for name, _ in shown}
+        others = [value for name, value in ranked if name not in listed]
+        return {
+            "top": [
+                {"feature": name, "value": features[name], "contribution": float(value)}
+                for name, value in shown
+            ],
+            "others_sum": finite_number(float(sum(others)), "contribution sum"),
+            "others_count": len(others),
+            "base_value": finite_number(float(base), "base value"),
+        }

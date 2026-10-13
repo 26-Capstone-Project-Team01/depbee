@@ -56,7 +56,11 @@ def scan(request: dict, analyzer: Analyzer | None, predictor: Predictor | None) 
                     score=score,
                 )
                 if explain:
-                    item["explanation"] = explain(row["features"])
+                    explained = explain(row["features"])
+                    item["explanation"] = explained["top"]
+                    item["explanation_rest"] = {
+                        key: explained[key] for key in ("others_sum", "others_count", "base_value")
+                    }
             except OutOfScopeError as exc:
                 item.update(reason="out_of_training_scope", detail=str(exc))
             except GuardError as exc:

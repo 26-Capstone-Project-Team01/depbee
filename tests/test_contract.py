@@ -47,7 +47,12 @@ class ExplainingPredictor(FakePredictor):
         return features["signal"]
 
     def explain(self, features):
-        return [{"feature": "signal", "value": features["signal"], "contribution": 1.5}]
+        return {
+            "top": [{"feature": "signal", "value": features["signal"], "contribution": 1.5}],
+            "others_sum": -0.25,
+            "others_count": 2,
+            "base_value": -1.0,
+        }
 
 
 class ReportTests(Fixture):
@@ -62,6 +67,10 @@ class ReportTests(Fixture):
     def test_explanation_in_report(self):
         report = scan(self.request(), self.adapter(), ExplainingPredictor())
         self.assertEqual(report["results"][0]["explanation"][0]["feature"], "signal")
+        self.assertEqual(
+            report["results"][0]["explanation_rest"],
+            {"others_sum": -0.25, "others_count": 2, "base_value": -1.0},
+        )
         self.assertEqual(report["results"][0]["features"], {"signal": 0.9})
 
 
@@ -125,7 +134,13 @@ class TypedModelTests(Fixture):
         low = predictor.predict({"flag": False, "kind": "a", "ratio": 0.1})
         self.assertGreater(high, low)
         explanation = predictor.explain({"flag": True, "kind": "c", "ratio": None})
-        self.assertTrue(all(math.isfinite(e["contribution"]) for e in explanation))
+        top = explanation["top"]
+        self.assertTrue(all(math.isfinite(e["contribution"]) for e in top))
+        self.assertEqual(len(top) + explanation["others_count"], 3)
+        # Listed contributions, the rest and the base value add up to the score's log-odds.
+        total = sum(e["contribution"] for e in top) + explanation["others_sum"]
+        total += explanation["base_value"]
+        self.assertAlmostEqual(total, math.log(high / (1 - high)), places=6)
 
     def test_type_and_scope_errors(self):
         predictor = self.predictor()

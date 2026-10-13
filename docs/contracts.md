@@ -86,6 +86,7 @@ SHA-256은 파일 변조·혼동 확인용이다. 모델은 신뢰하는 팀원�
 보고서는 request_id, model_id, threshold, analyzer_version, scope, results를 포함한다.
 패키지 상태는 `flagged`, `not_flagged`, `incomplete`, `removed`다.
 점수가 나온 항목에는 `compared_version`(비교 기준 버전), `features`, `evidence`(추출된 사실), `explanation`(점수에 크게 작용한 feature 3개와 SHAP 기여도, log-odds 단위)이 있다. 추출된 사실과 모델 설명은 구분한다.
+`explanation_rest`는 `explanation`에 없는 feature의 기여도 합(`others_sum`)과 개수(`others_count`), 모델 기준값(`base_value`)이다. `explanation`의 기여도와 이 두 값을 모두 더하면 점수의 log-odds가 된다.
 `incomplete` 항목에는 `reason`과, 있으면 `detail`이 있다. 학습 범위 밖 입력은 `out_of_training_scope` 또는 `no_baseline`이다.
 하나라도 미완료면 전체 종료 코드 2, 그 외 위험이 있으면 1, 나머지는 0이다.
 위험과 미완료가 함께 있으면 보고서에 둘 다 남기고 2로 보류한다.
