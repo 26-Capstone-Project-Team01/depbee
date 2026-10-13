@@ -6,6 +6,7 @@ previous version is kept only as context in the evidence.
 """
 
 import importlib.metadata
+from collections.abc import Callable
 from pathlib import Path
 
 from ..contracts import SCHEMA_VERSION, GuardError
@@ -105,15 +106,18 @@ class ExtractorAnalyzer:
     ``local_sources`` maps (package, version) to a directory holding a copy of that version
     (``.../package/package.json``), for versions the registry no longer serves. Such copies
     cannot be checked against the lockfile integrity, which the evidence states.
+    ``progress``, if given, is called as ``progress(index, total, change)`` before each change.
     """
 
     def __init__(
         self,
         local_sources: dict[tuple[str, str], Path] | None = None,
         backend: FeatureExtractorBackend | None = None,
+        progress: Callable[[int, int, dict], None] | None = None,
     ) -> None:
         self.backend = backend or FeatureExtractorBackend()
         self.local_sources = dict(local_sources or {})
+        self.progress = progress
         self._packuments: dict[str, dict] = {}
 
     def analyze(self, request: dict) -> dict:
@@ -124,12 +128,17 @@ class ExtractorAnalyzer:
             # A typo would otherwise silently fall back to the registry.
             name, version = unused[0]
             raise GuardError(f"Local source matches no analyzable change: {name}@{version}")
+        results = []
+        for index, change in enumerate(changes, start=1):
+            if self.progress:
+                self.progress(index, len(changes), change)
+            results.append({"change_id": change["change_id"], **self._analyze(change)})
         artifact = {
             "schema_version": SCHEMA_VERSION,
             "request_id": request["request_id"],
             "analyzer_version": self.backend.version,
             "feature_schema": FEATURE_SCHEMA,
-            "results": [{"change_id": c["change_id"], **self._analyze(c)} for c in changes],
+            "results": results,
         }
         return validate(artifact, request)
 

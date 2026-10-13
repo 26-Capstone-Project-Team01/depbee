@@ -8,7 +8,7 @@ import io
 import unittest
 
 from test_contract import ExplainingPredictor
-from test_workflow import Fixture
+from test_workflow import Fixture, package
 
 from depbee.analysis.baseline import select_baseline
 from depbee.analysis.extractor import ExtractorAnalyzer
@@ -146,6 +146,15 @@ class ExtractorAnalyzerTests(Fixture):
         self.assertEqual(row["status"], "complete")
         self.assertIn("로컬 사본", "\n".join(row["evidence"]))
 
+    def test_progress_is_reported_before_each_change(self):
+        calls = []
+        backend = FakeBackend(self.doc, new_json=self.new_json)
+        analyzer = ExtractorAnalyzer(
+            backend=backend, progress=lambda i, n, c: calls.append((i, n, c["after"]["name"]))
+        )
+        analyzer.analyze(self.request())
+        self.assertEqual(calls, [(1, 1, "example")])
+
     def test_unused_local_copy_is_an_error(self):
         with self.assertRaises(GuardError):
             self.run_analyzer(local={("example", "9.9.9"): self.root})
@@ -176,8 +185,26 @@ class CliTests(Fixture):
         self.assertIn("depbee 검사 결과: 위험 판정 있음 (종료 코드 1)", text)
         self.assertIn("[위험] example@1.1.0", text)
         self.assertIn("+ signal = 0.9 (+1.50)", text)
+        self.assertIn("나머지 특징 2개 합 -0.25, 모델 기준값 -1.00 (합계 +0.25 → 점수 0.900)", text)
         self.assertNotIn("\x1b", text)
         self.assertIn("\\u001b[2J", text)
+        self.assertTrue(text.rstrip().endswith("패키지가 안전하다는 보증이 아닙니다."))
+
+    def test_korean_text_lists_risky_results_first_with_counts(self):
+        self.old["packages"]["node_modules/zeta"] = package()
+        self.new["packages"]["node_modules/zeta"] = package("1.1.0")
+        self.save_locks()
+        artifact = self.artifact()
+        # Lockfile order is example, zeta; only zeta is risky.
+        artifact["results"][0]["features"] = {"signal": 0.2}
+        report = scan(self.request(), self.adapter(artifact), ExplainingPredictor())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            _print_text(report)
+        text = out.getvalue()
+        self.assertIn("바뀐 의존성 2개: 위험 1, 통과 1, 보류 0", text)
+        self.assertLess(text.index("[위험] zeta@1.1.0"), text.index("[통과] example@1.1.0"))
+        self.assertEqual([r["package"] for r in report["results"]], ["example", "zeta"])
 
     def test_korean_text_for_missing_model(self):
         out = io.StringIO()
