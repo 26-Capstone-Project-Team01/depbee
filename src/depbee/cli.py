@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 from . import __version__
@@ -55,6 +56,7 @@ METRIC_LABELS = {
     "WhitespaceRatio": "공백 비율",
 }
 PART_LABELS = {"New": "새 버전", "Change": "변화량", "ChangedCode": "바뀐 코드"}
+STATUS_ORDER = {"flagged": 0, "incomplete": 1, "not_flagged": 2, "removed": 3}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -125,7 +127,12 @@ def _analyzer(args: argparse.Namespace):
     if args.extract:
         from .analysis.extractor import ExtractorAnalyzer
 
-        return ExtractorAnalyzer(sources)
+        # Extraction takes seconds per package; show progress unless stdout is JSON.
+        if args.format != "text":
+            return ExtractorAnalyzer(sources)
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(errors="backslashreplace")
+        return ExtractorAnalyzer(sources, progress=_progress)
     return None
 
 
@@ -157,16 +164,37 @@ def _feature_value(name: str, value: object) -> str:
     return _clean(value)
 
 
+def _progress(index: int, total: int, change: dict) -> None:
+    after = change["after"]
+    name = f"{_clean(after['name'])}@{_clean(after['version'])}"
+    print(f"분석 중 {index}/{total}: {name}", file=sys.stderr, flush=True)
+
+
+def _summary(results: list[dict]) -> str:
+    counts = Counter(row["status"] for row in results)
+    text = (
+        f"바뀐 의존성 {len(results)}개: 위험 {counts['flagged']}, "
+        f"통과 {counts['not_flagged']}, 보류 {counts['incomplete']}"
+    )
+    return text + (f", 삭제 {counts['removed']}" if counts["removed"] else "")
+
+
 def _print_text(report: dict) -> None:
     # A console code page (e.g. cp949) may not encode every character in package data.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="backslashreplace")
     status = OVERALL_LABELS.get(report["status"], report["status"])
     print(f"depbee 검사 결과: {status} (종료 코드 {report['exit_code']})")
+    print(_summary(report["results"]))
     if report["model_id"]:
         print(f"모델: {_clean(report['model_id'])}, 판정 기준 점수 {report['threshold']}")
     print("범위: lockfile에서 바뀐 의존성만 검사했습니다. 프로젝트 전체의 안전성 평가가 아닙니다.")
-    for row in report["results"]:
+    # Risky and unfinished results first; the JSON report keeps the lockfile order.
+    rows = sorted(
+        report["results"],
+        key=lambda r: (STATUS_ORDER.get(r["status"], len(STATUS_ORDER)), -(r["score"] or 0.0)),
+    )
+    for row in rows:
         label = STATUS_LABELS.get(row["status"], row["status"])
         version = row["after_version"] or row["before_version"]
         print()
@@ -182,15 +210,24 @@ def _print_text(report: dict) -> None:
             print("  추출된 사실:")
             for evidence in row["evidence"]:
                 print(f"    - {_clean(evidence)}")
-        if row.get("explanation"):
-            print("  모델 판단에 크게 작용한 feature (+ 위험 쪽, - 정상 쪽):")
-            for item in row["explanation"]:
+        rest = row.get("explanation_rest")
+        if row.get("explanation") or rest:
+            print("  판단에 크게 작용한 특징 (+ 위험 쪽, - 정상 쪽):")
+            for item in row.get("explanation", []):
                 sign = "+" if item["contribution"] > 0 else "-"
                 name = item["feature"]
                 print(
                     f"    {sign} {_feature_label(name)} = {_feature_value(name, item['value'])}"
                     f" ({item['contribution']:+.2f})"
                 )
+        if rest:
+            shown = sum(item["contribution"] for item in row.get("explanation", []))
+            total = shown + rest["others_sum"] + rest["base_value"]
+            print(
+                f"    나머지 특징 {rest['others_count']}개 합 {rest['others_sum']:+.2f},"
+                f" 모델 기준값 {rest['base_value']:+.2f}"
+                f" (합계 {total:+.2f} → 점수 {row['score']:.3f})"
+            )
     print()
     print("'통과'는 모델의 판정일 뿐 패키지가 안전하다는 보증이 아닙니다.")
 
