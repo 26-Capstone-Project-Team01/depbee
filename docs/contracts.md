@@ -72,6 +72,7 @@
 ```
 
 - 양성 라벨 1이 악성이어야 한다. `feature_names`는 모델에 저장된 이름·순서와 정확히 같아야 한다.
+- 분석기는 `feature_schema`의 feature를 모두 뽑고, 예측기는 그중 `feature_names`에 있는 것만 그 순서로 모델에 넣는다. 그래서 feature 일부만 쓰는 모델(예: package.json feature 7개)도 같은 분석기로 붙는다. 모델 feature가 분석 결과에 없으면 채우지 않고 오류(보류)로 둔다.
 - `boolean_features`(선택): true/false를 1/0으로 넣는다. 학습 CSV의 True/False와 같다.
 - `categorical_features`(선택): 값의 목록 내 위치가 범주 코드다. pandas로 학습한 모델은 범주 순서를 모델 파일에 저장하므로, 그 순서와 다르면 로딩을 거부한다. 목록에 없는 값은 학습 범위 밖으로 보고 점수를 내지 않는다.
 - `nullable_features`(선택): null을 LightGBM 결측값(NaN)으로 넣는다. 학습 데이터에서 계산할 대상이 없어 비어 있던 feature만 여기에 둔다. 나머지 feature의 null은 거부한다.
