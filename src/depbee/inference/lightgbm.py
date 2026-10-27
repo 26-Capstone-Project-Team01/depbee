@@ -87,9 +87,11 @@ class LightGBMPredictor:
             raise GuardError("Unable to load the LightGBM model") from exc
 
     def _encode(self, features: dict[str, object]) -> list[float]:
-        if set(features) != set(self.feature_names):
+        # The analyzer may extract more than this model uses; extras are dropped, never filled.
+        missing = [name for name in self.feature_names if name not in features]
+        if missing:
             raise GuardError(
-                "Feature names differ from the model contract; no auto-fill is allowed"
+                f"Analyzer output lacks model features {missing}; no auto-fill is allowed"
             )
         values = []
         for name in self.feature_names:

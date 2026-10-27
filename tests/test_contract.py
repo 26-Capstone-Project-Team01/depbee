@@ -154,6 +154,15 @@ class TypedModelTests(Fixture):
             with self.subTest(features=bad), self.assertRaises(GuardError):
                 predictor.predict(bad)
 
+    def test_extra_features_are_ignored_and_missing_ones_rejected(self):
+        predictor = self.predictor()
+        features = {"flag": True, "kind": "c", "ratio": 0.9}
+        with_extra = {**features, "unusedByModel": 123.0}
+        self.assertEqual(predictor.predict(with_extra), predictor.predict(features))
+        self.assertEqual(predictor.explain(with_extra), predictor.explain(features))
+        with self.assertRaises(GuardError):
+            predictor.predict({"flag": True, "kind": "c"})
+
     def test_stored_category_order_must_match(self):
         raw = self.model.read_bytes()
         self.assertIn(b"pandas_categorical:null", raw)
