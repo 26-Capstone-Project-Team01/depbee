@@ -1,5 +1,10 @@
 # 검증 기록
 
+## 2026-11-04: Git 시간 제한의 실제 범위(`--base-ref` 후속)
+
+- 시간 제한이나 출력 상한을 넘으면 depbee는 직접 실행한 Git 프로세스만 종료한다. 손자 프로세스까지 정리하는 프로세스 트리 종료는 보류했다. Windows에서는 Job Object 같은 플랫폼 코드나 PID 재사용으로 확실하지 않은 종료가 필요하고, 실행하는 명령이 읽기 전용이며 lazy fetch도 꺼져 있기 때문이다(PR #6 리뷰 1차 nit 1, 2차 nit 3).
+- Windows 기본 설치의 `Git\cmd\git.exe`는 실제 Git(`mingw64\bin\git.exe`)을 손자 프로세스로 실행하는 wrapper다. wrapper를 종료해도 실제 Git은 계속 돌고, 파이프를 닫는 단계가 그 프로세스가 끝날 때까지 기다리므로 시간 초과 오류가 30초보다 늦게 날 수 있다(리뷰의 모의 실험에서 2초 제한이 12.1초까지 늘어남). 메모리 상한은 그대로 지켜진다. `_run` docstring, README, 구조 문서의 시간 제한 문구를 이 범위에 맞게 고쳤다. 이 동작은 이번 작업에서 직접 재현하지 않았다.
+
 ## 2026-11-04: Windows의 git.exe 미발견 오류 문구(`--base-ref` 후속)
 
 - PATH에 `git.cmd`만 있거나 현재 폴더에만 `git.exe`가 있을 때 Windows의 오류가 `Git executable not found on PATH`라 원인이 분명하지 않았다(PR #6 리뷰 2차 nit 2). Windows에서는 `git.exe not found on PATH (git.cmd, git.bat and the current directory are not used)`로 바꿨다. POSIX의 문구와 동작은 그대로다. 테스트 79개 통과(skip 없음), `ruff check` 통과. POSIX 문구 확인은 개발 CI(Ubuntu)에서만 실행된다.

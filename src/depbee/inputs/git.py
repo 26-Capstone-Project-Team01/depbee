@@ -34,7 +34,10 @@ def _run(
     """Run argv without a shell and return (returncode, stdout, stderr).
 
     The child is killed at TIMEOUT_SECONDS, or as soon as stdout passes limit bytes or stderr
-    passes _STDERR_LIMIT bytes, so neither time nor memory depends on what it prints.
+    passes _STDERR_LIMIT bytes, so memory does not depend on what it prints. Only the direct
+    child is killed: processes it started keep running, and closing the pipes waits for them.
+    On Windows the default Git\\cmd\\git.exe is such a wrapper, so a timeout can take until the
+    real Git ends.
     """
     caps = {"stdout": limit, "stderr": _STDERR_LIMIT}
     captured: dict[str, bytes] = {}

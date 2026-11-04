@@ -85,7 +85,7 @@ manifest 구조는 [연결 규약](docs/contracts.md)에 있습니다.
 Git은 읽기 전용 명령(`rev-parse`, `cat-file`)만 실행하고 fetch, merge-base 계산, 작업 트리·브랜치 변경은 하지 않습니다. 원격 브랜치를 기준으로 쓰려면 미리 fetch해 둡니다.
 부분 복제(partial clone) 저장소에서도 없는 객체를 원격에서 자동으로 받지 않도록 `--no-lazy-fetch`와 `GIT_NO_LAZY_FETCH=1`로 실행합니다. 기준 커밋의 lockfile이 로컬에 없으면 오류(종료 코드 2)로 끝납니다. `--base-ref`와 기본 HEAD 기준에는 Git 2.45 이상이 필요하고(`--no-lazy-fetch`가 2.45에 추가됨), 그보다 오래된 Git에서는 받는 대신 필요한 버전을 알리는 오류(종료 코드 2)로 끝납니다. `--base-lock`은 Git이 필요 없습니다.
 부모 프로세스의 `GIT_DIR`, `GIT_WORK_TREE` 같은 저장소 지정 환경 변수는 Git에 넘기지 않으므로 항상 대상 폴더가 속한 저장소를 읽고, replace ref(`refs/replace/`)는 적용하지 않습니다(`--no-replace-objects`). 커밋의 부모를 바꾸는 graft(`GIT_GRAFT_FILE`, `.git/info/grafts`)도 쓰지 않도록 Git에 빈 graft 파일(`GIT_GRAFT_FILE`을 null 장치로)을 줍니다.
-Git 명령은 30초 안에 끝나야 하며 출력 크기에 상한이 있습니다. 현재 폴더나 상대 경로 PATH 항목에서 찾은 `git`은 실행하지 않고 오류로 처리합니다. Windows에서는 인자가 cmd.exe를 거치지 않도록 `git.exe`만 실행하고 `git.cmd`·`git.bat`은 쓰지 않습니다.
+Git 명령에는 30초 제한과 출력 크기 상한이 있습니다. 제한을 넘으면 depbee가 직접 실행한 Git 프로세스를 종료하지만 그 하위 프로세스는 종료하지 않습니다. Windows 기본 설치의 `Git\cmd\git.exe`는 실제 Git을 하위 프로세스로 실행하는 wrapper라서, 시간 초과 오류가 실제 Git이 끝날 때까지 늦어질 수 있습니다. 현재 폴더나 상대 경로 PATH 항목에서 찾은 `git`은 실행하지 않고 오류로 처리합니다. Windows에서는 인자가 cmd.exe를 거치지 않도록 `git.exe`만 실행하고 `git.cmd`·`git.bat`은 쓰지 않습니다.
 
 `plan`은 바뀐 버전 쌍과 `request_id`를 JSON으로 출력합니다.
 `scan --extract`는 바뀌거나 새로 추가된 의존성마다 tarball을 받아 feature를 추출하고 모델로 판정합니다.
