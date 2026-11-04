@@ -375,10 +375,10 @@ class GitBaseTests(Fixture):
         run = self.git(*self.committed(self.base.read_bytes()))
         # Same bytes as the base file -> exactly the same request, including request_id.
         self.assertEqual(plan_project(self.project), self.request())
-        self.assertEqual([c.args for c in run.call_args_list], [
-            ([FAKE_GIT, "rev-parse", "--verify", "--quiet", "--end-of-options", "HEAD^{commit}"],
-             self.project, 4096),
-            ([FAKE_GIT, "cat-file", "blob", BLOB], self.project, MAX_JSON_BYTES),
+        self.assertEqual([c.args[:3] for c in run.call_args_list], [
+            ([FAKE_GIT, "--no-lazy-fetch", "rev-parse", "--verify", "--quiet", "--end-of-options",
+              "HEAD^{commit}"], self.project, 4096),
+            ([FAKE_GIT, "--no-lazy-fetch", "cat-file", "blob", BLOB], self.project, MAX_JSON_BYTES),
         ])
 
     def test_explicit_ref_in_subdirectory_with_space_and_korean(self):
@@ -453,6 +453,47 @@ class GitBaseTests(Fixture):
                     plan_project(self.project)
                 self.assertEqual(run.call_count, len(steps))
                 self.assertLess(len(str(caught.exception)), 1000)
+
+    def git_children(self, parent_env):
+        """Run plan_project through the real _run; each Git child is a harmless Python child."""
+        if parent_env is None:
+            os.environ.pop("GIT_NO_LAZY_FETCH", None)
+        else:
+            os.environ["GIT_NO_LAZY_FETCH"] = parent_env
+        replies = iter((COMMIT_LINE[1], self.base.read_bytes()))
+        children = []
+
+        def popen(argv, **kwargs):
+            children.append((argv, kwargs["env"]))
+            code = f"import sys; sys.stdout.buffer.write({next(replies)!r})"
+            return REAL_POPEN([sys.executable, "-I", "-c", code], **kwargs)
+
+        with (
+            mock.patch("depbee.inputs.git.shutil.which", return_value=FAKE_GIT),
+            mock.patch("depbee.inputs.git.subprocess.Popen", side_effect=popen),
+        ):
+            self.assertEqual(plan_project(self.project), self.request())
+        return children
+
+    def test_lazy_fetch_blocked_in_every_git_child(self):
+        # A partial clone would fetch a missing blob from its promisor remote; never go online,
+        # whatever GIT_NO_LAZY_FETCH the parent process inherited.
+        for parent_env in (None, "0", "false"):
+            with self.subTest(parent_env=parent_env):
+                children = self.git_children(parent_env)
+                self.assertEqual(len(children), 2)
+                for argv, env in children:
+                    self.assertEqual(argv[:2], [FAKE_GIT, "--no-lazy-fetch"])
+                    self.assertEqual(env["GIT_NO_LAZY_FETCH"], "1")
+
+    def test_missing_blob_ends_with_exit_2(self):
+        missing = b"fatal: unable to read 89abcdef (missing object, lazy fetch disabled)\n"
+        self.git(COMMIT_LINE, (128, b"", missing))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = main(["plan", str(self.project), "--base-ref", "HEAD~1"])
+        self.assertEqual(code, 2)
+        self.assertIn("missing object", json.loads(err.getvalue())["error"])
 
     def test_committed_lockfile_gets_the_same_json_checks(self):
         cases = {

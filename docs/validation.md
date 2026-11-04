@@ -1,5 +1,11 @@
 # 검증 기록
 
+## 2026-11-04: Git 기준 읽기의 lazy fetch 차단(`--base-ref` 후속)
+
+- 부분 복제 저장소에서 기준 커밋의 lockfile blob이 없으면 Git이 promisor remote에서 자동으로 받을 수 있었다. 모든 Git 호출에 `--no-lazy-fetch`를 붙이고 자식 환경의 `GIT_NO_LAZY_FETCH`를 부모 값과 무관하게 `1`로 둔다. 이 옵션을 모르는 Git은 알 수 없는 옵션으로 종료하므로(종료 코드 129, 현재 Git으로 다른 알 수 없는 옵션에서 확인) 받지 않고 오류가 된다.
+- 테스트 75개 통과(skip 없음), `ruff check` 통과, 격리 환경 build 성공. 실제 `_run`과 Popen을 거쳐 Git 대신 무해한 Python 자식을 실행해, 부모의 `GIT_NO_LAZY_FETCH`가 없음·`0`·`false`일 때도 두 Git 자식 모두 옵션과 환경 값 `1`을 받고 request_id가 파일 입력과 같음을 확인했다. 없는 blob 오류는 CLI 종료 코드 2로 끝난다.
+- 실제 Git(2.50.1, Windows) 합성 저장소의 기준 읽기와 기존 CLI 출력(9개 명령, 29개 파일)은 바이트 단위로 그대로다. 실제 부분 복제와 네트워크 fetch는 재현하지 않았다.
+
 ## 2026-11-04: 모델 경로 환경 변수(`DEPBEE_MODEL_DIR`)
 
 - 모델 경로 우선순위는 명시한 `--model-dir`, `DEPBEE_MODEL_DIR`, 모델 없음 순이다. 변수는 import 때가 아니라 `scan_project()`를 호출할 때마다 읽는다. 테스트 73개 통과(skip 없음), `ruff check` 통과, 격리 환경 build 성공.

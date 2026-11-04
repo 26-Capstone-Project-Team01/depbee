@@ -19,7 +19,9 @@ _STDERR_LIMIT = 4096
 _COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
-def _run(argv: list[str], cwd: Path, limit: int) -> tuple[int, bytes, bytes]:
+def _run(
+    argv: list[str], cwd: Path, limit: int, env: dict[str, str] | None = None
+) -> tuple[int, bytes, bytes]:
     """Run argv without a shell and return (returncode, stdout, stderr).
 
     The child is killed at TIMEOUT_SECONDS, or as soon as stdout passes limit bytes or stderr
@@ -28,7 +30,12 @@ def _run(argv: list[str], cwd: Path, limit: int) -> tuple[int, bytes, bytes]:
     caps = {"stdout": limit, "stderr": _STDERR_LIMIT}
     captured: dict[str, bytes] = {}
     with subprocess.Popen(
-        argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        argv,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     ) as proc:
 
         def drain(name: str) -> None:
@@ -63,8 +70,12 @@ def _git(project: Path, *args: str, limit: int = _LINE_LIMIT) -> tuple[int, byte
     # Windows also searches the current directory; never run a git.exe planted there.
     if git is None or not os.path.isabs(git):
         raise GuardError("Git executable not found on PATH")
+    # A partial clone would fetch a missing blob from its promisor remote; never go online.
+    # The option makes a Git too old to know it exit with an error instead of fetching, and the
+    # forced variable overrides an inherited GIT_NO_LAZY_FETCH=0.
+    env = {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
     try:
-        return _run([git, *args], project, limit)
+        return _run([git, "--no-lazy-fetch", *args], project, limit, env)
     except OSError as exc:
         raise GuardError(f"Unable to run Git: {exc}") from exc
 

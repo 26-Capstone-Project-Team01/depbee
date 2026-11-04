@@ -83,6 +83,7 @@ manifest 구조는 [연결 규약](docs/contracts.md)에 있습니다.
 비교 기준은 `--base-lock <파일>`로 주거나, 생략하면 대상 폴더가 속한 Git 저장소의 HEAD 커밋에 있는 같은 위치의 `package-lock.json`을 씁니다.
 다른 커밋·브랜치·태그는 `--base-ref <ref>`로 지정하며, `--base-lock`과 함께 쓸 수 없습니다.
 Git은 읽기 전용 명령(`rev-parse`, `cat-file`)만 실행하고 fetch, merge-base 계산, 작업 트리·브랜치 변경은 하지 않습니다. 원격 브랜치를 기준으로 쓰려면 미리 fetch해 둡니다.
+부분 복제(partial clone) 저장소에서도 없는 객체를 원격에서 자동으로 받지 않도록 `--no-lazy-fetch`와 `GIT_NO_LAZY_FETCH=1`로 실행합니다. 기준 커밋의 lockfile이 로컬에 없으면 오류(종료 코드 2)로 끝나고, 이 옵션을 모르는 오래된 Git도 받는 대신 오류로 끝납니다.
 Git 명령은 30초 안에 끝나야 하며 출력 크기에 상한이 있습니다. 현재 폴더나 상대 경로 PATH 항목에서 찾은 `git`은 실행하지 않고 오류로 처리합니다.
 
 `plan`은 바뀐 버전 쌍과 `request_id`를 JSON으로 출력합니다.
