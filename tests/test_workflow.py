@@ -39,6 +39,11 @@ class Fixture(unittest.TestCase):
         self.root = self.test_runs / uuid.uuid4().hex
         self.root.mkdir(parents=True)
         self.addCleanup(self.cleanup_run)
+        # A developer's DEPBEE_MODEL_DIR must not change service and CLI results.
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("DEPBEE_MODEL_DIR", None)
         self.project = self.root / "project"
         self.project.mkdir()
         self.base = self.root / "base.json"
@@ -267,6 +272,74 @@ class ServiceTests(Fixture):
                 extractor.assert_called_once_with({}, progress=progress)
                 # model_missing report (exit 2) with an empty stderr, not the error path.
                 self.assertEqual((code, err.getvalue()), (2, ""))
+
+
+class ModelDirEnvTests(Fixture):
+    """DEPBEE_MODEL_DIR: explicit model_dir > variable > no model, read on every call."""
+
+    def scan_with(self, env=None, **kwargs):
+        if env is not None:
+            os.environ["DEPBEE_MODEL_DIR"] = env
+        self.adapter()
+        with mock.patch("depbee.service.LightGBMPredictor", return_value=FakePredictor()) as model:
+            report = scan_project(
+                self.project, self.base, analysis=self.root / "analysis.json", **kwargs
+            )
+        return model, report
+
+    def test_variable_selects_the_model(self):
+        model, report = self.scan_with("models/from-env")
+        model.assert_called_once_with(Path("models/from-env"))
+        self.assertEqual(report["exit_code"], 1)  # scored by that model (signal 0.9)
+
+    def test_explicit_model_dir_wins_and_is_never_retried(self):
+        model, _ = self.scan_with("models/from-env", model_dir=Path("models/explicit"))
+        model.assert_called_once_with(Path("models/explicit"))
+        with (
+            mock.patch("depbee.service.LightGBMPredictor", side_effect=GuardError("bad")) as bad,
+            self.assertRaises(GuardError),
+        ):
+            scan_project(self.project, self.base, model_dir=Path("models/explicit"))
+        bad.assert_called_once_with(Path("models/explicit"))
+
+    def test_unset_or_empty_means_no_model(self):
+        for env in (None, ""):
+            with self.subTest(env=env):
+                model, report = self.scan_with(env)
+                model.assert_not_called()
+                self.assertEqual(report["results"][0]["reason"], "model_missing")
+        # Unchanged lockfiles still pass without any model.
+        self.new = copy.deepcopy(self.old)
+        self.save_locks()
+        self.assertEqual(scan_project(self.project, self.base)["exit_code"], 0)
+
+    def test_whitespace_or_missing_directory_is_a_path_error(self):
+        model, _ = self.scan_with("   ")
+        model.assert_called_once_with(Path("   "))  # used as given, not trimmed or skipped
+        for env in ("   ", str(self.root / "no-such-model")):
+            with self.subTest(env=env):
+                os.environ["DEPBEE_MODEL_DIR"] = env
+                with self.assertRaises((OSError, GuardError)):
+                    scan_project(self.project, self.base)
+
+    def test_variable_is_read_on_every_call(self):
+        models = []
+        for env in ("models/a", "models/b"):
+            model, _ = self.scan_with(env)
+            models.append(model.call_args.args[0])
+        self.assertEqual(models, [Path("models/a"), Path("models/b")])
+
+    def test_cli_uses_the_variable(self):
+        self.adapter()
+        os.environ["DEPBEE_MODEL_DIR"] = "models/from-env"
+        with (
+            mock.patch("depbee.service.LightGBMPredictor", return_value=FakePredictor()) as model,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            code = main(["scan", str(self.project), "--base-lock", str(self.base),
+                         "--analysis", str(self.root / "analysis.json"), "--format", "json"])
+        model.assert_called_once_with(Path("models/from-env"))
+        self.assertEqual(code, 1)
 
 
 FAKE_GIT = str(Path(__file__).resolve().parent / "fake-git")  # absolute; never executed

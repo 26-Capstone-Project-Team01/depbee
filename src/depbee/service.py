@@ -3,6 +3,7 @@
 Detection and verdicts stay in pipeline.scan(); output formats and exit handling stay with callers.
 """
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -63,6 +64,8 @@ def scan_project(
     base_lock, base_ref: the base lockfile, as in plan_project().
     analysis: trusted precomputed analysis JSON. extract: run feature-extractor instead.
     local_sources: NAME@VERSION=DIR specs under local_root (extract only).
+    model_dir: trusted model directory. If None, DEPBEE_MODEL_DIR is read on each call; empty or
+    unset means no model. A bad path is an error and never falls back to another model.
     progress: called per extracted package; the caller decides how to show it.
     With extract=False, progress and local_root are ignored; any local_sources raise GuardError.
 
@@ -81,5 +84,8 @@ def scan_project(
         from .analysis.extractor import ExtractorAnalyzer
 
         analyzer = ExtractorAnalyzer(sources, progress=progress)
+    env_model = os.environ.get("DEPBEE_MODEL_DIR")
+    if model_dir is None and env_model:
+        model_dir = Path(env_model)
     predictor = LightGBMPredictor(model_dir) if model_dir else None
     return scan(request, analyzer, predictor)
