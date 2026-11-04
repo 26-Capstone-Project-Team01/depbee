@@ -342,7 +342,7 @@ class ModelDirEnvTests(Fixture):
         self.assertEqual(code, 1)
 
 
-FAKE_GIT = str(Path(__file__).resolve().parent / "fake-git")  # absolute; never executed
+FAKE_GIT = str(Path(__file__).resolve().parent / "fake-git.exe")  # absolute; never executed
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 COMMIT_LINE = (0, f"{COMMIT}\n".encode(), b"")
 BLOB = f"{COMMIT}:./package-lock.json"
@@ -364,6 +364,7 @@ class GitBaseTests(Fixture):
         for patcher in patchers:
             mocks.append(patcher.start())
             self.addCleanup(patcher.stop)
+        self.which = mocks[0]
         return mocks[1]
 
     def committed(self, blob):
@@ -515,6 +516,17 @@ class GitBaseTests(Fixture):
             code = main(["plan", str(self.project), "--base-ref", "HEAD~1"])
         self.assertEqual(code, 2)
         self.assertIn("missing object", json.loads(err.getvalue())["error"])
+
+    def test_windows_runs_only_git_exe(self):
+        # A git.cmd or git.bat would pass the ref through cmd.exe. POSIX keeps looking up "git".
+        self.git(*self.committed(self.base.read_bytes()))
+        plan_project(self.project)
+        self.assertEqual(self.which.call_args.args[0], "git.exe" if os.name == "nt" else "git")
+        if os.name == "nt":
+            run = self.git(which=str(self.root / "bin" / "git.exe.cmd"))  # absolute, never run
+            with self.assertRaises(GuardError):
+                plan_project(self.project)
+            run.assert_not_called()
 
     def test_git_older_than_2_45_gets_a_clear_error(self):
         # Git before 2.45 rejects --no-lazy-fetch as an unknown option (exit 129).

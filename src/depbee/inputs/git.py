@@ -75,9 +75,11 @@ def _run(
 
 
 def _git(project: Path, *args: str, limit: int = _LINE_LIMIT) -> tuple[int, bytes, bytes]:
-    git = shutil.which("git")
+    windows = os.name == "nt"
+    # On Windows a git.cmd or git.bat would pass the arguments through cmd.exe; run git.exe only.
+    git = shutil.which("git.exe" if windows else "git")
     # Windows also searches the current directory; never run a git.exe planted there.
-    if git is None or not os.path.isabs(git):
+    if git is None or not os.path.isabs(git) or (windows and not git.lower().endswith(".exe")):
         raise GuardError("Git executable not found on PATH")
     # A partial clone would fetch a missing blob from its promisor remote; never go online.
     # The option makes a Git too old to know it exit with an error instead of fetching, and the
