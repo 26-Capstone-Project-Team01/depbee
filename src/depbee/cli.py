@@ -5,11 +5,8 @@ from collections import Counter
 from pathlib import Path
 
 from . import __version__
-from .analysis.artifact import ArtifactAnalyzer
 from .contracts import GuardError
-from .inference.lightgbm import LightGBMPredictor
-from .inputs.npm import build_request
-from .pipeline import scan
+from .service import plan_project, scan_project
 
 STATUS_LABELS = {
     "flagged": "위험",
@@ -97,43 +94,6 @@ def _parser() -> argparse.ArgumentParser:
             cmd.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
             cmd.add_argument("--format", choices=("text", "json"), default="text")
     return parser
-
-
-def _local_sources(args: argparse.Namespace) -> dict[tuple[str, str], Path]:
-    if not args.local_source:
-        return {}
-    if not args.extract or args.local_root is None:
-        raise GuardError("--local-source requires --extract and --local-root")
-    root = args.local_root.resolve()
-    sources = {}
-    for spec in args.local_source:
-        target, separator, directory = spec.partition("=")
-        name, at, version = target.rpartition("@")
-        if not separator or not at or not name or not version or not directory:
-            raise GuardError(f"--local-source must look like NAME@VERSION=DIR: {spec}")
-        path = (root / directory).resolve()
-        if not path.is_relative_to(root) or not path.is_dir():
-            raise GuardError(f"--local-source directory must exist under --local-root: {spec}")
-        if (name, version) in sources:
-            raise GuardError(f"Duplicate --local-source: {name}@{version}")
-        sources[(name, version)] = path
-    return sources
-
-
-def _analyzer(args: argparse.Namespace):
-    sources = _local_sources(args)
-    if args.analysis:
-        return ArtifactAnalyzer(args.analysis)
-    if args.extract:
-        from .analysis.extractor import ExtractorAnalyzer
-
-        # Extraction takes seconds per package; show progress unless stdout is JSON.
-        if args.format != "text":
-            return ExtractorAnalyzer(sources)
-        if hasattr(sys.stderr, "reconfigure"):
-            sys.stderr.reconfigure(errors="backslashreplace")
-        return ExtractorAnalyzer(sources, progress=_progress)
-    return None
 
 
 def _clean(value: object) -> str:
@@ -247,13 +207,25 @@ def _emit(report: dict, args: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        request = build_request(args.project, args.base_lock)
         if args.command == "plan":
-            _emit(request, args)
+            _emit(plan_project(args.project, args.base_lock), args)
             return 0
-        analyzer = _analyzer(args)
-        predictor = LightGBMPredictor(args.model_dir) if args.model_dir else None
-        report = scan(request, analyzer, predictor)
+        progress = None
+        # Extraction takes seconds per package; show progress unless stdout is JSON.
+        if args.extract and args.format == "text":
+            if hasattr(sys.stderr, "reconfigure"):
+                sys.stderr.reconfigure(errors="backslashreplace")
+            progress = _progress
+        report = scan_project(
+            args.project,
+            args.base_lock,
+            analysis=args.analysis,
+            extract=args.extract,
+            local_sources=args.local_source,
+            local_root=args.local_root,
+            model_dir=args.model_dir,
+            progress=progress,
+        )
         _emit(report, args)
         return report["exit_code"]
     except (GuardError, OSError, ValueError, RecursionError) as exc:

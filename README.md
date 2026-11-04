@@ -34,6 +34,7 @@ src/depbee/
   analysis/artifact.py    # 분석 결과 검증, 미리 만든 분석 JSON 연결
   inference/lightgbm.py   # 학습 완료 모델 로딩·검증·추론·기여도
   pipeline.py             # 입력→분석→추론 처리 조율
+  service.py              # CLI·Actions·MCP·대시보드 공통 진입점(요청·분석기·모델 조립)
 scripts/write_manifest.py # 모델 파일로 manifest.json 생성
 tests/                    # 합성 자료를 이용한 회귀·모델 연동 테스트
 examples/                 # 실행 가능한 명령에 사용할 가상 lockfile
