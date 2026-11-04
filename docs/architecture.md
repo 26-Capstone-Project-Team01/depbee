@@ -14,6 +14,8 @@
 판정 보고서 → CLI / JSON / 종료 코드 → 향후 CI 정책·UI
 ```
 
+`service.py`의 `plan_project()`·`scan_project()`가 위 단계를 조립하는 공통 진입점이다. CLI와 이후 Actions·MCP·대시보드는 이 함수를 호출하고, 판정은 `pipeline.scan()`에만 둔다.
+
 | 영역 | 담당 | 인계할 결과물 |
 |---|---|---|
 | 학습·평가 | 모델 담당 팀원 | native LightGBM 모델, 임계값, 학습 기록. manifest는 `scripts/write_manifest.py`로 만든다 |

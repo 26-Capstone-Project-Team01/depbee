@@ -8,6 +8,7 @@ import shutil
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
 from depbee.analysis.artifact import ArtifactAnalyzer
 from depbee.cli import main
@@ -15,6 +16,7 @@ from depbee.contracts import GuardError, finite_number, read_json
 from depbee.inference.lightgbm import LightGBMPredictor
 from depbee.inputs.npm import build_request
 from depbee.pipeline import scan
+from depbee.service import plan_project, scan_project
 
 
 def package(version="1.0.0"):
@@ -212,6 +214,40 @@ class PipelineTests(Fixture):
         self.assertEqual(read_json(output)[0], self.request())
 
 
+class ServiceTests(Fixture):
+    def test_plan_project_is_the_request(self):
+        self.assertEqual(plan_project(self.project, self.base), self.request())
+
+    def test_scan_project_without_analysis_or_model(self):
+        report = scan_project(self.project, self.base)
+        self.assertEqual(report, scan(self.request(), None, None))
+        self.assertEqual(report["results"][0]["reason"], "analysis_missing")
+        self.adapter()
+        report = scan_project(self.project, self.base, analysis=self.root / "analysis.json")
+        self.assertEqual(report["exit_code"], 2)
+        self.assertEqual(report["results"][0]["reason"], "model_missing")
+
+    def test_scan_project_rejects_bad_source_options(self):
+        with self.assertRaises(GuardError):
+            scan_project(self.project, self.base, analysis=self.base, extract=True)
+        with self.assertRaises(GuardError):
+            scan_project(self.project, self.base, local_sources=[f"example@1.1.0={self.root}"])
+
+    def test_scan_project_passes_sources_and_progress_to_extractor(self):
+        (self.root / "src").mkdir()
+        progress = mock.Mock()
+        with mock.patch("depbee.analysis.extractor.ExtractorAnalyzer") as extractor:
+            extractor.return_value.analyze.return_value = self.artifact()
+            report = scan_project(
+                self.project, self.base, extract=True, local_root=self.root,
+                local_sources=["example@1.1.0=src"], progress=progress,
+            )
+        extractor.assert_called_once_with(
+            {("example", "1.1.0"): (self.root / "src").resolve()}, progress=progress
+        )
+        self.assertEqual(report["results"][0]["reason"], "model_missing")
+
+
 @unittest.skipUnless(importlib.util.find_spec("lightgbm"), "Install .[ml] for native integration tests")
 class LightGBMTests(Fixture):
     def setUp(self):
@@ -245,6 +281,14 @@ class LightGBMTests(Fixture):
                          "--model-dir", str(self.root), "--format", "json"])
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(out.getvalue())["results"][0]["status"], "flagged")
+
+    def test_scan_project_matches_pipeline(self):
+        self.adapter()
+        analysis = self.root / "analysis.json"
+        report = scan_project(self.project, self.base, analysis=analysis, model_dir=self.root)
+        expected = scan(self.request(), ArtifactAnalyzer(analysis), LightGBMPredictor(self.root))
+        self.assertEqual(report, expected)
+        self.assertEqual(report["results"][0]["status"], "flagged")
 
     def test_hash_order_and_missing_features(self):
         predictor = LightGBMPredictor(self.root)
