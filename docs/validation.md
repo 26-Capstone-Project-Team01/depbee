@@ -1,5 +1,41 @@
 # 검증 기록
 
+## 2026-11-04: Windows에서 git.exe만 실행(`--base-ref` 후속)
+
+- Windows에서 `shutil.which("git")`는 PATH 앞쪽 폴더의 `git.cmd`를 `git.exe`보다 먼저 고를 수 있고, 그러면 ref 인자가 cmd.exe를 거친다(PR #6 리뷰 nit 2). 빈 자리표시 파일로 확인했다(Python 3.13.5, 실행하지 않음): 같은 PATH에서 `which("git")`는 `git.CMD`, `which("git.exe")`는 뒤 폴더의 `git.exe`를 돌려준다. Windows에서는 `git.exe`를 찾고, 결과가 `.exe`로 끝나지 않으면 실행하지 않는다. POSIX는 그대로 `git`을 찾는다.
+- 테스트 78개 통과(skip 없음), `ruff check` 통과. POSIX 분기는 개발 CI(Ubuntu)에서만 실행된다.
+
+## 2026-11-04: Git 2.45 미만에서 필요한 버전 안내(`--base-ref` 후속)
+
+- `--no-lazy-fetch`는 Git 2.45 릴리스 노트에 처음 나온다. 그보다 오래된 Git은 알 수 없는 옵션으로 종료 코드 129를 내고, 지금까지는 `Git cannot resolve HEAD to a commit`처럼 원인을 알기 어려운 오류였다(PR #6 리뷰 minor 1). Git이 129와 `unknown option`으로 끝나면 `Git 2.45 or later is required`로 시작하는 오류를 내고 종료 코드 2는 그대로다. README와 연결 규약에 최소 Git 2.45를 적었다.
+- 테스트 77개 통과(skip 없음), `ruff check` 통과. 오래된 Git의 출력은 합성 stderr로 넣었고, 실제 Git 2.45 미만은 실행하지 않았다.
+
+## 2026-11-04: Git 자식 환경의 저장소 지정 변수 제거와 replace 객체 무시(`--base-ref` 후속)
+
+- 부모 프로세스가 `GIT_DIR` 등을 물려주면 Git이 대상 폴더가 아닌 다른 저장소의 lockfile을 기준으로 읽어, 실제 변경이 `changes: []`와 종료 코드 0으로 사라질 수 있었다(PR #6 리뷰 major 1). Git 자식 환경에서 `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`를 지우고, `refs/replace/`로 바뀐 객체를 읽지 않도록 `--no-replace-objects`를 붙인다. `GIT_NO_LAZY_FETCH=1` 강제는 그대로다.
+- 테스트 76개 통과(skip 없음), `ruff check` 통과. 실제 `_run`과 Popen을 거쳐 Git 대신 무해한 Python 자식(상속된 `GIT_DIR`이 있으면 다른 저장소처럼 답함)을 실행해, 여섯 변수가 다른 저장소를 가리켜도 자식 환경에 남지 않고, request가 파일 입력과 같으며, 부모 환경이 바뀌지 않음을 확인했다.
+- 실제 Git(2.50.1, Windows)과 합성 저장소 2개(examples lockfile만)로 확인했다. `GIT_DIR`만, 여섯 변수 모두, `refs/replace/`로 기준 blob을 바꾼 경우 모두 `plan` 출력이 같은 파일을 `--base-lock`으로 준 출력과 바이트 단위로 같다. 같은 경우를 수정 전 코드로 실행하면 `GIT_DIR`과 replace 경우에 변경이 사라졌다.
+
+## 2026-11-04: Git 기준 읽기의 lazy fetch 차단(`--base-ref` 후속)
+
+- 부분 복제 저장소에서 기준 커밋의 lockfile blob이 없으면 Git이 promisor remote에서 자동으로 받을 수 있었다. 모든 Git 호출에 `--no-lazy-fetch`를 붙이고 자식 환경의 `GIT_NO_LAZY_FETCH`를 부모 값과 무관하게 `1`로 둔다. 이 옵션을 모르는 Git은 알 수 없는 옵션으로 종료하므로(종료 코드 129, 현재 Git으로 다른 알 수 없는 옵션에서 확인) 받지 않고 오류가 된다.
+- 테스트 75개 통과(skip 없음), `ruff check` 통과, 격리 환경 build 성공. 실제 `_run`과 Popen을 거쳐 Git 대신 무해한 Python 자식을 실행해, 부모의 `GIT_NO_LAZY_FETCH`가 없음·`0`·`false`일 때도 두 Git 자식 모두 옵션과 환경 값 `1`을 받고 request_id가 파일 입력과 같음을 확인했다. 없는 blob 오류는 CLI 종료 코드 2로 끝난다.
+- 실제 Git(2.50.1, Windows) 합성 저장소의 기준 읽기와 기존 CLI 출력(9개 명령, 29개 파일)은 바이트 단위로 그대로다. 실제 부분 복제와 네트워크 fetch는 재현하지 않았다.
+
+## 2026-11-04: 모델 경로 환경 변수(`DEPBEE_MODEL_DIR`)
+
+- 모델 경로 우선순위는 명시한 `--model-dir`, `DEPBEE_MODEL_DIR`, 모델 없음 순이다. 변수는 import 때가 아니라 `scan_project()`를 호출할 때마다 읽는다. 테스트 73개 통과(skip 없음), `ruff check` 통과, 격리 환경 build 성공.
+- 단위 테스트는 명시 경로 우선(잘못돼도 변수로 다시 시도하지 않음), 변수만 있음, 미설정과 빈 값, 공백만 있는 값과 없는 폴더의 경로 오류, 호출 사이 변수 변경, CLI 연결을 확인한다. 기존 테스트는 공통 fixture에서 변수를 지워 개발 PC 설정과 무관하게 돌고, 변수를 남기면 8개가 실패함을 확인했다.
+- D04-E00과 DEV-01 합성 feature로 확인했다. 변수로 고른 모델의 text·json 출력과 `--output` 파일이 `--model-dir`로 준 출력과 바이트 단위로 같고, 잘못된 변수가 있어도 `--model-dir`을 주면 같다. 빈 값은 미설정과 같고, 공백만 있는 값과 없는 폴더는 종료 코드 2다. 변수가 없는 기존 CLI 출력(9개 명령, 29개 파일)은 바이트 단위로 같다. 탐지 성능 검증은 아니다.
+
+## 2026-11-04: Git 기준 lockfile(`--base-ref`)
+
+- `plan`·`scan`에 `--base-ref`를 추가했다. `--base-lock`도 `--base-ref`도 없으면 HEAD를 쓴다. 테스트 67개 통과(skip 없음), `ruff check` 통과, 격리 환경 build 성공.
+- 단위 테스트는 Git을 모두 mock한다. 커밋에서 읽은 바이트가 기준 파일과 같으면 request와 request_id가 같고, 빈 ref·옵션 형태 ref, Git 없음, 현재 폴더에서 찾은 git, 저장소 아님, 없는 ref, 커밋에 lockfile 없음, 잘못된 JSON·중복 키·lockfileVersion은 오류다.
+- 출력 상한, timeout, 종료 정리는 테스트 자신의 Python을 자식 프로세스로 실행해 확인했다. 끝없이 출력하는 자식은 상한을 넘는 즉시 종료되고, 출력 없이 멈춘 자식은 제한 시간에 종료되며, 두 경우 모두 프로세스가 끝나고 파이프가 닫힌다.
+- `--base-lock`을 명시한 기존 CLI 출력(9개 명령, 29개 파일)은 바이트 단위로 같다.
+- 실제 Git(2.50.1, Windows)으로 공백과 한글이 든 하위 폴더에 합성 저장소를 만들어 확인했다. `HEAD~1`과 annotated tag 기준의 `plan`·`scan` 출력이 같은 파일을 `--base-lock`으로 준 출력과 바이트 단위로 같고, 없는 ref, 옵션 형태 ref, 커밋하지 않은 lockfile, 저장소 밖 폴더는 종료 코드 2다. Linux·macOS의 실제 Git은 확인하지 않았다.
+
 ## 2026-10-27: 모델이 쓰는 feature만 골라 추론
 
 - 분석기가 뽑은 feature 중 manifest `feature_names`에 있는 것만 모델에 넣는다. 남는 feature는 버리고, 모델 feature가 하나라도 없으면 지금처럼 오류(보류)다. 없는 값은 채우지 않는다.

@@ -25,6 +25,9 @@ depbee plan target --base-lock baseline/package-lock.json --output artifacts/req
 depbee scan target --base-lock baseline/package-lock.json --analysis artifacts/analysis.json --model-dir trusted-model --format json --output artifacts/report.json
 ```
 
+CI에서는 기준을 반드시 `--base-lock <보호된 기준 파일>` 또는 `--base-ref <보호된 기준 브랜치>`(예: 미리 fetch한 `origin/main`)로 지정한다.
+기준을 생략하면 HEAD가 기준이 되는데, PR checkout의 HEAD에는 의존성 변경이 이미 커밋돼 있어 실제 변경이 있어도 "변경 없음, 종료 코드 0"이 나올 수 있고, 이는 정말 변경이 없는 경우와 구별되지 않는다. `--base-ref`에는 Git 2.45 이상이 필요하다.
+
 이 문서는 설계이며 바로 설치·차단을 수행하는 완성 workflow가 아니다.
 실제 analyzer와 모델 전달 후 required check와 `needs` 관계를 구성한다.
 

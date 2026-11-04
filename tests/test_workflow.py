@@ -4,16 +4,21 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import shutil
+import subprocess
+import sys
+import time
 import unittest
 import uuid
 from pathlib import Path
 from unittest import mock
 
 from depbee.analysis.artifact import ArtifactAnalyzer
-from depbee.cli import main
-from depbee.contracts import GuardError, finite_number, read_json
+from depbee.cli import _progress, main
+from depbee.contracts import MAX_JSON_BYTES, GuardError, finite_number, read_json
 from depbee.inference.lightgbm import LightGBMPredictor
+from depbee.inputs import git as git_input
 from depbee.inputs.npm import build_request
 from depbee.pipeline import scan
 from depbee.service import plan_project, scan_project
@@ -34,6 +39,11 @@ class Fixture(unittest.TestCase):
         self.root = self.test_runs / uuid.uuid4().hex
         self.root.mkdir(parents=True)
         self.addCleanup(self.cleanup_run)
+        # A developer's DEPBEE_MODEL_DIR must not change service and CLI results.
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("DEPBEE_MODEL_DIR", None)
         self.project = self.root / "project"
         self.project.mkdir()
         self.base = self.root / "base.json"
@@ -246,6 +256,352 @@ class ServiceTests(Fixture):
             {("example", "1.1.0"): (self.root / "src").resolve()}, progress=progress
         )
         self.assertEqual(report["results"][0]["reason"], "model_missing")
+
+    def test_cli_extract_progress_by_format(self):
+        # Real cli.main and scan_project; only the extractor is replaced (nothing is extracted).
+        for fmt, progress in (("text", _progress), ("json", None)):
+            err = io.StringIO()
+            with (
+                self.subTest(format=fmt),
+                mock.patch("depbee.analysis.extractor.ExtractorAnalyzer") as extractor,
+            ):
+                extractor.return_value.analyze.return_value = self.artifact()
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                    code = main(["scan", str(self.project), "--base-lock", str(self.base),
+                                 "--extract", "--format", fmt])
+                extractor.assert_called_once_with({}, progress=progress)
+                # model_missing report (exit 2) with an empty stderr, not the error path.
+                self.assertEqual((code, err.getvalue()), (2, ""))
+
+
+class ModelDirEnvTests(Fixture):
+    """DEPBEE_MODEL_DIR: explicit model_dir > variable > no model, read on every call."""
+
+    def scan_with(self, env=None, **kwargs):
+        if env is not None:
+            os.environ["DEPBEE_MODEL_DIR"] = env
+        self.adapter()
+        with mock.patch("depbee.service.LightGBMPredictor", return_value=FakePredictor()) as model:
+            report = scan_project(
+                self.project, self.base, analysis=self.root / "analysis.json", **kwargs
+            )
+        return model, report
+
+    def test_variable_selects_the_model(self):
+        model, report = self.scan_with("models/from-env")
+        model.assert_called_once_with(Path("models/from-env"))
+        self.assertEqual(report["exit_code"], 1)  # scored by that model (signal 0.9)
+
+    def test_explicit_model_dir_wins_and_is_never_retried(self):
+        model, _ = self.scan_with("models/from-env", model_dir=Path("models/explicit"))
+        model.assert_called_once_with(Path("models/explicit"))
+        with (
+            mock.patch("depbee.service.LightGBMPredictor", side_effect=GuardError("bad")) as bad,
+            self.assertRaises(GuardError),
+        ):
+            scan_project(self.project, self.base, model_dir=Path("models/explicit"))
+        bad.assert_called_once_with(Path("models/explicit"))
+
+    def test_unset_or_empty_means_no_model(self):
+        for env in (None, ""):
+            with self.subTest(env=env):
+                model, report = self.scan_with(env)
+                model.assert_not_called()
+                self.assertEqual(report["results"][0]["reason"], "model_missing")
+        # Unchanged lockfiles still pass without any model.
+        self.new = copy.deepcopy(self.old)
+        self.save_locks()
+        self.assertEqual(scan_project(self.project, self.base)["exit_code"], 0)
+
+    def test_whitespace_or_missing_directory_is_a_path_error(self):
+        model, _ = self.scan_with("   ")
+        model.assert_called_once_with(Path("   "))  # used as given, not trimmed or skipped
+        for env in ("   ", str(self.root / "no-such-model")):
+            with self.subTest(env=env):
+                os.environ["DEPBEE_MODEL_DIR"] = env
+                with self.assertRaises((OSError, GuardError)):
+                    scan_project(self.project, self.base)
+
+    def test_variable_is_read_on_every_call(self):
+        models = []
+        for env in ("models/a", "models/b"):
+            model, _ = self.scan_with(env)
+            models.append(model.call_args.args[0])
+        self.assertEqual(models, [Path("models/a"), Path("models/b")])
+
+    def test_cli_uses_the_variable(self):
+        self.adapter()
+        os.environ["DEPBEE_MODEL_DIR"] = "models/from-env"
+        with (
+            mock.patch("depbee.service.LightGBMPredictor", return_value=FakePredictor()) as model,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            code = main(["scan", str(self.project), "--base-lock", str(self.base),
+                         "--analysis", str(self.root / "analysis.json"), "--format", "json"])
+        model.assert_called_once_with(Path("models/from-env"))
+        self.assertEqual(code, 1)
+
+
+FAKE_GIT = str(Path(__file__).resolve().parent / "fake-git.exe")  # absolute; never executed
+COMMIT = "0123456789abcdef0123456789abcdef01234567"
+COMMIT_LINE = (0, f"{COMMIT}\n".encode(), b"")
+BLOB = f"{COMMIT}:./package-lock.json"
+GIT_OPTIONS = [FAKE_GIT, "--no-lazy-fetch", "--no-replace-objects"]
+REPOSITORY_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+                        "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
+
+
+class GitBaseTests(Fixture):
+    """Git is always mocked, so no test depends on a real repository or a Git install."""
+
+    def git(self, *steps, which=FAKE_GIT):
+        """Mock Git. Each step is (returncode, stdout, stderr) or an exception, in call order."""
+        patchers = (
+            mock.patch("depbee.inputs.git.shutil.which", return_value=which),
+            mock.patch("depbee.inputs.git._run", side_effect=list(steps)),
+        )
+        mocks = []
+        for patcher in patchers:
+            mocks.append(patcher.start())
+            self.addCleanup(patcher.stop)
+        self.which = mocks[0]
+        return mocks[1]
+
+    def committed(self, blob):
+        return COMMIT_LINE, (0, blob, b"")
+
+    def test_base_lock_file_never_runs_git(self):
+        run = self.git()
+        self.assertEqual(plan_project(self.project, self.base), self.request())
+        run.assert_not_called()
+
+    def test_default_head_matches_file_input(self):
+        run = self.git(*self.committed(self.base.read_bytes()))
+        # Same bytes as the base file -> exactly the same request, including request_id.
+        self.assertEqual(plan_project(self.project), self.request())
+        self.assertEqual([c.args[:3] for c in run.call_args_list], [
+            ([*GIT_OPTIONS, "rev-parse", "--verify", "--quiet", "--end-of-options",
+              "HEAD^{commit}"], self.project, 4096),
+            ([*GIT_OPTIONS, "cat-file", "blob", BLOB], self.project, MAX_JSON_BYTES),
+        ])
+
+    def test_explicit_ref_in_subdirectory_with_space_and_korean(self):
+        project = self.root / "repo" / "하위 폴더 a"
+        project.mkdir(parents=True)
+        shutil.copyfile(self.head, project / "package-lock.json")
+        run = self.git(*self.committed(self.base.read_bytes()))
+        request = plan_project(project, base_ref="origin/main")
+        self.assertEqual(request["request_id"], self.request()["request_id"])
+        self.assertEqual(run.call_args_list[0].args[0][-1], "origin/main^{commit}")
+        self.assertEqual(run.call_args_list[1].args[0][-1], BLOB)
+        self.assertEqual({c.args[1] for c in run.call_args_list}, {project})
+
+    def test_scan_project_and_cli_read_base_ref(self):
+        self.git(*self.committed(self.base.read_bytes()))
+        self.assertEqual(scan_project(self.project, base_ref="v1"), scan(self.request(), None, None))
+        expected = io.StringIO()
+        with contextlib.redirect_stdout(expected):
+            main(["plan", str(self.project), "--base-lock", str(self.base)])
+        for extra, ref in (([], "HEAD"), (["--base-ref", "HEAD~1"], "HEAD~1")):
+            with self.subTest(ref=ref):
+                run = self.git(*self.committed(self.base.read_bytes()))
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    code = main(["plan", str(self.project), *extra])
+                self.assertEqual((code, out.getvalue()), (0, expected.getvalue()))
+                self.assertEqual(run.call_args_list[0].args[0][-1], f"{ref}^{{commit}}")
+
+    def test_base_lock_and_base_ref_together_rejected(self):
+        run = self.git()
+        with self.assertRaises(GuardError):
+            plan_project(self.project, self.base, base_ref="HEAD")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as stop:
+            main(["plan", str(self.project), "--base-lock", str(self.base), "--base-ref", "HEAD"])
+        self.assertEqual(stop.exception.code, 2)
+        self.assertIn("not allowed with argument", err.getvalue())
+        run.assert_not_called()
+
+    def test_option_like_or_empty_ref_rejected_before_git(self):
+        run = self.git()
+        for ref in ("", "-n", "--output=x"):
+            with self.subTest(ref=ref), self.assertRaises(GuardError):
+                plan_project(self.project, base_ref=ref)
+        run.assert_not_called()
+
+    def test_git_not_found_or_planted_in_current_directory(self):
+        for which in (None, "git.exe", os.path.join(".", "git.exe")):
+            with self.subTest(which=which):
+                run = self.git(which=which)
+                with self.assertRaises(GuardError):
+                    plan_project(self.project)
+                run.assert_not_called()
+
+    def test_git_failures_stop_with_short_errors(self):
+        no_repo = b"fatal: not a git repository (or any of the parent directories): .git\n"
+        cases = {
+            "cannot execute": [FileNotFoundError("git")],
+            "not a repository": [(128, b"", no_repo)],
+            "unknown ref": [(1, b"", b"")],
+            "not a commit id": [(0, b"HEAD\n", b"")],
+            # _run raises these itself; BoundedRunTests checks it with a real child.
+            "timeout": [GuardError("Git did not finish within 30 seconds")],
+            "too large": [COMMIT_LINE, GuardError("Git output exceeds 20971520 bytes")],
+            "no base lockfile": [COMMIT_LINE, (128, b"", b"fatal: path does not exist\n")],
+            "long stderr": [(128, b"", b"x" * 4096)],
+        }
+        for name, steps in cases.items():
+            with self.subTest(name):
+                run = self.git(*steps)
+                with self.assertRaises(GuardError) as caught:
+                    plan_project(self.project)
+                self.assertEqual(run.call_count, len(steps))
+                self.assertLess(len(str(caught.exception)), 1000)
+
+    def git_children(self, **parent):
+        """Run plan_project through the real _run; each Git child is a harmless Python child.
+
+        Like Git, a child that inherits GIT_DIR answers from that other repository, whose
+        lockfile equals the project's, so a leaked variable would hide the real change.
+        """
+        os.environ.pop("GIT_NO_LAZY_FETCH", None)
+        os.environ.update(parent)
+        before = dict(os.environ)
+        replies = iter((COMMIT_LINE[1], self.base.read_bytes()))
+        children = []
+
+        def popen(argv, **kwargs):
+            children.append((argv, kwargs["env"]))
+            reply = next(replies)
+            if "GIT_DIR" in kwargs["env"] and reply != COMMIT_LINE[1]:
+                reply = self.head.read_bytes()
+            code = f"import sys; sys.stdout.buffer.write({reply!r})"
+            return REAL_POPEN([sys.executable, "-I", "-c", code], **kwargs)
+
+        with (
+            mock.patch("depbee.inputs.git.shutil.which", return_value=FAKE_GIT),
+            mock.patch("depbee.inputs.git.subprocess.Popen", side_effect=popen),
+        ):
+            self.assertEqual(plan_project(self.project), self.request())
+        self.assertEqual(dict(os.environ), before)  # the parent environment is not changed
+        return children
+
+    def test_lazy_fetch_blocked_in_every_git_child(self):
+        # A partial clone would fetch a missing blob from its promisor remote; never go online,
+        # whatever GIT_NO_LAZY_FETCH the parent process inherited.
+        for parent_env in (None, "0", "false"):
+            with self.subTest(parent_env=parent_env):
+                parent = {} if parent_env is None else {"GIT_NO_LAZY_FETCH": parent_env}
+                children = self.git_children(**parent)
+                self.assertEqual(len(children), 2)
+                for argv, env in children:
+                    self.assertEqual(argv[:3], GIT_OPTIONS)
+                    self.assertEqual(env["GIT_NO_LAZY_FETCH"], "1")
+
+    def test_inherited_repository_variables_cannot_redirect_git(self):
+        # git_children checks the request still shows the project's real change.
+        other = str(self.root / "other-repo" / ".git")
+        children = self.git_children(**dict.fromkeys(REPOSITORY_VARIABLES, other))
+        self.assertEqual(len(children), 2)
+        for argv, env in children:
+            self.assertEqual(argv[:3], GIT_OPTIONS)
+            self.assertFalse(set(REPOSITORY_VARIABLES) & env.keys())
+            self.assertEqual(env["GIT_NO_LAZY_FETCH"], "1")
+
+    def test_missing_blob_ends_with_exit_2(self):
+        missing = b"fatal: unable to read 89abcdef (missing object, lazy fetch disabled)\n"
+        self.git(COMMIT_LINE, (128, b"", missing))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = main(["plan", str(self.project), "--base-ref", "HEAD~1"])
+        self.assertEqual(code, 2)
+        self.assertIn("missing object", json.loads(err.getvalue())["error"])
+
+    def test_windows_runs_only_git_exe(self):
+        # A git.cmd or git.bat would pass the ref through cmd.exe. POSIX keeps looking up "git".
+        self.git(*self.committed(self.base.read_bytes()))
+        plan_project(self.project)
+        self.assertEqual(self.which.call_args.args[0], "git.exe" if os.name == "nt" else "git")
+        if os.name == "nt":
+            run = self.git(which=str(self.root / "bin" / "git.exe.cmd"))  # absolute, never run
+            with self.assertRaises(GuardError):
+                plan_project(self.project)
+            run.assert_not_called()
+
+    def test_git_older_than_2_45_gets_a_clear_error(self):
+        # Git before 2.45 rejects --no-lazy-fetch as an unknown option (exit 129).
+        usage = b"unknown option: --no-lazy-fetch\nusage: git [-v | --version] [-h | --help]\n"
+        run = self.git((129, b"", usage))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = main(["plan", str(self.project)])
+        self.assertEqual(code, 2)
+        self.assertIn("Git 2.45 or later is required", json.loads(err.getvalue())["error"])
+        self.assertEqual(run.call_count, 1)
+
+    def test_committed_lockfile_gets_the_same_json_checks(self):
+        cases = {
+            "invalid JSON": b"{",
+            "duplicate key": b'{"lockfileVersion": 3, "lockfileVersion": 3, "packages": {}}',
+            "lockfileVersion 1": b'{"lockfileVersion": 1, "packages": {}}',
+            "not an object": b"[]",
+        }
+        for name, blob in cases.items():
+            with self.subTest(name):
+                self.git(*self.committed(blob))
+                with self.assertRaises(GuardError):
+                    plan_project(self.project)
+
+
+REAL_POPEN = subprocess.Popen
+
+
+class BoundedRunTests(unittest.TestCase):
+    """The real _run with a real child: this test's own Python printing synthetic bytes."""
+
+    def run_child(self, code, limit=100):
+        """Run code in a child Python; keep the Popen object and its arguments for checks."""
+        self.started = []
+
+        def popen(*args, **kwargs):
+            self.started.append((REAL_POPEN(*args, **kwargs), kwargs))
+            return self.started[-1][0]
+
+        began = time.monotonic()
+        try:
+            with mock.patch("depbee.inputs.git.subprocess.Popen", side_effect=popen):
+                return git_input._run([sys.executable, "-I", "-c", code], Path.cwd(), limit)
+        finally:
+            self.elapsed = time.monotonic() - began
+            proc, _ = self.started[0]
+            # Cleanup: the child has exited and both pipes are closed, success or not.
+            self.assertIsNotNone(proc.poll())
+            self.assertTrue(proc.stdout.closed and proc.stderr.closed)
+
+    def test_output_and_exit_code_without_shell(self):
+        code = "import sys; sys.stdout.write('ok'); sys.stderr.write('warn'); sys.exit(3)"
+        self.assertEqual(self.run_child(code), (3, b"ok", b"warn"))
+        kwargs = self.started[0][1]
+        self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertFalse(kwargs.get("shell", False))
+
+    def test_output_at_the_limit_is_kept(self):
+        code = "import sys; sys.stdout.buffer.write(b'x' * 100)"
+        self.assertEqual(self.run_child(code), (0, b"x" * 100, b""))
+
+    def test_endless_output_is_cut_and_the_child_killed(self):
+        for stream in ("stdout", "stderr"):
+            with self.subTest(stream=stream):
+                code = f"import sys\nwhile True: sys.{stream}.buffer.write(b'x' * 65536)"
+                with self.assertRaisesRegex(GuardError, "exceeds"):
+                    self.run_child(code)
+                self.assertLess(self.elapsed, 10)  # stopped by the limit, not the timeout
+
+    def test_timeout_kills_a_silent_child(self):
+        with mock.patch.object(git_input, "TIMEOUT_SECONDS", 0.5):
+            with self.assertRaisesRegex(GuardError, "did not finish"):
+                self.run_child("import time; time.sleep(60)")
+        self.assertLess(self.elapsed, 10)
 
 
 @unittest.skipUnless(importlib.util.find_spec("lightgbm"), "Install .[ml] for native integration tests")

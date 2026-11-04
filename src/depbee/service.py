@@ -3,6 +3,7 @@
 Detection and verdicts stay in pipeline.scan(); output formats and exit handling stay with callers.
 """
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -13,9 +14,14 @@ from .inputs.npm import build_request
 from .pipeline import scan
 
 
-def plan_project(project: Path, base_lock: Path) -> dict:
-    """Changed version pairs between the base lockfile and project/package-lock.json."""
-    return build_request(project, base_lock)
+def plan_project(
+    project: Path, base_lock: Path | None = None, *, base_ref: str | None = None
+) -> dict:
+    """Changed version pairs between the base lockfile and project/package-lock.json.
+
+    The base is base_lock, else project/package-lock.json in Git base_ref (default HEAD).
+    """
+    return build_request(project, base_lock, base_ref=base_ref)
 
 
 def _local_sources(
@@ -43,8 +49,9 @@ def _local_sources(
 
 def scan_project(
     project: Path,
-    base_lock: Path,
+    base_lock: Path | None = None,
     *,
+    base_ref: str | None = None,
     analysis: Path | None = None,
     extract: bool = False,
     local_sources: list[str] | None = None,
@@ -54,13 +61,21 @@ def scan_project(
 ) -> dict:
     """Build the request, pick the analyzer and model, and return the pipeline.scan() report.
 
+    base_lock, base_ref: the base lockfile, as in plan_project().
     analysis: trusted precomputed analysis JSON. extract: run feature-extractor instead.
     local_sources: NAME@VERSION=DIR specs under local_root (extract only).
+    model_dir: trusted model directory. If None, DEPBEE_MODEL_DIR is read on each call; empty or
+    unset means no model. A bad path is an error and never falls back to another model.
     progress: called per extracted package; the caller decides how to show it.
+    With extract=False, progress and local_root are ignored; any local_sources raise GuardError.
+
+    Raises GuardError, OSError, ValueError or RecursionError for bad options or invalid inputs
+    (lockfiles, analysis, model); the caller maps them to its error output.
     """
+    # Intended error priority: option conflict before reading lockfiles, local sources after.
     if analysis and extract:
         raise GuardError("Use either an analysis file or extraction, not both")
-    request = plan_project(project, base_lock)
+    request = plan_project(project, base_lock, base_ref=base_ref)
     sources = _local_sources(local_sources or [], extract, local_root)
     analyzer = None
     if analysis:
@@ -69,5 +84,8 @@ def scan_project(
         from .analysis.extractor import ExtractorAnalyzer
 
         analyzer = ExtractorAnalyzer(sources, progress=progress)
+    env_model = os.environ.get("DEPBEE_MODEL_DIR")
+    if model_dir is None and env_model:
+        model_dir = Path(env_model)
     predictor = LightGBMPredictor(model_dir) if model_dir else None
     return scan(request, analyzer, predictor)

@@ -10,7 +10,7 @@ npm 프로젝트에서 바뀐 의존성 버전을 찾아, 각 버전의 변경�
 
 | 영역      | 현재 구현 내용                                                                                    | 남은 연결·검증                          |
 | --------- | ------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| 입력 처리 | lockfile v2/v3 비교, 직접·중첩 의존성의 변경·추가 추출, 변경·요청 ID와 파일 해시 생성             | Git 기준 파일 자동 추출, 추가 입력 형식 |
+| 입력 처리 | lockfile v2/v3 비교(기준은 파일·Git 커밋), 직접·중첩 의존성 변경·추가 추출, 변경·요청 ID와 해시   | 추가 입력 형식                          |
 | 분석      | `--extract`: feature-extractor로 설치될 버전과 그 직전 stable을 비교해 feature·근거 추출          | tarball 자체의 integrity 검증           |
 | 분석 연결 | `--analysis`: 다른 분석기가 만든 JSON의 요청 ID·변경 ID·중복·상태·feature 형식 검증               |                                         |
 | 모델 추론 | native LightGBM 로딩, 모델 해시·이진 분류·feature 이름/순서·자료형 검증, feature별 기여도 계산     | 검증 세트로 정한 임계값 수령            |
@@ -29,6 +29,7 @@ src/depbee/
   cli.py                  # 인자·한국어 텍스트·JSON 출력·종료 코드
   contracts.py            # 공통 규약과 Analyzer/Predictor 인터페이스
   inputs/npm.py           # 대상 프로젝트와 기준 lockfile 비교
+  inputs/git.py           # Git 커밋에서 기준 lockfile 읽기
   analysis/extractor.py   # feature-extractor 호출, 근거 정리
   analysis/baseline.py    # 비교 기준 버전(직전 stable) 선정
   analysis/artifact.py    # 분석 결과 검증, 미리 만든 분석 JSON 연결
@@ -79,12 +80,23 @@ manifest 구조는 [연결 규약](docs/contracts.md)에 있습니다.
 .\.venv\Scripts\python.exe -m depbee scan C:/path/to/target --base-lock C:/path/to/base-package-lock.json --extract --model-dir models/<model-id>
 ```
 
+비교 기준은 `--base-lock <파일>`로 주거나, 생략하면 대상 폴더가 속한 Git 저장소의 HEAD 커밋에 있는 같은 위치의 `package-lock.json`을 씁니다.
+다른 커밋·브랜치·태그는 `--base-ref <ref>`로 지정하며, `--base-lock`과 함께 쓸 수 없습니다.
+Git은 읽기 전용 명령(`rev-parse`, `cat-file`)만 실행하고 fetch, merge-base 계산, 작업 트리·브랜치 변경은 하지 않습니다. 원격 브랜치를 기준으로 쓰려면 미리 fetch해 둡니다.
+부분 복제(partial clone) 저장소에서도 없는 객체를 원격에서 자동으로 받지 않도록 `--no-lazy-fetch`와 `GIT_NO_LAZY_FETCH=1`로 실행합니다. 기준 커밋의 lockfile이 로컬에 없으면 오류(종료 코드 2)로 끝납니다. `--base-ref`와 기본 HEAD 기준에는 Git 2.45 이상이 필요하고(`--no-lazy-fetch`가 2.45에 추가됨), 그보다 오래된 Git에서는 받는 대신 필요한 버전을 알리는 오류(종료 코드 2)로 끝납니다. `--base-lock`은 Git이 필요 없습니다.
+부모 프로세스의 `GIT_DIR`, `GIT_WORK_TREE` 같은 저장소 지정 환경 변수는 Git에 넘기지 않으므로 항상 대상 폴더가 속한 저장소를 읽고, replace ref(`refs/replace/`)는 적용하지 않습니다(`--no-replace-objects`).
+Git 명령은 30초 안에 끝나야 하며 출력 크기에 상한이 있습니다. 현재 폴더나 상대 경로 PATH 항목에서 찾은 `git`은 실행하지 않고 오류로 처리합니다. Windows에서는 인자가 cmd.exe를 거치지 않도록 `git.exe`만 실행하고 `git.cmd`·`git.bat`은 쓰지 않습니다.
+
 `plan`은 바뀐 버전 쌍과 `request_id`를 JSON으로 출력합니다.
 `scan --extract`는 바뀌거나 새로 추가된 의존성마다 tarball을 받아 feature를 추출하고 모델로 판정합니다.
 텍스트 출력은 판정별 개수를 먼저 보여 주고 위험 → 보류 → 통과 순, 같은 판정 안에서는 점수 순으로 나열합니다. `--extract`로 분석하는 동안에는 진행 상황을 표준 오류에 표시합니다.
 `--format json`은 같은 결과를 lockfile 순서 그대로 JSON으로 출력하고(진행 표시 없음), `--output`은 결과를 새 파일에 저장합니다(기존 파일을 덮어쓰지 않습니다).
 오류는 표준 오류에 JSON으로 나옵니다.
 tarball은 Python 임시 폴더에 풀었다가 지웁니다. 위치를 바꾸려면 `TMP`/`TEMP` 환경변수를 지정합니다.
+
+`scan`에서 `--model-dir`을 생략하면 환경 변수 `DEPBEE_MODEL_DIR`의 모델 폴더를 씁니다. `--model-dir`이 항상 우선하고, 둘 다 없거나 환경 변수가 빈 값이면 모델 없이 처리합니다(분석할 변경이 있으면 `incomplete`).
+지정한 경로가 잘못되면 다른 모델로 대체하지 않고 오류(종료 코드 2)로 끝납니다. 대상 프로젝트의 설정에서는 모델 경로를 읽지 않습니다.
+이 폴더의 모델은 신뢰한 입력으로 다루므로(manifest와 모델 해시만 대조합니다) 직접 준비한 신뢰할 수 있는 모델 폴더만 지정합니다.
 
 다른 분석기가 만든 결과가 있으면 `--extract` 대신 `--analysis <분석 JSON>`을 씁니다.
 registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때는 `--local-root <폴더>`와 `--local-source NAME@VERSION=<폴더 안의 상대 경로>`로 그 버전의 사본을 지정합니다.
@@ -110,7 +122,7 @@ registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때�
 
 ## 현재 제한
 
-- 로컬 `package-lock.json` v2/v3만 지원하고, 비교 기준 lockfile을 명시해야 합니다.
+- 로컬 `package-lock.json` v2/v3만 지원합니다. 기준 lockfile은 파일이나 Git 커밋에서 읽고, 저장소 하위 폴더의 단일 프로젝트는 지원하지만 npm workspaces 전체를 한 번에 비교하지는 않습니다.
 - npm 공식 registry 의존성만 분석합니다. workspace/link, Git·file·사설 레지스트리 의존성, 같은 버전의 아카이브 변경은 `incomplete`입니다.
 - integrity는 lockfile과 registry 메타데이터를 비교합니다. 받은 tarball 자체의 해시는 아직 검증하지 않습니다.
 - 학습 데이터와 달리 비교 기준 후보를 OSV 악성 목록과 대조하지 않고, 새 버전 직전 24시간 안의 후보도 별도로 검증하지 않습니다.
