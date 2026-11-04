@@ -29,6 +29,6 @@
 `package-lock`의 전체 파일 해시를 request_id에 반영한다. 다른 커밋의 분석 결과 재사용을 막지만
 분석 파일 작성자의 신뢰성을 보장하지는 않는다. 배포 시 보호된 분석 작업이 결과를 생성해야 한다.
 
-기준 lockfile은 파일로 받거나 Git 커밋(기본 HEAD)에서 읽는다. `inputs/git.py`는 PATH의 Git으로 고정된 읽기 전용 명령만 셸 없이 실행하고, 부분 복제의 자동 객체 받기(lazy fetch)를 끄고(`--no-lazy-fetch`, `GIT_NO_LAZY_FETCH=1`), 시간과 stdout·stderr 크기에 상한을 두며, 읽은 바이트를 파일 입력과 같은 JSON 검사·해시 경로(`contracts.parse_json`)로 넘긴다.
+기준 lockfile은 파일로 받거나 Git 커밋(기본 HEAD)에서 읽는다. `inputs/git.py`는 PATH의 Git으로 고정된 읽기 전용 명령만 셸 없이 실행하고, 부분 복제의 자동 객체 받기(lazy fetch)를 끄고(`--no-lazy-fetch`, `GIT_NO_LAZY_FETCH=1`), 다른 저장소를 가리킬 수 있는 상속 환경 변수(`GIT_DIR` 등 6개)를 지우고 replace 객체를 쓰지 않으며(`--no-replace-objects`), 시간과 stdout·stderr 크기에 상한을 두며, 읽은 바이트를 파일 입력과 같은 JSON 검사·해시 경로(`contracts.parse_json`)로 넘긴다.
 이후 tarball 캐시, CI PR 연결, HTML 보고서는 각 경계를 유지하며 붙인다. 전체 프로젝트 코드나 변경되지 않은
 패키지를 분석했다는 뜻으로 결과를 표현하지 않는다.

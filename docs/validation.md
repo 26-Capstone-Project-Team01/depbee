@@ -1,5 +1,11 @@
 # 검증 기록
 
+## 2026-11-04: Git 자식 환경의 저장소 지정 변수 제거와 replace 객체 무시(`--base-ref` 후속)
+
+- 부모 프로세스가 `GIT_DIR` 등을 물려주면 Git이 대상 폴더가 아닌 다른 저장소의 lockfile을 기준으로 읽어, 실제 변경이 `changes: []`와 종료 코드 0으로 사라질 수 있었다(PR #6 리뷰 major 1). Git 자식 환경에서 `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`를 지우고, `refs/replace/`로 바뀐 객체를 읽지 않도록 `--no-replace-objects`를 붙인다. `GIT_NO_LAZY_FETCH=1` 강제는 그대로다.
+- 테스트 76개 통과(skip 없음), `ruff check` 통과. 실제 `_run`과 Popen을 거쳐 Git 대신 무해한 Python 자식(상속된 `GIT_DIR`이 있으면 다른 저장소처럼 답함)을 실행해, 여섯 변수가 다른 저장소를 가리켜도 자식 환경에 남지 않고, request가 파일 입력과 같으며, 부모 환경이 바뀌지 않음을 확인했다.
+- 실제 Git(2.50.1, Windows)과 합성 저장소 2개(examples lockfile만)로 확인했다. `GIT_DIR`만, 여섯 변수 모두, `refs/replace/`로 기준 blob을 바꾼 경우 모두 `plan` 출력이 같은 파일을 `--base-lock`으로 준 출력과 바이트 단위로 같다. 같은 경우를 수정 전 코드로 실행하면 `GIT_DIR`과 replace 경우에 변경이 사라졌다.
+
 ## 2026-11-04: Git 기준 읽기의 lazy fetch 차단(`--base-ref` 후속)
 
 - 부분 복제 저장소에서 기준 커밋의 lockfile blob이 없으면 Git이 promisor remote에서 자동으로 받을 수 있었다. 모든 Git 호출에 `--no-lazy-fetch`를 붙이고 자식 환경의 `GIT_NO_LAZY_FETCH`를 부모 값과 무관하게 `1`로 둔다. 이 옵션을 모르는 Git은 알 수 없는 옵션으로 종료하므로(종료 코드 129, 현재 Git으로 다른 알 수 없는 옵션에서 확인) 받지 않고 오류가 된다.

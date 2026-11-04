@@ -346,6 +346,9 @@ FAKE_GIT = str(Path(__file__).resolve().parent / "fake-git")  # absolute; never 
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 COMMIT_LINE = (0, f"{COMMIT}\n".encode(), b"")
 BLOB = f"{COMMIT}:./package-lock.json"
+GIT_OPTIONS = [FAKE_GIT, "--no-lazy-fetch", "--no-replace-objects"]
+REPOSITORY_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+                        "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
 
 
 class GitBaseTests(Fixture):
@@ -376,9 +379,9 @@ class GitBaseTests(Fixture):
         # Same bytes as the base file -> exactly the same request, including request_id.
         self.assertEqual(plan_project(self.project), self.request())
         self.assertEqual([c.args[:3] for c in run.call_args_list], [
-            ([FAKE_GIT, "--no-lazy-fetch", "rev-parse", "--verify", "--quiet", "--end-of-options",
+            ([*GIT_OPTIONS, "rev-parse", "--verify", "--quiet", "--end-of-options",
               "HEAD^{commit}"], self.project, 4096),
-            ([FAKE_GIT, "--no-lazy-fetch", "cat-file", "blob", BLOB], self.project, MAX_JSON_BYTES),
+            ([*GIT_OPTIONS, "cat-file", "blob", BLOB], self.project, MAX_JSON_BYTES),
         ])
 
     def test_explicit_ref_in_subdirectory_with_space_and_korean(self):
@@ -454,18 +457,24 @@ class GitBaseTests(Fixture):
                 self.assertEqual(run.call_count, len(steps))
                 self.assertLess(len(str(caught.exception)), 1000)
 
-    def git_children(self, parent_env):
-        """Run plan_project through the real _run; each Git child is a harmless Python child."""
-        if parent_env is None:
-            os.environ.pop("GIT_NO_LAZY_FETCH", None)
-        else:
-            os.environ["GIT_NO_LAZY_FETCH"] = parent_env
+    def git_children(self, **parent):
+        """Run plan_project through the real _run; each Git child is a harmless Python child.
+
+        Like Git, a child that inherits GIT_DIR answers from that other repository, whose
+        lockfile equals the project's, so a leaked variable would hide the real change.
+        """
+        os.environ.pop("GIT_NO_LAZY_FETCH", None)
+        os.environ.update(parent)
+        before = dict(os.environ)
         replies = iter((COMMIT_LINE[1], self.base.read_bytes()))
         children = []
 
         def popen(argv, **kwargs):
             children.append((argv, kwargs["env"]))
-            code = f"import sys; sys.stdout.buffer.write({next(replies)!r})"
+            reply = next(replies)
+            if "GIT_DIR" in kwargs["env"] and reply != COMMIT_LINE[1]:
+                reply = self.head.read_bytes()
+            code = f"import sys; sys.stdout.buffer.write({reply!r})"
             return REAL_POPEN([sys.executable, "-I", "-c", code], **kwargs)
 
         with (
@@ -473,6 +482,7 @@ class GitBaseTests(Fixture):
             mock.patch("depbee.inputs.git.subprocess.Popen", side_effect=popen),
         ):
             self.assertEqual(plan_project(self.project), self.request())
+        self.assertEqual(dict(os.environ), before)  # the parent environment is not changed
         return children
 
     def test_lazy_fetch_blocked_in_every_git_child(self):
@@ -480,11 +490,22 @@ class GitBaseTests(Fixture):
         # whatever GIT_NO_LAZY_FETCH the parent process inherited.
         for parent_env in (None, "0", "false"):
             with self.subTest(parent_env=parent_env):
-                children = self.git_children(parent_env)
+                parent = {} if parent_env is None else {"GIT_NO_LAZY_FETCH": parent_env}
+                children = self.git_children(**parent)
                 self.assertEqual(len(children), 2)
                 for argv, env in children:
-                    self.assertEqual(argv[:2], [FAKE_GIT, "--no-lazy-fetch"])
+                    self.assertEqual(argv[:3], GIT_OPTIONS)
                     self.assertEqual(env["GIT_NO_LAZY_FETCH"], "1")
+
+    def test_inherited_repository_variables_cannot_redirect_git(self):
+        # git_children checks the request still shows the project's real change.
+        other = str(self.root / "other-repo" / ".git")
+        children = self.git_children(**dict.fromkeys(REPOSITORY_VARIABLES, other))
+        self.assertEqual(len(children), 2)
+        for argv, env in children:
+            self.assertEqual(argv[:3], GIT_OPTIONS)
+            self.assertFalse(set(REPOSITORY_VARIABLES) & env.keys())
+            self.assertEqual(env["GIT_NO_LAZY_FETCH"], "1")
 
     def test_missing_blob_ends_with_exit_2(self):
         missing = b"fatal: unable to read 89abcdef (missing object, lazy fetch disabled)\n"

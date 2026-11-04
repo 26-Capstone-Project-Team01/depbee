@@ -17,6 +17,15 @@ TIMEOUT_SECONDS = 30
 _LINE_LIMIT = 4096  # rev-parse prints one commit id
 _STDERR_LIMIT = 4096
 _COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+# Inherited, these would make Git read another repository than the one holding the project.
+_REPOSITORY_VARIABLES = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
 
 
 def _run(
@@ -73,9 +82,12 @@ def _git(project: Path, *args: str, limit: int = _LINE_LIMIT) -> tuple[int, byte
     # A partial clone would fetch a missing blob from its promisor remote; never go online.
     # The option makes a Git too old to know it exit with an error instead of fetching, and the
     # forced variable overrides an inherited GIT_NO_LAZY_FETCH=0.
-    env = {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
+    env = {k: v for k, v in os.environ.items() if k not in _REPOSITORY_VARIABLES}
+    env["GIT_NO_LAZY_FETCH"] = "1"
+    # --no-replace-objects: read the committed objects, not refs/replace substitutes.
+    argv = [git, "--no-lazy-fetch", "--no-replace-objects", *args]
     try:
-        return _run([git, "--no-lazy-fetch", *args], project, limit, env)
+        return _run(argv, project, limit, env)
     except OSError as exc:
         raise GuardError(f"Unable to run Git: {exc}") from exc
 
