@@ -1,5 +1,9 @@
 # 검증 기록
 
+## 2026-11-04: Windows의 git.exe 미발견 오류 문구(`--base-ref` 후속)
+
+- PATH에 `git.cmd`만 있거나 현재 폴더에만 `git.exe`가 있을 때 Windows의 오류가 `Git executable not found on PATH`라 원인이 분명하지 않았다(PR #6 리뷰 2차 nit 2). Windows에서는 `git.exe not found on PATH (git.cmd, git.bat and the current directory are not used)`로 바꿨다. POSIX의 문구와 동작은 그대로다. 테스트 79개 통과(skip 없음), `ruff check` 통과. POSIX 문구 확인은 개발 CI(Ubuntu)에서만 실행된다.
+
 ## 2026-11-04: Git 버전 안내 판정의 언어 고정(`--base-ref` 후속)
 
 - Git 2.45 안내는 Git의 `unknown option` 문구로 판정하는데, 이 문구는 locale에 따라 번역된다(PR #6 리뷰 2차 nit 1). Git 자식 환경에 `LC_ALL=C`를 강제한다. Git 문서(`po/README.md`)는 Git 테스트를 `LANG=C LC_ALL=C`로 실행해 번역을 고려하지 않아도 된다고 적고 있다. 부모 환경은 바꾸지 않는다.

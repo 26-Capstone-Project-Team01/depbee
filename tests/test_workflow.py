@@ -430,10 +430,11 @@ class GitBaseTests(Fixture):
         run.assert_not_called()
 
     def test_git_not_found_or_planted_in_current_directory(self):
+        expected = "git.exe not found on PATH" if os.name == "nt" else "Git executable not found"
         for which in (None, "git.exe", os.path.join(".", "git.exe")):
             with self.subTest(which=which):
                 run = self.git(which=which)
-                with self.assertRaises(GuardError):
+                with self.assertRaisesRegex(GuardError, expected):
                     plan_project(self.project)
                 run.assert_not_called()
 
@@ -534,7 +535,7 @@ class GitBaseTests(Fixture):
         self.assertEqual(self.which.call_args.args[0], "git.exe" if os.name == "nt" else "git")
         if os.name == "nt":
             run = self.git(which=str(self.root / "bin" / "git.exe.cmd"))  # absolute, never run
-            with self.assertRaises(GuardError):
+            with self.assertRaisesRegex(GuardError, "git.exe not found on PATH"):
                 plan_project(self.project)
             run.assert_not_called()
 
