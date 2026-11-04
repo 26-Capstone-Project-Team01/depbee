@@ -12,13 +12,14 @@ import json
 import os
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from test_contract import ExplainingPredictor
 from test_workflow import FakePredictor, Fixture, package
 
 from depbee.analysis.baseline import select_baseline
-from depbee.analysis.extractor import ExtractorAnalyzer
+from depbee.analysis.extractor import ExtractorAnalyzer, FeatureExtractorBackend
 from depbee.cli import _print_text, main
 from depbee.contracts import GuardError, read_json
 from depbee.inputs.npm import build_package_request, check_package_spec
@@ -89,6 +90,21 @@ class BaselineTests(unittest.TestCase):
         self.assertIsNone(select_baseline(doc, "1.0.0"))
         with self.assertRaises(GuardError):
             select_baseline(doc, "1.1.0-rc.1")
+
+    def test_publish_times_need_a_timezone(self):
+        # Different offsets compare by instant: 08:00+09:00 is 23:00Z, before 23:30Z.
+        doc = packument({"1.0.0": "2026-01-02T08:00:00+09:00", "1.1.0": "2026-01-01T23:30:00Z"})
+        self.assertEqual(select_baseline(doc, "1.1.0").version, "1.0.0")
+        for bad in (
+            {"1.0.0": "2026-01-01T00:00:00"},  # candidate without timezone
+            {"1.1.0": "2026-01-02T00:00:00"},  # new version without timezone
+            {"1.0.0": "2026-13-01T00:00:00Z"},  # not a time
+        ):
+            with self.subTest(bad=bad):
+                doc = packument({"1.0.0": "2026-01-01T00:00:00Z", "1.1.0": "2026-01-02T00:00:00Z"})
+                doc["time"].update(bad)
+                with self.assertRaisesRegex(GuardError, "publish time"):
+                    select_baseline(doc, "1.1.0")
 
 
 class FakeBackend:
@@ -259,6 +275,26 @@ class FetchError(Exception):
     pass
 
 
+class CachingRegistrySource:
+    """Stand-in for feature-extractor c24761d RegistrySnapshotSource: it fetches a packument
+    only when its _packument_cache has none for the package, and reuses it for old and new."""
+
+    def __init__(self, fetch):
+        self._packument_cache = {}
+        self.fetch = fetch
+        self.snapshots = []
+
+    def get_snapshot(self, package, version, *, include_source=False):
+        packument = self._packument_cache.get(package)
+        if packument is None:
+            packument = self._packument_cache[package] = self.fetch(package)
+        self.snapshots.append(packument)
+        return SimpleNamespace(package_json=packument["versions"][version])
+
+    def close(self):
+        pass
+
+
 class PackageCheckTests(Fixture):
     """check NAME@VERSION with FakeBackend: no network, no package code, no real extraction."""
 
@@ -295,6 +331,9 @@ class PackageCheckTests(Fixture):
         for name in ("example", "@scope/pkg", "@scope/_pkg", "JSONStream", "a.b-c_d~e", "a" * 214):
             with self.subTest(name=name):
                 self.assertIsNone(check_package_spec(name, "1.0.0-rc.1"))
+        for version in ("1.0.0", "1.0.0-0", "1.0.0-01a", "1.0.0-0-1", "1.0.0-alpha.0"):
+            with self.subTest(version=version):
+                self.assertIsNone(check_package_spec("example", version))
         bad_names = (
             "", "@scope", "@scope/", "@/pkg", ".hidden", "_private", "@.scope/pkg", "@_scope/pkg",
             "@scope/.pkg", "@scope/..", "..", "a/b", "@s/a/b", "a b", " a", "a\n", "a\x1b[2J",
@@ -304,7 +343,7 @@ class PackageCheckTests(Fixture):
             "", "latest", "^1.0.0", "~1.0.0", "1.x", ">=1.0.0", "1.0", "v1.0.0", "=1.0.0",
             "01.0.0", "1.0.0+build", "1.0.0 ", "1.0.0\n", "1.0.0 || 2.0.0", "file:../x",
             "git+https://x.test/a.git", "https://x.test/a.tgz", "١.٠.٠", "1.0.0-",
-            "1.0.0-a..b",
+            "1.0.0-a..b", "1.0.0-01", "1.0.0-alpha.01", "1.0.0-00",
         )  # fmt: skip
         for name in bad_names:
             with self.subTest(name=name), self.assertRaisesRegex(GuardError, "package name"):
@@ -312,6 +351,9 @@ class PackageCheckTests(Fixture):
         for version in bad_versions:
             with self.subTest(version=version), self.assertRaisesRegex(GuardError, "exact version"):
                 check_package("example", version)
+        # Valid SemVer, but outside the supported build-free form; the error says so.
+        with self.assertRaisesRegex(GuardError, r"\+build metadata"):
+            check_package("example", "1.0.0+build.1")
         self.assertEqual(self.backend.fetched, [])
 
     def test_cli_splits_name_at_version(self):
@@ -512,6 +554,54 @@ class PackageCheckTests(Fixture):
         lockfile = scan_project(self.project, self.base)
         self.assertNotIn("input_kind", lockfile)
         self.assertEqual(lockfile["scope"], LOCKFILE_SCOPE)
+
+    def test_real_backend_snapshots_reuse_the_checked_packument(self):
+        # Real FeatureExtractorBackend.extract; only feature-extractor's pieces are stand-ins.
+        sources = []
+
+        def registry_source():
+            sources.append(CachingRegistrySource(self.backend.fetch_packument))
+            return sources[-1]
+
+        def build_row(name, old, new, label, extractors, *, old_source, new_source):
+            old_source.get_snapshot(name, old)
+            new_source.get_snapshot(name, new)
+            return SimpleNamespace(features={"signal": 0.9, "obfChangedFileCount": 2})
+
+        backend = FeatureExtractorBackend.__new__(FeatureExtractorBackend)
+        backend.errors, backend.version = (), "stand-in"
+        backend.fetch_packument = self.backend.fetch_packument
+        backend._build_row, backend._extractors = build_row, []
+        backend._registry_source, backend._local_source = registry_source, None
+        loader = mock.patch(
+            "depbee.analysis.extractor.FeatureExtractorBackend", return_value=backend
+        )
+        with loader:
+            report = check_package("example", "1.1.0")
+        self.assertEqual(report["results"][0]["reason"], "model_missing")  # analysis complete
+        self.assertEqual(self.backend.fetched, ["example"])  # one registry read in total
+        self.assertEqual(len(sources[0].snapshots), 2)  # old and new
+        self.assertTrue(all(doc is self.doc for doc in sources[0].snapshots))
+        # A feature-extractor without that cache fails the analysis instead of fetching again.
+        backend._registry_source = lambda: SimpleNamespace(close=lambda: None)
+        with loader:
+            row = check_package("example", "1.1.0")["results"][0]
+        self.assertEqual(row["reason"], "analysis_failed")
+        self.assertIn("packument cache", row["detail"])
+        self.assertEqual(self.backend.fetched, ["example", "example"])  # analyzer only
+
+    def test_bad_publish_times_end_with_exit_2_not_a_traceback(self):
+        for label, times in (
+            ("mixed timezone", {"1.0.0": "2026-01-01T00:00:00", "1.1.0": "2026-01-02T00:00:00Z"}),
+            ("new without timezone", {"1.0.0": "2026-01-01T00:00:00Z", "1.1.0": "2026-01-02"}),
+            ("not a time", {"1.0.0": "2026-13-01T00:00:00Z", "1.1.0": "2026-01-02T00:00:00Z"}),
+        ):
+            with self.subTest(label):
+                self.backend.doc = packument(times)
+                code, out, err = self.run_check("example@1.1.0", "--format", "json")
+                row = json.loads(out)["results"][0]
+                self.assertEqual((code, err, row["reason"]), (2, "", "analysis_failed"))
+                self.assertIn("publish time", row["detail"])
 
     def test_malformed_compared_metadata_fails_closed(self):
         edits = {

@@ -16,7 +16,7 @@
 
 `service.py`의 `plan_project()`·`scan_project()`가 위 단계를 조립하는 공통 진입점이다. CLI와 이후 Actions·MCP·대시보드는 이 함수를 호출하고, 판정은 `pipeline.scan()`에만 둔다.
 
-`check_package()`(`depbee check NAME@VERSION`)는 lockfile 대신 registry 메타데이터에서 같은 형식의 요청을 만든다. 이름과 버전을 네트워크 전에 검사하고, `ExtractorAnalyzer.packument()`로 메타데이터를 한 번 받아 `inputs/npm.py`의 `build_package_request()`(새로 추가된 의존성 하나, `input_kind: "package"`)와 분석에 함께 쓴 뒤, 같은 `pipeline.scan()`으로 판정한다. 모델 경로 선택(`--model-dir` → `DEPBEE_MODEL_DIR` → 없음)은 `scan_project()`와 같은 함수를 쓴다.
+`check_package()`(`depbee check NAME@VERSION`)는 lockfile 대신 registry 메타데이터에서 같은 형식의 요청을 만든다. 이름과 버전을 네트워크 전에 검사하고, `ExtractorAnalyzer.packument()`로 메타데이터를 한 번 받아 `inputs/npm.py`의 `build_package_request()`(새로 추가된 의존성 하나, `input_kind: "package"`)와 분석에 함께 쓴 뒤, 같은 `pipeline.scan()`으로 판정한다. `FeatureExtractorBackend.extract()`는 받은 메타데이터를 feature-extractor `RegistrySnapshotSource`의 캐시에 넣어 old/new snapshot도 같은 문서를 쓰게 한다. 고정 버전(c24761d)에는 이를 넘기는 공개 API가 없어 그 캐시 속성(`_packument_cache`)에 의존하고, 속성이 없으면 다시 조회하지 않고 분석 실패로 둔다(`scan --extract`도 같다). 모델 경로 선택(`--model-dir` → `DEPBEE_MODEL_DIR` → 없음)은 `scan_project()`와 같은 함수를 쓴다.
 
 | 영역 | 담당 | 인계할 결과물 |
 |---|---|---|

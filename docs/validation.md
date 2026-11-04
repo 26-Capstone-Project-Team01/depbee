@@ -1,5 +1,12 @@
 # 검증 기록
 
+## 2026-11-04: check 교차 리뷰 후속(메타데이터 재사용, 버전 검사, 배포 시각)
+
+- 아래 기록의 "메타데이터를 한 번 받는다"는 FakeBackend 기준이었다. 실제 `FeatureExtractorBackend.extract()`는 빈 `RegistrySnapshotSource`를 새로 만들어 registry를 다시 조회했고, old/new snapshot이 요청을 만들 때 검증한 문서와 다른 문서를 쓸 수 있었다(PR 전 교차 리뷰 차단 1). 이제 받은 메타데이터를 그 source의 캐시에 넣어 old/new snapshot도 같은 문서를 쓴다. 고정 feature-extractor(c24761d)에는 공개 API가 없어 캐시 속성(`_packument_cache`)에 의존하며, 속성이 없으면 다시 조회하지 않고 분석 실패로 둔다. `scan --extract`도 패키지당 조회가 한 번으로 줄었다.
+- 숫자로만 된 pre-release 식별자의 선행 0(`1.0.0-01`, `1.0.0-alpha.01`)을 네트워크 전에 거부한다(차단 2). `1.0.0-0`, `1.0.0-01a`는 그대로 받는다. build metadata(`+...`)는 SemVer 문법상 유효하지만 이 명령의 지원 범위가 아니라는 점을 README, `--help`, 오류 문구, 연결 규약에 맞췄다(권장 4). registry 저장 규칙 전체를 검증한 것은 아니다.
+- 비교 기준 선정의 배포 시각이 ISO 8601이 아니거나 timezone이 없으면 TypeError로 CLI가 종료 코드 1로 끝나던 것을, 그 항목의 분석 실패(`incomplete`, 종료 코드 2)로 바꿨다(차단 3). 서로 다른 timezone offset은 시각대로 비교한다. 정상 메타데이터의 출력은 같다.
+- 테스트 94개 통과(skip 없음), `ruff check` 통과. 새 회귀는 고친 전 코드(530133a)에서 실패한다. 고정 feature-extractor의 `RegistrySnapshotSource`·`build_row` 소스를 그대로 실행하고 조회와 snapshot 생성만 합성으로 바꾼 확인에서, 고친 뒤에는 조회 1회와 old/new의 같은 문서 사용을, 고치기 전에는 조회 2회를 확인했다. 실제 registry 접근, tarball 다운로드, 추출은 하지 않았다. 기존 CLI 출력(9개 명령, 29개 파일)은 바이트 단위로 같다.
+
 ## 2026-11-04: lockfile 없는 단일 패키지 검사(`check NAME@VERSION`)
 
 - `depbee check NAME@VERSION`을 추가했다. 이름과 버전은 네트워크 접근 전에 검사하고(scope가 있거나 없는 registry 이름, 정확한 semver), registry 메타데이터를 한 번 받아 요청(`input_kind: "package"`, 새로 추가된 의존성 하나, lockfile 해시 없음)과 분석에 함께 쓴 뒤 `scan --extract`와 같은 분석기와 판정으로 처리한다. 그 버전의 manifest 이름·버전, `https://registry.npmjs.org` tarball, `dist.integrity` 중 하나라도 맞지 않거나 메타데이터를 읽지 못하면 오류(종료 코드 2)다. 텍스트·JSON 보고서의 범위와 근거에 lockfile 없이 registry 정보로 검사했다고 표시한다. lockfile 보고서의 필드·scope·텍스트는 그대로다.

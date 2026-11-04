@@ -107,7 +107,8 @@ def _parser() -> argparse.ArgumentParser:
     check.add_argument(
         "package",
         metavar="NAME@VERSION",
-        help="Exact registry version, e.g. lodash@4.17.21 or @scope/name@1.0.0",
+        help="Exact registry version without +build metadata, "
+        "e.g. lodash@4.17.21 or @scope/name@1.0.0",
     )
     check.add_argument("--output", type=Path, help="Write a NEW JSON file (never overwrite inputs)")
     check.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")

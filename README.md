@@ -97,7 +97,8 @@ tarball은 Python 임시 폴더에 풀었다가 지웁니다. 위치를 바꾸�
 
 `check NAME@VERSION`은 lockfile 없이 npm 공식 registry의 버전 하나를 `scan --extract`와 같은 방식(같은 release line의 직전 stable과 비교)으로 검사합니다. 설치 전에 특정 버전을 확인할 때 씁니다.
 `lodash@4.17.21`이나 `@scope/name@1.0.0`처럼 정확한 이름과 버전만 받고, 범위(`^1.0.0`)·태그(`latest`)·URL·Git·파일 경로·사설 registry는 네트워크에 접근하기 전에 오류(종료 코드 2)로 거부합니다.
-registry 메타데이터는 한 번만 받아 요청과 분석에 함께 씁니다. 그 버전이 registry에 없거나, tarball 주소가 `https://registry.npmjs.org`가 아니거나, `dist.integrity`가 없거나, 메타데이터 형식이 잘못됐으면 오류(종료 코드 2)로 끝납니다.
+버전은 npm이 버전을 표시하는 build metadata 없는 형식(`1.2.3`, `1.2.3-beta.1`)만 지원합니다. `1.2.3+build.1`처럼 `+`가 붙은 버전은 SemVer 문법상 유효하지만 이 명령의 지원 범위가 아니라서 거부합니다. 숫자로만 된 pre-release 식별자의 선행 0(`1.0.0-01`)처럼 SemVer에 맞지 않는 버전도 거부합니다.
+registry 메타데이터는 한 번만 받아 요청, 분석, feature 추출(feature-extractor의 registry source)에 함께 씁니다. 그 버전이 registry에 없거나, tarball 주소가 `https://registry.npmjs.org`가 아니거나, `dist.integrity`가 없거나, 메타데이터 형식이 잘못됐으면 오류(종료 코드 2)로 끝납니다.
 pre-release와 비교할 이전 stable이 없는 버전은 `scan`과 같이 `incomplete`입니다.
 결과에는 "lockfile 없이 registry 정보로 검사"했다는 범위(`input_kind: "package"`)와 근거가 표시됩니다. 출력 형식, `--output`, 진행 표시(텍스트만), 종료 코드는 `scan`과 같습니다.
 
@@ -116,6 +117,7 @@ registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때�
 - **비교 기준:** 모델은 "새 버전과 같은 release line의 직전 stable → 새 버전" 쌍으로 학습했습니다. 그래서 lockfile에서 1.2.0 → 1.5.3으로 바뀌어도 1.5.3을 같은 line의 직전 stable(예: 1.5.2)과 비교합니다. release line은 npm `^` 범위 단위이고(`>=1.0.0`은 major, `0.y.z`는 `0.y`), 새 line의 첫 버전이면 이전 line의 최신 stable과 비교합니다. lockfile의 이전 버전은 근거에만 표시합니다.
 - **새로 추가된 의존성:** 같은 방식으로 설치될 버전과 그 직전 stable을 비교합니다.
 - **학습 범위 밖 입력:** 새 버전이 pre-release이거나, 비교할 이전 stable이 없거나, 모델이 본 적 없는 범주 값이면 점수를 내지 않고 `incomplete`로 둡니다.
+- **배포 시각:** 비교 기준 선정에 쓰는 registry 배포 시각이 ISO 8601 형식이 아니거나 timezone이 없으면 그 항목은 분석 실패(`incomplete`)입니다.
 - **무결성:** 설치될 버전의 lockfile integrity가 registry 값과 다르면 분석 실패로 처리합니다.
 - **근거와 설명:** 결과에는 추출된 사실(비교한 버전, 추가된 설치 스크립트, 새 의존성, 바뀐 JS 파일 수)과 모델 설명(점수에 크게 작용한 feature와 기여도)이 따로 나옵니다. 기여도는 LightGBM의 SHAP 값(log-odds 단위)입니다. 상위 feature 외의 기여도 합과 모델 기준값도 함께 보여 주며, 모두 더하면 점수의 log-odds가 됩니다.
 

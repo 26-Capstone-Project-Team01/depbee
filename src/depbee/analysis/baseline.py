@@ -52,7 +52,14 @@ def release_line(core: tuple[int, int, int]) -> tuple[int, ...]:
 
 
 def _timestamp(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    """Registry publish time; must carry a timezone so that any two can be compared."""
+    try:
+        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise GuardError(f"Registry publish time is not an ISO 8601 time: {value[:64]!r}") from exc
+    if stamp.utcoffset() is None:
+        raise GuardError(f"Registry publish time has no timezone: {value[:64]!r}")
+    return stamp
 
 
 def select_baseline(packument: dict, new_version: str) -> Baseline | None:

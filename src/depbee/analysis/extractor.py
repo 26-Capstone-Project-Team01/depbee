@@ -70,9 +70,16 @@ class FeatureExtractorBackend:
     def extract(
         self, name: str, old: str, new: str, packument: dict, local: Path | None
     ) -> tuple[dict, dict]:
-        """Return (features, package.json of the new version)."""
+        """Return (features, package.json of the new version), both from the given packument."""
         registry = self._registry_source()
         try:
+            # Snapshots must use the packument depbee already checked, not a second fetch. The
+            # pinned feature-extractor (c24761d) has no public way to pass it in; its
+            # RegistrySnapshotSource reads fetched packuments from _packument_cache first.
+            cache = getattr(registry, "_packument_cache", None)
+            if not isinstance(cache, dict):
+                raise GuardError("feature-extractor RegistrySnapshotSource has no packument cache")
+            cache[name] = packument
             new_source = self._local_source(local, packument) if local else registry
             # label is a dataset column; inference does not use it.
             row = self._build_row(

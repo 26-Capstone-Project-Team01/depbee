@@ -16,9 +16,15 @@ PACKAGE_NAME = re.compile(
     rf"(?:@[A-Za-z0-9~!*'()-]{_NAME_REST}/[A-Za-z0-9_~!*'()-]|[A-Za-z0-9~!*'()-]){_NAME_REST}"
 )
 MAX_NAME_LENGTH = 214
-# A version exactly as the registry stores it: semver with ASCII digits, no build metadata.
+# Versions check supports: SemVer 2.0.0 with ASCII digits and no leading zeros in numeric parts,
+# including numeric prerelease identifiers (1.0.0-01 is invalid, 1.0.0-01a is valid). Build
+# metadata (+...) is valid SemVer but outside this command's support policy, which takes only
+# the build-free form npm shows for versions.
 _NUMBER = r"(?:0|[1-9][0-9]*)"
-EXACT_VERSION = re.compile(rf"{_NUMBER}\.{_NUMBER}\.{_NUMBER}(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?")
+_PRERELEASE_ID = rf"(?:{_NUMBER}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+EXACT_VERSION = re.compile(
+    rf"{_NUMBER}\.{_NUMBER}\.{_NUMBER}(?:-{_PRERELEASE_ID}(?:\.{_PRERELEASE_ID})*)?"
+)
 REGISTRY_LOCATION = "registry.npmjs.org"
 
 
@@ -130,7 +136,8 @@ def check_package_spec(name: str, version: str) -> None:
         raise GuardError(f"Invalid npm package name: {name!r}")
     if not isinstance(version, str) or not EXACT_VERSION.fullmatch(version):
         raise GuardError(
-            f"Version must be an exact version such as 1.2.3 (no range, tag or URL): {version!r}"
+            "Version must be an exact version such as 1.2.3 or 1.2.3-beta.1 (no range, tag, URL "
+            f"or +build metadata): {version!r}"
         )
 
 

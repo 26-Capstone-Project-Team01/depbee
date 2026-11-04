@@ -42,9 +42,9 @@
 
 - `input_kind: "package"`로 lockfile 요청과 구분한다. lockfile 요청에는 이 필드가 없다.
 - lockfile이 없으므로 `base_lock_sha256`·`head_lock_sha256`이 없다. 존재하지 않는 파일의 해시를 만들지 않는다.
-- 이름과 버전은 네트워크 접근 전에 검사한다. scope가 있거나 없는 registry 이름과 정확한 semver 버전(build metadata 없음)만 받는다.
+- 이름과 버전은 네트워크 접근 전에 검사한다. scope가 있거나 없는 registry 이름과, 숫자 부분과 숫자로만 된 pre-release 식별자에 선행 0이 없는 SemVer 버전을 받는다. build metadata(`+...`)가 붙은 버전은 SemVer 문법상 유효하지만 이 명령의 지원 범위 밖이라 거부한다. 이것은 npm이 버전을 표시하는 형식에 맞춘 지원 정책이며, registry의 저장 규칙 전체를 검증한 결과는 아니다.
 - `after`는 registry 메타데이터의 그 버전 manifest에서 만든다. manifest의 `name`·`version`이 요청과 같고, `dist.tarball`이 `https://registry.npmjs.org`이며, `dist.integrity`가 있어야 한다. 하나라도 어긋나면 요청을 만들지 않고 오류(종료 코드 2)다. 이 integrity는 registry 메타데이터 값이며 받은 tarball 바이트의 해시가 아니다.
-- 분석기는 lockfile 요청의 새로 추가된 의존성과 같은 방식으로 처리하고(같은 release line의 직전 stable과 비교), 근거에 "lockfile 없이 registry 정보로 검사"를 넣는다. 분석 결과(2절)와 모델 manifest(3절) 형식은 같다.
+- 분석기는 lockfile 요청의 새로 추가된 의존성과 같은 방식으로 처리하고(같은 release line의 직전 stable과 비교), 근거에 "lockfile 없이 registry 정보로 검사"를 넣는다. 요청을 만든 메타데이터를 비교 기준 선정과 feature 추출(old/new snapshot)에도 그대로 쓰고 registry를 다시 조회하지 않는다. 분석 결과(2절)와 모델 manifest(3절) 형식은 같다.
 
 ## 2. 분석기 → CLI
 
