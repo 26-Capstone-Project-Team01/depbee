@@ -89,6 +89,8 @@ def _git(project: Path, *args: str, limit: int = _LINE_LIMIT) -> tuple[int, byte
     # Grafts rewrite parents (HEAD~1) and --no-replace-objects does not turn them off. An empty
     # graft file replaces the default <git dir>/info/grafts path, so that file is ignored too.
     env["GIT_GRAFT_FILE"] = os.devnull
+    # Untranslated messages: the version check below matches Git's "unknown option" text.
+    env["LC_ALL"] = "C"
     # --no-replace-objects: read the committed objects, not refs/replace substitutes.
     argv = [git, "--no-lazy-fetch", "--no-replace-objects", *args]
     try:
@@ -96,6 +98,7 @@ def _git(project: Path, *args: str, limit: int = _LINE_LIMIT) -> tuple[int, byte
     except OSError as exc:
         raise GuardError(f"Unable to run Git: {exc}") from exc
     # Git before 2.45 rejects --no-lazy-fetch as an unknown option before running anything.
+    # 129 alone is any usage failure, so without the marker the caller's Git error is kept.
     if code == 129 and b"unknown option" in err:
         raise GuardError(f"Git 2.45 or later is required (--no-lazy-fetch){_detail(err)}")
     return code, out, err

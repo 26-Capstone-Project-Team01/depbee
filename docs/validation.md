@@ -1,5 +1,11 @@
 # 검증 기록
 
+## 2026-11-04: Git 버전 안내 판정의 언어 고정(`--base-ref` 후속)
+
+- Git 2.45 안내는 Git의 `unknown option` 문구로 판정하는데, 이 문구는 locale에 따라 번역된다(PR #6 리뷰 2차 nit 1). Git 자식 환경에 `LC_ALL=C`를 강제한다. Git 문서(`po/README.md`)는 Git 테스트를 `LANG=C LC_ALL=C`로 실행해 번역을 고려하지 않아도 된다고 적고 있다. 부모 환경은 바꾸지 않는다.
+- 동작 결정(조율자): 종료 코드 129이면서 stderr에 `unknown option`이 있을 때만 "Git 2.45 or later is required" 안내를 낸다. 129이지만 이 문구가 없으면 버전 오류로 단정하지 않고, 기존 `read_base_lock`의 Git 오류(예: `Git cannot resolve HEAD to a commit ...`)에 stderr 앞부분을 붙여 내며 CLI 종료 코드는 2다. 이유: 129는 Git의 usage 실패 전반에 쓰이는 코드이고, `--no-lazy-fetch` 문자열은 2.45 이상의 usage 출력에도 들어 있어 판정 근거가 될 수 없다.
+- 테스트 79개 통과(skip 없음), `ruff check` 통과. 129, `unknown option` 없음, usage에 `--no-lazy-fetch` 있음인 음성 테스트가 버전 안내 없이 기존 Git 오류와 종료 코드 2를 확인한다. 상속 환경 회귀로 자식 `LC_ALL=C`, 부모 원래 값을 확인한다. 번역된 Git과 실제 Git 2.45 미만은 실행하지 않았다.
+
 ## 2026-11-04: Git graft 무시(`--base-ref` 후속)
 
 - graft는 `--no-replace-objects`로 꺼지지 않는다. 부모 프로세스의 `GIT_GRAFT_FILE`이나 대상 저장소의 `.git/info/grafts`가 커밋의 부모를 바꾸면 `--base-ref HEAD~1`이 다른 커밋의 lockfile을 기준으로 읽어 실제 변경이 `changes: []`와 종료 코드 0으로 사라질 수 있었다(PR #6 리뷰 2차 minor 1). Git 자식 환경의 `GIT_GRAFT_FILE`을 null 장치(`os.devnull`)로 둔다. Git 소스(`setup.c`, `repository.c`)상 이 변수가 있으면 기본 경로 `<git dir>/info/grafts` 대신 쓰이므로 두 경로가 함께 막힌다. 부모 환경은 바꾸지 않는다.

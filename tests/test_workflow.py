@@ -505,6 +505,7 @@ class GitBaseTests(Fixture):
         # git_children checks the request still shows the project's real change.
         parent = dict.fromkeys(REPOSITORY_VARIABLES, str(self.root / "other-repo" / ".git"))
         parent["GIT_GRAFT_FILE"] = str(self.root / "grafts")
+        parent["LC_ALL"] = "ko_KR.UTF-8"
         children = self.git_children(**parent)
         self.assertEqual(len(children), 2)
         for argv, env in children:
@@ -513,7 +514,9 @@ class GitBaseTests(Fixture):
             self.assertEqual(env["GIT_NO_LAZY_FETCH"], "1")
             # An empty graft file also hides .git/info/grafts.
             self.assertEqual(env["GIT_GRAFT_FILE"], os.devnull)
+            self.assertEqual(env["LC_ALL"], "C")  # untranslated messages for the 2.45 check
         self.assertEqual(os.environ["GIT_GRAFT_FILE"], parent["GIT_GRAFT_FILE"])
+        self.assertEqual(os.environ["LC_ALL"], "ko_KR.UTF-8")
 
     def test_missing_blob_ends_with_exit_2(self):
         missing = b"fatal: unable to read 89abcdef (missing object, lazy fetch disabled)\n"
@@ -545,6 +548,19 @@ class GitBaseTests(Fixture):
         self.assertEqual(code, 2)
         self.assertIn("Git 2.45 or later is required", json.loads(err.getvalue())["error"])
         self.assertEqual(run.call_count, 1)
+
+    def test_exit_129_without_unknown_option_keeps_the_git_error(self):
+        # 129 is any usage failure; Git 2.45+ also lists --no-lazy-fetch in its usage text.
+        usage = b"usage: git [-v | --version] [--no-lazy-fetch] [--no-replace-objects]\n"
+        self.git((129, b"", usage))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = main(["plan", str(self.project)])
+        message = json.loads(err.getvalue())["error"]
+        self.assertEqual(code, 2)
+        self.assertTrue(message.startswith("Git cannot resolve HEAD to a commit"))
+        self.assertIn("usage: git", message)
+        self.assertNotIn("2.45", message)
 
     def test_committed_lockfile_gets_the_same_json_checks(self):
         cases = {
