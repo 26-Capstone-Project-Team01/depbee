@@ -1,5 +1,12 @@
 # 검증 기록
 
+## 2026-11-04: lockfile 없는 단일 패키지 검사(`check NAME@VERSION`)
+
+- `depbee check NAME@VERSION`을 추가했다. 이름과 버전은 네트워크 접근 전에 검사하고(scope가 있거나 없는 registry 이름, 정확한 semver), registry 메타데이터를 한 번 받아 요청(`input_kind: "package"`, 새로 추가된 의존성 하나, lockfile 해시 없음)과 분석에 함께 쓴 뒤 `scan --extract`와 같은 분석기와 판정으로 처리한다. 그 버전의 manifest 이름·버전, `https://registry.npmjs.org` tarball, `dist.integrity` 중 하나라도 맞지 않거나 메타데이터를 읽지 못하면 오류(종료 코드 2)다. 텍스트·JSON 보고서의 범위와 근거에 lockfile 없이 registry 정보로 검사했다고 표시한다. lockfile 보고서의 필드·scope·텍스트는 그대로다.
+- 분석기는 비교한 두 버전의 manifest와 `scripts`·`dependencies`·`optionalDependencies`가 객체가 아니면(빈 값 제외) 예외로 끝내지 않고 그 항목을 분석 실패(`incomplete`)로 둔다. `scan --extract`에도 같이 적용된다.
+- 테스트 91개 통과(skip 없음), `ruff check` 통과. 새 테스트 12개는 feature-extractor를 FakeBackend로 바꿔 네트워크와 패키지 코드 없이 돈다: 네트워크 전 이름·버전 거부, NAME@VERSION 분리, 요청 형식과 request_id 반복 일치, 잘못된 메타데이터 14가지, 메타데이터 읽기 실패, 임계값 경계와 메타데이터 한 번 조회, 결과별 텍스트의 출처 표시, JSON `--output`과 덮어쓰기 거부, 모델 경로 우선순위, 비교 버전의 잘못된 메타데이터, 합성 native 모델.
+- D04-E00과 DEV-01 합성 feature, 합성 registry 응답으로 `cli.main`을 subprocess에서 14가지 실행해 출력 바이트를 기록했다(위험, 통과, 모델 없음, 환경 변수 모델, pre-release, 비교 기준 없음, integrity 없음, 버전 범위, 메타데이터 읽기 실패, scoped 이름, 출력 파일 덮어쓰기 거부, URL 이름 등). 두 번 실행한 결과가 바이트 단위로 같다(기존 출력 파일 경로가 들어간 오류 메시지 1개는 실행 폴더 이름만 다름). 실제 registry 접근과 실제 추출은 하지 않았고 탐지 성능 검증도 아니다. 기존 CLI 출력(9개 명령, 29개 파일)은 바이트 단위로 같다.
+
 ## 2026-11-04: Git 시간 제한의 실제 범위(`--base-ref` 후속)
 
 - 시간 제한이나 출력 상한을 넘으면 depbee는 직접 실행한 Git 프로세스만 종료한다. 손자 프로세스까지 정리하는 프로세스 트리 종료는 보류했다. Windows에서는 Job Object 같은 플랫폼 코드나 PID 재사용으로 확실하지 않은 종료가 필요하고, 실행하는 명령이 읽기 전용이며 lazy fetch도 꺼져 있기 때문이다(PR #6 리뷰 1차 nit 1, 2차 nit 3).

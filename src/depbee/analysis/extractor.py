@@ -96,8 +96,17 @@ def _integrity_tokens(value: object) -> set[str]:
     return set(value.split()) if isinstance(value, str) else set()
 
 
+def _object(value: object, label: str) -> dict:
+    """Registry data is untrusted: a non-object fails the analysis instead of crashing it."""
+    if not value:
+        return {}
+    if not isinstance(value, dict):
+        raise GuardError(f"Registry metadata {label} is not an object")
+    return value
+
+
 def _dependencies(manifest: dict) -> set[str]:
-    return {d for field in DEPENDENCY_FIELDS for d in (manifest.get(field) or {})}
+    return {d for field in DEPENDENCY_FIELDS for d in _object(manifest.get(field), field)}
 
 
 class ExtractorAnalyzer:
@@ -128,11 +137,14 @@ class ExtractorAnalyzer:
             # A typo would otherwise silently fall back to the registry.
             name, version = unused[0]
             raise GuardError(f"Local source matches no analyzable change: {name}@{version}")
+        # A package request (check) has no lockfile; the evidence must not mention one.
+        package_input = request.get("input_kind") == "package"
         results = []
         for index, change in enumerate(changes, start=1):
             if self.progress:
                 self.progress(index, len(changes), change)
-            results.append({"change_id": change["change_id"], **self._analyze(change)})
+            result = self._analyze(change, package_input)
+            results.append({"change_id": change["change_id"], **result})
         artifact = {
             "schema_version": SCHEMA_VERSION,
             "request_id": request["request_id"],
@@ -142,18 +154,19 @@ class ExtractorAnalyzer:
         }
         return validate(artifact, request)
 
-    def _analyze(self, change: dict) -> dict:
+    def _analyze(self, change: dict, package_input: bool) -> dict:
         try:
-            return self._analyze_change(change)
+            return self._analyze_change(change, package_input)
         except (GuardError, OSError, *self.backend.errors) as exc:
             return {"status": "failed", "error": str(exc) or type(exc).__name__}
 
-    def _packument(self, name: str) -> dict:
+    def packument(self, name: str) -> dict:
+        """Registry metadata of name, fetched once per analyzer and reused by later calls."""
         if name not in self._packuments:
             self._packuments[name] = self.backend.fetch_packument(name)
         return self._packuments[name]
 
-    def _analyze_change(self, change: dict) -> dict:
+    def _analyze_change(self, change: dict, package_input: bool) -> dict:
         name, new = change["after"]["name"], change["after"]["version"]
         if not is_stable(new):
             return {
@@ -161,7 +174,7 @@ class ExtractorAnalyzer:
                 "reason": "out_of_training_scope",
                 "error": f"{new} is a prerelease; the model was trained on stable versions only",
             }
-        packument = self._packument(name)
+        packument = self.packument(name)
         local = self.local_sources.get((name, new))
         if local is None:
             manifest = (packument.get("versions") or {}).get(new)
@@ -183,25 +196,33 @@ class ExtractorAnalyzer:
             "status": "complete",
             "baseline_version": baseline.version,
             "features": features,
-            "evidence": self._evidence(change, baseline, local, old_json, new_json, features),
+            "evidence": self._evidence(
+                change, baseline, local, old_json, new_json, features, package_input
+            ),
         }
 
-    def _evidence(self, change, baseline, local, old_json, new_json, features) -> list[str]:
+    def _evidence(
+        self, change, baseline, local, old_json, new_json, features, package_input
+    ) -> list[str]:
         new = change["after"]["version"]
         if baseline.level == "L1":
             line = "같은 release line의 직전 stable"
         else:
             line = "이전 release line의 최신 stable"
         evidence = [f"비교: {baseline.version} → {new} ({line})"]
-        if change["before"] is None:
+        if package_input:
+            evidence.append("lockfile 없이 registry 정보로 검사")
+        elif change["before"] is None:
             evidence.append("lockfile에 새로 추가된 의존성")
         elif change["before"]["version"] != baseline.version:
             evidence.append(f"lockfile의 이전 버전은 {change['before']['version']}")
         if local:
             evidence.append("새 버전을 로컬 사본에서 읽음(registry 무결성 확인 안 함)")
 
-        old_scripts = old_json.get("scripts") or {}
-        new_scripts = new_json.get("scripts") or {}
+        if not isinstance(old_json, dict) or not isinstance(new_json, dict):
+            raise GuardError("Registry metadata of a compared version is not an object")
+        old_scripts = _object(old_json.get("scripts"), "scripts")
+        new_scripts = _object(new_json.get("scripts"), "scripts")
         for key in INSTALL_SCRIPT_KEYS:
             if key in new_scripts and key not in old_scripts:
                 evidence.append(_short(f"설치 스크립트 추가: {key} = {new_scripts[key]}"))

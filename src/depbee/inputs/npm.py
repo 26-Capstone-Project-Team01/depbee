@@ -8,6 +8,18 @@ from ..contracts import SCHEMA_VERSION, GuardError, digest, parse_json, read_jso
 from .git import read_base_lock
 
 VERSION = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\Z")
+# npm package names (npm docs, package.json "name"): URL-safe characters only, at most 214 with
+# the scope, no leading "." or "_" except that a scoped name may start with "_". Uppercase stays
+# allowed for old packages. A leading "." is refused everywhere so "." and ".." never reach a URL.
+_NAME_REST = r"[A-Za-z0-9._~!*'()-]*"
+PACKAGE_NAME = re.compile(
+    rf"(?:@[A-Za-z0-9~!*'()-]{_NAME_REST}/[A-Za-z0-9_~!*'()-]|[A-Za-z0-9~!*'()-]){_NAME_REST}"
+)
+MAX_NAME_LENGTH = 214
+# A version exactly as the registry stores it: semver with ASCII digits, no build metadata.
+_NUMBER = r"(?:0|[1-9][0-9]*)"
+EXACT_VERSION = re.compile(rf"{_NUMBER}\.{_NUMBER}\.{_NUMBER}(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?")
+REGISTRY_LOCATION = "registry.npmjs.org"
 
 
 def _snapshot(loaded: tuple[dict, str]) -> tuple[dict, str]:
@@ -108,5 +120,71 @@ def build_request(
         "base_lock_sha256": base_hash,
         "head_lock_sha256": head_hash,
         "changes": changes,
+    }
+    return {"request_id": digest(request), **request}
+
+
+def check_package_spec(name: str, version: str) -> None:
+    """Accept only an exact npm registry name and version. Runs before any network access."""
+    if not isinstance(name, str) or len(name) > MAX_NAME_LENGTH or not PACKAGE_NAME.fullmatch(name):
+        raise GuardError(f"Invalid npm package name: {name!r}")
+    if not isinstance(version, str) or not EXACT_VERSION.fullmatch(version):
+        raise GuardError(
+            f"Version must be an exact version such as 1.2.3 (no range, tag or URL): {version!r}"
+        )
+
+
+def build_package_request(name: str, version: str, packument: dict) -> dict:
+    """Request to check one registry version without a lockfile: one added change, no base.
+
+    The version's registry manifest must name this package and version, with a
+    registry.npmjs.org tarball and dist.integrity. That integrity is registry metadata, not a hash
+    of downloaded bytes. There is no lockfile, so the request has no lockfile hashes and is marked
+    input_kind "package"; request_id is the digest of the checked content.
+    """
+    check_package_spec(name, version)
+    where = f"npm registry metadata for {name}@{version}"
+    if not isinstance(packument, dict):
+        raise GuardError(f"{where} is not a JSON object")
+    versions = packument.get("versions")
+    # The analyzer reads both objects (baseline selection), so check their type here.
+    if not isinstance(versions, dict) or not isinstance(packument.get("time"), dict):
+        raise GuardError(f"{where} lacks versions or time objects")
+    manifest = versions.get(version)
+    if manifest is None:
+        raise GuardError(f"npm registry does not serve {name}@{version}")
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("name") != name
+        or manifest.get("version") != version
+    ):
+        raise GuardError(f"{where} describes another package or version")
+    dist = manifest.get("dist") if isinstance(manifest.get("dist"), dict) else {}
+    for field in ("tarball", "integrity"):
+        if not isinstance(dist.get(field), str) or not dist[field].strip():
+            raise GuardError(f"{where} has no dist.{field}")
+    after = {
+        "name": name,
+        "version": version,
+        "resolved": dist["tarball"],
+        "integrity": dist["integrity"],
+        "link": False,
+    }
+    # Same rule as lockfile entries; with the checks above only the tarball source can fail it.
+    if _unsupported(None, after):
+        raise GuardError(f"{where} has a tarball outside https://{REGISTRY_LOCATION}")
+    change = {"location": REGISTRY_LOCATION, "before": None, "after": after}
+    request = {
+        "schema_version": SCHEMA_VERSION,
+        "input_kind": "package",
+        "changes": [
+            {
+                "change_id": digest(change),
+                **change,
+                "kind": "added",
+                "analyzable": True,
+                "reason": None,
+            }
+        ],
     }
     return {"request_id": digest(request), **request}

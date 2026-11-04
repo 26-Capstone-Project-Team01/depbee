@@ -4,25 +4,40 @@ No network access and no package code: feature-extractor is replaced by FakeBack
 """
 
 import contextlib
+import copy
+import hashlib
+import importlib.util
 import io
+import json
+import os
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from test_contract import ExplainingPredictor
-from test_workflow import Fixture, package
+from test_workflow import FakePredictor, Fixture, package
 
 from depbee.analysis.baseline import select_baseline
 from depbee.analysis.extractor import ExtractorAnalyzer
 from depbee.cli import _print_text, main
-from depbee.contracts import GuardError
-from depbee.pipeline import scan
+from depbee.contracts import GuardError, read_json
+from depbee.inputs.npm import build_package_request, check_package_spec
+from depbee.pipeline import LOCKFILE_SCOPE, PACKAGE_SCOPE, scan
+from depbee.service import check_package, scan_project
 
 INTEGRITY = "sha512-test-only-not-an-archive-digest"
 
 
-def packument(times):
+def packument(times, name="example"):
+    def manifest(version):
+        tarball = f"https://registry.npmjs.org/{name}/-/{name.rpartition('/')[2]}-{version}.tgz"
+        dist = {"integrity": INTEGRITY, "tarball": tarball}
+        return {"name": name, "version": version, "dist": dist}
+
     return {
+        "name": name,
         "time": {"created": "2020-01-01T00:00:00Z", **times},
-        "versions": {v: {"version": v, "dist": {"integrity": INTEGRITY}} for v in times},
+        "versions": {v: manifest(v) for v in times},
     }
 
 
@@ -87,8 +102,10 @@ class FakeBackend:
         self.features = features or {"signal": 0.9, "obfChangedFileCount": 2}
         self.new_json = new_json
         self.calls = []
+        self.fetched = []
 
     def fetch_packument(self, name):
+        self.fetched.append(name)
         return self.doc
 
     def extract(self, name, old, new, doc, local):
@@ -230,6 +247,318 @@ class CliTests(Fixture):
         )
         self.assertEqual(code, 2)
         self.assertIn("under --local-root", err)
+
+
+class PackagePredictor(FakePredictor):
+    """FakePredictor for the extractor's feature schema; scores the synthetic "signal"."""
+
+    feature_schema = "depbee-features-v1"
+
+
+class FetchError(Exception):
+    pass
+
+
+class PackageCheckTests(Fixture):
+    """check NAME@VERSION with FakeBackend: no network, no package code, no real extraction."""
+
+    def setUp(self):
+        super().setUp()
+        self.doc = packument(
+            {
+                "1.0.0": "2026-01-01T00:00:00Z",
+                "1.0.1": "2026-01-02T00:00:00Z",
+                "1.1.0": "2026-01-03T00:00:00Z",
+                "1.2.0-beta.1": "2026-01-04T00:00:00Z",
+            }
+        )
+        self.backend = FakeBackend(self.doc)
+        backend = mock.patch(
+            "depbee.analysis.extractor.FeatureExtractorBackend", return_value=self.backend
+        )
+        backend.start()
+        self.addCleanup(backend.stop)
+
+    def run_check(self, *args, model=None):
+        """Real cli.main; model, if given, is what LightGBMPredictor returns."""
+        out, err = io.StringIO(), io.StringIO()
+        loader = (
+            mock.patch("depbee.service.LightGBMPredictor", return_value=model)
+            if model
+            else contextlib.nullcontext()
+        )
+        with loader, contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(["check", *args])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_name_and_version_are_checked_before_any_network(self):
+        for name in ("example", "@scope/pkg", "@scope/_pkg", "JSONStream", "a.b-c_d~e", "a" * 214):
+            with self.subTest(name=name):
+                self.assertIsNone(check_package_spec(name, "1.0.0-rc.1"))
+        bad_names = (
+            "", "@scope", "@scope/", "@/pkg", ".hidden", "_private", "@.scope/pkg", "@_scope/pkg",
+            "@scope/.pkg", "@scope/..", "..", "a/b", "@s/a/b", "a b", " a", "a\n", "a\x1b[2J",
+            "https://evil.test/a", "a?b", "a#b", "a%2fb", "a:b", "é", "a" * 215,
+        )  # fmt: skip
+        bad_versions = (
+            "", "latest", "^1.0.0", "~1.0.0", "1.x", ">=1.0.0", "1.0", "v1.0.0", "=1.0.0",
+            "01.0.0", "1.0.0+build", "1.0.0 ", "1.0.0\n", "1.0.0 || 2.0.0", "file:../x",
+            "git+https://x.test/a.git", "https://x.test/a.tgz", "١.٠.٠", "1.0.0-",
+            "1.0.0-a..b",
+        )  # fmt: skip
+        for name in bad_names:
+            with self.subTest(name=name), self.assertRaisesRegex(GuardError, "package name"):
+                check_package(name, "1.0.0")
+        for version in bad_versions:
+            with self.subTest(version=version), self.assertRaisesRegex(GuardError, "exact version"):
+                check_package("example", version)
+        self.assertEqual(self.backend.fetched, [])
+
+    def test_cli_splits_name_at_version(self):
+        self.backend.doc = packument(
+            {"1.0.1": "2026-01-02T00:00:00Z", "1.1.0": "2026-01-03T00:00:00Z"}, name="@scope/pkg"
+        )
+        code, out, _ = self.run_check("@scope/pkg@1.1.0", "--format", "json")
+        self.assertEqual(code, 2)  # no model
+        self.assertEqual(json.loads(out)["results"][0]["package"], "@scope/pkg")
+        self.assertEqual(self.backend.calls, [("@scope/pkg", "1.0.1", "1.1.0", None)])
+        for spec in ("example", "@scope/pkg", "@1.0.0", "example@", "example@latest", "x@^1.0.0"):
+            with self.subTest(spec=spec):
+                code, out, err = self.run_check(spec)
+                self.assertEqual((code, out), (2, ""))
+                self.assertEqual(json.loads(err)["status"], "error")
+        self.assertEqual(self.backend.fetched, ["@scope/pkg"])  # none for the bad specs
+
+    def test_request_is_one_added_registry_change(self):
+        request = build_package_request("example", "1.1.0", self.doc)
+        self.assertEqual(list(request), ["request_id", "schema_version", "input_kind", "changes"])
+        self.assertEqual(request["input_kind"], "package")
+        [change] = request["changes"]
+        self.assertEqual(
+            {key: change[key] for key in ("location", "before", "kind", "analyzable", "reason")},
+            {
+                "location": "registry.npmjs.org",
+                "before": None,
+                "kind": "added",
+                "analyzable": True,
+                "reason": None,
+            },
+        )
+        self.assertEqual(
+            change["after"],
+            {
+                "name": "example",
+                "version": "1.1.0",
+                "resolved": "https://registry.npmjs.org/example/-/example-1.1.0.tgz",
+                "integrity": INTEGRITY,
+                "link": False,
+            },
+        )
+        # The ids are digests of the checked content: same metadata, same ids.
+        self.assertEqual(
+            build_package_request("example", "1.1.0", copy.deepcopy(self.doc)), request
+        )
+        self.doc["versions"]["1.1.0"]["dist"]["integrity"] = "sha512-other"
+        other = build_package_request("example", "1.1.0", self.doc)
+        self.assertNotEqual(other["request_id"], request["request_id"])
+        self.assertNotEqual(other["changes"][0]["change_id"], change["change_id"])
+
+    def test_bad_registry_metadata_is_an_error(self):
+        def broken(edit):
+            doc = copy.deepcopy(self.doc)
+            edit(doc)
+            return doc
+
+        def dist(**fields):
+            return broken(lambda d: d["versions"]["1.1.0"]["dist"].update(fields))
+
+        cases = {
+            "not an object": [],
+            "no versions": broken(lambda d: d.pop("versions")),
+            "time not an object": broken(lambda d: d.update(time=["1.1.0"])),
+            "version not served": broken(lambda d: d["versions"].pop("1.1.0")),
+            "manifest not an object": broken(lambda d: d["versions"].update({"1.1.0": "x"})),
+            "other version": broken(lambda d: d["versions"]["1.1.0"].update(version="1.1.1")),
+            "other package": broken(lambda d: d["versions"]["1.1.0"].update(name="other")),
+            "no dist": broken(lambda d: d["versions"]["1.1.0"].pop("dist")),
+            "http tarball": dist(tarball="http://registry.npmjs.org/example/-/example-1.1.0.tgz"),
+            "other host": dist(tarball="https://registry.npmjs.org.evil.test/example-1.1.0.tgz"),
+            "tarball not text": dist(tarball=5),
+            "no integrity": broken(lambda d: d["versions"]["1.1.0"]["dist"].pop("integrity")),
+            "blank integrity": dist(integrity="  "),
+            "integrity not text": dist(integrity=[INTEGRITY]),
+        }
+        for label, doc in cases.items():
+            with self.subTest(label), self.assertRaises(GuardError):
+                build_package_request("example", "1.1.0", doc)
+        # Through the CLI it is an error JSON with exit 2, never a report.
+        self.backend.doc = cases["no integrity"]
+        code, out, err = self.run_check("example@1.1.0", "--format", "json")
+        self.assertEqual((code, out), (2, ""))
+        self.assertEqual(
+            json.loads(err)["error"],
+            "npm registry metadata for example@1.1.0 has no dist.integrity",
+        )
+
+    def test_registry_read_failure_is_exit_2(self):
+        self.backend.errors = (FetchError,)
+        self.backend.fetch_packument = mock.Mock(side_effect=FetchError("404 Not Found"))
+        code, out, err = self.run_check("example@1.1.0")
+        self.assertEqual((code, out), (2, ""))
+        self.assertEqual(
+            json.loads(err)["error"], "Cannot read npm registry metadata for example: 404 Not Found"
+        )
+
+    def test_scores_threshold_and_registry_evidence(self):
+        for signal, expected in ((0.2, 0), (0.5, 1), (0.9, 1)):
+            with self.subTest(signal=signal):
+                self.backend.features = {"signal": signal, "obfChangedFileCount": 2}
+                self.backend.fetched, self.backend.calls = [], []
+                code, out, err = self.run_check(
+                    "example@1.1.0", "--model-dir", "models/fake", "--format", "json",
+                    model=PackagePredictor(),
+                )  # fmt: skip
+                report = json.loads(out)
+                self.assertEqual((code, report["exit_code"], err), (expected, expected, ""))
+                self.assertEqual(self.backend.fetched, ["example"])  # metadata read once
+                self.assertEqual(self.backend.calls, [("example", "1.0.1", "1.1.0", None)])
+        self.assertEqual((report["input_kind"], report["scope"]), ("package", PACKAGE_SCOPE))
+        row = report["results"][0]
+        self.assertEqual(
+            (row["status"], row["compared_version"], row["before_version"]),
+            ("flagged", "1.0.1", None),
+        )
+        self.assertEqual(
+            row["evidence"],
+            [
+                "비교: 1.0.1 → 1.1.0 (같은 release line의 직전 stable)",
+                "lockfile 없이 registry 정보로 검사",
+                "추가·수정된 JS 파일 2개",
+            ],
+        )
+
+    def test_text_names_the_registry_source_for_every_outcome(self):
+        runs = {}
+        self.backend.features = {"signal": 0.2, "obfChangedFileCount": 2}
+        runs["passed"] = self.run_check(
+            "example@1.1.0", "--model-dir", "m", model=PackagePredictor()
+        )
+        runs["model_missing"] = self.run_check("example@1.1.0")
+        runs["prerelease"] = self.run_check("example@1.2.0-beta.1")
+        failure = GuardError("synthetic extraction failure")
+        with mock.patch.object(self.backend, "extract", side_effect=failure):
+            runs["failed"] = self.run_check("example@1.1.0")
+        self.backend.doc = packument({"1.1.0": "2026-01-03T00:00:00Z"})
+        runs["no_baseline"] = self.run_check("example@1.1.0")
+        expected = {
+            "passed": (0, "[통과] example@1.1.0  (registry.npmjs.org)"),
+            "model_missing": (2, "이유: 모델 없음"),
+            "prerelease": (2, "이유: 학습 범위 밖 입력"),
+            "failed": (2, "상세: synthetic extraction failure"),
+            "no_baseline": (2, "이유: 비교할 이전 stable 버전 없음"),
+        }
+        for label, (code, out, err) in runs.items():
+            with self.subTest(label):
+                self.assertEqual(code, expected[label][0])
+                self.assertIn(expected[label][1], out)
+                self.assertIn("검사한 패키지 1개:", out)
+                self.assertIn(
+                    "범위: lockfile 없이 registry 정보로 이 버전 하나만 검사했습니다.", out
+                )
+                # Neither "바뀐 의존성" nor "lockfile에서 바뀐"/"lockfile에 새로 추가" wording.
+                self.assertNotIn("바뀐 의존성", out)
+                self.assertNotIn("lockfile에", out)
+                self.assertTrue(out.rstrip().endswith("패키지가 안전하다는 보증이 아닙니다."))
+                self.assertRegex(err, r"\A분석 중 1/1: example@1\.(1\.0|2\.0-beta\.1)\n\Z")
+
+    def test_json_output_file_and_no_overwrite(self):
+        output = self.root / "check.json"
+        code, out, err = self.run_check(
+            "example@1.1.0", "--format", "json", "--output", str(output)
+        )
+        self.assertEqual((code, err), (2, ""))  # no model; JSON format shows no progress
+        self.assertEqual(output.read_bytes(), out.encode())
+        self.assertEqual(read_json(output)[0]["results"][0]["reason"], "model_missing")
+        original = output.read_bytes()
+        code, out, err = self.run_check("example@1.1.0", "--output", str(output))
+        self.assertEqual((code, out), (2, ""))
+        self.assertEqual(json.loads(err.splitlines()[-1])["status"], "error")
+        self.assertEqual(output.read_bytes(), original)
+
+    def test_model_dir_then_variable_then_none(self):
+        os.environ["DEPBEE_MODEL_DIR"] = "models/from-env"
+        with mock.patch(
+            "depbee.service.LightGBMPredictor", return_value=PackagePredictor()
+        ) as loader:
+            self.assertEqual(check_package("example", "1.1.0")["exit_code"], 1)
+            loader.assert_called_once_with(Path("models/from-env"))
+            loader.reset_mock()
+            check_package("example", "1.1.0", model_dir=Path("models/explicit"))
+            loader.assert_called_once_with(Path("models/explicit"))
+        os.environ["DEPBEE_MODEL_DIR"] = ""
+        report = check_package("example", "1.1.0")
+        self.assertEqual(report["results"][0]["reason"], "model_missing")
+        # A bad model path stops the check before the registry is read.
+        self.backend.fetched = []
+        with self.assertRaises((OSError, GuardError)):
+            check_package("example", "1.1.0", model_dir=self.root / "no-such-model")
+        self.assertEqual(self.backend.fetched, [])
+
+    def test_request_id_repeats_and_lockfile_reports_keep_their_fields(self):
+        first = check_package("example", "1.1.0")
+        self.assertEqual(check_package("example", "1.1.0"), first)
+        request = build_package_request("example", "1.1.0", self.doc)
+        self.assertEqual(first["request_id"], request["request_id"])
+        lockfile = scan_project(self.project, self.base)
+        self.assertNotIn("input_kind", lockfile)
+        self.assertEqual(lockfile["scope"], LOCKFILE_SCOPE)
+
+    def test_malformed_compared_metadata_fails_closed(self):
+        edits = {
+            "manifest": lambda d: d["versions"].update({"1.0.1": "x"}),
+            "scripts": lambda d: d["versions"]["1.0.1"].update(scripts=["postinstall"]),
+            "dependencies": lambda d: d["versions"]["1.0.1"].update(dependencies=7),
+        }
+        for label, edit in edits.items():
+            with self.subTest(label):
+                self.backend.doc = copy.deepcopy(self.doc)
+                edit(self.backend.doc)
+                code, out, _ = self.run_check(
+                    "example@1.1.0", "--model-dir", "m", "--format", "json",
+                    model=PackagePredictor(),
+                )  # fmt: skip
+                row = json.loads(out)["results"][0]
+                self.assertEqual((code, row["reason"]), (2, "analysis_failed"))
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("lightgbm"), "Install .[ml] for native integration tests"
+    )
+    def test_synthetic_native_model(self):
+        import lightgbm as lgb
+        import numpy as np
+
+        # Purely synthetic numbers verify the connection, not detection quality.
+        data = lgb.Dataset(np.array([[0.0], [0.1], [0.2], [0.8], [0.9], [1.0]]),
+                           label=[0, 0, 0, 1, 1, 1], feature_name=["signal"])  # fmt: skip
+        params = {"objective": "binary", "verbosity": -1, "num_threads": 1,
+                  "min_data_in_leaf": 1, "min_data_in_bin": 1}  # fmt: skip
+        lgb.train(params, data, num_boost_round=4).save_model(str(self.root / "model.txt"))
+        manifest = {
+            "schema_version": 1, "model_id": "synthetic-test-only",
+            "feature_schema": "depbee-features-v1", "feature_names": ["signal"],
+            "positive_class": "malicious", "objective": "binary", "threshold": 0.5,
+            "model_sha256": hashlib.sha256((self.root / "model.txt").read_bytes()).hexdigest(),
+        }  # fmt: skip
+        self.write(self.root / "manifest.json", manifest)
+        for signal, expected in ((0.1, 0), (0.9, 1)):
+            with self.subTest(signal=signal):
+                self.backend.features = {"signal": signal, "obfChangedFileCount": 2}
+                code, out, _ = self.run_check(
+                    "example@1.1.0", "--model-dir", str(self.root), "--format", "json"
+                )
+                self.assertEqual(
+                    (code, json.loads(out)["model_id"]), (expected, "synthetic-test-only")
+                )
 
 
 if __name__ == "__main__":

@@ -10,12 +10,12 @@ npm 프로젝트에서 바뀐 의존성 버전을 찾아, 각 버전의 변경�
 
 | 영역      | 현재 구현 내용                                                                                    | 남은 연결·검증                          |
 | --------- | ------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| 입력 처리 | lockfile v2/v3 비교(기준은 파일·Git 커밋), 직접·중첩 의존성 변경·추가 추출, 변경·요청 ID와 해시   | 추가 입력 형식                          |
+| 입력 처리 | lockfile v2/v3 비교(기준은 파일·Git 커밋), 직접·중첩 의존성 변경·추가 추출, 변경·요청 ID와 해시. lockfile 없이 registry의 버전 하나(`check`) | 추가 입력 형식                          |
 | 분석      | `--extract`: feature-extractor로 설치될 버전과 그 직전 stable을 비교해 feature·근거 추출          | tarball 자체의 integrity 검증           |
 | 분석 연결 | `--analysis`: 다른 분석기가 만든 JSON의 요청 ID·변경 ID·중복·상태·feature 형식 검증               |                                         |
 | 모델 추론 | native LightGBM 로딩, 모델 해시·이진 분류·feature 이름/순서·자료형 검증, feature별 기여도 계산     | 검증 세트로 정한 임계값 수령            |
 | 판정 조율 | feature 스키마 확인, 임계값 판정, 실패·학습 범위 밖 입력은 `incomplete` 처리                      |                                         |
-| CLI 출력  | `plan`/`scan`, 한국어 텍스트·JSON, 새 파일 저장, 종료 코드 0/1/2                                  |                                         |
+| CLI 출력  | `plan`/`scan`/`check`, 한국어 텍스트·JSON, 새 파일 저장, 종료 코드 0/1/2                          |                                         |
 | 테스트    | 합성 입력 회귀 테스트, 합성 native 모델 연동 테스트                                                |                                         |
 | 개발 CI   | push/PR에서 Ubuntu·Windows × Python 3.11·3.13 검사·테스트·패키지 빌드                              | GitHub 서버 실행 확인                   |
 
@@ -28,7 +28,7 @@ npm 프로젝트에서 바뀐 의존성 버전을 찾아, 각 버전의 변경�
 src/depbee/
   cli.py                  # 인자·한국어 텍스트·JSON 출력·종료 코드
   contracts.py            # 공통 규약과 Analyzer/Predictor 인터페이스
-  inputs/npm.py           # 대상 프로젝트와 기준 lockfile 비교
+  inputs/npm.py           # 대상 프로젝트와 기준 lockfile 비교, check의 단일 버전 요청
   inputs/git.py           # Git 커밋에서 기준 lockfile 읽기
   analysis/extractor.py   # feature-extractor 호출, 근거 정리
   analysis/baseline.py    # 비교 기준 버전(직전 stable) 선정
@@ -78,6 +78,7 @@ manifest 구조는 [연결 규약](docs/contracts.md)에 있습니다.
 ```powershell
 .\.venv\Scripts\python.exe -m depbee plan C:/path/to/target --base-lock C:/path/to/base-package-lock.json
 .\.venv\Scripts\python.exe -m depbee scan C:/path/to/target --base-lock C:/path/to/base-package-lock.json --extract --model-dir models/<model-id>
+.\.venv\Scripts\python.exe -m depbee check lodash@4.17.21 --model-dir models/<model-id>
 ```
 
 비교 기준은 `--base-lock <파일>`로 주거나, 생략하면 대상 폴더가 속한 Git 저장소의 HEAD 커밋에 있는 같은 위치의 `package-lock.json`을 씁니다.
@@ -94,7 +95,13 @@ Git 명령에는 30초 제한과 출력 크기 상한이 있습니다. 제한을
 오류는 표준 오류에 JSON으로 나옵니다.
 tarball은 Python 임시 폴더에 풀었다가 지웁니다. 위치를 바꾸려면 `TMP`/`TEMP` 환경변수를 지정합니다.
 
-`scan`에서 `--model-dir`을 생략하면 환경 변수 `DEPBEE_MODEL_DIR`의 모델 폴더를 씁니다. `--model-dir`이 항상 우선하고, 둘 다 없거나 환경 변수가 빈 값이면 모델 없이 처리합니다(분석할 변경이 있으면 `incomplete`).
+`check NAME@VERSION`은 lockfile 없이 npm 공식 registry의 버전 하나를 `scan --extract`와 같은 방식(같은 release line의 직전 stable과 비교)으로 검사합니다. 설치 전에 특정 버전을 확인할 때 씁니다.
+`lodash@4.17.21`이나 `@scope/name@1.0.0`처럼 정확한 이름과 버전만 받고, 범위(`^1.0.0`)·태그(`latest`)·URL·Git·파일 경로·사설 registry는 네트워크에 접근하기 전에 오류(종료 코드 2)로 거부합니다.
+registry 메타데이터는 한 번만 받아 요청과 분석에 함께 씁니다. 그 버전이 registry에 없거나, tarball 주소가 `https://registry.npmjs.org`가 아니거나, `dist.integrity`가 없거나, 메타데이터 형식이 잘못됐으면 오류(종료 코드 2)로 끝납니다.
+pre-release와 비교할 이전 stable이 없는 버전은 `scan`과 같이 `incomplete`입니다.
+결과에는 "lockfile 없이 registry 정보로 검사"했다는 범위(`input_kind: "package"`)와 근거가 표시됩니다. 출력 형식, `--output`, 진행 표시(텍스트만), 종료 코드는 `scan`과 같습니다.
+
+`scan`과 `check`에서 `--model-dir`을 생략하면 환경 변수 `DEPBEE_MODEL_DIR`의 모델 폴더를 씁니다. `--model-dir`이 항상 우선하고, 둘 다 없거나 환경 변수가 빈 값이면 모델 없이 처리합니다(분석할 변경이 있으면 `incomplete`).
 지정한 경로가 잘못되면 다른 모델로 대체하지 않고 오류(종료 코드 2)로 끝납니다. 대상 프로젝트의 설정에서는 모델 경로를 읽지 않습니다.
 이 폴더의 모델은 신뢰한 입력으로 다루므로(manifest와 모델 해시만 대조합니다) 직접 준비한 신뢰할 수 있는 모델 폴더만 지정합니다.
 
@@ -124,7 +131,7 @@ registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때�
 
 - 로컬 `package-lock.json` v2/v3만 지원합니다. 기준 lockfile은 파일이나 Git 커밋에서 읽고, 저장소 하위 폴더의 단일 프로젝트는 지원하지만 npm workspaces 전체를 한 번에 비교하지는 않습니다.
 - npm 공식 registry 의존성만 분석합니다. workspace/link, Git·file·사설 레지스트리 의존성, 같은 버전의 아카이브 변경은 `incomplete`입니다.
-- integrity는 lockfile과 registry 메타데이터를 비교합니다. 받은 tarball 자체의 해시는 아직 검증하지 않습니다.
+- integrity는 lockfile과 registry 메타데이터를 비교합니다. 받은 tarball 자체의 해시는 아직 검증하지 않습니다. `check`는 대조할 lockfile이 없어 registry 메타데이터에 `dist.integrity`가 있는지만 확인하며(registry 문서상 2017년 4월부터 기록된 값), 이 값이 없는 버전은 검사하지 못합니다.
 - 학습 데이터와 달리 비교 기준 후보를 OSV 악성 목록과 대조하지 않고, 새 버전 직전 24시간 안의 후보도 별도로 검증하지 않습니다.
 - typosquat처럼 패키지 자체가 악성인 경우는 "업데이트 변경점"을 보는 이 모델의 범위가 아닙니다.
 - `package.json`만 있는 프로젝트, yarn/pnpm, Git URL 입력은 후속 범위입니다.

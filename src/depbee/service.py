@@ -10,7 +10,7 @@ from pathlib import Path
 from .analysis.artifact import ArtifactAnalyzer
 from .contracts import GuardError
 from .inference.lightgbm import LightGBMPredictor
-from .inputs.npm import build_request
+from .inputs.npm import build_package_request, build_request, check_package_spec
 from .pipeline import scan
 
 
@@ -84,8 +84,42 @@ def scan_project(
         from .analysis.extractor import ExtractorAnalyzer
 
         analyzer = ExtractorAnalyzer(sources, progress=progress)
+    return scan(request, analyzer, _predictor(model_dir))
+
+
+def _predictor(model_dir: Path | None) -> LightGBMPredictor | None:
+    """model_dir, else DEPBEE_MODEL_DIR read on this call; empty or unset means no model."""
     env_model = os.environ.get("DEPBEE_MODEL_DIR")
     if model_dir is None and env_model:
         model_dir = Path(env_model)
-    predictor = LightGBMPredictor(model_dir) if model_dir else None
-    return scan(request, analyzer, predictor)
+    return LightGBMPredictor(model_dir) if model_dir else None
+
+
+def check_package(
+    name: str,
+    version: str,
+    *,
+    model_dir: Path | None = None,
+    progress: Callable[[int, int, dict], None] | None = None,
+) -> dict:
+    """Check one npm registry version without a lockfile and return the pipeline.scan() report.
+
+    name, version: an exact registry name (scoped or not) and version, checked before any
+    network access. The version is compared with its stable predecessor, as in scan --extract.
+    The registry metadata is fetched once and used for both the request and the analysis; its
+    dist.integrity is registry metadata, not a hash of the downloaded tarball.
+    model_dir, progress: as in scan_project(). The model is loaded before the registry is read.
+
+    Raises GuardError, OSError or ValueError for an invalid name or version, unreadable or
+    invalid registry metadata, or a bad model; the caller maps them to its error output.
+    """
+    check_package_spec(name, version)
+    from .analysis.extractor import ExtractorAnalyzer
+
+    analyzer = ExtractorAnalyzer(progress=progress)
+    predictor = _predictor(model_dir)
+    try:
+        packument = analyzer.packument(name)
+    except analyzer.backend.errors as exc:
+        raise GuardError(f"Cannot read npm registry metadata for {name}: {exc}") from exc
+    return scan(build_package_request(name, version, packument), analyzer, predictor)

@@ -17,6 +17,35 @@
 중첩 의존성은 경로별로 식별한다. alias는 name과 설치 경로를 구분한다.
 분석기는 `analyzable=true`인 항목만 처리하고, 다운로드한 버전이 lockfile integrity와 일치하는지 확인해야 한다. 예시의 가상 integrity를 실제 데이터로 사용하지 않는다.
 
+### 1.1 lockfile 없는 단일 패키지 요청 (`depbee check NAME@VERSION`)
+
+`check`는 lockfile 없이 npm 공식 registry의 버전 하나를 검사하는 요청을 만든다. 위 lockfile 요청의 필드와 순서, 해시 계산은 그대로이고, 이 요청에만 아래 차이가 있다.
+
+```json
+{
+  "request_id": "아래 필드의 결정적 digest",
+  "schema_version": 1,
+  "input_kind": "package",
+  "changes": [
+    {
+      "change_id": "location·before·after의 digest",
+      "location": "registry.npmjs.org",
+      "before": null,
+      "after": {"name": "lodash", "version": "4.17.21", "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz", "integrity": "sha512-...", "link": false},
+      "kind": "added",
+      "analyzable": true,
+      "reason": null
+    }
+  ]
+}
+```
+
+- `input_kind: "package"`로 lockfile 요청과 구분한다. lockfile 요청에는 이 필드가 없다.
+- lockfile이 없으므로 `base_lock_sha256`·`head_lock_sha256`이 없다. 존재하지 않는 파일의 해시를 만들지 않는다.
+- 이름과 버전은 네트워크 접근 전에 검사한다. scope가 있거나 없는 registry 이름과 정확한 semver 버전(build metadata 없음)만 받는다.
+- `after`는 registry 메타데이터의 그 버전 manifest에서 만든다. manifest의 `name`·`version`이 요청과 같고, `dist.tarball`이 `https://registry.npmjs.org`이며, `dist.integrity`가 있어야 한다. 하나라도 어긋나면 요청을 만들지 않고 오류(종료 코드 2)다. 이 integrity는 registry 메타데이터 값이며 받은 tarball 바이트의 해시가 아니다.
+- 분석기는 lockfile 요청의 새로 추가된 의존성과 같은 방식으로 처리하고(같은 release line의 직전 stable과 비교), 근거에 "lockfile 없이 registry 정보로 검사"를 넣는다. 분석 결과(2절)와 모델 manifest(3절) 형식은 같다.
+
 ## 2. 분석기 → CLI
 
 ```json
@@ -85,6 +114,7 @@ SHA-256은 파일 변조·혼동 확인용이다. 모델은 신뢰하는 팀원�
 ## 4. CLI → 사용자·CI
 
 보고서는 request_id, model_id, threshold, analyzer_version, scope, results를 포함한다.
+`check`의 보고서에만 `input_kind: "package"`가 request_id 다음에 더 있고, scope는 `one npm registry version checked without a lockfile; not a whole-project safety assessment`다. lockfile 보고서의 필드와 scope 문구는 그대로다.
 패키지 상태는 `flagged`, `not_flagged`, `incomplete`, `removed`다.
 점수가 나온 항목에는 `compared_version`(비교 기준 버전), `features`, `evidence`(추출된 사실), `explanation`(점수에 크게 작용한 feature 3개와 SHAP 기여도, log-odds 단위)이 있다. 추출된 사실과 모델 설명은 구분한다.
 `explanation_rest`는 `explanation`에 없는 feature의 기여도 합(`others_sum`)과 개수(`others_count`), 모델 기준값(`base_value`)이다. `explanation`의 기여도와 이 두 값을 모두 더하면 점수의 log-odds가 된다.

@@ -9,6 +9,11 @@ from .contracts import (
     finite_number,
 )
 
+LOCKFILE_SCOPE = "changed npm lockfile entries only; not a whole-project safety assessment"
+PACKAGE_SCOPE = (
+    "one npm registry version checked without a lockfile; not a whole-project safety assessment"
+)
+
 
 def scan(request: dict, analyzer: Analyzer | None, predictor: Predictor | None) -> dict:
     artifact = analyzer.analyze(request) if analyzer else None
@@ -71,10 +76,13 @@ def scan(request: dict, analyzer: Analyzer | None, predictor: Predictor | None) 
     incomplete = any(r["status"] == "incomplete" for r in results)
     flagged = any(r["status"] == "flagged" for r in results)
     exit_code = 2 if incomplete else 1 if flagged else 0
+    # Only a package request (check, no lockfile) adds input_kind; lockfile reports are unchanged.
+    package = {"input_kind": "package"} if request.get("input_kind") == "package" else {}
     return {
         "schema_version": SCHEMA_VERSION,
         "request_id": request["request_id"],
-        "scope": "changed npm lockfile entries only; not a whole-project safety assessment",
+        **package,
+        "scope": PACKAGE_SCOPE if package else LOCKFILE_SCOPE,
         "status": "incomplete" if incomplete else "flagged" if flagged else "passed",
         "exit_code": exit_code,
         "model_id": predictor.model_id if predictor else None,
