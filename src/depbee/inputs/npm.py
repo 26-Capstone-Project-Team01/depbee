@@ -4,13 +4,14 @@ import re
 from pathlib import Path
 from urllib.parse import urlparse
 
-from ..contracts import SCHEMA_VERSION, GuardError, digest, read_json
+from ..contracts import SCHEMA_VERSION, GuardError, digest, parse_json, read_json
+from .git import read_base_lock
 
 VERSION = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\Z")
 
 
-def _snapshot(path: Path) -> tuple[dict, str]:
-    lock, sha256 = read_json(path)
+def _snapshot(loaded: tuple[dict, str]) -> tuple[dict, str]:
+    lock, sha256 = loaded
     if type(lock.get("lockfileVersion")) is not int or lock["lockfileVersion"] not in (2, 3):
         raise GuardError("Only package-lock.json lockfileVersion 2 and 3 are supported")
     packages = lock.get("packages")
@@ -67,12 +68,25 @@ def _unsupported(before: dict | None, after: dict | None) -> str | None:
     return None
 
 
-def build_request(project: Path, base_lock: Path) -> dict:
+def build_request(
+    project: Path, base_lock: Path | None = None, *, base_ref: str | None = None
+) -> dict:
+    """Compare project/package-lock.json with base_lock, else with its copy in Git base_ref.
+
+    base_ref defaults to HEAD. Either way the base bytes get the same checks and SHA-256.
+    """
+    if base_lock is not None and base_ref is not None:
+        raise GuardError("Use either a base lockfile or a Git base ref, not both")
     head_lock = project / "package-lock.json"
     if not project.is_dir():
         raise GuardError(f"Project directory not found: {project}")
-    before, base_hash = _snapshot(base_lock)
-    after, head_hash = _snapshot(head_lock)
+    if base_lock is not None:
+        base = read_json(base_lock)
+    else:
+        ref = "HEAD" if base_ref is None else base_ref
+        base = parse_json(read_base_lock(project, ref), f"{ref}:{head_lock}")
+    before, base_hash = _snapshot(base)
+    after, head_hash = _snapshot(read_json(head_lock))
     changes = []
     for location in sorted(before.keys() | after.keys()):
         old, new = before.get(location), after.get(location)

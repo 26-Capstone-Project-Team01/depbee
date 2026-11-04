@@ -27,18 +27,23 @@ def _unique_object(pairs: list) -> dict:
     return result
 
 
-def read_json(path: Path) -> tuple[dict, str]:
-    with path.open("rb") as stream:
-        raw = stream.read(MAX_JSON_BYTES + 1)
+def parse_json(raw: bytes, source: object) -> tuple[dict, str]:
+    """Check JSON bytes from a file or Git and hash them as given; source names them in errors."""
     if len(raw) > MAX_JSON_BYTES:
-        raise GuardError(f"JSON exceeds {MAX_JSON_BYTES} bytes: {path}")
+        raise GuardError(f"JSON exceeds {MAX_JSON_BYTES} bytes: {source}")
     try:
         value = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=_unique_object)
     except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
-        raise GuardError(f"Invalid JSON: {path}") from exc
+        raise GuardError(f"Invalid JSON: {source}") from exc
     if not isinstance(value, dict):
-        raise GuardError(f"Expected JSON object: {path}")
+        raise GuardError(f"Expected JSON object: {source}")
     return value, hashlib.sha256(raw).hexdigest()
+
+
+def read_json(path: Path) -> tuple[dict, str]:
+    with path.open("rb") as stream:
+        raw = stream.read(MAX_JSON_BYTES + 1)
+    return parse_json(raw, path)
 
 
 def digest(value: object) -> str:

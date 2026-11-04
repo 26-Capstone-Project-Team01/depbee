@@ -13,9 +13,14 @@ from .inputs.npm import build_request
 from .pipeline import scan
 
 
-def plan_project(project: Path, base_lock: Path) -> dict:
-    """Changed version pairs between the base lockfile and project/package-lock.json."""
-    return build_request(project, base_lock)
+def plan_project(
+    project: Path, base_lock: Path | None = None, *, base_ref: str | None = None
+) -> dict:
+    """Changed version pairs between the base lockfile and project/package-lock.json.
+
+    The base is base_lock, else project/package-lock.json in Git base_ref (default HEAD).
+    """
+    return build_request(project, base_lock, base_ref=base_ref)
 
 
 def _local_sources(
@@ -43,8 +48,9 @@ def _local_sources(
 
 def scan_project(
     project: Path,
-    base_lock: Path,
+    base_lock: Path | None = None,
     *,
+    base_ref: str | None = None,
     analysis: Path | None = None,
     extract: bool = False,
     local_sources: list[str] | None = None,
@@ -54,6 +60,7 @@ def scan_project(
 ) -> dict:
     """Build the request, pick the analyzer and model, and return the pipeline.scan() report.
 
+    base_lock, base_ref: the base lockfile, as in plan_project().
     analysis: trusted precomputed analysis JSON. extract: run feature-extractor instead.
     local_sources: NAME@VERSION=DIR specs under local_root (extract only).
     progress: called per extracted package; the caller decides how to show it.
@@ -65,7 +72,7 @@ def scan_project(
     # Intended error priority: option conflict before reading lockfiles, local sources after.
     if analysis and extract:
         raise GuardError("Use either an analysis file or extraction, not both")
-    request = plan_project(project, base_lock)
+    request = plan_project(project, base_lock, base_ref=base_ref)
     sources = _local_sources(local_sources or [], extract, local_root)
     analyzer = None
     if analysis:

@@ -68,7 +68,14 @@ def _parser() -> argparse.ArgumentParser:
         cmd.add_argument(
             "project", type=Path, help="Directory containing the new package-lock.json"
         )
-        cmd.add_argument("--base-lock", required=True, type=Path, help="Previous package-lock.json")
+        base = cmd.add_mutually_exclusive_group()
+        base.add_argument("--base-lock", type=Path, help="Previous package-lock.json")
+        base.add_argument(
+            "--base-ref",
+            metavar="REF",
+            help="Use the project's package-lock.json committed in this Git revision "
+            "(default without --base-lock: HEAD)",
+        )
         cmd.add_argument(
             "--output", type=Path, help="Write a NEW JSON file (never overwrite inputs)"
         )
@@ -208,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         if args.command == "plan":
-            _emit(plan_project(args.project, args.base_lock), args)
+            _emit(plan_project(args.project, args.base_lock, base_ref=args.base_ref), args)
             return 0
         progress = None
         # Extraction takes seconds per package; show progress unless stdout is JSON.
@@ -219,6 +226,7 @@ def main(argv: list[str] | None = None) -> int:
         report = scan_project(
             args.project,
             args.base_lock,
+            base_ref=args.base_ref,
             analysis=args.analysis,
             extract=args.extract,
             local_sources=args.local_source,

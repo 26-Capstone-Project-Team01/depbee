@@ -5,11 +5,11 @@
 
 ## 1. CLI → 분석기
 
-`depbee plan <project> --base-lock <path>`의 JSON을 그대로 전달한다.
+`depbee plan <project> [--base-lock <path> | --base-ref <ref>]`의 JSON을 그대로 전달한다. 기준이 파일이든 Git 커밋이든 요청 형식은 같다.
 
 - `schema_version`: 현재 1
 - `request_id`: 두 lockfile 해시와 변경 목록의 결정적 식별자
-- `base_lock_sha256`, `head_lock_sha256`: 원본 lockfile 바이트 해시
+- `base_lock_sha256`, `head_lock_sha256`: 원본 lockfile 바이트 해시. Git 기준이면 커밋에 저장된 파일 바이트의 해시다.
 - `changes[]`: change_id, lockfile location, kind(`updated`/`added`/`removed`), before/after의 name/version/resolved/integrity/link. 새로 추가된 의존성은 before가 null이다.
 - `analyzable`: 분석 대상 여부. 설치될 버전(after)이 npm 공식 registry의 semver 버전이고 integrity가 있으면 true다. 새로 추가된 의존성도 포함한다.
 - `reason`: 분석하지 않는 이유(삭제·미지원 출처 등)

@@ -1,5 +1,13 @@
 # 검증 기록
 
+## 2026-11-04: Git 기준 lockfile(`--base-ref`)
+
+- `plan`·`scan`에 `--base-ref`를 추가했다. `--base-lock`도 `--base-ref`도 없으면 HEAD를 쓴다. 테스트 67개 통과(skip 없음), `ruff check` 통과, 격리 환경 build 성공.
+- 단위 테스트는 Git을 모두 mock한다. 커밋에서 읽은 바이트가 기준 파일과 같으면 request와 request_id가 같고, 빈 ref·옵션 형태 ref, Git 없음, 현재 폴더에서 찾은 git, 저장소 아님, 없는 ref, 커밋에 lockfile 없음, 잘못된 JSON·중복 키·lockfileVersion은 오류다.
+- 출력 상한, timeout, 종료 정리는 테스트 자신의 Python을 자식 프로세스로 실행해 확인했다. 끝없이 출력하는 자식은 상한을 넘는 즉시 종료되고, 출력 없이 멈춘 자식은 제한 시간에 종료되며, 두 경우 모두 프로세스가 끝나고 파이프가 닫힌다.
+- `--base-lock`을 명시한 기존 CLI 출력(9개 명령, 29개 파일)은 바이트 단위로 같다.
+- 실제 Git(2.50.1, Windows)으로 공백과 한글이 든 하위 폴더에 합성 저장소를 만들어 확인했다. `HEAD~1`과 annotated tag 기준의 `plan`·`scan` 출력이 같은 파일을 `--base-lock`으로 준 출력과 바이트 단위로 같고, 없는 ref, 옵션 형태 ref, 커밋하지 않은 lockfile, 저장소 밖 폴더는 종료 코드 2다. Linux·macOS의 실제 Git은 확인하지 않았다.
+
 ## 2026-10-27: 모델이 쓰는 feature만 골라 추론
 
 - 분석기가 뽑은 feature 중 manifest `feature_names`에 있는 것만 모델에 넣는다. 남는 feature는 버리고, 모델 feature가 하나라도 없으면 지금처럼 오류(보류)다. 없는 값은 채우지 않는다.
