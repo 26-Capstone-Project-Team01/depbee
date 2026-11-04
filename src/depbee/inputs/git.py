@@ -87,9 +87,13 @@ def _git(project: Path, *args: str, limit: int = _LINE_LIMIT) -> tuple[int, byte
     # --no-replace-objects: read the committed objects, not refs/replace substitutes.
     argv = [git, "--no-lazy-fetch", "--no-replace-objects", *args]
     try:
-        return _run(argv, project, limit, env)
+        code, out, err = _run(argv, project, limit, env)
     except OSError as exc:
         raise GuardError(f"Unable to run Git: {exc}") from exc
+    # Git before 2.45 rejects --no-lazy-fetch as an unknown option before running anything.
+    if code == 129 and b"unknown option" in err:
+        raise GuardError(f"Git 2.45 or later is required (--no-lazy-fetch){_detail(err)}")
+    return code, out, err
 
 
 def _detail(stderr: bytes) -> str:

@@ -1,5 +1,10 @@
 # 검증 기록
 
+## 2026-11-04: Git 2.45 미만에서 필요한 버전 안내(`--base-ref` 후속)
+
+- `--no-lazy-fetch`는 Git 2.45 릴리스 노트에 처음 나온다. 그보다 오래된 Git은 알 수 없는 옵션으로 종료 코드 129를 내고, 지금까지는 `Git cannot resolve HEAD to a commit`처럼 원인을 알기 어려운 오류였다(PR #6 리뷰 minor 1). Git이 129와 `unknown option`으로 끝나면 `Git 2.45 or later is required`로 시작하는 오류를 내고 종료 코드 2는 그대로다. README와 연결 규약에 최소 Git 2.45를 적었다.
+- 테스트 77개 통과(skip 없음), `ruff check` 통과. 오래된 Git의 출력은 합성 stderr로 넣었고, 실제 Git 2.45 미만은 실행하지 않았다.
+
 ## 2026-11-04: Git 자식 환경의 저장소 지정 변수 제거와 replace 객체 무시(`--base-ref` 후속)
 
 - 부모 프로세스가 `GIT_DIR` 등을 물려주면 Git이 대상 폴더가 아닌 다른 저장소의 lockfile을 기준으로 읽어, 실제 변경이 `changes: []`와 종료 코드 0으로 사라질 수 있었다(PR #6 리뷰 major 1). Git 자식 환경에서 `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`를 지우고, `refs/replace/`로 바뀐 객체를 읽지 않도록 `--no-replace-objects`를 붙인다. `GIT_NO_LAZY_FETCH=1` 강제는 그대로다.

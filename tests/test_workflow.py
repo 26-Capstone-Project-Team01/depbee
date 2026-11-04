@@ -516,6 +516,17 @@ class GitBaseTests(Fixture):
         self.assertEqual(code, 2)
         self.assertIn("missing object", json.loads(err.getvalue())["error"])
 
+    def test_git_older_than_2_45_gets_a_clear_error(self):
+        # Git before 2.45 rejects --no-lazy-fetch as an unknown option (exit 129).
+        usage = b"unknown option: --no-lazy-fetch\nusage: git [-v | --version] [-h | --help]\n"
+        run = self.git((129, b"", usage))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = main(["plan", str(self.project)])
+        self.assertEqual(code, 2)
+        self.assertIn("Git 2.45 or later is required", json.loads(err.getvalue())["error"])
+        self.assertEqual(run.call_count, 1)
+
     def test_committed_lockfile_gets_the_same_json_checks(self):
         cases = {
             "invalid JSON": b"{",

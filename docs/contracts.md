@@ -5,7 +5,7 @@
 
 ## 1. CLI → 분석기
 
-`depbee plan <project> [--base-lock <path> | --base-ref <ref>]`의 JSON을 그대로 전달한다. 기준이 파일이든 Git 커밋이든 요청 형식은 같다.
+`depbee plan <project> [--base-lock <path> | --base-ref <ref>]`의 JSON을 그대로 전달한다. 기준이 파일이든 Git 커밋이든 요청 형식은 같다. Git 커밋 기준(`--base-ref`, 기준을 주지 않은 HEAD)은 Git 2.45 이상이 필요하고, 오래된 Git이면 요청을 만들지 않고 오류(종료 코드 2)로 끝난다.
 
 - `schema_version`: 현재 1
 - `request_id`: 두 lockfile 해시와 변경 목록의 결정적 식별자
