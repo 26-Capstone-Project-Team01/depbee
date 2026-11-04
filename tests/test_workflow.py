@@ -461,8 +461,9 @@ class GitBaseTests(Fixture):
     def git_children(self, **parent):
         """Run plan_project through the real _run; each Git child is a harmless Python child.
 
-        Like Git, a child that inherits GIT_DIR answers from that other repository, whose
-        lockfile equals the project's, so a leaked variable would hide the real change.
+        Like Git, a child that inherits GIT_DIR or a graft file answers from that other
+        repository or history, whose lockfile equals the project's, so a leaked variable would
+        hide the real change.
         """
         os.environ.pop("GIT_NO_LAZY_FETCH", None)
         os.environ.update(parent)
@@ -473,7 +474,9 @@ class GitBaseTests(Fixture):
         def popen(argv, **kwargs):
             children.append((argv, kwargs["env"]))
             reply = next(replies)
-            if "GIT_DIR" in kwargs["env"] and reply != COMMIT_LINE[1]:
+            env = kwargs["env"]
+            grafted = env.get("GIT_GRAFT_FILE", os.devnull) != os.devnull
+            if ("GIT_DIR" in env or grafted) and reply != COMMIT_LINE[1]:
                 reply = self.head.read_bytes()
             code = f"import sys; sys.stdout.buffer.write({reply!r})"
             return REAL_POPEN([sys.executable, "-I", "-c", code], **kwargs)
@@ -500,13 +503,17 @@ class GitBaseTests(Fixture):
 
     def test_inherited_repository_variables_cannot_redirect_git(self):
         # git_children checks the request still shows the project's real change.
-        other = str(self.root / "other-repo" / ".git")
-        children = self.git_children(**dict.fromkeys(REPOSITORY_VARIABLES, other))
+        parent = dict.fromkeys(REPOSITORY_VARIABLES, str(self.root / "other-repo" / ".git"))
+        parent["GIT_GRAFT_FILE"] = str(self.root / "grafts")
+        children = self.git_children(**parent)
         self.assertEqual(len(children), 2)
         for argv, env in children:
             self.assertEqual(argv[:3], GIT_OPTIONS)
             self.assertFalse(set(REPOSITORY_VARIABLES) & env.keys())
             self.assertEqual(env["GIT_NO_LAZY_FETCH"], "1")
+            # An empty graft file also hides .git/info/grafts.
+            self.assertEqual(env["GIT_GRAFT_FILE"], os.devnull)
+        self.assertEqual(os.environ["GIT_GRAFT_FILE"], parent["GIT_GRAFT_FILE"])
 
     def test_missing_blob_ends_with_exit_2(self):
         missing = b"fatal: unable to read 89abcdef (missing object, lazy fetch disabled)\n"

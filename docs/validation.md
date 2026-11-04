@@ -1,5 +1,11 @@
 # 검증 기록
 
+## 2026-11-04: Git graft 무시(`--base-ref` 후속)
+
+- graft는 `--no-replace-objects`로 꺼지지 않는다. 부모 프로세스의 `GIT_GRAFT_FILE`이나 대상 저장소의 `.git/info/grafts`가 커밋의 부모를 바꾸면 `--base-ref HEAD~1`이 다른 커밋의 lockfile을 기준으로 읽어 실제 변경이 `changes: []`와 종료 코드 0으로 사라질 수 있었다(PR #6 리뷰 2차 minor 1). Git 자식 환경의 `GIT_GRAFT_FILE`을 null 장치(`os.devnull`)로 둔다. Git 소스(`setup.c`, `repository.c`)상 이 변수가 있으면 기본 경로 `<git dir>/info/grafts` 대신 쓰이므로 두 경로가 함께 막힌다. 부모 환경은 바꾸지 않는다.
+- 테스트 78개 통과(skip 없음), `ruff check` 통과. 기존 상속 환경 회귀에 `GIT_GRAFT_FILE`을 더해 자식은 null 장치, 부모는 원래 값임을 확인한다.
+- 실제 Git(2.50.1, Windows)과 합성 저장소로 `GIT_GRAFT_FILE`과 `.git/info/grafts` 두 경우를 확인했다. 새 코드의 `--base-ref HEAD~1` 출력은 같은 lockfile을 `--base-lock`으로 준 출력과 바이트 단위로 같고, 수정 전 코드(bc79c59)는 두 경우 모두 변경을 놓쳤다.
+
 ## 2026-11-04: Windows에서 git.exe만 실행(`--base-ref` 후속)
 
 - Windows에서 `shutil.which("git")`는 PATH 앞쪽 폴더의 `git.cmd`를 `git.exe`보다 먼저 고를 수 있고, 그러면 ref 인자가 cmd.exe를 거친다(PR #6 리뷰 nit 2). 빈 자리표시 파일로 확인했다(Python 3.13.5, 실행하지 않음): 같은 PATH에서 `which("git")`는 `git.CMD`, `which("git.exe")`는 뒤 폴더의 `git.exe`를 돌려준다. Windows에서는 `git.exe`를 찾고, 결과가 `.exe`로 끝나지 않으면 실행하지 않는다. POSIX는 그대로 `git`을 찾는다.

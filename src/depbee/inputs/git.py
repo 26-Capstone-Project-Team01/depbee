@@ -86,6 +86,9 @@ def _git(project: Path, *args: str, limit: int = _LINE_LIMIT) -> tuple[int, byte
     # forced variable overrides an inherited GIT_NO_LAZY_FETCH=0.
     env = {k: v for k, v in os.environ.items() if k not in _REPOSITORY_VARIABLES}
     env["GIT_NO_LAZY_FETCH"] = "1"
+    # Grafts rewrite parents (HEAD~1) and --no-replace-objects does not turn them off. An empty
+    # graft file replaces the default <git dir>/info/grafts path, so that file is ignored too.
+    env["GIT_GRAFT_FILE"] = os.devnull
     # --no-replace-objects: read the committed objects, not refs/replace substitutes.
     argv = [git, "--no-lazy-fetch", "--no-replace-objects", *args]
     try:
