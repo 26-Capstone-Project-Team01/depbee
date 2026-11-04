@@ -1,5 +1,13 @@
 # 검증 기록
 
+## 2026-11-04: 비교할 manifest의 사전 검사, 다운로드 상한 없음(PR #7 리뷰 후속)
+
+- 비교 기준 버전의 manifest가 문자열이거나 그 `dist`가 리스트이면, 고정 feature-extractor(c24761d) `loader.py` 100행이 형식 검사 없이 `dist.tarball`을 읽다가 `AttributeError`를 냈다. 이 예외는 분석 실패로 바뀌지 않아 traceback과 종료 코드 1(위험 판정과 같은 코드)로 끝났다(PR #7 리뷰 minor 1). 아래 기록의 "비교한 두 버전의 manifest가 객체가 아니면 분석 실패"는 FakeBackend 기준이었고, 실제 loader를 거치면 비교 기준 쪽은 지켜지지 않았다.
+- 이제 `backend.extract()`를 부르기 전에 비교 기준과 새 버전의 manifest, 각 `dist`가 객체인지 확인하고, 아니면 그 항목을 분석 실패(`incomplete`, 종료 코드 2)로 둔다. `scan --extract`에서 새 버전의 integrity를 읽던 곳의 같은 예외도 이 검사로 막힌다. 로컬 사본으로 읽는 새 버전은 registry manifest를 쓰지 않으므로 검사하지 않는다. `dist`가 아예 없을 때는 전에도 분석 실패였고 오류 문구만 바뀐다. 정상 메타데이터의 출력은 같다.
+- 테스트 96개 통과(skip 없음), `ruff check` 통과. 새 회귀는 두 가지다. check 경로에서는 실제 `FeatureExtractorBackend.extract`와 c24761d `loader.py` 55-56, 100행처럼 `dist.tarball`을 읽는 stand-in source로, 문자열 manifest와 리스트 `dist`가 JSON `incomplete`, 종료 코드 2로 끝나고 feature-extractor를 부르지 않는지 본다. lockfile 경로에서는 비교 기준과 새 버전 각각의 같은 경우가 extract 전에 실패하는지 본다. 테스트만 수정 전 코드(66e3527)에 붙이면 새 회귀가 실패 2개, 오류 4개로 깨지고, 오류는 모두 그 `AttributeError`다.
+- 고정 c24761d의 `errors.py`, `loader.py`(`build_snapshot`, `get_publish_time`, `_download_and_extract_tarball`), `sources.py`, `pipeline.py`(`build_row`) 원문을 그대로 실행하고 registry 조회, `requests.get`(다운로드 차단), 임시 폴더 생성만 합성으로 바꿔 확인했다. 수정 전 코드는 두 경우 모두 `loader.py` 100행의 `AttributeError` traceback과 종료 코드 1로 끝났고, 수정 후에는 tarball 요청 없이 종료 코드 2였다. 정상 메타데이터는 두 코드 모두 비교 기준 tarball 요청까지 가서 합성 차단으로 분석 실패가 됐다. 실제 registry 접근, tarball 다운로드, 압축 해제, feature-extractor 설치는 하지 않았다.
+- 제한(이번에 고치지 않음): 고정 feature-extractor의 다운로드에는 packument·tarball 크기, 압축 해제 크기, 멤버 수, 전체 시간의 상한이 없다. `loader.py`의 `timeout=30`은 연결과 읽기에 각각 걸리는 소켓 단위 제한으로, 그 시간 동안 받은 바이트가 없을 때만 끝나므로 전체 다운로드 시간의 상한이 아니다(requests 문서). PR #7 리뷰는 65 KB tgz 안의 64 MiB 파일이 그대로 풀리는 것을 확인했다고 보고했다. 이번 작업에서 대용량 실험은 다시 하지 않았다. `check`는 임의의 패키지 이름을 받으므로 `scan --extract`보다 이 노출이 크다.
+
 ## 2026-11-04: check 교차 리뷰 후속(메타데이터 재사용, 버전 검사, 배포 시각)
 
 - 아래 기록의 "메타데이터를 한 번 받는다"는 FakeBackend 기준이었다. 실제 `FeatureExtractorBackend.extract()`는 빈 `RegistrySnapshotSource`를 새로 만들어 registry를 다시 조회했고, old/new snapshot이 요청을 만들 때 검증한 문서와 다른 문서를 쓸 수 있었다(PR 전 교차 리뷰 차단 1). 이제 받은 메타데이터를 그 source의 캐시에 넣어 old/new snapshot도 같은 문서를 쓴다. 고정 feature-extractor(c24761d)에는 공개 API가 없어 캐시 속성(`_packument_cache`)에 의존하며, 속성이 없으면 다시 조회하지 않고 분석 실패로 둔다. `scan --extract`도 패키지당 조회가 한 번으로 줄었다.

@@ -112,6 +112,17 @@ def _object(value: object, label: str) -> dict:
     return value
 
 
+def _dist(packument: dict, name: str, version: str) -> dict:
+    """dist of a compared version. feature-extractor c24761d reads dist.tarball without type
+    checks (loader.py:100), so a malformed manifest must fail before it is called."""
+    manifest = packument["versions"][version]
+    if not isinstance(manifest, dict):
+        raise GuardError(f"Registry metadata of {name}@{version} is not an object")
+    if not isinstance(manifest.get("dist"), dict):
+        raise GuardError(f"Registry metadata of {name}@{version} has no dist object")
+    return manifest["dist"]
+
+
 def _dependencies(manifest: dict) -> set[str]:
     return {d for field in DEPENDENCY_FIELDS for d in _object(manifest.get(field), field)}
 
@@ -184,10 +195,9 @@ class ExtractorAnalyzer:
         packument = self.packument(name)
         local = self.local_sources.get((name, new))
         if local is None:
-            manifest = (packument.get("versions") or {}).get(new)
-            if manifest is None:
+            if (packument.get("versions") or {}).get(new) is None:
                 raise GuardError(f"Registry no longer serves {name}@{new}")
-            registry = _integrity_tokens((manifest.get("dist") or {}).get("integrity"))
+            registry = _integrity_tokens(_dist(packument, name, new).get("integrity"))
             if not registry & _integrity_tokens(change["after"]["integrity"]):
                 raise GuardError("Lockfile integrity does not match the registry integrity")
         baseline = select_baseline(packument, new)
@@ -197,6 +207,7 @@ class ExtractorAnalyzer:
                 "reason": "no_baseline",
                 "error": f"No earlier stable version of {name} to compare {new} with",
             }
+        _dist(packument, name, baseline.version)
         features, new_json = self.backend.extract(name, baseline.version, new, packument, local)
         old_json = packument["versions"][baseline.version]
         return {

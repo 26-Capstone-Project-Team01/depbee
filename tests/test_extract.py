@@ -188,6 +188,21 @@ class ExtractorAnalyzerTests(Fixture):
         analyzer.analyze(self.request())
         self.assertEqual(calls, [(1, 1, "example")])
 
+    def test_malformed_compared_manifest_fails_before_extract(self):
+        for version in ("1.0.1", "1.1.0"):  # baseline, new
+            for label, value in (("manifest", "x"), ("dist", ["tarball"])):
+                with self.subTest(version=version, label=label):
+                    doc = copy.deepcopy(self.doc)
+                    if label == "manifest":
+                        doc["versions"][version] = value
+                    else:
+                        doc["versions"][version]["dist"] = value
+                    artifact, backend = self.run_analyzer(FakeBackend(doc, new_json=self.new_json))
+                    row = artifact["results"][0]
+                    self.assertEqual(row["status"], "failed")
+                    self.assertIn(f"Registry metadata of example@{version}", row["error"])
+                    self.assertEqual(backend.calls, [])
+
     def test_unused_local_copy_is_an_error(self):
         with self.assertRaises(GuardError):
             self.run_analyzer(local={("example", "9.9.9"): self.root})
@@ -277,7 +292,9 @@ class FetchError(Exception):
 
 class CachingRegistrySource:
     """Stand-in for feature-extractor c24761d RegistrySnapshotSource: it fetches a packument
-    only when its _packument_cache has none for the package, and reuses it for old and new."""
+    only when its _packument_cache has none for the package, and reuses it for old and new.
+    With include_source it reads dist.tarball as c24761d loader.py:55-56,100 do, unchecked,
+    before the download, which is left out here."""
 
     def __init__(self, fetch):
         self._packument_cache = {}
@@ -289,10 +306,34 @@ class CachingRegistrySource:
         if packument is None:
             packument = self._packument_cache[package] = self.fetch(package)
         self.snapshots.append(packument)
-        return SimpleNamespace(package_json=packument["versions"][version])
+        package_json = packument.get("versions", {}).get(version)
+        if include_source:
+            package_json.get("dist", {}).get("tarball")
+        return SimpleNamespace(package_json=package_json)
 
     def close(self):
         pass
+
+
+def stand_in_backend(fetch, sources):
+    """Real FeatureExtractorBackend; only feature-extractor's pieces are stand-ins. build_row
+    asks for source, as c24761d build_row does for the default (obfuscation) extractors."""
+
+    def registry_source():
+        sources.append(CachingRegistrySource(fetch))
+        return sources[-1]
+
+    def build_row(name, old, new, label, extractors, *, old_source, new_source):
+        old_source.get_snapshot(name, old, include_source=True)
+        new_source.get_snapshot(name, new, include_source=True)
+        return SimpleNamespace(features={"signal": 0.9, "obfChangedFileCount": 2})
+
+    backend = FeatureExtractorBackend.__new__(FeatureExtractorBackend)
+    backend.errors, backend.version = (), "stand-in"
+    backend.fetch_packument = fetch
+    backend._build_row, backend._extractors = build_row, []
+    backend._registry_source, backend._local_source = registry_source, None
+    return backend
 
 
 class PackageCheckTests(Fixture):
@@ -556,23 +597,8 @@ class PackageCheckTests(Fixture):
         self.assertEqual(lockfile["scope"], LOCKFILE_SCOPE)
 
     def test_real_backend_snapshots_reuse_the_checked_packument(self):
-        # Real FeatureExtractorBackend.extract; only feature-extractor's pieces are stand-ins.
         sources = []
-
-        def registry_source():
-            sources.append(CachingRegistrySource(self.backend.fetch_packument))
-            return sources[-1]
-
-        def build_row(name, old, new, label, extractors, *, old_source, new_source):
-            old_source.get_snapshot(name, old)
-            new_source.get_snapshot(name, new)
-            return SimpleNamespace(features={"signal": 0.9, "obfChangedFileCount": 2})
-
-        backend = FeatureExtractorBackend.__new__(FeatureExtractorBackend)
-        backend.errors, backend.version = (), "stand-in"
-        backend.fetch_packument = self.backend.fetch_packument
-        backend._build_row, backend._extractors = build_row, []
-        backend._registry_source, backend._local_source = registry_source, None
+        backend = stand_in_backend(self.backend.fetch_packument, sources)
         loader = mock.patch(
             "depbee.analysis.extractor.FeatureExtractorBackend", return_value=backend
         )
@@ -589,6 +615,32 @@ class PackageCheckTests(Fixture):
         self.assertEqual(row["reason"], "analysis_failed")
         self.assertIn("packument cache", row["detail"])
         self.assertEqual(self.backend.fetched, ["example", "example"])  # analyzer only
+
+    def test_malformed_baseline_stops_before_the_pinned_loader(self):
+        # Before the check, c24761d loader.py:100 raised AttributeError: a traceback and exit 1.
+        def baseline_dist_list(doc):
+            doc["versions"]["1.0.1"]["dist"] = [doc["versions"]["1.0.1"]["dist"]]
+
+        for label, edit, detail in (
+            ("baseline manifest is a string", lambda d: d["versions"].update({"1.0.1": "x"}),
+             "Registry metadata of example@1.0.1 is not an object"),
+            ("baseline dist is a list", baseline_dist_list,
+             "Registry metadata of example@1.0.1 has no dist object"),
+        ):  # fmt: skip
+            with self.subTest(label):
+                self.backend.doc = copy.deepcopy(self.doc)
+                edit(self.backend.doc)
+                sources = []
+                backend = stand_in_backend(self.backend.fetch_packument, sources)
+                with mock.patch(
+                    "depbee.analysis.extractor.FeatureExtractorBackend", return_value=backend
+                ):
+                    code, out, err = self.run_check("example@1.1.0", "--format", "json")
+                report = json.loads(out)
+                self.assertEqual((code, err, report["exit_code"]), (2, "", 2))
+                row = report["results"][0]
+                self.assertEqual((row["reason"], row["detail"]), ("analysis_failed", detail))
+                self.assertEqual(sources, [])  # feature-extractor was not called
 
     def test_bad_publish_times_end_with_exit_2_not_a_traceback(self):
         for label, times in (
