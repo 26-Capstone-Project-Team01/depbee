@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from depbee.analysis.artifact import ArtifactAnalyzer
-from depbee.cli import main
+from depbee.cli import _progress, main
 from depbee.contracts import GuardError, finite_number, read_json
 from depbee.inference.lightgbm import LightGBMPredictor
 from depbee.inputs.npm import build_request
@@ -246,6 +246,22 @@ class ServiceTests(Fixture):
             {("example", "1.1.0"): (self.root / "src").resolve()}, progress=progress
         )
         self.assertEqual(report["results"][0]["reason"], "model_missing")
+
+    def test_cli_extract_progress_by_format(self):
+        # Real cli.main and scan_project; only the extractor is replaced (nothing is extracted).
+        for fmt, progress in (("text", _progress), ("json", None)):
+            err = io.StringIO()
+            with (
+                self.subTest(format=fmt),
+                mock.patch("depbee.analysis.extractor.ExtractorAnalyzer") as extractor,
+            ):
+                extractor.return_value.analyze.return_value = self.artifact()
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                    code = main(["scan", str(self.project), "--base-lock", str(self.base),
+                                 "--extract", "--format", fmt])
+                extractor.assert_called_once_with({}, progress=progress)
+                # model_missing report (exit 2) with an empty stderr, not the error path.
+                self.assertEqual((code, err.getvalue()), (2, ""))
 
 
 @unittest.skipUnless(importlib.util.find_spec("lightgbm"), "Install .[ml] for native integration tests")

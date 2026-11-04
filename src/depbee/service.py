@@ -57,7 +57,12 @@ def scan_project(
     analysis: trusted precomputed analysis JSON. extract: run feature-extractor instead.
     local_sources: NAME@VERSION=DIR specs under local_root (extract only).
     progress: called per extracted package; the caller decides how to show it.
+    With extract=False, progress and local_root are ignored; any local_sources raise GuardError.
+
+    Raises GuardError, OSError, ValueError or RecursionError for bad options or invalid inputs
+    (lockfiles, analysis, model); the caller maps them to its error output.
     """
+    # Intended error priority: option conflict before reading lockfiles, local sources after.
     if analysis and extract:
         raise GuardError("Use either an analysis file or extraction, not both")
     request = plan_project(project, base_lock)
