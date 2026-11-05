@@ -5,6 +5,7 @@ few synthetic bytes; nothing in them is executed.
 """
 
 import base64
+import contextlib
 import gzip
 import hashlib
 import http.client
@@ -24,16 +25,23 @@ from depbee.analysis.registry import RegistryError
 
 def tgz(files, *, symlink=None):
     """A deterministic .tgz of {member name: bytes}; symlink=(name, target) adds a link."""
+    links = [(symlink[0], tarfile.SYMTYPE, symlink[1])] if symlink else []
+    return linked_tgz(*files.items(), *links)
+
+
+def linked_tgz(*entries):
+    """A deterministic .tgz of entries in order, names may repeat: (name, bytes) is a file and
+    (name, tarfile.SYMTYPE or tarfile.LNKTYPE, link name) a link."""
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w", format=tarfile.PAX_FORMAT) as archive:
-        for name, data in files.items():
+        for name, *rest in entries:
             info = tarfile.TarInfo(name)
-            info.size, info.mtime = len(data), 0
-            archive.addfile(info, io.BytesIO(data))
-        if symlink:
-            info = tarfile.TarInfo(symlink[0])
-            info.type, info.linkname = tarfile.SYMTYPE, symlink[1]
-            archive.addfile(info)
+            if len(rest) == 2:
+                info.type, info.linkname = rest
+                archive.addfile(info)
+            else:
+                info.size, info.mtime = len(rest[0]), 0
+                archive.addfile(info, io.BytesIO(rest[0]))
     return gzip.compress(raw.getvalue(), mtime=0)
 
 
@@ -216,9 +224,16 @@ class IntegrityTests(unittest.TestCase):
 
 class UnpackTests(Fixture):
     def unpack(self, data):
-        target = self.root / f"unpack-{len(list(self.root.iterdir()))}"
-        target.mkdir()
-        return registry.unpack(data, target, "x tarball")
+        self.target = self.root / f"unpack-{len(list(self.root.iterdir()))}"
+        self.target.mkdir()
+        return registry.unpack(data, self.target, "x tarball")
+
+    def unpacked(self):
+        """{name: size} of every file the last unpack left; no link may be left."""
+        paths = list(self.target.rglob("*"))
+        self.assertEqual([p for p in paths if p.is_symlink()], [])
+        return {p.relative_to(self.target).as_posix(): p.stat().st_size
+                for p in paths if p.is_file()}  # fmt: skip
 
     def test_package_root_like_feature_extractor(self):
         root = self.unpack(package_tgz("example", "1.0.0"))
@@ -256,6 +271,64 @@ class UnpackTests(Fixture):
             with self.subTest(label), self.assertRaises(RegistryError):
                 self.unpack(data)
         self.assertFalse((self.root / "evil.txt").exists())
+
+    def test_symbolic_links_are_not_unpacked(self):
+        # Revy major 1: where os.symlink fails (Windows without the privilege) tarfile copied
+        # each link's target, which the size limit did not count; npm and feature-extractor's
+        # source walk read no symbolic link.
+        big, json_ = ("package/big.bin", bytes(64 * 1024)), ("package/package.json", b"{}")
+        copies = [(f"package/link{i}", tarfile.SYMTYPE, "big.bin") for i in range(8)]
+        cycle = [("package/a", tarfile.SYMTYPE, "b"), ("package/b", tarfile.SYMTYPE, "a")]
+        for label, links in (("copies over the limit", copies), ("a cycle", cycle)):
+            with (
+                self.subTest(label),
+                mock.patch.object(registry, "MAX_UNPACKED_BYTES", 128 * 1024),
+                mock.patch("os.symlink", side_effect=OSError("no privilege")) as symlink,
+            ):
+                self.unpack(linked_tgz(json_, big, *links))
+                expected = {"package/package.json": 2, "package/big.bin": 65536}
+                self.assertEqual(self.unpacked(), expected)
+                symlink.assert_not_called()
+        with self.assertRaisesRegex(RegistryError, "Cannot unpack"):  # still the "data" filter
+            self.unpack(linked_tgz(json_, ("package/up", tarfile.SYMTYPE, "../../evil")))
+
+    def test_hard_links_count_as_the_file_they_copy(self):
+        # Revy major 1: a hard link is unpacked (os.link, or a copy of its target where that
+        # fails), so it counts as the target: the latest earlier member of that name.
+        link = tarfile.LNKTYPE
+        json_, f = ("package/package.json", b"{}"), "package/f"
+        cap = mock.patch.object(registry, "MAX_UNPACKED_BYTES", 128 * 1024)
+        no_link = mock.patch("os.link", side_effect=OSError("no hard links here"))
+        refused = {
+            "copies over the limit": [(f, bytes(64 * 1024)), *((f"package/c{i}", link, f)
+                                                              for i in range(8))],
+            "a chain": [(f, bytes(40 * 1024)), ("package/h1", link, f),
+                        ("package/h2", link, "package/h1"), ("package/h3", link, "package/h2")],
+            "the earlier of two names": [(f, bytes(100 * 1024)), ("package/h", link, f), (f, b"x")],
+        }  # fmt: skip
+        for label, entries in refused.items():
+            with self.subTest(label), cap, no_link:
+                with self.assertRaisesRegex(RegistryError, "unpacks to more than 131072 bytes"):
+                    self.unpack(linked_tgz(json_, *entries))
+                self.assertEqual(self.unpacked(), {})  # refused before anything is written
+        within = [(f, bytes(40 * 1024)), ("package/h1", link, f), ("package/h2", link, "package/h1"),
+                  (f, b"x"), ("package/h3", link, f)]  # fmt: skip
+        for label, patch in (("os.link", contextlib.nullcontext()), ("copies", no_link)):
+            with self.subTest(label), cap, patch:
+                self.unpack(linked_tgz(json_, *within))
+                files = self.unpacked()
+                self.assertEqual(files["package/h3"], 1)  # the latest f before it
+                self.assertLessEqual(sum(files.values()), 128 * 1024)
+        # A hard link to anything but a file is left out, as are its symbolic link targets.
+        skipped = [("package/s", tarfile.SYMTYPE, "f"), ("package/d", tarfile.DIRTYPE, ""),
+                   ("package/to-link", link, "package/s"), ("package/to-dir", link, "package/d"),
+                   ("package/to-nothing", link, "package/none")]  # fmt: skip
+        with cap, no_link:
+            self.unpack(linked_tgz(json_, (f, bytes(100 * 1024)), *skipped))
+        self.assertEqual(self.unpacked(), {"package/package.json": 2, f: 100 * 1024})
+        for target in ("../../evil", "/etc/passwd"):  # still the "data" filter
+            with self.subTest(target), self.assertRaisesRegex(RegistryError, "Cannot unpack"):
+                self.unpack(linked_tgz(json_, ("package/out", link, target)))
 
 
 if __name__ == "__main__":

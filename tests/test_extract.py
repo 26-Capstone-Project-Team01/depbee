@@ -11,13 +11,14 @@ import importlib.util
 import io
 import json
 import os
+import tarfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from test_contract import ExplainingPredictor
-from test_registry import FakeRegistry, Response, serve_tarballs, sri, tarball_url, tgz
+from test_registry import FakeRegistry, Response, linked_tgz, serve_tarballs, sri, tarball_url, tgz
 from test_workflow import FakePredictor, Fixture, package
 
 from depbee.analysis import registry
@@ -714,6 +715,32 @@ class PackageCheckTests(Fixture):
             row = check_package("example", "1.1.0", no_cache=True)["results"][0]
         self.assertEqual(row["reason"], "analysis_failed")
         self.assertEqual(row["detail"], "example@1.0.1 tarball does not match its sha512 integrity")
+
+    def test_hard_links_over_the_unpacked_limit_end_with_exit_2(self):
+        # Revy major 1 through check: where os.link fails each hard link is a copy of its target.
+        served = serve_tarballs(self.doc, "example")
+        manifest = json.dumps({"name": "example", "version": "1.1.0"}).encode()
+        data = linked_tgz(("package/package.json", manifest), ("package/f", bytes(64 * 1024)),
+                          *((f"package/c{i}", tarfile.LNKTYPE, "package/f") for i in range(8)))
+        self.doc["versions"]["1.1.0"]["dist"]["integrity"] = sri(data)
+        served.files[tarball_url("example", "1.1.0")] = data
+        backend = stand_in_backend(self.backend.fetch_packument, [])
+        with mock.patch(
+            "depbee.analysis.extractor.FeatureExtractorBackend", return_value=backend
+        ), mock.patch("depbee.analysis.registry._open", served), mock.patch.object(
+            registry, "MAX_UNPACKED_BYTES", 128 * 1024
+        ), mock.patch("os.link", side_effect=OSError("no hard links here")):
+            code, out, err = self.run_check(
+                "example@1.1.0", "--model-dir", "m", "--format", "json", "--no-cache",
+                model=PackagePredictor(),
+            )  # fmt: skip
+        row = json.loads(out)["results"][0]
+        detail = "example@1.1.0 tarball unpacks to more than 131072 bytes"
+        self.assertEqual((code, err, row.get("reason"), row.get("detail")),
+                         (2, "", "analysis_failed", detail))  # fmt: skip
+        left = [p for p in self.root.rglob("*") if p.name.startswith("depbee_src_")
+                or p.is_file() and p.stat().st_size > 64 * 1024]  # fmt: skip
+        self.assertEqual(left, [])  # no work folder, no large file
 
     def test_malformed_baseline_stops_before_the_pinned_loader(self):
         # Before the check, c24761d loader.py:100 raised AttributeError: a traceback and exit 1.

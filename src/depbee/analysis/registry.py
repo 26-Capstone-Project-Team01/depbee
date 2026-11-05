@@ -11,7 +11,8 @@ or member limits. depbee therefore downloads packuments and tarballs itself:
 - tarball bytes must match the version's ``dist.integrity`` before anything is unpacked, using
   the strongest listed algorithm as npm does (``dist.shasum`` if there is no integrity);
 - unpacking stops at limits on the unpacked size and member count and uses the tarfile "data"
-  filter and package-root rule of feature-extractor's loader, so the source tree is the same.
+  filter and package-root rule of feature-extractor's loader. Symbolic links are not unpacked
+  (npm installs none, feature-extractor reads none) and a hard link counts as the file it copies.
 
 The limits are constants, not options; docs/validation.md records why each value was chosen.
 """
@@ -22,6 +23,7 @@ import hashlib
 import http.client
 import io
 import json
+import os
 import tarfile
 import urllib.error
 import urllib.request
@@ -139,6 +141,14 @@ def tarball(name: str, version: str, dist: dict) -> bytes:
     return data
 
 
+def _data_without_symlinks(member: tarfile.TarInfo, path: str) -> tarfile.TarInfo | None:
+    """feature-extractor's "data" filter (loader.py:112-114), which refuses links that leave the
+    folder, then leaves out symbolic links. Where os.symlink fails (Windows without the
+    privilege) tarfile would copy a link's target instead, bytes the size limit never counted."""
+    member = tarfile.data_filter(member, path)
+    return None if member.issym() else member
+
+
 def unpack(data: bytes, directory: Path, what: str) -> Path:
     """Unpack a checked .tgz into directory within the limits and return its package root."""
     try:
@@ -150,16 +160,26 @@ def unpack(data: bytes, directory: Path, what: str) -> Path:
         raise RegistryError(f"{what} unpacks to more than {MAX_UNPACKED_BYTES} bytes")
     try:
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
-            members, declared = [], 0
-            for member in archive:
-                members.append(member)
-                declared += max(member.size, 0)  # a sparse member can declare more than it holds
-                if len(members) > MAX_MEMBERS:
+            members, declared, files = [], 0, {}  # files: size of each name, None if no file
+            for count, member in enumerate(archive, 1):
+                if count > MAX_MEMBERS:
                     raise RegistryError(f"{what} has more than {MAX_MEMBERS} members")
+                name = os.path.normpath(member.name)
+                if member.islnk():
+                    # Where os.link fails tarfile copies the latest earlier member of that name
+                    # (TarFile._find_link_target): count that file, leave out links to anything else.
+                    size = files[name] = files.get(os.path.normpath(member.linkname))
+                    if size is None:
+                        tarfile.data_filter(member, str(directory))  # links out are still refused
+                        continue
+                else:
+                    size = max(member.size, 0)  # a sparse member can declare more than it holds
+                    files[name] = size if member.isreg() else None
+                members.append(member)
+                declared += size
                 if declared > MAX_UNPACKED_BYTES:
                     raise RegistryError(f"{what} unpacks to more than {MAX_UNPACKED_BYTES} bytes")
-            # The filter feature-extractor uses (loader.py:112-114) against path traversal.
-            archive.extractall(directory, members=members, filter="data")
+            archive.extractall(directory, members=members, filter=_data_without_symlinks)
     except (tarfile.TarError, OSError) as exc:
         raise RegistryError(f"Cannot unpack {what}: {exc}") from exc
     # feature-extractor's _locate_package_root (loader.py:123-142): the folder or its one child

@@ -1,5 +1,11 @@
 # 검증 기록
 
+## 2026-11-05: tar 링크로 압축 해제 상한을 넘던 경계(PR #8 Revy major 1)
+
+- 리뷰가 Windows에서 symbolic link 권한이 없을 때 선언 크기 1 MiB인 tarball이 디스크에 약 53.5 MB를 쓰는 것을 재현했다. `unpack`은 member가 선언한 크기만 더했는데 링크 member의 크기는 0이고, tarfile은 링크를 만들 수 없으면 대상 member의 내용을 복사하므로 그 복사본이 상한에 들지 않았다. hard link도 `os.link`가 실패하면 같았다.
+- 처리 정책과 이유, 정상 입력 영향은 아래 "registry 다운로드" 기록의 상한 절("링크 처리")에 적었다. symbolic link는 "data" filter 검사 뒤 풀지 않고, hard link는 tarfile이 복사할 대상의 크기로 센다.
+- 테스트 152개 통과(skip 없음), `ruff check` 통과. 새 회귀 3개(상한 128 KiB, 합성 tarball): `os.symlink`를 실패시켜도 64 KiB 파일을 가리키는 symbolic link 8개와 순환하는 두 링크가 풀리지 않고 `os.symlink`가 불리지 않음, 폴더 밖 symbolic link는 전과 같이 거부. `os.link`를 실패시킨 hard link 복사 8개, 연쇄, 같은 이름 두 member 중 링크 앞의 큰 것이 상한을 넘으면 `RegistryError`로 거부하고 아무 파일도 쓰지 않음, 상한 안의 연쇄와 중복 이름은 `os.link`와 복사 두 경우 모두 풀리고 링크가 앞쪽 마지막 member의 내용을 가짐, 파일이 아닌 대상(symbolic link, 디렉터리, 없는 이름)의 hard link는 생략, 폴더 밖·절대 경로 hard link는 거부. `check`에서 상한을 넘는 hard link tarball은 `analysis_failed`·종료 코드 2이고 작업 폴더와 큰 파일이 남지 않음. 이 회귀만 수정 전 코드(`4aa005f`)에 붙이면 실패 5개와 오류 2개다: 링크 복사본이 풀림(symbolic link 576 KiB), hard link 거부 없음, 순환 링크에서 RecursionError, 없는 이름을 가리키는 hard link에서 KeyError(`RegistryError`가 아님), `check`는 판정까지 가서 종료 코드 1.
+
 ## 2026-11-05: 변경마다 시작하는 예산과 캐시 게시 경계(PR 전 교차 리뷰 03 M1 잔여)
 
 - 리뷰가 두 경계를 재현했다. (A) 완료 결과 확인 뒤에 캐시용 모델 입력 검사와 `cache.store`가 실행돼, 예산 1초에 그 단계만 1.3초 늦어도 캐시 항목이 쓰이고 `passed`·종료 코드 0이었다. (B) 예산은 첫 자식 단계에서 시작했기 때문에, 같은 패키지의 두 번째 위치처럼 메타데이터와 feature를 모두 재사용하는 변경에는 deadline이 없어 늦은 캐시 읽기도 통과했다.
@@ -59,9 +65,14 @@
 | --- | --- | --- |
 | 메타데이터 크기 | 128 MiB | 로컬에 보관한 packument 3,146개(baseline 점검 때 받은 캐시)의 중앙값 3 KB, p99 0.43 MB, 최대 1.49 MB. 버전이 수천 개인 대형 패키지가 거의 없는 표본이라 실제 최대치를 대표하지 못해 넉넉히 잡았다. JSON을 메모리에 올리므로 최악의 메모리 사용은 이 값의 몇 배다. |
 | tarball 크기 | 128 MiB | 3차 수집 때 받은 원본 tarball 119개의 최대 28.8 MB(p99 11.9 MB)의 약 4배 |
-| 풀린 크기 | 512 MiB | pair archive의 버전 트리 2,334개(Git tree의 파일 크기 합)의 최대 261 MB(p99 84 MB)의 약 2배. 압축을 이 크기 넘게 풀지 않고, member가 선언한 크기의 합도 같은 상한으로 본다. |
+| 풀린 크기 | 512 MiB | pair archive의 버전 트리 2,334개(Git tree의 파일 크기 합)의 최대 261 MB(p99 84 MB)의 약 2배. 압축을 이 크기 넘게 풀지 않고, member가 선언한 크기의 합도 같은 상한으로 본다(링크는 표 아래 "링크 처리"). |
 | 파일 수 | 20,000 | 같은 표본의 최대 9,152개(p99 2,502개)의 약 2배 |
 | 다운로드 하나의 벽시계 시간(이후 변경 하나의 예산 300초로 바뀜, 위 기록) | 120초 | 관측한 최대 tarball 28.8 MB를 1 MB/s에서 약 29초에 받는다. 128 MiB tarball은 약 1.1 MB/s 이상이어야 이 안에 받는다. 소켓 동작별 30초 제한은 feature-extractor와 같다. |
+
+- 링크 처리(PR #8 Revy major 1, 위 기록에서 추가). 선언 크기의 합은 링크가 쓰는 바이트를 세지 못했다. tarfile은 링크를 만들 수 없으면(Windows에서 symbolic link 권한이 없을 때, hard link를 지원하지 않는 파일 시스템) 대상 member를 복사한다.
+  - symbolic link는 풀지 않는다. "data" filter를 먼저 적용하므로 폴더 밖이나 절대 경로를 가리키는 링크는 전과 같이 거부하고, 통과한 symbolic link만 건너뛴다. 이유: npm은 tarball의 링크를 설치하지 않는다(이 PC의 npm 11.6.1에 든 pacote 21.0.3 `lib/fetcher.js`의 tar filter가 `SymbolicLink`·`Link` 항목을 버린다). 고정 feature-extractor도 소스 파일을 모을 때 symbolic link를 건너뛴다(`core/source_files.py`의 `_walk_source_paths`). 그래서 링크를 만들 수 있는 OS에서는 feature에 쓰이지 않았고, 링크를 만들 수 없는 Windows에서만 복사본이 일반 파일로 읽혀 OS마다 feature가 달라질 수 있었다. 대상 크기를 더하는 방식은 tarfile의 symbolic link 대상 해석(아카이브 전체에서 찾기, 연쇄)을 따라 해야 하고, 서로를 가리키는 링크는 링크를 만들 수 없을 때 tarfile 자체가 RecursionError로 끝났다.
+  - hard link는 대상의 크기로 센다. tarfile은 hard link의 대상을 그 링크보다 앞에 있는 member 중 경로를 정규화한 이름이 같은 마지막 것으로 찾고(`TarFile._find_link_target`), `os.link`가 실패하면 그 member를 복사한다. depbee는 링크마다 그 member의 크기를 더한다(대상이 hard link이면 그 링크가 센 크기). `os.link`가 성공해 디스크를 더 쓰지 않을 때도 같은 값을 세므로 OS와 관계없이 같은 판정이 난다. 일반 파일이나 그런 hard link가 아닌 것(symbolic link, 디렉터리, 없는 이름)을 가리키는 hard link는 풀지 않고, 폴더 밖이나 절대 경로를 가리키면 "data" filter로 거부한다. hard link는 OS와 관계없이 대상 내용을 가진 파일이 되고 feature-extractor가 일반 파일로 읽으므로 남긴다.
+  - 정상 입력 영향: 링크가 없는 tarball의 처리는 그대로다. 링크가 든 tarball은 symbolic link 없는 트리로 분석하고, package.json이 symbolic link이면 패키지 루트를 찾지 못해 분석 실패다. hard link는 대상 크기만큼 상한에 더 가까워진다. 실제 registry tarball에 링크가 얼마나 있는지는 확인하지 않았다.
 
 - 시간 범위의 구분(이 기록 당시의 구현이며, 위 "변경 하나의 전체 시간 예산" 기록에서 바꿨다):
   - 다운로드: 메타데이터 하나, tarball 하나가 각각 120초다. 요청을 스레드에서 실행하고 depbee는 최대 120초만 기다리므로 이름 조회, 연결, TLS, 헤더, redirect, 본문이 모두 이 안에 든다. 소켓 제한만으로는 데이터가 조금씩 계속 오면 이 시간이 끝나지 않는다. 스레드도 읽기(한 번에 소켓 읽기 하나인 `read1`)마다, 본문 끝에서도 시간을 확인하고 멈춘다. 시간이 지났을 때 아직 돌던 스레드는 버려 둔다. 본문을 받던 스레드는 다음 읽기에서 멈추고(읽기 하나는 데이터 없이 최대 30초), 연결·TLS·헤더 단계에서 데이터가 조금씩 계속 오면 그 단계가 끝나거나 프로세스가 끝날 때까지 남는다(이 경우의 스레드 수명은 확인하지 않았다). 한 항목은 메타데이터 하나와 tarball 두 개를 받으므로 다운로드만으로 최대 약 360초다.
