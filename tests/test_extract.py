@@ -5,6 +5,7 @@ No network access and no package code: feature-extractor is replaced by FakeBack
 
 import contextlib
 import copy
+import dataclasses
 import hashlib
 import importlib.util
 import io
@@ -16,8 +17,10 @@ from types import SimpleNamespace
 from unittest import mock
 
 from test_contract import ExplainingPredictor
+from test_registry import Response, serve_tarballs, tarball_url
 from test_workflow import FakePredictor, Fixture, package
 
+from depbee.analysis import registry
 from depbee.analysis.baseline import select_baseline
 from depbee.analysis.extractor import ExtractorAnalyzer, FeatureExtractorBackend
 from depbee.cli import _print_text, main
@@ -239,6 +242,41 @@ class ExtractorAnalyzerTests(Fixture):
                                  r"(is not a JSON object|lacks versions or time objects)\Z")
                 self.assertEqual(backend.calls, [])
 
+    def test_lockfile_scan_unpacks_only_checked_registry_tarballs(self):
+        served = serve_tarballs(self.doc, "example")
+        self.new["packages"]["node_modules/example"]["integrity"] = (
+            self.doc["versions"]["1.1.0"]["dist"]["integrity"]
+        )
+        self.save_locks()
+        baseline_url = tarball_url("example", "1.0.1")
+        good = copy.deepcopy(served.files)
+
+        def other_host(doc):
+            doc["versions"]["1.0.1"]["dist"]["tarball"] = "https://evil.test/example-1.0.1.tgz"
+
+        def redirected(_doc):
+            served.files[baseline_url] = Response(good[baseline_url], "https://evil.test/x")
+
+        def tampered(_doc):
+            served.files[tarball_url("example", "1.1.0")] += b"x"
+
+        for label, edit, error, opened in (
+            ("checked", lambda d: None, None, 2),
+            ("baseline URL on another host", other_host, "tarball URL is not", 0),
+            ("redirected off the registry", redirected, "outside https://registry.npmjs.org", 1),
+            ("new version tarball tampered", tampered, "does not match its sha512 integrity", 2),
+        ):  # fmt: skip
+            with self.subTest(label):
+                doc, served.files, served.opened = copy.deepcopy(self.doc), dict(good), []
+                edit(doc)
+                backend = stand_in_backend(FakeBackend(doc).fetch_packument, [])
+                with mock.patch("depbee.analysis.registry._open", served):
+                    row = ExtractorAnalyzer(backend=backend).analyze(self.request())["results"][0]
+                self.assertEqual(row["status"], "failed" if error else "complete")
+                if error:
+                    self.assertIn(error, row["error"])
+                self.assertEqual(len(served.opened), opened)
+
     def test_unused_local_copy_is_an_error(self):
         with self.assertRaises(GuardError):
             self.run_analyzer(local={("example", "9.9.9"): self.root})
@@ -326,49 +364,36 @@ class FetchError(Exception):
     pass
 
 
-class CachingRegistrySource:
-    """Stand-in for feature-extractor c24761d RegistrySnapshotSource: it fetches a packument
-    only when its _packument_cache has none for the package, and reuses it for old and new.
-    With include_source it reads dist.tarball as c24761d loader.py:55-56,100 do, unchecked,
-    before the download, which is left out here."""
+@dataclasses.dataclass(frozen=True)
+class Snapshot:
+    """Stand-in for feature-extractor's PackageVersionSnapshot, also a frozen dataclass."""
 
-    def __init__(self, fetch):
-        self._packument_cache = {}
-        self.fetch = fetch
-        self.snapshots = []
-
-    def get_snapshot(self, package, version, *, include_source=False):
-        packument = self._packument_cache.get(package)
-        if packument is None:
-            packument = self._packument_cache[package] = self.fetch(package)
-        self.snapshots.append(packument)
-        package_json = packument.get("versions", {}).get(version)
-        if include_source:
-            package_json.get("dist", {}).get("tarball")
-        return SimpleNamespace(package_json=package_json)
-
-    def close(self):
-        pass
+    package_json: dict
+    source_dir: Path | None = None
 
 
-def stand_in_backend(fetch, sources):
-    """Real FeatureExtractorBackend; only feature-extractor's pieces are stand-ins. build_row
-    asks for source, as c24761d build_row does for the default (obfuscation) extractors."""
+def stand_in_backend(fetch, snapshots):
+    """Real FeatureExtractorBackend and depbee download; feature-extractor's build_snapshot and
+    build_row are stand-ins. build_snapshot reads versions[version] as c24761d loader.py:55-56
+    does. build_row asks for source, as c24761d build_row does for the default (obfuscation)
+    extractors, and reads both unpacked package.json files. Tarballs come from a FakeRegistry."""
 
-    def registry_source():
-        sources.append(CachingRegistrySource(fetch))
-        return sources[-1]
+    def build_snapshot(packument, package, version):
+        snapshots.append(packument)
+        return Snapshot(packument["versions"][version])
 
     def build_row(name, old, new, label, extractors, *, old_source, new_source):
-        old_source.get_snapshot(name, old, include_source=True)
-        new_source.get_snapshot(name, new, include_source=True)
+        for source, version in ((old_source, old), (new_source, new)):
+            snapshot = source.get_snapshot(name, version, include_source=True)
+            unpacked = json.loads((snapshot.source_dir / "package.json").read_text("utf-8"))
+            assert unpacked["version"] == version
         return SimpleNamespace(features={"signal": 0.9, "obfChangedFileCount": 2})
 
     backend = FeatureExtractorBackend.__new__(FeatureExtractorBackend)
-    backend.errors, backend.version = (), "stand-in"
+    backend.errors, backend.version = (registry.RegistryError,), "stand-in"
     backend.fetch_packument = fetch
-    backend._build_row, backend._extractors = build_row, []
-    backend._registry_source, backend._local_source = registry_source, None
+    backend._build_snapshot, backend._build_row = build_snapshot, build_row
+    backend._extractors, backend._local_source = [], None
     return backend
 
 
@@ -644,25 +669,26 @@ class PackageCheckTests(Fixture):
         self.assertNotIn("input_kind", lockfile)
         self.assertEqual(lockfile["scope"], LOCKFILE_SCOPE)
 
-    def test_real_backend_snapshots_reuse_the_checked_packument(self):
-        sources = []
-        backend = stand_in_backend(self.backend.fetch_packument, sources)
+    def test_real_backend_uses_the_checked_packument_and_verified_tarballs(self):
+        snapshots = []
+        served = serve_tarballs(self.doc, "example")
+        backend = stand_in_backend(self.backend.fetch_packument, snapshots)
         loader = mock.patch(
             "depbee.analysis.extractor.FeatureExtractorBackend", return_value=backend
         )
-        with loader:
-            report = check_package("example", "1.1.0")
+        with loader, mock.patch("depbee.analysis.registry._open", served):
+            report = check_package("example", "1.1.0", no_cache=True)
         self.assertEqual(report["results"][0]["reason"], "model_missing")  # analysis complete
-        self.assertEqual(self.backend.fetched, ["example"])  # one registry read in total
-        self.assertEqual(len(sources[0].snapshots), 2)  # old and new
-        self.assertTrue(all(doc is self.doc for doc in sources[0].snapshots))
-        # A feature-extractor without that cache fails the analysis instead of fetching again.
-        backend._registry_source = lambda: SimpleNamespace(close=lambda: None)
-        with loader:
-            row = check_package("example", "1.1.0")["results"][0]
+        self.assertEqual(self.backend.fetched, ["example"])  # one metadata read in total
+        self.assertEqual(len(snapshots), 2)  # old and new, both from the checked document
+        self.assertTrue(all(doc is self.doc for doc in snapshots))
+        self.assertEqual(served.opened, [tarball_url("example", v) for v in ("1.0.1", "1.1.0")])
+        # Bytes that do not match the registry integrity are never unpacked.
+        served.files[tarball_url("example", "1.0.1")] += b"tampered"
+        with loader, mock.patch("depbee.analysis.registry._open", served):
+            row = check_package("example", "1.1.0", no_cache=True)["results"][0]
         self.assertEqual(row["reason"], "analysis_failed")
-        self.assertIn("packument cache", row["detail"])
-        self.assertEqual(self.backend.fetched, ["example", "example"])  # analyzer only
+        self.assertEqual(row["detail"], "example@1.0.1 tarball does not match its sha512 integrity")
 
     def test_malformed_baseline_stops_before_the_pinned_loader(self):
         # Before the check, c24761d loader.py:100 raised AttributeError: a traceback and exit 1.
@@ -687,17 +713,17 @@ class PackageCheckTests(Fixture):
             with self.subTest(label):
                 self.backend.doc = copy.deepcopy(self.doc)
                 edit(self.backend.doc)
-                sources = []
-                backend = stand_in_backend(self.backend.fetch_packument, sources)
+                snapshots, served = [], serve_tarballs(copy.deepcopy(self.doc), "example")
+                backend = stand_in_backend(self.backend.fetch_packument, snapshots)
                 with mock.patch(
                     "depbee.analysis.extractor.FeatureExtractorBackend", return_value=backend
-                ):
+                ), mock.patch("depbee.analysis.registry._open", served):
                     code, out, err = self.run_check("example@1.1.0", "--format", "json")
                 report = json.loads(out)
                 self.assertEqual((code, err, report["exit_code"]), (2, "", 2))
                 row = report["results"][0]
                 self.assertEqual((row["reason"], row["detail"]), ("analysis_failed", detail))
-                self.assertEqual(sources, [])  # feature-extractor was not called
+                self.assertEqual((snapshots, served.opened), ([], []))  # nothing called
 
     def test_bad_publish_times_end_with_exit_2_not_a_traceback(self):
         for label, times in (

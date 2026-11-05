@@ -144,8 +144,8 @@ def check_package(
 
     name, version: an exact registry name (scoped or not) and version, checked before any
     network access. The version is compared with its stable predecessor, as in scan --extract.
-    The registry metadata is fetched once and used for both the request and the analysis; its
-    dist.integrity is registry metadata, not a hash of the downloaded tarball.
+    The registry metadata is fetched once and used for both the request and the analysis; the
+    downloaded tarballs are checked against its dist.integrity (analysis.registry).
     model_dir, progress, cache_dir, no_cache: as in scan_project(). The model is loaded before
     the registry is read. The report has the elapsed_seconds and cache_hit of scan --extract.
 

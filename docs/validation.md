@@ -1,5 +1,27 @@
 # 검증 기록
 
+## 2026-11-05: registry 다운로드의 integrity, 주소, 크기·시간 상한(PR #7 후속)
+
+- 고정 feature-extractor(c24761d)의 loader는 받은 tarball을 해시하지 않고, redirect를 제한하지 않으며, 크기·파일 수·전체 시간 상한 없이 받고 풀었다(아래 2026-11-04 기록의 제한). 이제 registry 메타데이터와 tarball은 depbee(`analysis/registry.py`)가 받고, feature-extractor에는 고정 loader의 공개 함수 `build_snapshot()`으로 만든 snapshot과 검사한 tarball을 푼 폴더만 넘긴다. feature-extractor는 registry에 접근하지 않으며, 이전 기록의 비공개 `_packument_cache` 의존도 없어졌다.
+- 받은 tarball 바이트는 풀기 전에 그 버전의 `dist.integrity`와 대조한다. npm(ssri)처럼 나열된 알고리즘 중 가장 강한 것(sha512 → sha384 → sha256 → sha1)으로만 판정하고 그 알고리즘의 값 중 하나가 맞으면 통과한다. integrity가 없으면 옛 `dist.shasum`(sha1)을 쓰고, 둘 다 없으면 분석 실패다. 설치될 버전은 전과 같이 lockfile integrity가 registry 값과 같은 값을 공유해야 한다.
+- 주소: 메타데이터와 tarball 모두 `https://registry.npmjs.org`에서만 받는다. redirect마다 새 주소를 검사하고 마지막 응답 주소도 다시 검사한다. tarball 주소는 비교 기준 버전도 포함해 `https://registry.npmjs.org/<이름>/-/<scope를 뺀 이름>-<버전>.tgz`와 정확히 같아야 한다.
+- 상한값과 근거(코드 상수, CLI 옵션 없음). 표본은 이 작업 공간에 이미 있던 자료이고 파일 크기만 읽었다.
+
+| 상한 | 값 | 근거 |
+| --- | --- | --- |
+| 메타데이터 크기 | 128 MiB | 로컬에 보관한 packument 3,146개(baseline 점검 때 받은 캐시)의 중앙값 3 KB, p99 0.43 MB, 최대 1.49 MB. 버전이 수천 개인 대형 패키지가 거의 없는 표본이라 실제 최대치를 대표하지 못해 넉넉히 잡았다. JSON을 메모리에 올리므로 최악의 메모리 사용은 이 값의 몇 배다. |
+| tarball 크기 | 128 MiB | 3차 수집 때 받은 원본 tarball 119개의 최대 28.8 MB(p99 11.9 MB)의 약 4배 |
+| 풀린 크기 | 512 MiB | pair archive의 버전 트리 2,334개(Git tree의 파일 크기 합)의 최대 261 MB(p99 84 MB)의 약 2배. 압축을 이 크기 넘게 풀지 않고, member가 선언한 크기의 합도 같은 상한으로 본다. |
+| 파일 수 | 20,000 | 같은 표본의 최대 9,152개(p99 2,502개)의 약 2배 |
+| 다운로드 하나의 벽시계 시간 | 120초 | 관측한 최대 tarball 28.8 MB를 1 MB/s에서 약 29초에 받는다. 128 MiB tarball은 약 1.1 MB/s 이상이어야 이 안에 받는다. 소켓 동작별 30초 제한은 feature-extractor와 같다. |
+
+- 시간 범위의 구분:
+  - 다운로드: 메타데이터 하나, tarball 하나가 각각 120초다. 요청을 스레드에서 실행하고 depbee는 최대 120초만 기다리므로 이름 조회, 연결, TLS, 헤더, redirect, 본문이 모두 이 안에 든다. 소켓 제한만으로는 데이터가 조금씩 계속 오면 이 시간이 끝나지 않는다. 스레드도 읽기(한 번에 소켓 읽기 하나인 `read1`)마다, 본문 끝에서도 시간을 확인하고 멈춘다. 시간이 지났을 때 소켓 동작에 걸려 있던 스레드는 버려 두며, 그 동작(데이터 없이 최대 30초)이나 프로세스가 끝날 때 함께 끝난다. 한 항목은 메타데이터 하나와 tarball 두 개를 받으므로 다운로드만으로 최대 약 360초다.
+  - 압축 해제: 시간 상한이 없고 크기와 파일 수 상한만 있다. 합성 측정(Windows 11, NTFS, 실시간 백신 켜짐)에서 512 MiB에 가까운 파일 하나는 1.0초, 16바이트 파일 20,000개는 16.1초 걸렸다.
+  - feature 추출(feature-extractor의 extractor 실행): 시간 상한이 없다.
+- 테스트 128개 통과(skip 없음), `ruff check` 통과. 모두 합성 I/O다(`_open`을 가짜 응답으로 바꿈): 다운로드 시간 상한은 합성 clock으로 본문 끝에서 시간이 지난 경우, 1바이트씩 오는 응답, 늦게 끝난 연결·redirect를 거절하고, 실제 시간 0.3초 상한으로 연결 단계와 본문 읽기에 멈춘 요청을 5초 안에 오류로 끝낸다. 그 밖에 redirect handler와 마지막 주소 재검사, 크기와 `Content-Length`, 전송 오류, integrity 알고리즘 순서와 shasum, 압축 해제의 크기·파일 수·선언 크기 상한, 경로 밖 파일과 링크 거부("data" filter), 패키지 루트 규칙, lockfile 경로와 `check`의 통합(실제 `FeatureExtractorBackend`와 depbee source, feature-extractor 부분만 stand-in)을 확인한다.
+- 확인하지 않은 것: 실제 registry 접근(대형 packument, 실제 redirect, 느린 네트워크), Linux·macOS, 모든 실제 패키지의 tarball 주소 형식(옛 버전에 `http://` 주소가 남아 있으면 그 항목은 분석 실패가 된다).
+
 ## 2026-11-05: lockfile 경로의 registry 메타데이터 형식 검사(PR #7 재검증 후속)
 
 - `scan --extract`에서 packument 자체나 `versions`가 리스트·문자열·숫자·null이거나 `time`이 리스트·문자열·숫자이면 `AttributeError`가 분석기 밖으로 나가 traceback과 종료 코드 1이 될 수 있었다(PR #7 재검증 minor 1). 이제 `ExtractorAnalyzer.packument()`가 받은 메타데이터가 객체이고 그 `versions`·`time`이 객체인지 확인하고, 아니면 `GuardError`로 그 항목을 분석 실패(`incomplete`, 종료 코드 2)로 둔다. `check`에서는 같은 검사가 요청을 만들기 전에 걸려 오류 JSON과 종료 코드 2로 끝난다(`build_package_request`와 같은 규칙). `versions`나 `time`이 아예 없을 때도 전과 같이 분석 실패이고 오류 문구만 바뀐다(전에는 "Registry no longer serves" 또는 "no publish time"). `AttributeError`를 잡는 코드는 넣지 않았다.

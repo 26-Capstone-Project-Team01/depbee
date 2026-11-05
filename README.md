@@ -11,7 +11,7 @@ npm 프로젝트에서 바뀐 의존성 버전을 찾아, 각 버전의 변경�
 | 영역      | 현재 구현 내용                                                                                    | 남은 연결·검증                          |
 | --------- | ------------------------------------------------------------------------------------------------- | --------------------------------------- |
 | 입력 처리 | lockfile v2/v3 비교(기준은 파일·Git 커밋), 직접·중첩 의존성 변경·추가 추출, 변경·요청 ID와 해시. lockfile 없이 registry의 버전 하나(`check`) | 추가 입력 형식                          |
-| 분석      | `--extract`: feature-extractor로 설치될 버전과 그 직전 stable을 비교해 feature·근거 추출, 추출한 feature를 실행 사이에 재사용하는 캐시와 소요 시간 | tarball 자체의 integrity 검증           |
+| 분석      | `--extract`: feature-extractor로 설치될 버전과 그 직전 stable을 비교해 feature·근거 추출, 받은 tarball의 integrity·주소·크기·시간 검사, 추출한 feature를 실행 사이에 재사용하는 캐시와 소요 시간 | 실제 registry에서의 상한값 검증         |
 | 분석 연결 | `--analysis`: 다른 분석기가 만든 JSON의 요청 ID·변경 ID·중복·상태·feature 형식 검증               |                                         |
 | 모델 추론 | native LightGBM 로딩, 모델 해시·이진 분류·feature 이름/순서·자료형 검증, feature별 기여도 계산     | 검증 세트로 정한 임계값 수령            |
 | 판정 조율 | feature 스키마 확인, 임계값 판정, 실패·학습 범위 밖 입력은 `incomplete` 처리                      |                                         |
@@ -33,6 +33,7 @@ src/depbee/
   analysis/extractor.py   # feature-extractor 호출, 근거 정리
   analysis/baseline.py    # 비교 기준 버전(직전 stable) 선정
   analysis/cache.py       # 추출한 feature의 실행 간 캐시
+  analysis/registry.py    # registry 메타데이터·tarball 다운로드와 검사, 압축 해제
   analysis/artifact.py    # 분석 결과 검증, 미리 만든 분석 JSON 연결
   inference/lightgbm.py   # 학습 완료 모델 로딩·검증·추론·기여도
   pipeline.py             # 입력→분석→추론 처리 조율
@@ -96,11 +97,13 @@ Git 명령에는 30초 제한과 출력 크기 상한이 있습니다. 제한을
 `--format markdown`(`scan`, `check`)은 같은 결과를 GitHub job summary 등에 붙일 수 있는 한국어 Markdown(전체 판정, 결과 표, 항목별 추출된 사실과 모델 설명)으로 출력합니다. 순서는 텍스트와 같고 진행 표시는 없으며, `--output` 파일은 이때도 JSON입니다. 패키지 이름·버전·근거처럼 보고서에서 온 문자열은 모두 code span으로 감싸 HTML·링크·이미지·강조로 해석되지 않게 합니다.
 오류는 표준 오류에 JSON으로 나옵니다.
 tarball은 Python 임시 폴더에 풀었다가 지웁니다. 위치를 바꾸려면 `TMP`/`TEMP` 환경변수를 지정합니다.
+registry 메타데이터와 tarball은 depbee가 직접 받습니다(feature-extractor는 받은 것을 읽기만 합니다). `https://registry.npmjs.org`에서만, redirect 뒤에도 그 주소에서만 받고, tarball 주소는 그 패키지·버전의 registry 경로(`/<이름>/-/<이름>-<버전>.tgz`)여야 합니다. 받은 tarball 바이트는 그 버전의 `dist.integrity`(가장 강한 해시 알고리즘, npm과 같은 방식)와 대조한 뒤에만 풉니다.
+다운로드 하나는 메타데이터 128 MiB, tarball 128 MiB, 벽시계 120초를 넘으면 멈추고, 압축 해제는 풀린 크기 512 MiB와 파일 20,000개를 넘으면 멈춥니다. 하나라도 넘거나 맞지 않으면 그 항목은 분석 실패(`incomplete`, 종료 코드 2)입니다. 압축 해제와 feature 추출 자체에는 시간 상한이 없습니다. 값의 근거는 [검증 기록](docs/validation.md)에 있습니다.
 
 `check NAME@VERSION`은 lockfile 없이 npm 공식 registry의 버전 하나를 `scan --extract`와 같은 방식(같은 release line의 직전 stable과 비교)으로 검사합니다. 설치 전에 특정 버전을 확인할 때 씁니다.
 `lodash@4.17.21`이나 `@scope/name@1.0.0`처럼 정확한 이름과 버전만 받고, 범위(`^1.0.0`)·태그(`latest`)·URL·Git·파일 경로·사설 registry는 네트워크에 접근하기 전에 오류(종료 코드 2)로 거부합니다.
 버전은 npm이 버전을 표시하는 build metadata 없는 형식(`1.2.3`, `1.2.3-beta.1`)만 지원합니다. `1.2.3+build.1`처럼 `+`가 붙은 버전은 SemVer 문법상 유효하지만 이 명령의 지원 범위가 아니라서 거부합니다. 숫자로만 된 pre-release 식별자의 선행 0(`1.0.0-01`)처럼 SemVer에 맞지 않는 버전도 거부합니다.
-registry 메타데이터는 한 번만 받아 요청, 분석, feature 추출(feature-extractor의 registry source)에 함께 씁니다. 그 버전이 registry에 없거나, tarball 주소가 `https://registry.npmjs.org`가 아니거나, `dist.integrity`가 없거나, 메타데이터 형식이 잘못됐으면 오류(종료 코드 2)로 끝납니다.
+registry 메타데이터는 한 번만 받아 요청, 분석, feature 추출(feature-extractor의 snapshot)에 함께 씁니다. 그 버전이 registry에 없거나, tarball 주소가 `https://registry.npmjs.org`가 아니거나, `dist.integrity`가 없거나, 메타데이터 형식이 잘못됐으면 오류(종료 코드 2)로 끝납니다.
 pre-release와 비교할 이전 stable이 없는 버전은 `scan`과 같이 `incomplete`입니다.
 결과에는 "lockfile 없이 registry 정보로 검사"했다는 범위(`input_kind: "package"`)와 근거가 표시됩니다. 출력 형식, `--output`, 진행 표시(텍스트만), 종료 코드는 `scan`과 같습니다.
 
@@ -141,7 +144,8 @@ registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때�
 
 - 로컬 `package-lock.json` v2/v3만 지원합니다. 기준 lockfile은 파일이나 Git 커밋에서 읽고, 저장소 하위 폴더의 단일 프로젝트는 지원하지만 npm workspaces 전체를 한 번에 비교하지는 않습니다.
 - npm 공식 registry 의존성만 분석합니다. workspace/link, Git·file·사설 레지스트리 의존성, 같은 버전의 아카이브 변경은 `incomplete`입니다.
-- integrity는 lockfile과 registry 메타데이터를 비교합니다. 받은 tarball 자체의 해시는 아직 검증하지 않습니다. `check`는 대조할 lockfile이 없어 registry 메타데이터에 `dist.integrity`가 있는지만 확인하며(registry 문서상 2017년 4월부터 기록된 값), 이 값이 없는 버전은 검사하지 못합니다.
+- 설치될 버전은 lockfile integrity가 registry 메타데이터의 값과 같은지 보고, 받은 tarball 바이트는 registry 메타데이터의 `dist.integrity`와 대조합니다(없으면 옛 `dist.shasum`). `check`는 대조할 lockfile이 없어 registry 값만 쓰며(registry 문서상 2017년 4월부터 기록된 값), 새 버전에 이 값이 없으면 검사하지 못합니다.
+- 다운로드 시간 상한이 끝난 뒤에도 네트워크 동작 중이던 연결은 바로 끊지 못하고 버려 둡니다. 그 동작이 끝나거나(데이터 없이 최대 30초) 프로세스가 끝나면 사라집니다.
 - 학습 데이터와 달리 비교 기준 후보를 OSV 악성 목록과 대조하지 않고, 새 버전 직전 24시간 안의 후보도 별도로 검증하지 않습니다.
 - typosquat처럼 패키지 자체가 악성인 경우는 "업데이트 변경점"을 보는 이 모델의 범위가 아닙니다.
 - `package.json`만 있는 프로젝트, yarn/pnpm, Git URL 입력은 후속 범위입니다.

@@ -1,0 +1,323 @@
+"""Registry downloads (PR #7 follow-ups): URLs, redirects, size and time limits, integrity, unpacking.
+
+No network: analysis.registry._open is replaced by FakeRegistry. Tarballs are built here from a
+few synthetic bytes; nothing in them is executed.
+"""
+
+import base64
+import gzip
+import hashlib
+import http.client
+import io
+import json
+import tarfile
+import threading
+import time
+import unittest
+import urllib.error
+import urllib.request
+from unittest import mock
+
+from test_workflow import Fixture
+
+from depbee.analysis import registry
+from depbee.analysis.registry import RegistryError
+
+
+def tgz(files, *, symlink=None):
+    """A deterministic .tgz of {member name: bytes}; symlink=(name, target) adds a link."""
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name)
+            info.size, info.mtime = len(data), 0
+            archive.addfile(info, io.BytesIO(data))
+        if symlink:
+            info = tarfile.TarInfo(symlink[0])
+            info.type, info.linkname = tarfile.SYMTYPE, symlink[1]
+            archive.addfile(info)
+    return gzip.compress(raw.getvalue(), mtime=0)
+
+
+def package_tgz(name, version):
+    manifest = json.dumps({"name": name, "version": version}).encode()
+    return tgz({"package/package.json": manifest, "package/index.js": b"module.exports = 1;\n"})
+
+
+def sri(data, algorithm="sha512"):
+    return f"{algorithm}-{base64.b64encode(hashlib.new(algorithm, data).digest()).decode()}"
+
+
+def tarball_url(name, version):
+    return f"https://registry.npmjs.org/{name}/-/{name.rpartition('/')[2]}-{version}.tgz"
+
+
+class Response(io.BytesIO):
+    def __init__(self, data, url, headers=None):
+        super().__init__(data)
+        self.url, self.headers = url, headers or {}
+
+    def geturl(self):
+        return self.url
+
+
+class FakeRegistry:
+    """Stands in for analysis.registry._open: serves files (bytes, or a prepared Response) by URL
+    and records each request."""
+
+    def __init__(self, files=None):
+        self.files, self.opened = dict(files or {}), []
+
+    def __call__(self, url):
+        self.opened.append(url)
+        if url not in self.files:
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+        served = self.files[url]
+        return served if isinstance(served, Response) else Response(served, url)
+
+
+def serve_tarballs(doc, name):
+    """A FakeRegistry with a synthetic tarball of every version in doc; doc's dist.integrity is
+    set to each tarball's real sha512."""
+    served = FakeRegistry()
+    for version, manifest in doc["versions"].items():
+        data = package_tgz(name, version)
+        manifest["dist"]["integrity"] = sri(data)
+        served.files[tarball_url(name, version)] = data
+    return served
+
+
+class UrlTests(unittest.TestCase):
+    def test_only_the_registry_over_https(self):
+        good = "https://registry.npmjs.org/example/-/example-1.0.0.tgz"
+        self.assertEqual(registry._check_url(good), good)
+        for url in ("http://registry.npmjs.org/a", "https://registry.npmjs.org.evil.test/a",
+                    "https://evil.test/registry.npmjs.org/a", "https://registry.npmjs.org:444/a",
+                    "https://user@registry.npmjs.org/a", "ftp://registry.npmjs.org/a",
+                    "//registry.npmjs.org/a", "", None, 5):  # fmt: skip
+            with self.subTest(url=url), self.assertRaisesRegex(RegistryError, "outside https"):
+                registry._check_url(url)
+
+    def test_tarball_url_must_be_the_registry_path_of_that_version(self):
+        data = package_tgz("@scope/pkg", "1.0.0")
+        served = FakeRegistry({tarball_url("@scope/pkg", "1.0.0"): data})
+        with mock.patch.object(registry, "_open", served):
+            dist = {"tarball": tarball_url("@scope/pkg", "1.0.0"), "integrity": sri(data)}
+            self.assertEqual(registry.tarball("@scope/pkg", "1.0.0", dist), data)
+            for label, url in {
+                "other host": "https://evil.test/@scope/pkg/-/pkg-1.0.0.tgz",
+                "http": "http://registry.npmjs.org/@scope/pkg/-/pkg-1.0.0.tgz",
+                "other package": tarball_url("other", "1.0.0"),
+                "other version": tarball_url("@scope/pkg", "0.9.0"),
+                "query": tarball_url("@scope/pkg", "1.0.0") + "?x=1",
+                "not text": ["https://registry.npmjs.org/@scope/pkg/-/pkg-1.0.0.tgz"],
+                "missing": None,
+            }.items():
+                with self.subTest(label), self.assertRaisesRegex(RegistryError, "URL is not"):
+                    registry.tarball("@scope/pkg", "1.0.0", {**dist, "tarball": url})
+        self.assertEqual(served.opened, [tarball_url("@scope/pkg", "1.0.0")])  # only the good one
+
+    def test_redirects_must_stay_on_the_registry(self):
+        handler = registry._Redirects()
+        request = urllib.request.Request("https://registry.npmjs.org/a")
+        moved = handler.redirect_request(request, None, 302, "Found", {},
+                                         "https://registry.npmjs.org/b")  # fmt: skip
+        self.assertEqual(moved.full_url, "https://registry.npmjs.org/b")
+        for target in ("https://evil.test/b", "http://registry.npmjs.org/b"):
+            with self.subTest(target), self.assertRaisesRegex(RegistryError, "outside https"):
+                handler.redirect_request(request, None, 302, "Found", {}, target)
+        # The opener really uses this handler, and the final URL is checked again.
+        opener = mock.Mock()
+        with mock.patch("urllib.request.build_opener", return_value=opener) as build:
+            registry._open("https://registry.npmjs.org/a")
+        build.assert_called_once_with(registry._Redirects)
+        self.assertEqual(opener.open.call_args.kwargs, {"timeout": 30})
+        with mock.patch.object(registry, "_open",
+                               lambda url: Response(b"{}", "https://evil.test/a")):  # fmt: skip
+            with self.assertRaisesRegex(RegistryError, "outside https"):
+                registry.download("https://registry.npmjs.org/a", 100)
+
+
+class DownloadTests(unittest.TestCase):
+    URL = "https://registry.npmjs.org/a"
+
+    def download(self, response, limit=100):
+        with mock.patch.object(registry, "_open", lambda url: response):
+            return registry.download(self.URL, limit)
+
+    def test_size_and_time_limits(self):
+        self.assertEqual(self.download(Response(b"x" * 100, self.URL)), b"x" * 100)
+        with self.assertRaisesRegex(RegistryError, "larger than 100 bytes"):
+            self.download(Response(b"x" * 101, self.URL))
+        # A declared length over the limit stops before reading.
+        reads = []
+
+        class Counted(Response):
+            def read1(self, size=-1):
+                reads.append(size)
+                return super().read1(size)
+
+        with self.assertRaisesRegex(RegistryError, "larger than 100 bytes"):
+            self.download(Counted(b"x", self.URL, {"Content-Length": "101"}))
+        self.assertEqual(reads, [])
+
+    def test_wall_clock_limit_on_a_synthetic_clock(self):
+        """The thread's own check: after every read, at the end of the body too."""
+        clock = {"now": 0.0}
+
+        class Clocked(Response):
+            def __init__(self, data, step):
+                super().__init__(data, DownloadTests.URL)
+                self.step = step
+
+            def read1(self, size=-1):
+                clock["now"] += self.step
+                return super().read1(min(size, 1))  # a byte at a time, as a slow server sends
+
+        def opener(response, opened_at=0.0):
+            def open_(_url):
+                clock["now"] = opened_at  # name lookup, connect, TLS, headers and redirects
+                return response
+
+            return open_
+
+        late = registry.DOWNLOAD_SECONDS + 1
+        cases = {
+            # The last read reaches EOF after the deadline (coordinator repro, read1 interface).
+            "end of body after the deadline": opener(Clocked(b"", late)),
+            "slow drip": opener(Clocked(b"x" * 99, 2.0)),  # the 61st read passes 120 s
+            "slow open or redirects": opener(Clocked(b"x", 0.0), opened_at=late),
+        }
+        with mock.patch("time.monotonic", lambda: clock["now"]):
+            for label, open_ in cases.items():
+                with self.subTest(label), self.assertRaisesRegex(RegistryError, "within 120 s"):
+                    clock["now"] = 0.0
+                    with mock.patch.object(registry, "_open", open_):
+                        registry.download(self.URL, 100)
+            # The same drip that ends at exactly 120 s completes.
+            clock["now"] = 0.0
+            self.assertEqual(self.download(Clocked(b"x" * 59, 2.0)), b"x" * 59)
+
+    def test_wall_clock_limit_while_blocked_in_the_network(self):
+        """depbee's wait: a request blocked in opening (name lookup, connect, TLS, headers,
+        redirects) or in one body read is abandoned when the time is up."""
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        class Stalled(Response):
+            def read1(self, size=-1):
+                release.wait(30)
+                return b""
+
+        def stalled_open(_url):
+            release.wait(30)
+            return Response(b"", self.URL)
+
+        for label, opener in (("opening", stalled_open),
+                              ("body read", lambda _url: Stalled(b"", self.URL))):  # fmt: skip
+            with self.subTest(label), mock.patch.object(registry, "DOWNLOAD_SECONDS", 0.3):
+                began = time.monotonic()
+                with mock.patch.object(registry, "_open", opener):
+                    with self.assertRaisesRegex(RegistryError, "did not download within 0.3 s"):
+                        registry.download(self.URL, 100)
+                self.assertLess(time.monotonic() - began, 5)
+
+    def test_transport_errors_are_registry_errors(self):
+        for error in (urllib.error.HTTPError(self.URL, 404, "Not Found", {}, None),
+                      urllib.error.URLError("no route"), TimeoutError("timed out"),
+                      http.client.IncompleteRead(b"x", 10)):  # fmt: skip
+            with self.subTest(error=type(error).__name__):
+                with mock.patch.object(registry, "_open", side_effect=error):
+                    with self.assertRaisesRegex(RegistryError, "Cannot download"):
+                        registry.download(self.URL, 100)
+
+    def test_packument_is_capped_json(self):
+        url = "https://registry.npmjs.org/@scope/pkg"
+        served = FakeRegistry({url: b'{"name": "@scope/pkg"}'})
+        with mock.patch.object(registry, "_open", served):
+            self.assertEqual(registry.packument("@scope/pkg"), {"name": "@scope/pkg"})
+            served.files[url] = b"{"
+            with self.assertRaisesRegex(RegistryError, "Invalid JSON"):
+                registry.packument("@scope/pkg")
+            served.files[url] = b"[]" * 10
+            with mock.patch.object(registry, "MAX_PACKUMENT_BYTES", 10):
+                with self.assertRaisesRegex(RegistryError, "larger than 10 bytes"):
+                    registry.packument("@scope/pkg")
+
+
+class IntegrityTests(unittest.TestCase):
+    DATA = b"synthetic tarball bytes"
+
+    def test_strongest_algorithm_decides(self):
+        ok = [sri(self.DATA), f"{sri(b'other')} {sri(self.DATA)}", f"{sri(self.DATA)}?opt",
+              sri(self.DATA, "sha1"), f"{sri(self.DATA)} {sri(b'other', 'sha1')}",
+              sri(self.DATA, "sha256")]  # fmt: skip
+        for integrity in ok:
+            with self.subTest(integrity=integrity):
+                registry.verify(self.DATA, {"integrity": integrity}, "x")
+        bad = {
+            "sha512 differs": sri(b"other"),
+            "sha512 differs, sha1 matches": f"{sri(b'other')} {sri(self.DATA, 'sha1')}",
+            "sha384 over sha256": f"{sri(b'other', 'sha384')} {sri(self.DATA, 'sha256')}",
+        }
+        for label, integrity in bad.items():
+            with self.subTest(label), self.assertRaisesRegex(RegistryError, "does not match"):
+                registry.verify(self.DATA, {"integrity": integrity}, "x")
+
+    def test_legacy_shasum_and_nothing_to_check(self):
+        shasum = hashlib.sha1(self.DATA).hexdigest()
+        registry.verify(self.DATA, {"shasum": shasum.upper()}, "x")
+        with self.assertRaisesRegex(RegistryError, "does not match its sha1 shasum"):
+            registry.verify(self.DATA, {"shasum": hashlib.sha1(b"other").hexdigest()}, "x")
+        for dist in ({}, {"integrity": "md5-abc"}, {"integrity": 5}, {"shasum": "short"},
+                     {"integrity": ""}):  # fmt: skip
+            with self.subTest(dist=dist), self.assertRaisesRegex(RegistryError, "no sha512"):
+                registry.verify(self.DATA, dist, "x")
+
+
+class UnpackTests(Fixture):
+    def unpack(self, data):
+        target = self.root / f"unpack-{len(list(self.root.iterdir()))}"
+        target.mkdir()
+        return registry.unpack(data, target, "x tarball")
+
+    def test_package_root_like_feature_extractor(self):
+        root = self.unpack(package_tgz("example", "1.0.0"))
+        self.assertEqual(root.name, "package")
+        self.assertEqual(json.loads((root / "package.json").read_bytes())["version"], "1.0.0")
+        flat = self.unpack(tgz({"package.json": b"{}"}))
+        self.assertEqual(sorted(p.name for p in flat.iterdir()), ["package.json"])
+        for files in ({"package/index.js": b""}, {"a/package.json": b"{}", "b/package.json": b"{}"}):
+            with self.subTest(files=list(files)), self.assertRaisesRegex(RegistryError, "root"):
+                self.unpack(tgz(files))
+
+    def test_limits_and_bad_archives(self):
+        members = {f"package/{i}.js": b"" for i in range(4)}
+        with mock.patch.object(registry, "MAX_MEMBERS", 3):
+            with self.assertRaisesRegex(RegistryError, "more than 3 members"):
+                self.unpack(tgz(members))
+        zeros = tgz({"package/package.json": b"{}", "package/zeros.bin": bytes(1 << 20)})
+        self.assertLess(len(zeros), 4096)  # a small archive that inflates to 1 MiB
+        with mock.patch.object(registry, "MAX_UNPACKED_BYTES", 64 * 1024):
+            with self.assertRaisesRegex(RegistryError, "unpacks to more than 65536 bytes"):
+                self.unpack(zeros)
+        # A member may declare far more than the archive holds (as a sparse file can).
+        huge = tarfile.TarInfo("package/huge.bin")
+        huge.size = 10**12
+        declared = gzip.compress(huge.tobuf(tarfile.PAX_FORMAT) + bytes(1024), mtime=0)
+        with self.assertRaisesRegex(RegistryError, "unpacks to more than"):
+            self.unpack(declared)
+        for label, data in {
+            "not gzip": b"plain bytes",
+            "truncated": package_tgz("example", "1.0.0")[:-8],
+            "outside the folder": tgz({"package/package.json": b"{}", "../evil.txt": b"x"}),
+            "link outside": tgz({"package/package.json": b"{}"},
+                                symlink=("package/link", "../../evil")),
+        }.items():  # fmt: skip
+            with self.subTest(label), self.assertRaises(RegistryError):
+                self.unpack(data)
+        self.assertFalse((self.root / "evil.txt").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

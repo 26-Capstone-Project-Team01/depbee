@@ -6,16 +6,18 @@ previous version is kept only as context in the evidence.
 """
 
 import base64
+import dataclasses
 import hashlib
 import importlib.metadata
 import json
 import platform
+import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
 
 from ..contracts import SCHEMA_VERSION, GuardError, digest, elapsed_since
-from . import cache
+from . import cache, registry
 from .artifact import validate
 from .baseline import is_stable, select_baseline
 
@@ -90,48 +92,75 @@ def _installed_identity() -> dict | None:
     }
 
 
+class _RegistrySource:
+    """feature-extractor SnapshotSource for registry versions, used instead of its
+    RegistrySnapshotSource: the snapshot comes from the packument depbee checked (the pinned
+    loader's public build_snapshot, which fetches nothing without include_source), and the source
+    tree from depbee's checked download (analysis.registry). feature-extractor's build_row uses
+    only get_snapshot and close."""
+
+    def __init__(self, packument: dict, build_snapshot: Callable) -> None:
+        self._packument = packument
+        self._build_snapshot = build_snapshot
+        self._root: tempfile.TemporaryDirectory | None = None
+
+    def get_snapshot(self, package: str, version: str, *, include_source: bool = False):
+        snapshot = self._build_snapshot(self._packument, package, version)
+        if not include_source:
+            return snapshot
+        data = registry.tarball(package, version, self._packument["versions"][version]["dist"])
+        if self._root is None:
+            # Like feature-extractor, under the Python temporary folder (TMP/TEMP).
+            self._root = tempfile.TemporaryDirectory(prefix="depbee_src_", ignore_cleanup_errors=True)
+        target = Path(tempfile.mkdtemp(prefix="version_", dir=self._root.name))
+        source = registry.unpack(data, target, f"{package}@{version} tarball")
+        return dataclasses.replace(snapshot, source_dir=source)
+
+    def close(self) -> None:
+        if self._root is not None:
+            self._root.cleanup()
+            self._root = None
+
+
 class FeatureExtractorBackend:
-    """The calls into feature-extractor, kept apart so tests can run without network access."""
+    """The calls into feature-extractor, kept apart so tests can run without network access.
+
+    Registry metadata and tarballs are downloaded by analysis.registry, never by
+    feature-extractor, so its size, time, address and integrity checks apply to everything read.
+    """
 
     def __init__(self) -> None:
         try:
             from feature_extractor.core.errors import FeatureExtractorError
-            from feature_extractor.core.loader import fetch_packument
+            from feature_extractor.core.loader import build_snapshot
             from feature_extractor.core.pipeline import build_row, resolve_extractors
-            from feature_extractor.core.sources import (
-                LocalArchiveSnapshotSource,
-                RegistrySnapshotSource,
-            )
+            from feature_extractor.core.sources import LocalArchiveSnapshotSource
         except ImportError as exc:
             raise GuardError(
                 'Install analyzer dependencies: python -m pip install -e ".[extract]"'
             ) from exc
-        self.errors = (FeatureExtractorError,)
+        self.errors = (FeatureExtractorError, registry.RegistryError)
         self.version = f"feature-extractor {importlib.metadata.version('feature-extractor')}"
         self.identity = _installed_identity()
-        self.fetch_packument = fetch_packument
+        self.fetch_packument = registry.packument
+        self._build_snapshot = build_snapshot
         self._build_row = build_row
         self._extractors = resolve_extractors(None)
         self._local_source = LocalArchiveSnapshotSource
-        self._registry_source = RegistrySnapshotSource
 
     def extract(
         self, name: str, old: str, new: str, packument: dict, local: Path | None
     ) -> tuple[dict, dict]:
-        """Return (features, package.json of the new version), both from the given packument."""
-        registry = self._registry_source()
+        """Return (features, package.json of the new version), both from the given packument.
+
+        Both manifests and their dist objects must already be checked (ExtractorAnalyzer does).
+        """
+        source = _RegistrySource(packument, self._build_snapshot)
         try:
-            # Snapshots must use the packument depbee already checked, not a second fetch. The
-            # pinned feature-extractor (c24761d) has no public way to pass it in; its
-            # RegistrySnapshotSource reads fetched packuments from _packument_cache first.
-            cache = getattr(registry, "_packument_cache", None)
-            if not isinstance(cache, dict):
-                raise GuardError("feature-extractor RegistrySnapshotSource has no packument cache")
-            cache[name] = packument
-            new_source = self._local_source(local, packument) if local else registry
+            new_source = self._local_source(local, packument) if local else source
             # label is a dataset column; inference does not use it.
             row = self._build_row(
-                name, old, new, 0, self._extractors, old_source=registry, new_source=new_source
+                name, old, new, 0, self._extractors, old_source=source, new_source=new_source
             )
             new_json = (
                 new_source.get_snapshot(name, new).package_json
@@ -139,7 +168,7 @@ class FeatureExtractorBackend:
                 else packument["versions"][new]
             )
         finally:
-            registry.close()
+            source.close()
         return row.features, new_json
 
 
@@ -292,8 +321,9 @@ class ExtractorAnalyzer:
         if local is None:
             if (packument.get("versions") or {}).get(new) is None:
                 raise GuardError(f"Registry no longer serves {name}@{new}")
-            registry = _integrity_tokens(_dist(packument, name, new).get("integrity"))
-            if not registry & _integrity_tokens(change["after"]["integrity"]):
+            # The tarball is later checked against this registry integrity (analysis.registry).
+            published = _integrity_tokens(_dist(packument, name, new).get("integrity"))
+            if not published & _integrity_tokens(change["after"]["integrity"]):
                 raise GuardError("Lockfile integrity does not match the registry integrity")
         baseline = select_baseline(packument, new)
         if baseline is None:
