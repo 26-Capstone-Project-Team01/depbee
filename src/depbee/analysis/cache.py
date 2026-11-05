@@ -52,7 +52,12 @@ def load(directory: Path, key: dict) -> dict | None:
 
 
 def store(directory: Path, key: dict, features: dict) -> None:
-    """Write the entry atomically (temporary file, then os.replace). A failure only skips caching."""
+    """Write the entry atomically (temporary file, then os.replace). A failure only skips caching.
+
+    Only features that load() would accept are written, so a stored entry is never a miss.
+    """
+    if not isinstance(features, dict) or not features or not all(map(_feature, features.values())):
+        return
     entry = {"format": FORMAT, "key": key, "features": features}
     try:
         raw = json.dumps(entry, ensure_ascii=True, allow_nan=False, sort_keys=True).encode()

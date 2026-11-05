@@ -3,6 +3,7 @@
 ## 2026-11-05: 학습 범위 밖 결과의 캐시 제외(DEV-02e 후속)
 
 - 분석 캐시 계획은 실패와 unsupported 결과를 캐시하지 않는다. 캐시 항목의 모델 입력 검사를 넣을 때 학습에 없던 범주 값(모델의 `OutOfScopeError`, 보고서의 `out_of_training_scope`)은 손상이 아니라고 보고 저장·재사용했는데, 이것도 모델이 점수를 내지 않는 unsupported 결과라 계획과 맞지 않았다. 이제 모델 입력 변환이 거부하는 feature는 이유와 상관없이 저장하지도, 캐시에서 쓰지도 않는다. 판정은 전과 같이 `out_of_training_scope`(`incomplete`, 종료 코드 2)다.
+- 저장은 근거를 만든 뒤, 분석 결과 전체의 검사(`artifact.validate`)보다 먼저 일어난다. 그래서 모델이 쓰지 않는 feature가 JSON 값 형식을 벗어나도(리스트 등) 저장될 수 있었다(읽을 때는 miss로 거부). 이제 `cache.store`는 `cache.load`가 받아들이는 feature만 쓴다. 테스트 135개 통과.
 - 테스트 134개 통과(skip 없음), `ruff check` 통과. 학습에 없던 범주를 두 번 검사하면 두 번 모두 추출하고(`cache_hit` false), 캐시 항목이 생기지 않으며, 판정은 두 번 모두 `out_of_training_scope`임을 확인한다.
 
 ## 2026-11-05: `--output` 충돌을 분석 전에 거부(PR #7 후속)

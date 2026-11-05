@@ -233,6 +233,17 @@ class CacheTests(CacheFixture):
                          [("out_of_training_scope", False)] * 2)  # fmt: skip
         self.assertEqual((len(self.backend.calls), self.entries()), (4, []))
 
+    def test_store_writes_only_what_load_accepts(self):
+        key = {"package": "example"}
+        for features in ({}, {"signal": 0.5, "extra": [1]}, {"signal": math.inf}, {"x": {"y": 1}},
+                         ["signal"]):  # fmt: skip
+            with self.subTest(features=features):
+                cache.store(self.cache_dir, key, features)
+                self.assertEqual(self.entries(), [])
+        cache.store(self.cache_dir, key, {"signal": 0.5, "name": "x", "flag": True, "none": None})
+        self.assertEqual(cache.load(self.cache_dir, key),
+                         {"signal": 0.5, "name": "x", "flag": True, "none": None})  # fmt: skip
+
     def test_write_failures_only_skip_caching(self):
         self.cache_dir.write_bytes(b"not a directory")
         self.assertEqual(self.scan()["results"][0]["status"], "not_flagged")
