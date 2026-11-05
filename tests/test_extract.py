@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from test_contract import ExplainingPredictor
-from test_registry import Response, serve_tarballs, tarball_url
+from test_registry import FakeRegistry, Response, serve_tarballs, sri, tarball_url, tgz
 from test_workflow import FakePredictor, Fixture, package
 
 from depbee.analysis import registry
@@ -784,6 +784,111 @@ class PackageCheckTests(Fixture):
                 self.assertEqual(
                     (code, json.loads(out)["model_id"]), (expected, "synthetic-test-only")
                 )
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("feature_extractor"), "Install .[extract] for the pinned loader tests"
+)
+class PinnedLoaderTests(Fixture):
+    """The installed, pinned feature-extractor (c24761d) behind the real backend: its loader,
+    sources, pipeline and extractors run on synthetic tarballs. Only depbee's registry access is a
+    FakeRegistry, and feature-extractor's own requests.get fails if it is ever called, so a pin
+    change that fetches again or reads another document breaks these tests (PR #7 nit 3)."""
+
+    def setUp(self):
+        super().setUp()
+        self.doc = packument({"1.0.0": "2026-01-01T00:00:00Z", "1.0.1": "2026-01-02T00:00:00Z",
+                              "1.1.0": "2026-01-03T00:00:00Z"})  # fmt: skip
+        # The registry manifest adds an install script that the tarball's package.json lacks, so
+        # installScriptAdded shows which document feature-extractor read.
+        self.doc["versions"]["1.1.0"]["scripts"] = {"postinstall": "node setup.js"}
+        self.served = FakeRegistry()
+        for version in self.doc["versions"]:
+            files = {"package/package.json": json.dumps({"name": "example",
+                                                         "version": version}).encode(),
+                     "package/index.js": b"module.exports = 1;\n"}  # fmt: skip
+            if version == "1.1.0":
+                files["package/lib/added.js"] = b"exports.added = true;\n"
+            data = tgz(files)
+            self.doc["versions"][version]["dist"]["integrity"] = sri(data)
+            self.served.files[tarball_url("example", version)] = data
+        self.packument_url = "https://registry.npmjs.org/example"
+        self.served.files[self.packument_url] = json.dumps(self.doc).encode()
+        self.new["packages"]["node_modules/example"]["integrity"] = (
+            self.doc["versions"]["1.1.0"]["dist"]["integrity"]
+        )
+        self.save_locks()
+        self.own_requests = mock.Mock(side_effect=AssertionError("feature-extractor fetched"))
+        for patcher in (mock.patch("depbee.analysis.registry._open", self.served),
+                        mock.patch("feature_extractor.core.loader.requests.get",
+                                   self.own_requests)):  # fmt: skip
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_one_metadata_read_and_the_checked_document_for_both_snapshots(self):
+        from feature_extractor.core.loader import build_snapshot
+
+        self.assertIs(FeatureExtractorBackend()._build_snapshot, build_snapshot)
+        for label, run in (
+            ("check", lambda: check_package("example", "1.1.0", no_cache=True)),
+            ("scan", lambda: scan_project(self.project, self.base, extract=True, no_cache=True)),
+        ):
+            with self.subTest(label):
+                self.served.opened = []
+                row = run()["results"][0]
+                self.assertEqual(row["reason"], "model_missing")  # analysis complete
+                self.assertEqual(self.served.opened, [self.packument_url,
+                                                      tarball_url("example", "1.0.1"),
+                                                      tarball_url("example", "1.1.0")])  # fmt: skip
+                self.own_requests.assert_not_called()
+
+        analyzer = ExtractorAnalyzer()
+        result = analyzer.analyze(self.request())["results"][0]
+        features = result["features"]
+        self.assertEqual(len(features), 29)
+        self.assertEqual(features["installScriptAdded"], True)  # from the registry manifest
+        self.assertEqual(features["obfChangedFileCount"], 1)  # from the unpacked tarballs
+        self.assertIn("설치 스크립트 추가: postinstall = node setup.js", result["evidence"])
+
+    def test_malformed_manifests_stop_before_the_pinned_loader(self):
+        # Before f268b4a, c24761d loader.py:100 raised AttributeError here (traceback, exit 1).
+        for label, edit in (
+            ("baseline manifest is a string", lambda d: d["versions"].update({"1.0.1": "x"})),
+            ("baseline dist is a list", lambda d: d["versions"]["1.0.1"].update(dist=["x"])),
+            ("baseline dist is null", lambda d: d["versions"]["1.0.1"].update(dist=None)),
+            ("baseline manifest is a number", lambda d: d["versions"].update({"1.0.1": 5})),
+            ("versions is a list", lambda d: d.update(versions=[])),
+            ("time is text", lambda d: d.update(time="x")),
+        ):
+            with self.subTest(label):
+                doc = copy.deepcopy(self.doc)
+                edit(doc)
+                self.served.files[self.packument_url] = json.dumps(doc).encode()
+                self.served.opened = []
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = main(["scan", str(self.project), "--base-lock", str(self.base),
+                                 "--extract", "--format", "json", "--no-cache"])  # fmt: skip
+                self.assertEqual((code, err.getvalue()), (2, ""))
+                self.assertEqual(json.loads(out.getvalue())["results"][0]["reason"],
+                                 "analysis_failed")  # fmt: skip
+                self.assertEqual(self.served.opened, [self.packument_url])  # no tarball
+                self.own_requests.assert_not_called()
+
+    def test_local_copy_with_the_pinned_local_source(self):
+        copy_root = self.root / "copies" / "example-1.1.0" / "package"
+        copy_root.mkdir(parents=True)
+        (copy_root / "package.json").write_text(json.dumps({"name": "example",
+                                                            "version": "1.1.0"}), "utf-8")
+        (copy_root / "index.js").write_text("module.exports = 2;\n", "utf-8")
+        analyzer = ExtractorAnalyzer({("example", "1.1.0"): self.root / "copies"})
+        row = analyzer.analyze(self.request())["results"][0]
+        self.assertEqual(row["status"], "complete")
+        self.assertEqual(row["features"]["installScriptAdded"], False)  # the copy's package.json
+        self.assertIn("새 버전을 로컬 사본에서 읽음(registry 무결성 확인 안 함)", row["evidence"])
+        # Only the baseline tarball came from the registry.
+        self.assertEqual(self.served.opened, [self.packument_url, tarball_url("example", "1.0.1")])
+        self.own_requests.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,12 @@
 # 검증 기록
 
+## 2026-11-05: 설치된 고정 feature-extractor의 loader 경계 테스트(PR #7 후속)
+
+- feature-extractor가 설치된 환경에서만 도는 테스트 3개(`PinnedLoaderTests`, `skipUnless`)를 더했다(PR #7 재검증 nit 2). 실제 `FeatureExtractorBackend`와 고정 커밋 c24761d의 `build_snapshot`, `build_row`, extractor 전체, `LocalArchiveSnapshotSource`를 합성 tarball로 실행하고, depbee의 registry 접근만 가짜 응답으로 바꾸며, feature-extractor 자신의 `requests.get`은 불리면 실패하게 둔다.
+- 확인하는 것: `check`와 `scan --extract` 모두 메타데이터 요청 1회와 tarball 2개만 받고 feature-extractor는 registry에 접근하지 않음, feature 29개, `installScriptAdded`가 tarball의 package.json이 아니라 확인한 registry 메타데이터에서 나옴, 바뀐 JS 수가 푼 tarball에서 나옴, 비교 기준 manifest·`dist`·`versions`·`time` 형식 오류가 tarball 요청 전에 종료 코드 2로 끝남(전에는 loader.py 100행의 `AttributeError`), 로컬 사본을 고정 `LocalArchiveSnapshotSource`로 읽음.
+- 백엔드가 feature-extractor의 `RegistrySnapshotSource`로 다시 메타데이터를 받게 바꾸면 이 테스트가 실패함을 확인했다. pin을 바꿀 때 같은 회귀를 잡는다.
+- 이 개발 환경(`.[dev,ml,extract]`, feature-extractor를 Git 커밋 c24761d에서 설치)에서 테스트 133개 통과, skip 없음, `ruff check` 통과. 네트워크 연결을 실패하게 바꾼 전체 실행에서도 133개가 통과했고 실제 backend는 11번 만들어졌다. `.[extract]` 없이 도는 개발 CI에서는 이 3개가 skip된다.
+
 ## 2026-11-05: 캐시 항목의 모델 입력 검사와 check의 메타데이터 시간(DEV-02e 후속)
 
 - 캐시는 JSON 값의 형식(숫자, 문자열, bool, null, NaN·무한대 아님)만 검사해서, 모델 feature가 빠졌거나 숫자 자리에 문자열이 든 항목도 hit로 쓰였다. 그러면 다시 추출하지 않고 매번 추론 실패(`incomplete`)로 끝났다. 이제 캐시한 feature를 검증한 모델의 입력 변환(`LightGBMPredictor.encode`, 이름·순서·boolean·범주·결측 규칙)에 넣어 보고, 받지 못하면 miss로 보고 다시 추출한다. 새로 추출한 feature도 모델이 받지 못하면 저장하지 않는다. 학습에 없던 범주 값은 손상이 아니라 결과(`out_of_training_scope`)이므로 그대로 저장하고 다시 쓴다. 저장은 근거를 만든 뒤, 추론 전에 한다.
