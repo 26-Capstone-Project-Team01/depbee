@@ -17,7 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ..contracts import SCHEMA_VERSION, GuardError, digest, elapsed_since
-from . import cache, registry
+from . import bounded, cache, registry
 from .artifact import validate
 from .baseline import is_stable, select_baseline
 
@@ -96,37 +96,31 @@ class _RegistrySource:
     """feature-extractor SnapshotSource for registry versions, used instead of its
     RegistrySnapshotSource: the snapshot comes from the packument depbee checked (the pinned
     loader's public build_snapshot, which fetches nothing without include_source), and the source
-    tree from depbee's checked download (analysis.registry). feature-extractor's build_row uses
-    only get_snapshot and close."""
+    tree from depbee's checked download (analysis.registry), unpacked under work. feature-extractor's
+    build_row uses only get_snapshot of the sources it is given."""
 
-    def __init__(self, packument: dict, build_snapshot: Callable) -> None:
+    def __init__(self, packument: dict, build_snapshot: Callable, work: Path) -> None:
         self._packument = packument
         self._build_snapshot = build_snapshot
-        self._root: tempfile.TemporaryDirectory | None = None
+        self._work = work
 
     def get_snapshot(self, package: str, version: str, *, include_source: bool = False):
         snapshot = self._build_snapshot(self._packument, package, version)
         if not include_source:
             return snapshot
         data = registry.tarball(package, version, self._packument["versions"][version]["dist"])
-        if self._root is None:
-            # Like feature-extractor, under the Python temporary folder (TMP/TEMP).
-            self._root = tempfile.TemporaryDirectory(prefix="depbee_src_", ignore_cleanup_errors=True)
-        target = Path(tempfile.mkdtemp(prefix="version_", dir=self._root.name))
+        target = Path(tempfile.mkdtemp(prefix="version_", dir=self._work))
         source = registry.unpack(data, target, f"{package}@{version} tarball")
         return dataclasses.replace(snapshot, source_dir=source)
-
-    def close(self) -> None:
-        if self._root is not None:
-            self._root.cleanup()
-            self._root = None
 
 
 class FeatureExtractorBackend:
     """The calls into feature-extractor, kept apart so tests can run without network access.
 
     Registry metadata and tarballs are downloaded by analysis.registry, never by
-    feature-extractor, so its size, time, address and integrity checks apply to everything read.
+    feature-extractor, so its size, address and integrity checks apply to everything read. The
+    metadata download and the extraction (both downloads, unpacking and feature extraction) run
+    in child processes of analysis.bounded, killed when the change's time budget runs out.
     """
 
     def __init__(self) -> None:
@@ -139,7 +133,12 @@ class FeatureExtractorBackend:
             raise GuardError(
                 'Install analyzer dependencies: python -m pip install -e ".[extract]"'
             ) from exc
-        self.errors = (FeatureExtractorError, registry.RegistryError)
+        self.errors = (
+            FeatureExtractorError,
+            registry.RegistryError,
+            bounded.StepError,
+            bounded.TimeLimitError,
+        )
         self.version = f"feature-extractor {importlib.metadata.version('feature-extractor')}"
         self.identity = _installed_identity()
         self.fetch_packument = registry.packument
@@ -154,21 +153,32 @@ class FeatureExtractorBackend:
         """Return (features, package.json of the new version), both from the given packument.
 
         Both manifests and their dist objects must already be checked (ExtractorAnalyzer does).
+        Runs in a bounded child process; only the two versions' manifests and publish times are
+        sent. The work folder is the caller's, so it is removed even when the child is killed.
         """
-        source = _RegistrySource(packument, self._build_snapshot)
-        try:
-            new_source = self._local_source(local, packument) if local else source
-            # label is a dataset column; inference does not use it.
-            row = self._build_row(
-                name, old, new, 0, self._extractors, old_source=source, new_source=new_source
+        compared = [v for v in (old, new) if v in packument["versions"]]  # new may be local only
+        slim = {
+            "versions": {v: packument["versions"][v] for v in compared},
+            "time": {v: packument["time"][v] for v in (old, new) if v in packument["time"]},
+        }
+        with tempfile.TemporaryDirectory(prefix="depbee_src_", ignore_cleanup_errors=True) as work:
+            features, new_json = bounded.run(
+                self._extract_here, (name, old, new, slim, local, Path(work))
             )
-            new_json = (
-                new_source.get_snapshot(name, new).package_json
-                if local
-                else packument["versions"][new]
-            )
-        finally:
-            source.close()
+        return features, new_json
+
+    def _extract_here(
+        self, name: str, old: str, new: str, packument: dict, local: Path | None, work: Path
+    ) -> tuple[dict, dict]:
+        source = _RegistrySource(packument, self._build_snapshot, work)
+        new_source = self._local_source(local, packument) if local else source
+        # label is a dataset column; inference does not use it.
+        row = self._build_row(
+            name, old, new, 0, self._extractors, old_source=source, new_source=new_source
+        )
+        new_json = (
+            new_source.get_snapshot(name, new).package_json if local else packument["versions"][new]
+        )
         return row.features, new_json
 
 
@@ -255,7 +265,8 @@ class ExtractorAnalyzer:
             if self.progress:
                 self.progress(index, len(changes), change)
             started = time.monotonic()
-            result, cache_hit = self._analyze(change, package_input)
+            with bounded.budget():  # one time budget per change (check: the service's)
+                result, cache_hit = self._analyze(change, package_input)
             self.measurements[change["change_id"]] = (elapsed_since(started), cache_hit)
             results.append({"change_id": change["change_id"], **result})
         artifact = {

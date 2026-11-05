@@ -33,6 +33,11 @@ def package(version="1.0.0"):
 
 
 class Fixture(unittest.TestCase):
+    # analysis.bounded runs steps in child processes, which do not see this process's mock
+    # patches (a patched registry would be the real one there). Tests run them in-process;
+    # test_bounded.py turns this off and gives its child jobs their own synthetic I/O.
+    bounded_in_process = True
+
     def setUp(self):
         # Keep synthetic test outputs inside the workspace, with inherited directory ACLs.
         self.test_runs = Path(__file__).resolve().parents[1] / "artifacts" / "test-runs"
@@ -43,6 +48,10 @@ class Fixture(unittest.TestCase):
         temp = mock.patch("tempfile.tempdir", str(self.root))
         temp.start()
         self.addCleanup(temp.stop)
+        if self.bounded_in_process:
+            here = mock.patch("depbee.analysis.bounded.run", side_effect=lambda f, args: f(*args))
+            here.start()
+            self.addCleanup(here.stop)
         # A developer's DEPBEE_MODEL_DIR must not change service and CLI results.
         env = mock.patch.dict(os.environ)
         env.start()

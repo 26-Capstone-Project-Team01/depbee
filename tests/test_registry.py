@@ -11,8 +11,6 @@ import http.client
 import io
 import json
 import tarfile
-import threading
-import time
 import unittest
 import urllib.error
 import urllib.request
@@ -161,67 +159,6 @@ class DownloadTests(unittest.TestCase):
             self.download(Counted(b"x", self.URL, {"Content-Length": "101"}))
         self.assertEqual(reads, [])
 
-    def test_wall_clock_limit_on_a_synthetic_clock(self):
-        """The thread's own check: after every read, at the end of the body too."""
-        clock = {"now": 0.0}
-
-        class Clocked(Response):
-            def __init__(self, data, step):
-                super().__init__(data, DownloadTests.URL)
-                self.step = step
-
-            def read1(self, size=-1):
-                clock["now"] += self.step
-                return super().read1(min(size, 1))  # a byte at a time, as a slow server sends
-
-        def opener(response, opened_at=0.0):
-            def open_(_url):
-                clock["now"] = opened_at  # name lookup, connect, TLS, headers and redirects
-                return response
-
-            return open_
-
-        late = registry.DOWNLOAD_SECONDS + 1
-        cases = {
-            # The last read reaches EOF after the deadline (coordinator repro, read1 interface).
-            "end of body after the deadline": opener(Clocked(b"", late)),
-            "slow drip": opener(Clocked(b"x" * 99, 2.0)),  # the 61st read passes 120 s
-            "slow open or redirects": opener(Clocked(b"x", 0.0), opened_at=late),
-        }
-        with mock.patch("time.monotonic", lambda: clock["now"]):
-            for label, open_ in cases.items():
-                with self.subTest(label), self.assertRaisesRegex(RegistryError, "within 120 s"):
-                    clock["now"] = 0.0
-                    with mock.patch.object(registry, "_open", open_):
-                        registry.download(self.URL, 100)
-            # The same drip that ends at exactly 120 s completes.
-            clock["now"] = 0.0
-            self.assertEqual(self.download(Clocked(b"x" * 59, 2.0)), b"x" * 59)
-
-    def test_wall_clock_limit_while_blocked_in_the_network(self):
-        """depbee's wait: a request blocked in opening (name lookup, connect, TLS, headers,
-        redirects) or in one body read is abandoned when the time is up."""
-        release = threading.Event()
-        self.addCleanup(release.set)
-
-        class Stalled(Response):
-            def read1(self, size=-1):
-                release.wait(30)
-                return b""
-
-        def stalled_open(_url):
-            release.wait(30)
-            return Response(b"", self.URL)
-
-        for label, opener in (("opening", stalled_open),
-                              ("body read", lambda _url: Stalled(b"", self.URL))):  # fmt: skip
-            with self.subTest(label), mock.patch.object(registry, "DOWNLOAD_SECONDS", 0.3):
-                began = time.monotonic()
-                with mock.patch.object(registry, "_open", opener):
-                    with self.assertRaisesRegex(RegistryError, "did not download within 0.3 s"):
-                        registry.download(self.URL, 100)
-                self.assertLess(time.monotonic() - began, 5)
-
     def test_transport_errors_are_registry_errors(self):
         for error in (urllib.error.HTTPError(self.URL, 404, "Not Found", {}, None),
                       urllib.error.URLError("no route"), TimeoutError("timed out"),
@@ -234,7 +171,9 @@ class DownloadTests(unittest.TestCase):
     def test_packument_is_capped_json(self):
         url = "https://registry.npmjs.org/@scope/pkg"
         served = FakeRegistry({url: b'{"name": "@scope/pkg"}'})
-        with mock.patch.object(registry, "_open", served):
+        # The download step runs in-process here (test_bounded.py covers the child process).
+        in_process = mock.patch.object(registry.bounded, "run", lambda f, args: f(*args))
+        with in_process, mock.patch.object(registry, "_open", served):
             self.assertEqual(registry.packument("@scope/pkg"), {"name": "@scope/pkg"})
             served.files[url] = b"{"
             with self.assertRaisesRegex(RegistryError, "Invalid JSON"):

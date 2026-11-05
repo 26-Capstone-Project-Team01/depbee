@@ -6,8 +6,8 @@ or member limits. depbee therefore downloads packuments and tarballs itself:
 
 - only from https://registry.npmjs.org, also after each redirect; a tarball URL must be the
   registry's own path for that package and version;
-- every download stops at a size limit and a wall-clock limit (``download``); unpacking has no
-  time limit of its own and is bounded by the size and member limits only;
+- every download stops at a size limit; the time limit is the change's budget in
+  analysis.bounded, whose child process (downloads, unpacking, extraction) is killed at the end;
 - tarball bytes must match the version's ``dist.integrity`` before anything is unpacked, using
   the strongest listed algorithm as npm does (``dist.shasum`` if there is no integrity);
 - unpacking stops at limits on the unpacked size and member count and uses the tarfile "data"
@@ -23,8 +23,6 @@ import http.client
 import io
 import json
 import tarfile
-import threading
-import time
 import urllib.error
 import urllib.request
 import zlib
@@ -33,13 +31,13 @@ from urllib.parse import urlsplit
 
 from .. import __version__
 from ..contracts import GuardError
+from . import bounded
 
 HOST = "registry.npmjs.org"
 MAX_PACKUMENT_BYTES = 128 * 1024 * 1024
 MAX_TARBALL_BYTES = 128 * 1024 * 1024
 MAX_UNPACKED_BYTES = 512 * 1024 * 1024
 MAX_MEMBERS = 20_000
-DOWNLOAD_SECONDS = 120
 SOCKET_TIMEOUT_SECONDS = 30  # per socket operation, as in feature-extractor
 _CHUNK = 1024 * 1024
 _ALGORITHMS = ("sha512", "sha384", "sha256", "sha1")  # strongest first, as ssri picks
@@ -70,38 +68,14 @@ def _open(url: str):
 
 
 def download(url: str, limit: int) -> bytes:
-    """Bytes at url, at most limit of them, within DOWNLOAD_SECONDS of wall-clock time.
+    """Bytes at url, at most limit of them.
 
-    Socket timeouts limit each operation, not a whole request: a server that keeps sending a few
-    bytes, slowly, never trips them, while connecting, in the headers, across redirects or in the
-    body. So the request runs in a daemon thread that depbee waits for at most DOWNLOAD_SECONDS.
-    The thread also checks the clock after every read, at the end of the body too, and stops. A
-    thread still running when the time is up is abandoned: in the body it stops at its next read
-    (each waits at most SOCKET_TIMEOUT_SECONDS for data); while connecting or reading headers, a
-    server that keeps trickling can keep it alive until that phase ends or the process exits.
+    No time limit here: socket timeouts only limit each operation, and a thread cannot be
+    stopped. The extractor runs downloads in a bounded child process (analysis.bounded), whose
+    time limit covers connecting, headers, redirects and the body, and which is killed with its
+    connection when the time is up.
     """
     _check_url(url)
-    deadline = time.monotonic() + DOWNLOAD_SECONDS
-    outcome: dict = {}
-    finished = threading.Event()
-
-    def work() -> None:
-        try:
-            outcome["data"] = _read(url, limit, deadline)
-        except Exception as exc:  # re-raised in the waiting thread
-            outcome["error"] = exc
-        finally:
-            finished.set()
-
-    threading.Thread(target=work, name="depbee-download", daemon=True).start()
-    if not finished.wait(DOWNLOAD_SECONDS):
-        raise RegistryError(f"{url} did not download within {DOWNLOAD_SECONDS} s")
-    if "error" in outcome:
-        raise outcome["error"]
-    return outcome["data"]
-
-
-def _read(url: str, limit: int, deadline: float) -> bytes:
     data = bytearray()
     try:
         with _open(url) as response:
@@ -109,23 +83,22 @@ def _read(url: str, limit: int, deadline: float) -> bytes:
             length = response.headers.get("Content-Length", "")
             if length.isdigit() and int(length) > limit:
                 raise RegistryError(f"{url} is larger than {limit} bytes")
-            while True:
-                # read1 returns after one socket read; read(n) would wait until n bytes arrive.
-                chunk = response.read1(_CHUNK)
-                if time.monotonic() > deadline:
-                    raise RegistryError(f"{url} did not download within {DOWNLOAD_SECONDS} s")
-                if not chunk:
-                    return bytes(data)
+            while chunk := response.read1(_CHUNK):  # one socket read at a time
                 data += chunk
                 if len(data) > limit:
                     raise RegistryError(f"{url} is larger than {limit} bytes")
     except (OSError, http.client.HTTPException) as exc:  # URLError and HTTPError are OSErrors
         raise RegistryError(f"Cannot download {url}: {exc}") from exc
+    return bytes(data)
 
 
 def packument(name: str) -> dict:
-    """Full registry metadata of name, at the URL feature-extractor's fetch_packument uses."""
-    raw = download(f"https://{HOST}/{name}", MAX_PACKUMENT_BYTES)
+    """Full registry metadata of name, at the URL feature-extractor's fetch_packument uses.
+
+    Downloaded in a bounded child process (part of the change's time budget); the bytes, at most
+    MAX_PACKUMENT_BYTES, are parsed here.
+    """
+    raw = bounded.run(download, (f"https://{HOST}/{name}", MAX_PACKUMENT_BYTES))
     try:
         return json.loads(raw)
     except (ValueError, RecursionError) as exc:

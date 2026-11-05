@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from .analysis import cache
+from .analysis import bounded, cache
 from .analysis.artifact import ArtifactAnalyzer
 from .contracts import GuardError, elapsed_since
 from .inference.lightgbm import LightGBMPredictor
@@ -163,13 +163,15 @@ def check_package(
     analyzer = ExtractorAnalyzer(
         progress=progress, **_cache_options(predictor, cache_dir, no_cache)
     )
-    fetch_started = time.monotonic()
-    try:
-        packument = analyzer.packument(name)
-    except analyzer.backend.errors as exc:
-        raise GuardError(f"Cannot read npm registry metadata for {name}: {exc}") from exc
-    fetched = elapsed_since(fetch_started)
-    request = build_package_request(name, version, packument)
-    # The one change's metadata was read before analyze(); count it in that result's time.
-    report = scan(request, analyzer, predictor)
+    # The metadata read and the analysis of the one change share its time budget.
+    with bounded.budget():
+        fetch_started = time.monotonic()
+        try:
+            packument = analyzer.packument(name)
+        except analyzer.backend.errors as exc:
+            raise GuardError(f"Cannot read npm registry metadata for {name}: {exc}") from exc
+        fetched = elapsed_since(fetch_started)
+        request = build_package_request(name, version, packument)
+        # The one change's metadata was read before analyze(); count it in that result's time.
+        report = scan(request, analyzer, predictor)
     return _timed(report, analyzer, started, {request["changes"][0]["change_id"]: fetched})

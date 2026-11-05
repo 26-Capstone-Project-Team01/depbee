@@ -702,7 +702,11 @@ class PackageCheckTests(Fixture):
         self.assertEqual(report["results"][0]["reason"], "model_missing")  # analysis complete
         self.assertEqual(self.backend.fetched, ["example"])  # one metadata read in total
         self.assertEqual(len(snapshots), 2)  # old and new, both from the checked document
-        self.assertTrue(all(doc is self.doc for doc in snapshots))
+        # Only the two compared versions go to the extraction step, as the checked manifests.
+        for snapshot in snapshots:
+            self.assertEqual(set(snapshot["versions"]), {"1.0.1", "1.1.0"})
+            self.assertTrue(all(snapshot["versions"][v] is self.doc["versions"][v]
+                                for v in snapshot["versions"]))  # fmt: skip
         self.assertEqual(served.opened, [tarball_url("example", v) for v in ("1.0.1", "1.1.0")])
         # Bytes that do not match the registry integrity are never unpacked.
         served.files[tarball_url("example", "1.0.1")] += b"tampered"
