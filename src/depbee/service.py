@@ -110,23 +110,26 @@ def _cache_options(predictor, cache_dir: Path | None, no_cache: bool) -> dict:
 
     The analyzer also requires verified feature-extractor provenance before it uses the cache.
     """
-    identity = getattr(predictor, "identity", None)
-    if no_cache or not isinstance(identity, dict):
+    if no_cache or not isinstance(getattr(predictor, "identity", None), dict):
         return {}
     if cache_dir is None:
         try:
             cache_dir = cache.default_dir()
         except RuntimeError:  # no home directory: run without the cache
             return {}
-    return {"cache_dir": cache_dir, "model_identity": identity}
+    return {"cache_dir": cache_dir, "cache_model": predictor}
 
 
-def _timed(report: dict, analyzer, started: float) -> dict:
-    """Add extraction times: per result (null and false if not analyzed) and for the whole call."""
+def _timed(report: dict, analyzer, started: float, fetched: dict | None = None) -> dict:
+    """Add extraction times: per result (null and false if not analyzed) and for the whole call.
+
+    fetched: seconds spent on a result's metadata before analyze() (check), added to its time.
+    """
     for row in report["results"]:
-        row["elapsed_seconds"], row["cache_hit"] = analyzer.measurements.get(
-            row["change_id"], (None, False)
-        )
+        seconds, hit = analyzer.measurements.get(row["change_id"], (None, False))
+        if seconds is not None:
+            seconds = round(seconds + (fetched or {}).get(row["change_id"], 0.0), 3)
+        row["elapsed_seconds"], row["cache_hit"] = seconds, hit
     results = report.pop("results")
     return {**report, "elapsed_seconds": elapsed_since(started), "results": results}
 
@@ -160,9 +163,13 @@ def check_package(
     analyzer = ExtractorAnalyzer(
         progress=progress, **_cache_options(predictor, cache_dir, no_cache)
     )
+    fetch_started = time.monotonic()
     try:
         packument = analyzer.packument(name)
     except analyzer.backend.errors as exc:
         raise GuardError(f"Cannot read npm registry metadata for {name}: {exc}") from exc
+    fetched = elapsed_since(fetch_started)
     request = build_package_request(name, version, packument)
-    return _timed(scan(request, analyzer, predictor), analyzer, started)
+    # The one change's metadata was read before analyze(); count it in that result's time.
+    report = scan(request, analyzer, predictor)
+    return _timed(report, analyzer, started, {request["changes"][0]["change_id"]: fetched})

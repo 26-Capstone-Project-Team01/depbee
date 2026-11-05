@@ -22,7 +22,7 @@ from test_workflow import Fixture, package
 from depbee.analysis import cache
 from depbee.analysis.extractor import _installed_identity
 from depbee.cli import main
-from depbee.contracts import GuardError, elapsed_since
+from depbee.contracts import GuardError, OutOfScopeError, elapsed_since
 from depbee.service import check_package, scan_project
 
 EXTRACTOR = {"commit": "c" * 40, "url": "https://example.test/fx", "files_sha256": "f" * 64,
@@ -31,10 +31,18 @@ MODEL = {"model_sha256": "a" * 64, "manifest_sha256": "b" * 64}
 
 
 class Model(PackagePredictor):
-    """FakePredictor with the hashes a verified LightGBMPredictor exposes."""
+    """FakePredictor with the hashes and input check a verified LightGBMPredictor exposes."""
 
     def __init__(self, identity=MODEL):
         self.identity = dict(identity)
+
+    def encode(self, features):
+        value = features.get("signal")
+        if value == "unseen":
+            raise OutOfScopeError("signal='unseen' is not a category the model was trained on")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise GuardError("signal must be a number")
+        return [float(value)]
 
 
 class CacheFixture(Fixture):
@@ -195,6 +203,10 @@ class CacheTests(CacheFixture):
             .replace("12345.5", "1e999").encode(),
             "object feature": json.dumps({**good, "features": {"signal": {"x": 1}}}).encode(),
             "oversized": entry.read_bytes() + b" " * cache.MAX_ENTRY_BYTES,
+            # Valid JSON values the model cannot take (checked with the model's encode).
+            "model feature missing": json.dumps({**good, "features": {"other": 1}}).encode(),
+            "text for a number": json.dumps({**good, "features": {"signal": "x"}}).encode(),
+            "bool for a number": json.dumps({**good, "features": {"signal": True}}).encode(),
         }
         for label, raw in damaged.items():
             with self.subTest(label):
@@ -203,6 +215,18 @@ class CacheTests(CacheFixture):
                 row = self.scan()["results"][0]
                 self.assertEqual((row["cache_hit"], len(self.backend.calls)), (False, calls + 1))
                 self.assertEqual(json.loads(entry.read_bytes()), good)  # rewritten from scratch
+
+    def test_only_features_the_model_takes_are_stored(self):
+        self.backend.features = {"signal": "x", "obfChangedFileCount": 2}  # not a number
+        for _ in range(2):
+            row = self.scan()["results"][0]
+            self.assertEqual((row["reason"], row["cache_hit"]), ("inference_failed", False))
+        self.assertEqual((len(self.backend.calls), self.entries()), (2, []))
+        # An unseen category is a result, not damage: stored and reused like any other.
+        self.backend.features = {"signal": "unseen", "obfChangedFileCount": 2}
+        rows = [self.scan()["results"][0] for _ in range(2)]
+        self.assertEqual([r["cache_hit"] for r in rows], [False, True])
+        self.assertEqual(len(self.backend.calls), 3)
 
     def test_write_failures_only_skip_caching(self):
         self.cache_dir.write_bytes(b"not a directory")
@@ -271,6 +295,14 @@ class TimeTests(CacheFixture):
                               (12.3456, 2.346)):  # fmt: skip
             with self.subTest(now=now), mock.patch("time.monotonic", return_value=now):
                 self.assertEqual(elapsed_since(10.0), expected)
+
+    def test_check_counts_its_metadata_read_in_the_result_time(self):
+        clock = itertools.count(100.0, 0.25)
+        with mock.patch("time.monotonic", side_effect=lambda: next(clock)):
+            report = check_package("example", "1.1.0", model_dir=Path("m"), no_cache=True)
+        # Clock reads: call start; metadata before and after; analysis before and after; end.
+        self.assertEqual(report["results"][0]["elapsed_seconds"], 0.5)
+        self.assertEqual(report["elapsed_seconds"], 1.25)
 
     def test_check_reports_times_and_reuses_the_cache(self):
         first = check_package("example", "1.1.0", model_dir=Path("m"), cache_dir=self.cache_dir)

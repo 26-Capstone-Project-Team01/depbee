@@ -88,7 +88,9 @@ class LightGBMPredictor:
         except Exception as exc:
             raise GuardError("Unable to load the LightGBM model") from exc
 
-    def _encode(self, features: dict[str, object]) -> list[float]:
+    def encode(self, features: dict[str, object]) -> list[float]:
+        """Model input for features. Raises OutOfScopeError for an unseen category and GuardError
+        for anything else this model cannot take; the feature cache uses it to reject entries."""
         # The analyzer may extract more than this model uses; extras are dropped, never filled.
         missing = [name for name in self.feature_names if name not in features]
         if missing:
@@ -125,7 +127,7 @@ class LightGBMPredictor:
             raise GuardError("LightGBM prediction failed") from exc
 
     def predict(self, features: dict[str, object]) -> float:
-        score = finite_number(float(self._run(self._encode(features))[0]), "model score")
+        score = finite_number(float(self._run(self.encode(features))[0]), "model score")
         if not 0 <= score <= 1:
             raise GuardError("Model score is outside [0, 1]")
         return score
@@ -136,7 +138,7 @@ class LightGBMPredictor:
         ``base_value`` plus every feature's contribution is the score's log-odds, so the
         features not listed are summed into ``others_sum`` to keep the explanation complete.
         """
-        *contributions, base = self._run(self._encode(features), pred_contrib=True)[0]
+        *contributions, base = self._run(self.encode(features), pred_contrib=True)[0]
         ranked = sorted(
             zip(self.feature_names, contributions, strict=True), key=lambda c: -abs(c[1])
         )

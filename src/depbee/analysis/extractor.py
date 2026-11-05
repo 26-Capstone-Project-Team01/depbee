@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from ..contracts import SCHEMA_VERSION, GuardError, digest, elapsed_since
+from ..contracts import SCHEMA_VERSION, GuardError, OutOfScopeError, digest, elapsed_since
 from . import cache, registry
 from .artifact import validate
 from .baseline import is_stable, select_baseline
@@ -212,10 +212,12 @@ class ExtractorAnalyzer:
     cannot be checked against the lockfile integrity, which the evidence states.
     ``progress``, if given, is called as ``progress(index, total, change)`` before each change.
     ``cache_dir`` enables the persistent feature cache (``analysis.cache``) for registry versions,
-    used only together with ``model_identity`` (hashes of the verified model) and a backend whose
-    installed provenance is verified (``backend.identity``); otherwise nothing is read or written.
-    After ``analyze()``, ``measurements`` maps each analyzed change_id to (elapsed seconds on the
-    monotonic clock for metadata, cache and extraction, whether the cache supplied the features).
+    used only together with ``cache_model``, the verified model (its ``identity`` hashes are part
+    of the key, and its ``encode`` must accept cached and newly stored features), and a backend
+    whose installed provenance is verified (``backend.identity``); otherwise nothing is read or
+    written. After ``analyze()``, ``measurements`` maps each analyzed change_id to (elapsed seconds
+    on the monotonic clock for metadata, cache and extraction, whether the cache supplied the
+    features).
     """
 
     def __init__(
@@ -225,15 +227,16 @@ class ExtractorAnalyzer:
         progress: Callable[[int, int, dict], None] | None = None,
         *,
         cache_dir: Path | None = None,
-        model_identity: dict | None = None,
+        cache_model=None,
     ) -> None:
         self.backend = backend or FeatureExtractorBackend()
         self.local_sources = dict(local_sources or {})
         self.progress = progress
-        identity = getattr(self.backend, "identity", None)
-        verified = isinstance(identity, dict) and isinstance(model_identity, dict)
+        verified = isinstance(getattr(self.backend, "identity", None), dict) and isinstance(
+            getattr(cache_model, "identity", None), dict
+        )
         self.cache_dir = cache_dir if verified else None
-        self.model_identity = model_identity
+        self.cache_model = cache_model
         self.measurements: dict[str, tuple[float, bool]] = {}
         self._packuments: dict[str, dict] = {}
 
@@ -298,7 +301,7 @@ class ExtractorAnalyzer:
             "format": cache.FORMAT,
             "feature_schema": FEATURE_SCHEMA,
             "extractor": self.backend.identity,
-            "model": self.model_identity,
+            "model": self.cache_model.identity,
             "package": name,
             "version": new,
             "baseline": baseline,
@@ -338,6 +341,8 @@ class ExtractorAnalyzer:
         if self.cache_dir is not None and local is None:
             key = self._cache_key(name, new, baseline.version, packument)
         features = cache.load(self.cache_dir, key) if key else None
+        if features is not None and not self._model_accepts(features):
+            features = None  # damaged or foreign entry: extract again
         cache_hit = features is not None
         if cache_hit:
             new_json = packument["versions"][new]
@@ -352,9 +357,20 @@ class ExtractorAnalyzer:
                 change, baseline, local, old_json, new_json, features, package_input
             ),
         }
-        if key and not cache_hit:
+        if key and not cache_hit and self._model_accepts(features):
             cache.store(self.cache_dir, key, features)
         return result, cache_hit
+
+    def _model_accepts(self, features: dict) -> bool:
+        """Whether the cache model takes these features: missing or wrongly typed ones are not
+        reused or stored. An unseen category is a result (out of training scope), not damage."""
+        try:
+            self.cache_model.encode(features)
+        except OutOfScopeError:
+            return True
+        except GuardError:
+            return False
+        return True
 
     def _evidence(
         self, change, baseline, local, old_json, new_json, features, package_input

@@ -1,5 +1,11 @@
 # 검증 기록
 
+## 2026-11-05: 캐시 항목의 모델 입력 검사와 check의 메타데이터 시간(DEV-02e 후속)
+
+- 캐시는 JSON 값의 형식(숫자, 문자열, bool, null, NaN·무한대 아님)만 검사해서, 모델 feature가 빠졌거나 숫자 자리에 문자열이 든 항목도 hit로 쓰였다. 그러면 다시 추출하지 않고 매번 추론 실패(`incomplete`)로 끝났다. 이제 캐시한 feature를 검증한 모델의 입력 변환(`LightGBMPredictor.encode`, 이름·순서·boolean·범주·결측 규칙)에 넣어 보고, 받지 못하면 miss로 보고 다시 추출한다. 새로 추출한 feature도 모델이 받지 못하면 저장하지 않는다. 학습에 없던 범주 값은 손상이 아니라 결과(`out_of_training_scope`)이므로 그대로 저장하고 다시 쓴다. 저장은 근거를 만든 뒤, 추론 전에 한다.
+- `check`는 요청을 만들기 전에 메타데이터를 받으므로 그 시간이 결과의 `elapsed_seconds`에 빠져 있었다(연결 규약은 항목별 시간에 메타데이터 조회를 포함한다고 정한다). 이제 그 조회 시간을 결과의 값에 더한다. `scan --extract`는 분석 중에 메타데이터를 받으므로 바뀌지 않는다.
+- 테스트 130개 통과(skip 없음), `ruff check` 통과. 모델 feature가 빠지거나 문자열·bool이 숫자 자리에 든 항목이 miss가 되고 다시 저장됨, 모델이 받지 못하는 새 feature는 저장되지 않음, 학습에 없던 범주는 저장되고 재사용됨, 고정 clock에서 `check`의 결과 시간이 메타데이터 조회와 분석 시간의 합임을 확인한다. 모델 검사를 끄거나 메타데이터 시간을 빼면 이 테스트들이 실패하는 것도 확인했다.
+
 ## 2026-11-05: registry 다운로드의 integrity, 주소, 크기·시간 상한(PR #7 후속)
 
 - 고정 feature-extractor(c24761d)의 loader는 받은 tarball을 해시하지 않고, redirect를 제한하지 않으며, 크기·파일 수·전체 시간 상한 없이 받고 풀었다(아래 2026-11-04 기록의 제한). 이제 registry 메타데이터와 tarball은 depbee(`analysis/registry.py`)가 받고, feature-extractor에는 고정 loader의 공개 함수 `build_snapshot()`으로 만든 snapshot과 검사한 tarball을 푼 폴더만 넘긴다. feature-extractor는 registry에 접근하지 않으며, 이전 기록의 비공개 `_packument_cache` 의존도 없어졌다.
