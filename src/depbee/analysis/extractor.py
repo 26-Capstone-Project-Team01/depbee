@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from ..contracts import SCHEMA_VERSION, GuardError, OutOfScopeError, digest, elapsed_since
+from ..contracts import SCHEMA_VERSION, GuardError, digest, elapsed_since
 from . import cache, registry
 from .artifact import validate
 from .baseline import is_stable, select_baseline
@@ -362,13 +362,12 @@ class ExtractorAnalyzer:
         return result, cache_hit
 
     def _model_accepts(self, features: dict) -> bool:
-        """Whether the cache model takes these features: missing or wrongly typed ones are not
-        reused or stored. An unseen category is a result (out of training scope), not damage."""
+        """Whether the cache model scores these features. Missing or wrongly typed features are
+        not reused or stored, and neither are unsupported ones (an unseen category, an
+        OutOfScopeError): the plan keeps failed and unsupported results out of the cache."""
         try:
             self.cache_model.encode(features)
-        except OutOfScopeError:
-            return True
-        except GuardError:
+        except GuardError:  # includes OutOfScopeError
             return False
         return True
 

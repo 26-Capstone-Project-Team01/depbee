@@ -44,6 +44,10 @@ class Model(PackagePredictor):
             raise GuardError("signal must be a number")
         return [float(value)]
 
+    def predict(self, features):
+        self.encode(features)  # as LightGBMPredictor: an unseen category is out of scope
+        return features["signal"]
+
 
 class CacheFixture(Fixture):
     def setUp(self):
@@ -222,11 +226,12 @@ class CacheTests(CacheFixture):
             row = self.scan()["results"][0]
             self.assertEqual((row["reason"], row["cache_hit"]), ("inference_failed", False))
         self.assertEqual((len(self.backend.calls), self.entries()), (2, []))
-        # An unseen category is a result, not damage: stored and reused like any other.
+        # Unsupported (an unseen category) is not cached either; the verdict itself is unchanged.
         self.backend.features = {"signal": "unseen", "obfChangedFileCount": 2}
         rows = [self.scan()["results"][0] for _ in range(2)]
-        self.assertEqual([r["cache_hit"] for r in rows], [False, True])
-        self.assertEqual(len(self.backend.calls), 3)
+        self.assertEqual([(r["reason"], r["cache_hit"]) for r in rows],
+                         [("out_of_training_scope", False)] * 2)  # fmt: skip
+        self.assertEqual((len(self.backend.calls), self.entries()), (4, []))
 
     def test_write_failures_only_skip_caching(self):
         self.cache_dir.write_bytes(b"not a directory")
