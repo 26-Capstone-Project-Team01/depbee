@@ -189,19 +189,55 @@ class ExtractorAnalyzerTests(Fixture):
         self.assertEqual(calls, [(1, 1, "example")])
 
     def test_malformed_compared_manifest_fails_before_extract(self):
+        # A null new-version manifest means "not served", tested above; the rest must not crash.
+        shapes = ("x", 5, 1.5, True, False, [], {}, ["dist"])
+        cases = [("manifest", value) for value in shapes] + [
+            ("dist", value) for value in (["tarball"], "x", 5, None, True, False, [])
+        ] + [("no dist", None)]
         for version in ("1.0.1", "1.1.0"):  # baseline, new
-            for label, value in (("manifest", "x"), ("dist", ["tarball"])):
-                with self.subTest(version=version, label=label):
+            for label, value in cases + ([("manifest", None)] if version == "1.0.1" else []):
+                with self.subTest(version=version, label=label, value=value):
                     doc = copy.deepcopy(self.doc)
                     if label == "manifest":
                         doc["versions"][version] = value
-                    else:
+                    elif label == "dist":
                         doc["versions"][version]["dist"] = value
+                    else:
+                        del doc["versions"][version]["dist"]
                     artifact, backend = self.run_analyzer(FakeBackend(doc, new_json=self.new_json))
                     row = artifact["results"][0]
                     self.assertEqual(row["status"], "failed")
                     self.assertIn(f"Registry metadata of example@{version}", row["error"])
                     self.assertEqual(backend.calls, [])
+
+    def test_malformed_packument_fails_the_scan_change_not_the_cli(self):
+        # Before the check in packument(), these raised AttributeError out of the analyzer.
+        cases = {
+            "packument list": [], "packument text": "x", "packument number": 5,
+            "packument null": None, "versions list": {**self.doc, "versions": []},
+            "versions text": {**self.doc, "versions": "x"},
+            "versions number": {**self.doc, "versions": 5},
+            "no versions": {k: v for k, v in self.doc.items() if k != "versions"},
+            "time list": {**self.doc, "time": ["1.1.0"]}, "time text": {**self.doc, "time": "x"},
+            "time number": {**self.doc, "time": 5},
+            "no time": {k: v for k, v in self.doc.items() if k != "time"},
+        }  # fmt: skip
+        for label, doc in cases.items():
+            with self.subTest(label):
+                backend = FakeBackend(doc)
+                with mock.patch(
+                    "depbee.analysis.extractor.FeatureExtractorBackend", return_value=backend
+                ):
+                    out, err = io.StringIO(), io.StringIO()
+                    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                        code = main(["scan", str(self.project), "--base-lock", str(self.base),
+                                     "--extract", "--format", "json", "--no-cache"])  # fmt: skip
+                row = json.loads(out.getvalue())["results"][0]
+                self.assertEqual((code, err.getvalue()), (2, ""))
+                self.assertEqual(row["reason"], "analysis_failed")
+                self.assertRegex(row["detail"], r"\Anpm registry metadata for example "
+                                 r"(is not a JSON object|lacks versions or time objects)\Z")
+                self.assertEqual(backend.calls, [])
 
     def test_unused_local_copy_is_an_error(self):
         with self.assertRaises(GuardError):
@@ -461,6 +497,10 @@ class PackageCheckTests(Fixture):
             "time not an object": broken(lambda d: d.update(time=["1.1.0"])),
             "version not served": broken(lambda d: d["versions"].pop("1.1.0")),
             "manifest not an object": broken(lambda d: d["versions"].update({"1.1.0": "x"})),
+            "manifest number": broken(lambda d: d["versions"].update({"1.1.0": 5})),
+            "manifest bool": broken(lambda d: d["versions"].update({"1.1.0": True})),
+            "dist null": broken(lambda d: d["versions"]["1.1.0"].update(dist=None)),
+            "dist number": broken(lambda d: d["versions"]["1.1.0"].update(dist=5)),
             "other version": broken(lambda d: d["versions"]["1.1.0"].update(version="1.1.1")),
             "other package": broken(lambda d: d["versions"]["1.1.0"].update(name="other")),
             "no dist": broken(lambda d: d["versions"]["1.1.0"].pop("dist")),
@@ -482,6 +522,13 @@ class PackageCheckTests(Fixture):
             json.loads(err)["error"],
             "npm registry metadata for example@1.1.0 has no dist.integrity",
         )
+        # The analyzer checks the packument's shape when it is fetched, before the request.
+        for doc in ([], {**self.doc, "time": []}):
+            with self.subTest(doc=type(doc).__name__):
+                self.backend.doc = doc
+                code, out, err = self.run_check("example@1.1.0", "--format", "json")
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("npm registry metadata for example ", json.loads(err)["error"])
 
     def test_registry_read_failure_is_exit_2(self):
         self.backend.errors = (FetchError,)
@@ -622,11 +669,20 @@ class PackageCheckTests(Fixture):
         def baseline_dist_list(doc):
             doc["versions"]["1.0.1"]["dist"] = [doc["versions"]["1.0.1"]["dist"]]
 
+        def baseline_dist(value):
+            return lambda d: d["versions"]["1.0.1"].update(dist=value)
+
+        no_object = "Registry metadata of example@1.0.1 is not an object"
+        no_dist = "Registry metadata of example@1.0.1 has no dist object"
         for label, edit, detail in (
             ("baseline manifest is a string", lambda d: d["versions"].update({"1.0.1": "x"}),
-             "Registry metadata of example@1.0.1 is not an object"),
-            ("baseline dist is a list", baseline_dist_list,
-             "Registry metadata of example@1.0.1 has no dist object"),
+             no_object),
+            ("baseline dist is a list", baseline_dist_list, no_dist),
+            *((f"baseline manifest is {value!r}",
+               lambda d, v=value: d["versions"].update({"1.0.1": v}), no_object)
+              for value in (5, 1.5, None, True, False, [])),
+            *((f"baseline dist is {value!r}", baseline_dist(value), no_dist)
+              for value in ("x", 5, None, True, False)),
         ):  # fmt: skip
             with self.subTest(label):
                 self.backend.doc = copy.deepcopy(self.doc)

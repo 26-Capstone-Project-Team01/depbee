@@ -242,9 +242,20 @@ class ExtractorAnalyzer:
             return {"status": "failed", "error": str(exc) or type(exc).__name__}, False
 
     def packument(self, name: str) -> dict:
-        """Registry metadata of name, fetched once per analyzer and reused by later calls."""
+        """Registry metadata of name, fetched once per analyzer and reused by later calls.
+
+        Raises GuardError unless it is an object with versions and time objects, the rule of
+        inputs.npm.build_package_request; the analysis reads both without further type checks.
+        """
         if name not in self._packuments:
-            self._packuments[name] = self.backend.fetch_packument(name)
+            packument = self.backend.fetch_packument(name)
+            if not isinstance(packument, dict):
+                raise GuardError(f"npm registry metadata for {name} is not a JSON object")
+            if not isinstance(packument.get("versions"), dict) or not isinstance(
+                packument.get("time"), dict
+            ):
+                raise GuardError(f"npm registry metadata for {name} lacks versions or time objects")
+            self._packuments[name] = packument
         return self._packuments[name]
 
     def _cache_key(self, name: str, new: str, baseline: str, packument: dict) -> dict:

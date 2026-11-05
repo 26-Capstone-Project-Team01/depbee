@@ -1,5 +1,11 @@
 # 검증 기록
 
+## 2026-11-05: lockfile 경로의 registry 메타데이터 형식 검사(PR #7 재검증 후속)
+
+- `scan --extract`에서 packument 자체나 `versions`가 리스트·문자열·숫자·null이거나 `time`이 리스트·문자열·숫자이면 `AttributeError`가 분석기 밖으로 나가 traceback과 종료 코드 1이 될 수 있었다(PR #7 재검증 minor 1). 이제 `ExtractorAnalyzer.packument()`가 받은 메타데이터가 객체이고 그 `versions`·`time`이 객체인지 확인하고, 아니면 `GuardError`로 그 항목을 분석 실패(`incomplete`, 종료 코드 2)로 둔다. `check`에서는 같은 검사가 요청을 만들기 전에 걸려 오류 JSON과 종료 코드 2로 끝난다(`build_package_request`와 같은 규칙). `versions`나 `time`이 아예 없을 때도 전과 같이 분석 실패이고 오류 문구만 바뀐다(전에는 "Registry no longer serves" 또는 "no publish time"). `AttributeError`를 잡는 코드는 넣지 않았다.
+- 테스트 115개 통과(skip 없음), `ruff check` 통과. 새 scan 경로 회귀 테스트(subTest 12개)는 실제 `cli.main`과 FakeBackend로 종료 코드 2, 빈 stderr, `analysis_failed`, feature-extractor 미호출을 확인한다. 테스트만 수정 전 코드(`9e7f989`)에 붙이면 오류 9개(모두 `AttributeError`)와 실패 3개(다른 오류 문구)로 깨진다.
+- 비교할 manifest와 `dist`의 형식 회귀에 숫자, 실수, null, bool, 빈 리스트·객체를 더했다(PR #7 재검증 nit 1). 이 형식들은 수정 전 코드에서도 통과했다(2026-11-04 기록의 검사로 이미 막혀 있었다).
+
 ## 2026-11-05: Markdown 출력(DEV-02f)
 
 - `scan`과 `check`에 `--format markdown`을 추가했다. 테스트 114개 통과(skip 없음), `ruff check` 통과.
