@@ -25,6 +25,7 @@
 | 서비스 연결 | 사용자 | 프로젝트 입력, 비교 기준 선정, 분석기 연결, 추론, CLI, CI/CD |
 
 `ExtractorAnalyzer`는 feature-extractor의 `build_row()`를 직접 호출한다. 패키지 코드는 읽기만 하고 실행하지 않는다.
+`analysis/cache.py`는 추출한 feature를 실행 사이에 재사용하는 작은 JSON 파일 캐시다(키 digest가 파일 이름, 임시 파일 뒤 `os.replace`로 저장). 키는 `ExtractorAnalyzer`가 비교한 두 버전의 메타데이터, 검증한 모델의 해시(`LightGBMPredictor.identity`), 설치 출처를 확인한 feature-extractor의 식별 정보(`FeatureExtractorBackend.identity`)로 만들고, 셋 중 하나라도 없으면 캐시를 쓰지 않는다. 서비스는 분석기가 잰 항목별 시간과 캐시 사용 여부를 보고서에 붙인다(`service._timed`). 판정은 그대로 `pipeline.scan()`이 한다.
 `ArtifactAnalyzer`는 다른 분석기가 파일로 넘긴 결과를 받는 연결부다.
 새 분석기는 `Analyzer.analyze(request)`를 구현한다. 임의 플러그인 자동 검색이나 대상 프로젝트 설정의 명령 실행은 하지 않는다.
 

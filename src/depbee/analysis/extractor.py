@@ -5,11 +5,17 @@ For each analyzable change, the installed version is compared with its registry 
 previous version is kept only as context in the evidence.
 """
 
+import base64
+import hashlib
 import importlib.metadata
+import json
+import platform
+import time
 from collections.abc import Callable
 from pathlib import Path
 
-from ..contracts import SCHEMA_VERSION, GuardError
+from ..contracts import SCHEMA_VERSION, GuardError, digest, elapsed_since
+from . import cache
 from .artifact import validate
 from .baseline import is_stable, select_baseline
 
@@ -43,6 +49,47 @@ _MAX_EVIDENCE_TEXT = 120
 _MAX_LISTED_DEPENDENCIES = 5
 
 
+def _installed_identity() -> dict | None:
+    """Provenance of the installed feature-extractor, or None if it cannot be verified.
+
+    Verified: pip installed it from Git at exactly the commit that depbee's ``extract`` extra pins
+    (direct_url.json; not editable, not a local folder) and every installed module still has the
+    hash pip recorded. Only then are extracted features reused between runs (analysis.cache).
+    """
+    try:
+        dist = importlib.metadata.distribution("feature-extractor")
+        direct = json.loads(dist.read_text("direct_url.json") or "null")
+        pins = importlib.metadata.requires("depbee") or []
+    except (importlib.metadata.PackageNotFoundError, ValueError):
+        return None
+    vcs = direct.get("vcs_info") if isinstance(direct, dict) else None
+    if not isinstance(vcs, dict) or vcs.get("vcs") != "git" or "dir_info" in direct:
+        return None
+    pinned = f"feature-extractor @ git+{direct.get('url')}@{vcs.get('commit_id')}"
+    if pinned not in (pin.split(";")[0].strip() for pin in pins):
+        return None
+    recorded = {}
+    for file in dist.files or []:
+        if file.parts[0] != "feature_extractor" or file.hash is None:
+            continue
+        try:
+            data = Path(dist.locate_file(file)).read_bytes()
+        except OSError:
+            return None
+        actual = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+        if file.hash.mode != "sha256" or actual != file.hash.value:
+            return None  # changed after install
+        recorded[file.as_posix()] = file.hash.value
+    if not recorded:
+        return None
+    return {
+        "commit": vcs["commit_id"],
+        "url": direct["url"],
+        "files_sha256": digest(recorded),
+        "python": platform.python_version(),  # tarfile and re behaviour can change between them
+    }
+
+
 class FeatureExtractorBackend:
     """The calls into feature-extractor, kept apart so tests can run without network access."""
 
@@ -61,6 +108,7 @@ class FeatureExtractorBackend:
             ) from exc
         self.errors = (FeatureExtractorError,)
         self.version = f"feature-extractor {importlib.metadata.version('feature-extractor')}"
+        self.identity = _installed_identity()
         self.fetch_packument = fetch_packument
         self._build_row = build_row
         self._extractors = resolve_extractors(None)
@@ -134,6 +182,11 @@ class ExtractorAnalyzer:
     (``.../package/package.json``), for versions the registry no longer serves. Such copies
     cannot be checked against the lockfile integrity, which the evidence states.
     ``progress``, if given, is called as ``progress(index, total, change)`` before each change.
+    ``cache_dir`` enables the persistent feature cache (``analysis.cache``) for registry versions,
+    used only together with ``model_identity`` (hashes of the verified model) and a backend whose
+    installed provenance is verified (``backend.identity``); otherwise nothing is read or written.
+    After ``analyze()``, ``measurements`` maps each analyzed change_id to (elapsed seconds on the
+    monotonic clock for metadata, cache and extraction, whether the cache supplied the features).
     """
 
     def __init__(
@@ -141,10 +194,18 @@ class ExtractorAnalyzer:
         local_sources: dict[tuple[str, str], Path] | None = None,
         backend: FeatureExtractorBackend | None = None,
         progress: Callable[[int, int, dict], None] | None = None,
+        *,
+        cache_dir: Path | None = None,
+        model_identity: dict | None = None,
     ) -> None:
         self.backend = backend or FeatureExtractorBackend()
         self.local_sources = dict(local_sources or {})
         self.progress = progress
+        identity = getattr(self.backend, "identity", None)
+        verified = isinstance(identity, dict) and isinstance(model_identity, dict)
+        self.cache_dir = cache_dir if verified else None
+        self.model_identity = model_identity
+        self.measurements: dict[str, tuple[float, bool]] = {}
         self._packuments: dict[str, dict] = {}
 
     def analyze(self, request: dict) -> dict:
@@ -161,7 +222,9 @@ class ExtractorAnalyzer:
         for index, change in enumerate(changes, start=1):
             if self.progress:
                 self.progress(index, len(changes), change)
-            result = self._analyze(change, package_input)
+            started = time.monotonic()
+            result, cache_hit = self._analyze(change, package_input)
+            self.measurements[change["change_id"]] = (elapsed_since(started), cache_hit)
             results.append({"change_id": change["change_id"], **result})
         artifact = {
             "schema_version": SCHEMA_VERSION,
@@ -172,11 +235,11 @@ class ExtractorAnalyzer:
         }
         return validate(artifact, request)
 
-    def _analyze(self, change: dict, package_input: bool) -> dict:
+    def _analyze(self, change: dict, package_input: bool) -> tuple[dict, bool]:
         try:
             return self._analyze_change(change, package_input)
         except (GuardError, OSError, *self.backend.errors) as exc:
-            return {"status": "failed", "error": str(exc) or type(exc).__name__}
+            return {"status": "failed", "error": str(exc) or type(exc).__name__}, False
 
     def packument(self, name: str) -> dict:
         """Registry metadata of name, fetched once per analyzer and reused by later calls."""
@@ -184,14 +247,35 @@ class ExtractorAnalyzer:
             self._packuments[name] = self.backend.fetch_packument(name)
         return self._packuments[name]
 
-    def _analyze_change(self, change: dict, package_input: bool) -> dict:
+    def _cache_key(self, name: str, new: str, baseline: str, packument: dict) -> dict:
+        """Everything the features depend on; any change makes a new key (a miss).
+
+        Not the request, the lockfile's previous version or the location: the same compared pair
+        yields the same features, and evidence about the request is rebuilt on every run.
+        """
+        versions, times = packument["versions"], packument["time"]
+        return {
+            "format": cache.FORMAT,
+            "feature_schema": FEATURE_SCHEMA,
+            "extractor": self.backend.identity,
+            "model": self.model_identity,
+            "package": name,
+            "version": new,
+            "baseline": baseline,
+            "integrity": [versions[baseline]["dist"].get("integrity"),
+                          versions[new]["dist"].get("integrity")],  # fmt: skip
+            "manifests": digest([versions[baseline], versions[new]]),
+            "time": [times.get(baseline), times.get(new)],
+        }
+
+    def _analyze_change(self, change: dict, package_input: bool) -> tuple[dict, bool]:
         name, new = change["after"]["name"], change["after"]["version"]
         if not is_stable(new):
             return {
                 "status": "unsupported",
                 "reason": "out_of_training_scope",
                 "error": f"{new} is a prerelease; the model was trained on stable versions only",
-            }
+            }, False
         packument = self.packument(name)
         local = self.local_sources.get((name, new))
         if local is None:
@@ -206,11 +290,20 @@ class ExtractorAnalyzer:
                 "status": "unsupported",
                 "reason": "no_baseline",
                 "error": f"No earlier stable version of {name} to compare {new} with",
-            }
+            }, False
         _dist(packument, name, baseline.version)
-        features, new_json = self.backend.extract(name, baseline.version, new, packument, local)
+        # Local copies are never cached: the key cannot bind files outside the registry.
+        key = None
+        if self.cache_dir is not None and local is None:
+            key = self._cache_key(name, new, baseline.version, packument)
+        features = cache.load(self.cache_dir, key) if key else None
+        cache_hit = features is not None
+        if cache_hit:
+            new_json = packument["versions"][new]
+        else:
+            features, new_json = self.backend.extract(name, baseline.version, new, packument, local)
         old_json = packument["versions"][baseline.version]
-        return {
+        result = {
             "status": "complete",
             "baseline_version": baseline.version,
             "features": features,
@@ -218,6 +311,9 @@ class ExtractorAnalyzer:
                 change, baseline, local, old_json, new_json, features, package_input
             ),
         }
+        if key and not cache_hit:
+            cache.store(self.cache_dir, key, features)
+        return result, cache_hit
 
     def _evidence(
         self, change, baseline, local, old_json, new_json, features, package_input

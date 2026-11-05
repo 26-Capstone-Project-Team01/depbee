@@ -248,6 +248,7 @@ class ServiceTests(Fixture):
         progress = mock.Mock()
         with mock.patch("depbee.analysis.extractor.ExtractorAnalyzer") as extractor:
             extractor.return_value.analyze.return_value = self.artifact()
+            extractor.return_value.measurements = {}
             report = scan_project(
                 self.project, self.base, extract=True, local_root=self.root,
                 local_sources=["example@1.1.0=src"], progress=progress,
@@ -266,6 +267,7 @@ class ServiceTests(Fixture):
                 mock.patch("depbee.analysis.extractor.ExtractorAnalyzer") as extractor,
             ):
                 extractor.return_value.analyze.return_value = self.artifact()
+                extractor.return_value.measurements = {}
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
                     code = main(["scan", str(self.project), "--base-lock", str(self.base),
                                  "--extract", "--format", fmt])
@@ -669,6 +671,12 @@ class LightGBMTests(Fixture):
         expected = scan(self.request(), ArtifactAnalyzer(analysis), LightGBMPredictor(self.root))
         self.assertEqual(report, expected)
         self.assertEqual(report["results"][0]["status"], "flagged")
+
+    def test_identity_is_the_verified_file_hashes(self):
+        # The feature cache keys on these (DEV-02e).
+        manifest = hashlib.sha256((self.root / "manifest.json").read_bytes()).hexdigest()
+        self.assertEqual(LightGBMPredictor(self.root).identity,
+                         {"model_sha256": self.manifest["model_sha256"], "manifest_sha256": manifest})
 
     def test_hash_order_and_missing_features(self):
         predictor = LightGBMPredictor(self.root)

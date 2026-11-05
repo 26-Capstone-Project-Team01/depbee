@@ -25,7 +25,7 @@ class LightGBMPredictor:
     """
 
     def __init__(self, directory: Path):
-        manifest, _ = read_json(directory / "manifest.json")
+        manifest, manifest_hash = read_json(directory / "manifest.json")
         if manifest.get("schema_version") != SCHEMA_VERSION:
             raise GuardError("Unsupported model manifest schema_version")
         if manifest.get("positive_class") != "malicious" or manifest.get("objective") != "binary":
@@ -65,6 +65,8 @@ class LightGBMPredictor:
             actual_hash = hashlib.file_digest(stream, "sha256").hexdigest()
         if manifest.get("model_sha256") != actual_hash:
             raise GuardError("Model SHA-256 does not match the manifest")
+        # The verified files; the feature cache keys on them (analysis.cache).
+        self.identity = {"model_sha256": actual_hash, "manifest_sha256": manifest_hash}
         try:
             import lightgbm as lgb
         except ImportError as exc:

@@ -56,6 +56,16 @@ PART_LABELS = {"New": "새 버전", "Change": "변화량", "ChangedCode": "바�
 STATUS_ORDER = {"flagged": 0, "incomplete": 1, "not_flagged": 2, "removed": 3}
 
 
+def _cache_arguments(cmd: argparse.ArgumentParser) -> None:
+    cache = cmd.add_mutually_exclusive_group()
+    cache.add_argument(
+        "--cache-dir",
+        type=Path,
+        help="Extracted-feature cache (default ~/.cache/depbee); use a directory only you can write",
+    )
+    cache.add_argument("--no-cache", action="store_true", help="Neither read nor write the cache")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Analyze npm updates without installing packages")
     parser.add_argument("--version", action="version", version=__version__)
@@ -100,6 +110,7 @@ def _parser() -> argparse.ArgumentParser:
             )
             cmd.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
             cmd.add_argument("--format", choices=("text", "json"), default="text")
+            _cache_arguments(cmd)
     check = commands.add_parser(
         "check",
         help="Check one npm registry version without a lockfile (needs .[extract])",
@@ -113,6 +124,7 @@ def _parser() -> argparse.ArgumentParser:
     check.add_argument("--output", type=Path, help="Write a NEW JSON file (never overwrite inputs)")
     check.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
     check.add_argument("--format", choices=("text", "json"), default="text")
+    _cache_arguments(check)
     return parser
 
 
@@ -178,6 +190,9 @@ def _print_text(report: dict) -> None:
         print(
             "범위: lockfile에서 바뀐 의존성만 검사했습니다. 프로젝트 전체의 안전성 평가가 아닙니다."
         )
+    # Only extraction reports (scan --extract, check) carry times.
+    if report.get("elapsed_seconds") is not None:
+        print(f"소요 시간: {report['elapsed_seconds']:.3f}초")
     # Risky and unfinished results first; the JSON report keeps the lockfile order.
     rows = sorted(
         report["results"],
@@ -195,6 +210,9 @@ def _print_text(report: dict) -> None:
             print(f"  이유: {_clean(reason)}")
         if row.get("detail"):
             print(f"  상세: {_clean(row['detail'])}")
+        if row.get("elapsed_seconds") is not None:
+            cached = " (캐시한 feature 사용)" if row.get("cache_hit") else ""
+            print(f"  분석 시간: {row['elapsed_seconds']:.3f}초{cached}")
         if row["evidence"]:
             print("  추출된 사실:")
             for evidence in row["evidence"]:
@@ -249,7 +267,14 @@ def main(argv: list[str] | None = None) -> int:
             name, at, version = args.package.rpartition("@")
             if not at or not name:
                 raise GuardError(f"check needs NAME@VERSION, e.g. lodash@4.17.21: {args.package!r}")
-            report = check_package(name, version, model_dir=args.model_dir, progress=progress)
+            report = check_package(
+                name,
+                version,
+                model_dir=args.model_dir,
+                progress=progress,
+                cache_dir=args.cache_dir,
+                no_cache=args.no_cache,
+            )
             _emit(report, args)
             return report["exit_code"]
         report = scan_project(
@@ -262,6 +287,8 @@ def main(argv: list[str] | None = None) -> int:
             local_root=args.local_root,
             model_dir=args.model_dir,
             progress=progress,
+            cache_dir=args.cache_dir,
+            no_cache=args.no_cache,
         )
         _emit(report, args)
         return report["exit_code"]

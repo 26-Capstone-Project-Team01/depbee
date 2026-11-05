@@ -1,5 +1,14 @@
 # 검증 기록
 
+## 2026-11-05: 분석 캐시와 소요 시간(DEV-02e)
+
+- `scan --extract`와 `check`에 추출한 feature의 실행 간 캐시(`--cache-dir`, 기본 `~/.cache/depbee`, `--no-cache`)와 소요 시간·캐시 사용 여부(`elapsed_seconds`, `cache_hit`)를 추가했다. 캐시 키와 우회 조건은 README와 연결 규약 4절에 있다. `--extract` 없는 `scan`과 `plan`에는 새 필드가 없다.
+- 테스트 109개 통과(skip 없음), `ruff check` 통과. 새 테스트는 FakeBackend와 합성 메타데이터로 돈다: 같은 쌍의 cold/warm에서 추출 1회와 같은 판정·feature·근거, 요청·위치·lockfile 이전 버전이 달라도 재사용하며 근거는 현재 요청으로 다시 만듦, 모델 파일·manifest, feature-extractor 출처, integrity, 두 manifest, 배포 시각, 비교 기준 중 하나만 바뀌어도 다시 추출, `--no-cache`·모델 없음·출처 미확인·로컬 사본·`--analysis`에서 읽기와 쓰기 없음, 추출 실패는 저장하지 않고 다음 실행에서 다시 추출, 잘리거나 키·형식·feature 값(NaN, 무한대, 객체)이 틀리거나 상한을 넘는 항목은 miss, 쓰기 실패는 캐시만 건너뜀, 스레드 여러 개가 같은 항목을 동시에 쓰고 읽어도 부분 파일을 읽지 않음, 고정 clock의 항목별·전체 시간과 삭제·미지원·실패 항목의 값, 시간 값이 음수나 NaN이 되지 않음, 설치 출처 확인(고정 커밋 VCS 설치만 인정, 편집 가능·로컬 폴더·다른 커밋·다른 URL·설치 후 수정은 거부), 검증한 모델의 해시.
+- 이 개발 환경에서는 `pip install -e ".[dev,ml,extract]"`가 feature-extractor를 Git 커밋 `c24761d`에서 설치했고(`direct_url.json`의 `vcs_info`), 설치 출처 확인을 통과했다.
+- 합성 측정(실제 성능 아님): 고정 feature를 즉시 돌려주는 합성 backend와 D04-E00으로 `scan --extract`를 바뀐 패키지 1·5·20개에 cold, warm, `--no-cache` 순서로 실행했다. 추출 횟수는 cold 1·5·20, warm 0·0·0, `--no-cache` 1·5·20이고 메타데이터 조회는 매번 패키지 수만큼이며, 세 실행의 판정·점수·feature·근거가 같다(시간·캐시 필드를 뺀 의미 비교). 벽시계 시간은 cold 0.474·0.122·0.163초, warm 0.108·0.115·0.138초였고 첫 cold에는 LightGBM import가 들어 있다. 추출이 즉시 끝나는 합성 backend라 이 값은 depbee 자체의 처리 시간이며 실제 npm 다운로드·추출 시간이나 캐시로 줄어드는 시간이 아니다.
+- 고정 clock으로 `check`와 `scan --extract`를 subprocess에서 12가지 실행한 출력(cold/warm, `--no-cache`, 모델 없음, pre-release, 잘못된 배포 시각, `--output`)은 두 번 실행해 바이트 단위로 같다.
+- 확인하지 않은 것: 실제 registry에서의 추출 시간과 캐시 효과, 여러 OS 파일시스템에서의 동시 쓰기·내구성(Windows NTFS에서 스레드로만 확인), 캐시 폴더의 크기 증가(자동 정리 없음).
+
 ## 2026-11-04: 비교할 manifest의 사전 검사, 다운로드 상한 없음(PR #7 리뷰 후속)
 
 - 비교 기준 버전의 manifest가 문자열이거나 그 `dist`가 리스트이면, 고정 feature-extractor(c24761d) `loader.py` 100행이 형식 검사 없이 `dist.tarball`을 읽다가 `AttributeError`를 냈다. 이 예외는 분석 실패로 바뀌지 않아 traceback과 종료 코드 1(위험 판정과 같은 코드)로 끝났다(PR #7 리뷰 minor 1). 아래 기록의 "비교한 두 버전의 manifest가 객체가 아니면 분석 실패"는 FakeBackend 기준이었고, 실제 loader를 거치면 비교 기준 쪽은 지켜지지 않았다.

@@ -588,8 +588,9 @@ class PackageCheckTests(Fixture):
         self.assertEqual(self.backend.fetched, [])
 
     def test_request_id_repeats_and_lockfile_reports_keep_their_fields(self):
-        first = check_package("example", "1.1.0")
-        self.assertEqual(check_package("example", "1.1.0"), first)
+        with mock.patch("time.monotonic", return_value=5.0):  # elapsed_seconds 0.0 in both
+            first = check_package("example", "1.1.0")
+            self.assertEqual(check_package("example", "1.1.0"), first)
         request = build_package_request("example", "1.1.0", self.doc)
         self.assertEqual(first["request_id"], request["request_id"])
         lockfile = scan_project(self.project, self.base)

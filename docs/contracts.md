@@ -119,6 +119,14 @@ SHA-256은 파일 변조·혼동 확인용이다. 모델은 신뢰하는 팀원�
 점수가 나온 항목에는 `compared_version`(비교 기준 버전), `features`, `evidence`(추출된 사실), `explanation`(점수에 크게 작용한 feature 3개와 SHAP 기여도, log-odds 단위)이 있다. 추출된 사실과 모델 설명은 구분한다.
 `explanation_rest`는 `explanation`에 없는 feature의 기여도 합(`others_sum`)과 개수(`others_count`), 모델 기준값(`base_value`)이다. `explanation`의 기여도와 이 두 값을 모두 더하면 점수의 log-odds가 된다.
 `incomplete` 항목에는 `reason`과, 있으면 `detail`이 있다. 학습 범위 밖 입력은 `out_of_training_scope` 또는 `no_baseline`이다.
+
+feature를 추출한 보고서(`scan --extract`, `check`)에만 소요 시간과 캐시 사용 여부가 더 있다. 그 밖의 필드와 순서는 그대로이고, `--extract` 없는 `scan`과 `plan`의 출력에는 이 필드가 없다.
+
+- 최상위 `elapsed_seconds`: `analyzer_version` 다음, `results` 앞. 서비스 함수(`scan_project`, `check_package`) 호출부터 판정 완료까지의 시간이다.
+- 각 결과의 끝 `elapsed_seconds`: 그 항목의 메타데이터 조회·캐시 조회·추출 시간이며 추론 시간은 들어가지 않는다. 분석하지 않은 항목(삭제, 미지원 출처 등)은 null이다. `check`는 요청을 만들 때 메타데이터를 미리 받으므로 그 조회 시간은 최상위 값에만 들어간다.
+- 각 결과의 끝 `cache_hit`: 캐시한 feature를 썼으면 true, 추출했거나 분석하지 않았거나 실패한 항목은 false다.
+- 시간은 단조 시계(`time.monotonic`)로 재며 초 단위, 소수 셋째 자리까지, 항상 유한한 0 이상의 값이다. 실행마다 달라지므로 보고서끼리 비교할 때는 이 필드를 빼고 비교한다.
+- 캐시 파일 형식은 depbee 내부 형식이며 이 규약에 속하지 않는다. 캐시는 추출한 feature만 담고, 판정·점수·근거·설명은 매번 다시 계산한다.
 하나라도 미완료면 전체 종료 코드 2, 그 외 위험이 있으면 1, 나머지는 0이다.
 위험과 미완료가 함께 있으면 보고서에 둘 다 남기고 2로 보류한다.
 입력/manifest 자체의 오류는 stderr의 error JSON과 종료 코드 2로 반환한다.

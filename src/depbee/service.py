@@ -4,11 +4,13 @@ Detection and verdicts stay in pipeline.scan(); output formats and exit handling
 """
 
 import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 
+from .analysis import cache
 from .analysis.artifact import ArtifactAnalyzer
-from .contracts import GuardError
+from .contracts import GuardError, elapsed_since
 from .inference.lightgbm import LightGBMPredictor
 from .inputs.npm import build_package_request, build_request, check_package_spec
 from .pipeline import scan
@@ -58,6 +60,8 @@ def scan_project(
     local_root: Path | None = None,
     model_dir: Path | None = None,
     progress: Callable[[int, int, dict], None] | None = None,
+    cache_dir: Path | None = None,
+    no_cache: bool = False,
 ) -> dict:
     """Build the request, pick the analyzer and model, and return the pipeline.scan() report.
 
@@ -67,24 +71,30 @@ def scan_project(
     model_dir: trusted model directory. If None, DEPBEE_MODEL_DIR is read on each call; empty or
     unset means no model. A bad path is an error and never falls back to another model.
     progress: called per extracted package; the caller decides how to show it.
-    With extract=False, progress and local_root are ignored; any local_sources raise GuardError.
+    cache_dir, no_cache: the extracted-feature cache (default ~/.cache/depbee); see _cache_dir().
+    With extract=True the report also has elapsed_seconds (in total and per result) and cache_hit.
+    With extract=False, progress, local_root and the cache options are ignored, and any
+    local_sources raise GuardError.
 
     Raises GuardError, OSError, ValueError or RecursionError for bad options or invalid inputs
     (lockfiles, analysis, model); the caller maps them to its error output.
     """
+    started = time.monotonic()
     # Intended error priority: option conflict before reading lockfiles, local sources after.
     if analysis and extract:
         raise GuardError("Use either an analysis file or extraction, not both")
     request = plan_project(project, base_lock, base_ref=base_ref)
     sources = _local_sources(local_sources or [], extract, local_root)
-    analyzer = None
-    if analysis:
-        analyzer = ArtifactAnalyzer(analysis)
-    elif extract:
-        from .analysis.extractor import ExtractorAnalyzer
+    predictor = _predictor(model_dir)
+    if not extract:
+        analyzer = ArtifactAnalyzer(analysis) if analysis else None
+        return scan(request, analyzer, predictor)
+    from .analysis.extractor import ExtractorAnalyzer
 
-        analyzer = ExtractorAnalyzer(sources, progress=progress)
-    return scan(request, analyzer, _predictor(model_dir))
+    analyzer = ExtractorAnalyzer(
+        sources, progress=progress, **_cache_options(predictor, cache_dir, no_cache)
+    )
+    return _timed(scan(request, analyzer, predictor), analyzer, started)
 
 
 def _predictor(model_dir: Path | None) -> LightGBMPredictor | None:
@@ -95,12 +105,40 @@ def _predictor(model_dir: Path | None) -> LightGBMPredictor | None:
     return LightGBMPredictor(model_dir) if model_dir else None
 
 
+def _cache_options(predictor, cache_dir: Path | None, no_cache: bool) -> dict:
+    """ExtractorAnalyzer cache options; none without a verified model or with no_cache.
+
+    The analyzer also requires verified feature-extractor provenance before it uses the cache.
+    """
+    identity = getattr(predictor, "identity", None)
+    if no_cache or not isinstance(identity, dict):
+        return {}
+    if cache_dir is None:
+        try:
+            cache_dir = cache.default_dir()
+        except RuntimeError:  # no home directory: run without the cache
+            return {}
+    return {"cache_dir": cache_dir, "model_identity": identity}
+
+
+def _timed(report: dict, analyzer, started: float) -> dict:
+    """Add extraction times: per result (null and false if not analyzed) and for the whole call."""
+    for row in report["results"]:
+        row["elapsed_seconds"], row["cache_hit"] = analyzer.measurements.get(
+            row["change_id"], (None, False)
+        )
+    results = report.pop("results")
+    return {**report, "elapsed_seconds": elapsed_since(started), "results": results}
+
+
 def check_package(
     name: str,
     version: str,
     *,
     model_dir: Path | None = None,
     progress: Callable[[int, int, dict], None] | None = None,
+    cache_dir: Path | None = None,
+    no_cache: bool = False,
 ) -> dict:
     """Check one npm registry version without a lockfile and return the pipeline.scan() report.
 
@@ -108,18 +146,23 @@ def check_package(
     network access. The version is compared with its stable predecessor, as in scan --extract.
     The registry metadata is fetched once and used for both the request and the analysis; its
     dist.integrity is registry metadata, not a hash of the downloaded tarball.
-    model_dir, progress: as in scan_project(). The model is loaded before the registry is read.
+    model_dir, progress, cache_dir, no_cache: as in scan_project(). The model is loaded before
+    the registry is read. The report has the elapsed_seconds and cache_hit of scan --extract.
 
     Raises GuardError, OSError or ValueError for an invalid name or version, unreadable or
     invalid registry metadata, or a bad model; the caller maps them to its error output.
     """
+    started = time.monotonic()
     check_package_spec(name, version)
     from .analysis.extractor import ExtractorAnalyzer
 
-    analyzer = ExtractorAnalyzer(progress=progress)
     predictor = _predictor(model_dir)
+    analyzer = ExtractorAnalyzer(
+        progress=progress, **_cache_options(predictor, cache_dir, no_cache)
+    )
     try:
         packument = analyzer.packument(name)
     except analyzer.backend.errors as exc:
         raise GuardError(f"Cannot read npm registry metadata for {name}: {exc}") from exc
-    return scan(build_package_request(name, version, packument), analyzer, predictor)
+    request = build_package_request(name, version, packument)
+    return _timed(scan(request, analyzer, predictor), analyzer, started)

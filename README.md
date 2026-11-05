@@ -11,7 +11,7 @@ npm 프로젝트에서 바뀐 의존성 버전을 찾아, 각 버전의 변경�
 | 영역      | 현재 구현 내용                                                                                    | 남은 연결·검증                          |
 | --------- | ------------------------------------------------------------------------------------------------- | --------------------------------------- |
 | 입력 처리 | lockfile v2/v3 비교(기준은 파일·Git 커밋), 직접·중첩 의존성 변경·추가 추출, 변경·요청 ID와 해시. lockfile 없이 registry의 버전 하나(`check`) | 추가 입력 형식                          |
-| 분석      | `--extract`: feature-extractor로 설치될 버전과 그 직전 stable을 비교해 feature·근거 추출          | tarball 자체의 integrity 검증           |
+| 분석      | `--extract`: feature-extractor로 설치될 버전과 그 직전 stable을 비교해 feature·근거 추출, 추출한 feature를 실행 사이에 재사용하는 캐시와 소요 시간 | tarball 자체의 integrity 검증           |
 | 분석 연결 | `--analysis`: 다른 분석기가 만든 JSON의 요청 ID·변경 ID·중복·상태·feature 형식 검증               |                                         |
 | 모델 추론 | native LightGBM 로딩, 모델 해시·이진 분류·feature 이름/순서·자료형 검증, feature별 기여도 계산     | 검증 세트로 정한 임계값 수령            |
 | 판정 조율 | feature 스키마 확인, 임계값 판정, 실패·학습 범위 밖 입력은 `incomplete` 처리                      |                                         |
@@ -32,6 +32,7 @@ src/depbee/
   inputs/git.py           # Git 커밋에서 기준 lockfile 읽기
   analysis/extractor.py   # feature-extractor 호출, 근거 정리
   analysis/baseline.py    # 비교 기준 버전(직전 stable) 선정
+  analysis/cache.py       # 추출한 feature의 실행 간 캐시
   analysis/artifact.py    # 분석 결과 검증, 미리 만든 분석 JSON 연결
   inference/lightgbm.py   # 학습 완료 모델 로딩·검증·추론·기여도
   pipeline.py             # 입력→분석→추론 처리 조율
@@ -101,6 +102,12 @@ tarball은 Python 임시 폴더에 풀었다가 지웁니다. 위치를 바꾸�
 registry 메타데이터는 한 번만 받아 요청, 분석, feature 추출(feature-extractor의 registry source)에 함께 씁니다. 그 버전이 registry에 없거나, tarball 주소가 `https://registry.npmjs.org`가 아니거나, `dist.integrity`가 없거나, 메타데이터 형식이 잘못됐으면 오류(종료 코드 2)로 끝납니다.
 pre-release와 비교할 이전 stable이 없는 버전은 `scan`과 같이 `incomplete`입니다.
 결과에는 "lockfile 없이 registry 정보로 검사"했다는 범위(`input_kind: "package"`)와 근거가 표시됩니다. 출력 형식, `--output`, 진행 표시(텍스트만), 종료 코드는 `scan`과 같습니다.
+
+`scan --extract`와 `check`는 추출한 feature를 캐시 폴더(기본 `~/.cache/depbee`, `--cache-dir`로 변경)에 저장해, 같은 두 버전을 다시 비교할 때 tarball을 다시 받거나 추출하지 않습니다. registry 메타데이터는 매번 다시 받아 확인하고, 판정·점수·근거는 매번 새로 계산합니다.
+캐시 키는 패키지와 비교한 두 버전, 두 버전의 registry manifest·integrity·배포 시각, feature 스키마, 설치된 feature-extractor의 출처(고정 커밋, 설치 파일 해시, Python 버전), 모델 파일과 manifest의 해시입니다. 하나라도 다르면 다시 추출합니다.
+모델이 없을 때, feature-extractor가 고정 커밋 그대로 설치됐는지 확인할 수 없을 때(편집 가능 설치, 로컬 폴더 설치, 설치 후 수정), 로컬 사본(`--local-source`)으로 읽은 버전, 분석에 실패한 항목은 캐시를 쓰지 않습니다. `--no-cache`는 캐시를 읽지도 쓰지도 않습니다.
+캐시 파일은 형식과 키만 검사하므로 누가 썼는지는 보증하지 못합니다. 다른 사람이나 PR이 쓸 수 있는 폴더를 캐시로 지정하지 않습니다. 캐시는 자동으로 지우지 않으므로 필요하면 폴더를 직접 지웁니다.
+두 명령의 결과에는 전체 소요 시간(`elapsed_seconds`)과, 항목별로 메타데이터 조회·캐시 조회·추출에 걸린 시간(추론 제외)과 캐시 사용 여부(`cache_hit`)가 붙습니다. `--extract` 없는 `scan`과 `plan`의 출력은 바뀌지 않습니다.
 
 `scan`과 `check`에서 `--model-dir`을 생략하면 환경 변수 `DEPBEE_MODEL_DIR`의 모델 폴더를 씁니다. `--model-dir`이 항상 우선하고, 둘 다 없거나 환경 변수가 빈 값이면 모델 없이 처리합니다(분석할 변경이 있으면 `incomplete`).
 지정한 경로가 잘못되면 다른 모델로 대체하지 않고 오류(종료 코드 2)로 끝납니다. 대상 프로젝트의 설정에서는 모델 경로를 읽지 않습니다.
