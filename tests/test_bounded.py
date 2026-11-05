@@ -16,12 +16,12 @@ from pathlib import Path
 from unittest import mock
 
 import bounded_jobs
-from test_cache import Model
+from test_cache import CacheFixture, Model
 from test_extract import FakeBackend, packument
 from test_registry import package_tgz, sri, tarball_url, tgz
-from test_workflow import Fixture
+from test_workflow import Fixture, package
 
-from depbee.analysis import bounded
+from depbee.analysis import bounded, cache
 from depbee.analysis.extractor import FeatureExtractorBackend
 from depbee.service import check_package, scan_project
 
@@ -233,6 +233,41 @@ class BoundedTests(Fixture):
         self.assertEqual(len(backend.calls), 1)  # extracted once, on the cold run
         self.assertEqual(next(cache_dir.glob("*.json")).read_bytes(), entry)
 
+    def test_a_repeated_package_second_location_has_its_own_deadline(self):
+        # Review 03 B with a real child for the metadata: the second location reuses the
+        # metadata and hits the cache, so before the fix its budget had no deadline at all.
+        for location in ("node_modules/example", "node_modules/a/node_modules/example"):
+            self.old["packages"][location] = package()
+            self.new["packages"][location] = package("1.1.0")
+        self.save_locks()
+        doc = packument({"1.0.0": "2026-01-01T00:00:00Z", "1.0.1": "2026-01-02T00:00:00Z",
+                         "1.1.0": "2026-01-03T00:00:00Z"})  # fmt: skip
+        backend = FakeBackend(doc, features={"signal": 0.2, "obfChangedFileCount": 2})
+        backend.identity = {"commit": "c" * 40}
+        backend.fetch_packument = lambda name: bounded.run(bounded_jobs.sleep_then, (0, doc))
+        real_load, loads = cache.load, []
+
+        def load(*args):
+            loads.append(1)
+            if len(loads) == 2:  # the second location's cache read
+                time.sleep(1.3)
+            return real_load(*args)
+
+        options = {"extract": True, "model_dir": Path("m"), "cache_dir": self.root / "cache"}
+        with (
+            mock.patch("depbee.analysis.extractor.FeatureExtractorBackend", return_value=backend),
+            mock.patch("depbee.service.LightGBMPredictor", return_value=Model()),
+            mock.patch.object(cache, "load", side_effect=load),
+            self.limit(1.0),
+        ):
+            rows = scan_project(self.project, self.base, **options)["results"]
+        self.assertEqual([r["location"] for r in rows],
+                         ["node_modules/a/node_modules/example", "node_modules/example"])  # fmt: skip
+        self.assertEqual((rows[0]["status"], rows[0]["cache_hit"]), ("not_flagged", False))
+        self.assertEqual((rows[1]["status"], rows[1].get("reason")), ("incomplete", "analysis_failed"))
+        self.assertEqual((len(self.children), len(backend.calls)), (1, 1))  # one metadata child
+        self.assertTrue(all(child.poll() is not None for child in self.children))
+
     @unittest.skipUnless(
         importlib.util.find_spec("feature_extractor"), "Install .[extract] for the pinned loader"
     )
@@ -253,6 +288,110 @@ class BoundedTests(Fixture):
         self.assertEqual(len(result["features"]), 29)
         self.assertIs(result["features"]["installScriptAdded"], True)  # from the manifest
         self.assertEqual(len(result["unpacked"]), 2)  # both verified tarballs, under work
+
+
+class ParentBudgetTests(CacheFixture):
+    """Review 03: the parent's own cache work is inside each change's budget, child or not.
+
+    Budgets of 1 s and parent delays of 1.3 s on the real clock; no child is needed now that a
+    budget starts with its change (the Fixture runs bounded steps in-process).
+    """
+
+    def setUp(self):
+        super().setUp()
+        limit = mock.patch.object(bounded, "ANALYSIS_SECONDS", 1.0)
+        limit.start()
+        self.addCleanup(limit.stop)
+
+    def late(self, target, attribute, calls=(1,)):
+        """target.attribute sleeps 1.3 s on the given calls (1 = first) before its real work."""
+        real, seen = getattr(target, attribute), []
+
+        def delayed(*args, **kwargs):
+            seen.append(1)
+            if len(seen) in calls:
+                time.sleep(1.3)
+            return real(*args, **kwargs)
+
+        return mock.patch.object(target, attribute, side_effect=delayed)
+
+    def assert_refused(self, row):
+        self.assertEqual((row["status"], row.get("reason")), ("incomplete", "analysis_failed"))
+        self.assertIn("did not finish within 1.0 s", row["detail"])
+
+    def test_a_late_cache_model_check_writes_and_accepts_nothing(self):
+        with self.late(self.model, "encode"):  # the cache's model check on the new features
+            self.assert_refused(self.scan()["results"][0])
+        self.assertEqual(self.entries(), [])
+
+    def test_a_late_write_is_not_published_and_other_entries_stay(self):
+        self.cache_dir.mkdir()
+        other = self.cache_dir / ("0" * 64 + ".json")
+        other.write_bytes(b'{"unrelated": true}')
+        self.scan()
+        [entry] = [p for p in self.entries() if p != other]
+        entry.write_bytes(b"damaged")  # a miss, so each next run extracts and stores again
+        # Every step store() takes before the rename: computing the entry's path (its key
+        # digest; load() made the first _path call) and writing the temporary file.
+        for label, target, attribute, calls in (("entry path", cache, "_path", (2,)),
+                                                ("writing", cache.os, "fdopen", (1,))):  # fmt: skip
+            with self.subTest(label):
+                with self.late(target, attribute, calls):
+                    self.assert_refused(self.scan()["results"][0])
+                self.assertEqual(entry.read_bytes(), b"damaged")  # not replaced, not removed
+                self.assertEqual(other.read_bytes(), b'{"unrelated": true}')
+                names = sorted(p.name for p in self.cache_dir.iterdir())
+                self.assertEqual(names, sorted([entry.name, other.name]))  # no temporary file
+
+    def test_a_publish_that_ends_late_is_kept_but_its_result_refused(self):
+        # os.replace cannot be stopped once it started in time; its entry holds features that
+        # were finished in time, so it stays. This run's result is still refused.
+        with self.late(cache.os, "replace"):
+            self.assert_refused(self.scan()["results"][0])
+        [entry] = self.entries()
+        self.assertTrue(json.loads(entry.read_bytes())["features"])
+        row = self.scan()["results"][0]
+        self.assertEqual((row["status"], row["cache_hit"]), ("not_flagged", True))
+
+    def two_locations(self):
+        self.old["packages"]["node_modules/a/node_modules/example"] = package()
+        self.new["packages"]["node_modules/a/node_modules/example"] = package("1.1.0")
+        self.save_locks()
+
+    def test_every_change_has_its_own_deadline(self):
+        # The second location reuses the metadata, and the features too with the cache: no
+        # child step at all, yet its own budget applies.
+        self.two_locations()
+        self.scan()  # warm the cache
+        for label, patcher, options in (
+            ("cache hit", self.late(cache, "load", calls=(2,)), {}),
+            ("no cache", self.late(self.backend, "extract", calls=(2,)), {"no_cache": True}),
+        ):
+            with self.subTest(label):
+                with patcher:
+                    rows = self.scan(**options)["results"]
+                self.assertEqual(rows[0]["status"], "not_flagged")  # a fresh budget each
+                self.assert_refused(rows[1])
+        self.assertEqual(self.backend.fetched, ["example"] * 3)  # once per run
+
+    def test_check_shares_one_deadline_from_its_metadata_read(self):
+        real_fetch = self.backend.fetch_packument
+
+        def fetch(name):
+            time.sleep(0.6)
+            return real_fetch(name)
+
+        self.backend.fetch_packument = fetch
+        real_extract = self.backend.extract
+
+        def extract(*args):
+            time.sleep(0.6)  # each step fits in 1 s, both together do not
+            return real_extract(*args)
+
+        self.backend.extract = extract
+        report = check_package("example", "1.1.0", model_dir=Path("m"), no_cache=True)
+        self.assert_refused(report["results"][0])
+        self.assertEqual(report["exit_code"], 2)
 
 
 if __name__ == "__main__":

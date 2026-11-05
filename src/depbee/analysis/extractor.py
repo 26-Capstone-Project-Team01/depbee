@@ -368,11 +368,12 @@ class ExtractorAnalyzer:
                 change, baseline, local, old_json, new_json, features, package_input
             ),
         }
-        # The parent parsed the metadata, read the cache and built the evidence after the last
-        # child step (a cache hit has none): a result finished past the budget is not used.
-        bounded.check()
+        # The parent parsed the metadata, read the cache, built the evidence and checks the
+        # features itself; none of that is in a child, so the deadline is checked here.
         if key and not cache_hit and self._model_accepts(features):
-            cache.store(self.cache_dir, key, features)
+            bounded.check()  # write nothing for a result already too late
+            cache.store(self.cache_dir, key, features)  # checks again before publishing
+        bounded.check()  # accept only a result finished in time: cold, cache hit or no cache
         return result, cache_hit
 
     def _model_accepts(self, features: dict) -> bool:

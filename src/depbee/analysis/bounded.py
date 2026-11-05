@@ -8,11 +8,13 @@ elsewhere). That stops its work and closes its sockets and files; run() waits un
 exited and only then raises TimeLimitError. The child sends its result back as JSON (or raw
 bytes), never as a pickle, because it has handled package data.
 
-budget() makes the steps of one analyzed change share ANALYSIS_SECONDS, counted from the first
-step: registry metadata, both tarball downloads, unpacking and feature extraction. The parent's
-own synchronous work (pickling, starting a child, decoding, then parsing metadata, the cache and
-evidence) cannot be interrupted; run() and check() refuse its result once the deadline passed,
-so such work can overrun the deadline by its own length but never turns into a success.
+budget() gives one analyzed change ANALYSIS_SECONDS from the moment it starts, whether or not it
+starts a child: registry metadata, both tarball downloads, unpacking and feature extraction in
+children, and the parent's own work (parsing metadata, the cache, evidence). The parent's own
+synchronous work cannot be interrupted; run() and check() refuse its result once the deadline
+passed, so such work can overrun the deadline by its own length but never turns into a success.
+Deadlines use time.perf_counter, a monotonic clock kept apart from time.monotonic, which reports
+the elapsed times in reports (and which tests and the fixed-clock evidence runner replace).
 """
 
 import contextlib
@@ -27,6 +29,7 @@ from collections.abc import Callable
 from ..contracts import GuardError
 
 ANALYSIS_SECONDS = 300
+_clock = time.perf_counter  # enforcement only; elapsed_seconds use time.monotonic
 _MAX_STDERR = 500
 # -I: the child ignores PYTHON* variables and the current folder; it gets the parent's sys.path.
 _BOOTSTRAP = (
@@ -46,12 +49,13 @@ class StepError(GuardError):
 
 @contextlib.contextmanager
 def budget():
-    """Share one ANALYSIS_SECONDS among the run() calls inside, counted from the first call.
+    """One change's ANALYSIS_SECONDS, from now, for the run() and check() calls inside.
 
     A budget() inside another one adds nothing: check opens one around its metadata read and
     the analysis, so both belong to its single change.
     """
-    token = None if _scope.get() is not None else _scope.set({})
+    outer = _scope.get() is not None
+    token = None if outer else _scope.set({"deadline": _clock() + ANALYSIS_SECONDS})
     try:
         yield
     finally:
@@ -60,24 +64,21 @@ def budget():
 
 
 def _deadline() -> float:
-    """The current budget's deadline, set by its first run(); a run() outside any budget() gets
-    its own, fixed when it starts."""
-    scope, now = _scope.get(), time.monotonic()
-    if scope is None:
-        return now + ANALYSIS_SECONDS
-    return scope.setdefault("deadline", now + ANALYSIS_SECONDS)
+    """The current budget's deadline; a run() outside any budget() gets its own, fixed when it
+    starts."""
+    scope = _scope.get()
+    return scope["deadline"] if scope is not None else _clock() + ANALYSIS_SECONDS
 
 
 def _remaining() -> float:
-    return _deadline() - time.monotonic()
+    return _deadline() - _clock()
 
 
 def check() -> None:
-    """Raise TimeLimitError if the current budget has run out. Callers use it before accepting
-    work the parent did after a run() (parsing, cache, evidence), which no child limits."""
+    """Raise TimeLimitError if the current budget has run out (nothing outside a budget()).
+    Callers use it before accepting work the parent did itself (parsing, cache, evidence)."""
     scope = _scope.get()
-    # No clock read before the first run(): a change that started no step has nothing to time.
-    if scope is not None and "deadline" in scope and time.monotonic() > scope["deadline"]:
+    if scope is not None and _clock() > scope["deadline"]:
         raise TimeLimitError(_limit_message())
 
 
@@ -95,7 +96,7 @@ def run(function: Callable, args: tuple):
     deadline = _deadline()
 
     def left() -> float:
-        seconds = deadline - time.monotonic()
+        seconds = deadline - _clock()
         if seconds <= 0:
             raise TimeLimitError(_limit_message())
         return seconds
