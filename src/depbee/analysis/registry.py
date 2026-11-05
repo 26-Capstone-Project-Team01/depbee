@@ -75,9 +75,10 @@ def download(url: str, limit: int) -> bytes:
     Socket timeouts limit each operation, not a whole request: a server that keeps sending a few
     bytes, slowly, never trips them, while connecting, in the headers, across redirects or in the
     body. So the request runs in a daemon thread that depbee waits for at most DOWNLOAD_SECONDS.
-    The thread also checks the clock after every read, at the end of the body too, and stops; one
-    that is still blocked in a socket operation when the time is up is abandoned and ends with
-    that operation (at most SOCKET_TIMEOUT_SECONDS without data) or with the process.
+    The thread also checks the clock after every read, at the end of the body too, and stops. A
+    thread still running when the time is up is abandoned: in the body it stops at its next read
+    (each waits at most SOCKET_TIMEOUT_SECONDS for data); while connecting or reading headers, a
+    server that keeps trickling can keep it alive until that phase ends or the process exits.
     """
     _check_url(url)
     deadline = time.monotonic() + DOWNLOAD_SECONDS
