@@ -1,5 +1,48 @@
 # 검증 기록
 
+## 2026-11-04: 비교할 manifest의 사전 검사, 다운로드 상한 없음(PR #7 리뷰 후속)
+
+- 비교 기준 버전의 manifest가 문자열이거나 그 `dist`가 리스트이면, 고정 feature-extractor(c24761d) `loader.py` 100행이 형식 검사 없이 `dist.tarball`을 읽다가 `AttributeError`를 냈다. 이 예외는 분석 실패로 바뀌지 않아 traceback과 종료 코드 1(위험 판정과 같은 코드)로 끝났다(PR #7 리뷰 minor 1). 아래 기록의 "비교한 두 버전의 manifest가 객체가 아니면 분석 실패"는 FakeBackend 기준이었고, 실제 loader를 거치면 비교 기준 쪽은 지켜지지 않았다.
+- 이제 `backend.extract()`를 부르기 전에 비교 기준과 새 버전의 manifest, 각 `dist`가 객체인지 확인하고, 아니면 그 항목을 분석 실패(`incomplete`, 종료 코드 2)로 둔다. `scan --extract`에서 새 버전의 integrity를 읽던 곳의 같은 예외도 이 검사로 막힌다. 로컬 사본으로 읽는 새 버전은 registry manifest를 쓰지 않으므로 검사하지 않는다. `dist`가 아예 없을 때는 전에도 분석 실패였고 오류 문구만 바뀐다. 정상 메타데이터의 출력은 같다.
+- 테스트 96개 통과(skip 없음), `ruff check` 통과. 새 회귀는 두 가지다. check 경로에서는 실제 `FeatureExtractorBackend.extract`와 c24761d `loader.py` 55-56, 100행처럼 `dist.tarball`을 읽는 stand-in source로, 문자열 manifest와 리스트 `dist`가 JSON `incomplete`, 종료 코드 2로 끝나고 feature-extractor를 부르지 않는지 본다. lockfile 경로에서는 비교 기준과 새 버전 각각의 같은 경우가 extract 전에 실패하는지 본다. 테스트만 수정 전 코드(66e3527)에 붙이면 새 회귀가 실패 2개, 오류 4개로 깨지고, 오류는 모두 그 `AttributeError`다.
+- 고정 c24761d의 `errors.py`, `loader.py`(`build_snapshot`, `get_publish_time`, `_download_and_extract_tarball`), `sources.py`, `pipeline.py`(`build_row`) 원문을 그대로 실행하고 registry 조회, `requests.get`(다운로드 차단), 임시 폴더 생성만 합성으로 바꿔 확인했다. 수정 전 코드는 두 경우 모두 `loader.py` 100행의 `AttributeError` traceback과 종료 코드 1로 끝났고, 수정 후에는 tarball 요청 없이 종료 코드 2였다. 정상 메타데이터는 두 코드 모두 비교 기준 tarball 요청까지 가서 합성 차단으로 분석 실패가 됐다. 실제 registry 접근, tarball 다운로드, 압축 해제, feature-extractor 설치는 하지 않았다.
+- 제한(이번에 고치지 않음): 고정 feature-extractor의 다운로드에는 packument·tarball 크기, 압축 해제 크기, 멤버 수, 전체 시간의 상한이 없다. `loader.py`의 `timeout=30`은 연결과 읽기에 각각 걸리는 소켓 단위 제한으로, 그 시간 동안 받은 바이트가 없을 때만 끝나므로 전체 다운로드 시간의 상한이 아니다(requests 문서). PR #7 리뷰는 65 KB tgz 안의 64 MiB 파일이 그대로 풀리는 것을 확인했다고 보고했다. 이번 작업에서 대용량 실험은 다시 하지 않았다. `check`는 임의의 패키지 이름을 받으므로 `scan --extract`보다 이 노출이 크다.
+
+## 2026-11-04: check 교차 리뷰 후속(메타데이터 재사용, 버전 검사, 배포 시각)
+
+- 아래 기록의 "메타데이터를 한 번 받는다"는 FakeBackend 기준이었다. 실제 `FeatureExtractorBackend.extract()`는 빈 `RegistrySnapshotSource`를 새로 만들어 registry를 다시 조회했고, old/new snapshot이 요청을 만들 때 검증한 문서와 다른 문서를 쓸 수 있었다(PR 전 교차 리뷰 차단 1). 이제 받은 메타데이터를 그 source의 캐시에 넣어 old/new snapshot도 같은 문서를 쓴다. 고정 feature-extractor(c24761d)에는 공개 API가 없어 캐시 속성(`_packument_cache`)에 의존하며, 속성이 없으면 다시 조회하지 않고 분석 실패로 둔다. `scan --extract`도 패키지당 조회가 한 번으로 줄었다.
+- 숫자로만 된 pre-release 식별자의 선행 0(`1.0.0-01`, `1.0.0-alpha.01`)을 네트워크 전에 거부한다(차단 2). `1.0.0-0`, `1.0.0-01a`는 그대로 받는다. build metadata(`+...`)는 SemVer 문법상 유효하지만 이 명령의 지원 범위가 아니라는 점을 README, `--help`, 오류 문구, 연결 규약에 맞췄다(권장 4). registry 저장 규칙 전체를 검증한 것은 아니다.
+- 비교 기준 선정의 배포 시각이 ISO 8601이 아니거나 timezone이 없으면 TypeError로 CLI가 종료 코드 1로 끝나던 것을, 그 항목의 분석 실패(`incomplete`, 종료 코드 2)로 바꿨다(차단 3). 서로 다른 timezone offset은 시각대로 비교한다. 정상 메타데이터의 출력은 같다.
+- 테스트 94개 통과(skip 없음), `ruff check` 통과. 새 회귀는 고친 전 코드(530133a)에서 실패한다. 고정 feature-extractor의 `RegistrySnapshotSource`·`build_row` 소스를 그대로 실행하고 조회와 snapshot 생성만 합성으로 바꾼 확인에서, 고친 뒤에는 조회 1회와 old/new의 같은 문서 사용을, 고치기 전에는 조회 2회를 확인했다. 실제 registry 접근, tarball 다운로드, 추출은 하지 않았다. 기존 CLI 출력(9개 명령, 29개 파일)은 바이트 단위로 같다.
+
+## 2026-11-04: lockfile 없는 단일 패키지 검사(`check NAME@VERSION`)
+
+- `depbee check NAME@VERSION`을 추가했다. 이름과 버전은 네트워크 접근 전에 검사하고(scope가 있거나 없는 registry 이름, 정확한 semver), registry 메타데이터를 한 번 받아 요청(`input_kind: "package"`, 새로 추가된 의존성 하나, lockfile 해시 없음)과 분석에 함께 쓴 뒤 `scan --extract`와 같은 분석기와 판정으로 처리한다. 그 버전의 manifest 이름·버전, `https://registry.npmjs.org` tarball, `dist.integrity` 중 하나라도 맞지 않거나 메타데이터를 읽지 못하면 오류(종료 코드 2)다. 텍스트·JSON 보고서의 범위와 근거에 lockfile 없이 registry 정보로 검사했다고 표시한다. lockfile 보고서의 필드·scope·텍스트는 그대로다.
+- 분석기는 비교한 두 버전의 manifest와 `scripts`·`dependencies`·`optionalDependencies`가 객체가 아니면(빈 값 제외) 예외로 끝내지 않고 그 항목을 분석 실패(`incomplete`)로 둔다. `scan --extract`에도 같이 적용된다.
+- 테스트 91개 통과(skip 없음), `ruff check` 통과. 새 테스트 12개는 feature-extractor를 FakeBackend로 바꿔 네트워크와 패키지 코드 없이 돈다: 네트워크 전 이름·버전 거부, NAME@VERSION 분리, 요청 형식과 request_id 반복 일치, 잘못된 메타데이터 14가지, 메타데이터 읽기 실패, 임계값 경계와 메타데이터 한 번 조회, 결과별 텍스트의 출처 표시, JSON `--output`과 덮어쓰기 거부, 모델 경로 우선순위, 비교 버전의 잘못된 메타데이터, 합성 native 모델.
+- D04-E00과 DEV-01 합성 feature, 합성 registry 응답으로 `cli.main`을 subprocess에서 14가지 실행해 출력 바이트를 기록했다(위험, 통과, 모델 없음, 환경 변수 모델, pre-release, 비교 기준 없음, integrity 없음, 버전 범위, 메타데이터 읽기 실패, scoped 이름, 출력 파일 덮어쓰기 거부, URL 이름 등). 두 번 실행한 결과가 바이트 단위로 같다(기존 출력 파일 경로가 들어간 오류 메시지 1개는 실행 폴더 이름만 다름). 실제 registry 접근과 실제 추출은 하지 않았고 탐지 성능 검증도 아니다. 기존 CLI 출력(9개 명령, 29개 파일)은 바이트 단위로 같다.
+
+## 2026-11-04: Git 시간 제한의 실제 범위(`--base-ref` 후속)
+
+- 시간 제한이나 출력 상한을 넘으면 depbee는 직접 실행한 Git 프로세스만 종료한다. 손자 프로세스까지 정리하는 프로세스 트리 종료는 보류했다. Windows에서는 Job Object 같은 플랫폼 코드나 PID 재사용으로 확실하지 않은 종료가 필요하고, 실행하는 명령이 읽기 전용이며 lazy fetch도 꺼져 있기 때문이다(PR #6 리뷰 1차 nit 1, 2차 nit 3).
+- Windows 기본 설치의 `Git\cmd\git.exe`는 실제 Git(`mingw64\bin\git.exe`)을 손자 프로세스로 실행하는 wrapper다. wrapper를 종료해도 실제 Git은 계속 돌고, 파이프를 닫는 단계가 그 프로세스가 끝날 때까지 기다리므로 시간 초과 오류가 30초보다 늦게 날 수 있다(리뷰의 모의 실험에서 2초 제한이 12.1초까지 늘어남). 메모리 상한은 그대로 지켜진다. `_run` docstring, README, 구조 문서의 시간 제한 문구를 이 범위에 맞게 고쳤다. 이 동작은 이번 작업에서 직접 재현하지 않았다.
+
+## 2026-11-04: Windows의 git.exe 미발견 오류 문구(`--base-ref` 후속)
+
+- PATH에 `git.cmd`만 있거나 현재 폴더에만 `git.exe`가 있을 때 Windows의 오류가 `Git executable not found on PATH`라 원인이 분명하지 않았다(PR #6 리뷰 2차 nit 2). Windows에서는 `git.exe not found on PATH (git.cmd, git.bat and the current directory are not used)`로 바꿨다. POSIX의 문구와 동작은 그대로다. 테스트 79개 통과(skip 없음), `ruff check` 통과. POSIX 문구 확인은 개발 CI(Ubuntu)에서만 실행된다.
+
+## 2026-11-04: Git 버전 안내 판정의 언어 고정(`--base-ref` 후속)
+
+- Git 2.45 안내는 Git의 `unknown option` 문구로 판정하는데, 이 문구는 locale에 따라 번역된다(PR #6 리뷰 2차 nit 1). Git 자식 환경에 `LC_ALL=C`를 강제한다. Git 문서(`po/README.md`)는 Git 테스트를 `LANG=C LC_ALL=C`로 실행해 번역을 고려하지 않아도 된다고 적고 있다. 부모 환경은 바꾸지 않는다.
+- 동작 결정(조율자): 종료 코드 129이면서 stderr에 `unknown option`이 있을 때만 "Git 2.45 or later is required" 안내를 낸다. 129이지만 이 문구가 없으면 버전 오류로 단정하지 않고, 기존 `read_base_lock`의 Git 오류(예: `Git cannot resolve HEAD to a commit ...`)에 stderr 앞부분을 붙여 내며 CLI 종료 코드는 2다. 이유: 129는 Git의 usage 실패 전반에 쓰이는 코드이고, `--no-lazy-fetch` 문자열은 2.45 이상의 usage 출력에도 들어 있어 판정 근거가 될 수 없다.
+- 테스트 79개 통과(skip 없음), `ruff check` 통과. 129, `unknown option` 없음, usage에 `--no-lazy-fetch` 있음인 음성 테스트가 버전 안내 없이 기존 Git 오류와 종료 코드 2를 확인한다. 상속 환경 회귀로 자식 `LC_ALL=C`, 부모 원래 값을 확인한다. 번역된 Git과 실제 Git 2.45 미만은 실행하지 않았다.
+
+## 2026-11-04: Git graft 무시(`--base-ref` 후속)
+
+- graft는 `--no-replace-objects`로 꺼지지 않는다. 부모 프로세스의 `GIT_GRAFT_FILE`이나 대상 저장소의 `.git/info/grafts`가 커밋의 부모를 바꾸면 `--base-ref HEAD~1`이 다른 커밋의 lockfile을 기준으로 읽어 실제 변경이 `changes: []`와 종료 코드 0으로 사라질 수 있었다(PR #6 리뷰 2차 minor 1). Git 자식 환경의 `GIT_GRAFT_FILE`을 null 장치(`os.devnull`)로 둔다. Git 소스(`setup.c`, `repository.c`)상 이 변수가 있으면 기본 경로 `<git dir>/info/grafts` 대신 쓰이므로 두 경로가 함께 막힌다. 부모 환경은 바꾸지 않는다.
+- 테스트 78개 통과(skip 없음), `ruff check` 통과. 기존 상속 환경 회귀에 `GIT_GRAFT_FILE`을 더해 자식은 null 장치, 부모는 원래 값임을 확인한다.
+- 실제 Git(2.50.1, Windows)과 합성 저장소로 `GIT_GRAFT_FILE`과 `.git/info/grafts` 두 경우를 확인했다. 새 코드의 `--base-ref HEAD~1` 출력은 같은 lockfile을 `--base-lock`으로 준 출력과 바이트 단위로 같고, 수정 전 코드(bc79c59)는 두 경우 모두 변경을 놓쳤다.
+
 ## 2026-11-04: Windows에서 git.exe만 실행(`--base-ref` 후속)
 
 - Windows에서 `shutil.which("git")`는 PATH 앞쪽 폴더의 `git.cmd`를 `git.exe`보다 먼저 고를 수 있고, 그러면 ref 인자가 cmd.exe를 거친다(PR #6 리뷰 nit 2). 빈 자리표시 파일로 확인했다(Python 3.13.5, 실행하지 않음): 같은 PATH에서 `which("git")`는 `git.CMD`, `which("git.exe")`는 뒤 폴더의 `git.exe`를 돌려준다. Windows에서는 `git.exe`를 찾고, 결과가 `.exe`로 끝나지 않으면 실행하지 않는다. POSIX는 그대로 `git`을 찾는다.

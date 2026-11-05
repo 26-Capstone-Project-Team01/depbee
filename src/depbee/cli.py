@@ -6,7 +6,7 @@ from pathlib import Path
 
 from . import __version__
 from .contracts import GuardError
-from .service import plan_project, scan_project
+from .service import check_package, plan_project, scan_project
 
 STATUS_LABELS = {
     "flagged": "위험",
@@ -100,6 +100,19 @@ def _parser() -> argparse.ArgumentParser:
             )
             cmd.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
             cmd.add_argument("--format", choices=("text", "json"), default="text")
+    check = commands.add_parser(
+        "check",
+        help="Check one npm registry version without a lockfile (needs .[extract])",
+    )
+    check.add_argument(
+        "package",
+        metavar="NAME@VERSION",
+        help="Exact registry version without +build metadata, "
+        "e.g. lodash@4.17.21 or @scope/name@1.0.0",
+    )
+    check.add_argument("--output", type=Path, help="Write a NEW JSON file (never overwrite inputs)")
+    check.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
+    check.add_argument("--format", choices=("text", "json"), default="text")
     return parser
 
 
@@ -137,11 +150,11 @@ def _progress(index: int, total: int, change: dict) -> None:
     print(f"분석 중 {index}/{total}: {name}", file=sys.stderr, flush=True)
 
 
-def _summary(results: list[dict]) -> str:
+def _summary(results: list[dict], package_input: bool) -> str:
     counts = Counter(row["status"] for row in results)
     text = (
-        f"바뀐 의존성 {len(results)}개: 위험 {counts['flagged']}, "
-        f"통과 {counts['not_flagged']}, 보류 {counts['incomplete']}"
+        f"{'검사한 패키지' if package_input else '바뀐 의존성'} {len(results)}개: "
+        f"위험 {counts['flagged']}, 통과 {counts['not_flagged']}, 보류 {counts['incomplete']}"
     )
     return text + (f", 삭제 {counts['removed']}" if counts["removed"] else "")
 
@@ -150,12 +163,21 @@ def _print_text(report: dict) -> None:
     # A console code page (e.g. cp949) may not encode every character in package data.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="backslashreplace")
+    package_input = report.get("input_kind") == "package"
     status = OVERALL_LABELS.get(report["status"], report["status"])
     print(f"depbee 검사 결과: {status} (종료 코드 {report['exit_code']})")
-    print(_summary(report["results"]))
+    print(_summary(report["results"], package_input))
     if report["model_id"]:
         print(f"모델: {_clean(report['model_id'])}, 판정 기준 점수 {report['threshold']}")
-    print("범위: lockfile에서 바뀐 의존성만 검사했습니다. 프로젝트 전체의 안전성 평가가 아닙니다.")
+    if package_input:
+        print(
+            "범위: lockfile 없이 registry 정보로 이 버전 하나만 검사했습니다. "
+            "프로젝트 전체의 안전성 평가가 아닙니다."
+        )
+    else:
+        print(
+            "범위: lockfile에서 바뀐 의존성만 검사했습니다. 프로젝트 전체의 안전성 평가가 아닙니다."
+        )
     # Risky and unfinished results first; the JSON report keeps the lockfile order.
     rows = sorted(
         report["results"],
@@ -219,10 +241,17 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         progress = None
         # Extraction takes seconds per package; show progress unless stdout is JSON.
-        if args.extract and args.format == "text":
+        if args.format == "text" and (args.command == "check" or args.extract):
             if hasattr(sys.stderr, "reconfigure"):
                 sys.stderr.reconfigure(errors="backslashreplace")
             progress = _progress
+        if args.command == "check":
+            name, at, version = args.package.rpartition("@")
+            if not at or not name:
+                raise GuardError(f"check needs NAME@VERSION, e.g. lodash@4.17.21: {args.package!r}")
+            report = check_package(name, version, model_dir=args.model_dir, progress=progress)
+            _emit(report, args)
+            return report["exit_code"]
         report = scan_project(
             args.project,
             args.base_lock,

@@ -70,9 +70,16 @@ class FeatureExtractorBackend:
     def extract(
         self, name: str, old: str, new: str, packument: dict, local: Path | None
     ) -> tuple[dict, dict]:
-        """Return (features, package.json of the new version)."""
+        """Return (features, package.json of the new version), both from the given packument."""
         registry = self._registry_source()
         try:
+            # Snapshots must use the packument depbee already checked, not a second fetch. The
+            # pinned feature-extractor (c24761d) has no public way to pass it in; its
+            # RegistrySnapshotSource reads fetched packuments from _packument_cache first.
+            cache = getattr(registry, "_packument_cache", None)
+            if not isinstance(cache, dict):
+                raise GuardError("feature-extractor RegistrySnapshotSource has no packument cache")
+            cache[name] = packument
             new_source = self._local_source(local, packument) if local else registry
             # label is a dataset column; inference does not use it.
             row = self._build_row(
@@ -96,8 +103,28 @@ def _integrity_tokens(value: object) -> set[str]:
     return set(value.split()) if isinstance(value, str) else set()
 
 
+def _object(value: object, label: str) -> dict:
+    """Registry data is untrusted: a non-object fails the analysis instead of crashing it."""
+    if not value:
+        return {}
+    if not isinstance(value, dict):
+        raise GuardError(f"Registry metadata {label} is not an object")
+    return value
+
+
+def _dist(packument: dict, name: str, version: str) -> dict:
+    """dist of a compared version. feature-extractor c24761d reads dist.tarball without type
+    checks (loader.py:100), so a malformed manifest must fail before it is called."""
+    manifest = packument["versions"][version]
+    if not isinstance(manifest, dict):
+        raise GuardError(f"Registry metadata of {name}@{version} is not an object")
+    if not isinstance(manifest.get("dist"), dict):
+        raise GuardError(f"Registry metadata of {name}@{version} has no dist object")
+    return manifest["dist"]
+
+
 def _dependencies(manifest: dict) -> set[str]:
-    return {d for field in DEPENDENCY_FIELDS for d in (manifest.get(field) or {})}
+    return {d for field in DEPENDENCY_FIELDS for d in _object(manifest.get(field), field)}
 
 
 class ExtractorAnalyzer:
@@ -128,11 +155,14 @@ class ExtractorAnalyzer:
             # A typo would otherwise silently fall back to the registry.
             name, version = unused[0]
             raise GuardError(f"Local source matches no analyzable change: {name}@{version}")
+        # A package request (check) has no lockfile; the evidence must not mention one.
+        package_input = request.get("input_kind") == "package"
         results = []
         for index, change in enumerate(changes, start=1):
             if self.progress:
                 self.progress(index, len(changes), change)
-            results.append({"change_id": change["change_id"], **self._analyze(change)})
+            result = self._analyze(change, package_input)
+            results.append({"change_id": change["change_id"], **result})
         artifact = {
             "schema_version": SCHEMA_VERSION,
             "request_id": request["request_id"],
@@ -142,18 +172,19 @@ class ExtractorAnalyzer:
         }
         return validate(artifact, request)
 
-    def _analyze(self, change: dict) -> dict:
+    def _analyze(self, change: dict, package_input: bool) -> dict:
         try:
-            return self._analyze_change(change)
+            return self._analyze_change(change, package_input)
         except (GuardError, OSError, *self.backend.errors) as exc:
             return {"status": "failed", "error": str(exc) or type(exc).__name__}
 
-    def _packument(self, name: str) -> dict:
+    def packument(self, name: str) -> dict:
+        """Registry metadata of name, fetched once per analyzer and reused by later calls."""
         if name not in self._packuments:
             self._packuments[name] = self.backend.fetch_packument(name)
         return self._packuments[name]
 
-    def _analyze_change(self, change: dict) -> dict:
+    def _analyze_change(self, change: dict, package_input: bool) -> dict:
         name, new = change["after"]["name"], change["after"]["version"]
         if not is_stable(new):
             return {
@@ -161,13 +192,12 @@ class ExtractorAnalyzer:
                 "reason": "out_of_training_scope",
                 "error": f"{new} is a prerelease; the model was trained on stable versions only",
             }
-        packument = self._packument(name)
+        packument = self.packument(name)
         local = self.local_sources.get((name, new))
         if local is None:
-            manifest = (packument.get("versions") or {}).get(new)
-            if manifest is None:
+            if (packument.get("versions") or {}).get(new) is None:
                 raise GuardError(f"Registry no longer serves {name}@{new}")
-            registry = _integrity_tokens((manifest.get("dist") or {}).get("integrity"))
+            registry = _integrity_tokens(_dist(packument, name, new).get("integrity"))
             if not registry & _integrity_tokens(change["after"]["integrity"]):
                 raise GuardError("Lockfile integrity does not match the registry integrity")
         baseline = select_baseline(packument, new)
@@ -177,31 +207,40 @@ class ExtractorAnalyzer:
                 "reason": "no_baseline",
                 "error": f"No earlier stable version of {name} to compare {new} with",
             }
+        _dist(packument, name, baseline.version)
         features, new_json = self.backend.extract(name, baseline.version, new, packument, local)
         old_json = packument["versions"][baseline.version]
         return {
             "status": "complete",
             "baseline_version": baseline.version,
             "features": features,
-            "evidence": self._evidence(change, baseline, local, old_json, new_json, features),
+            "evidence": self._evidence(
+                change, baseline, local, old_json, new_json, features, package_input
+            ),
         }
 
-    def _evidence(self, change, baseline, local, old_json, new_json, features) -> list[str]:
+    def _evidence(
+        self, change, baseline, local, old_json, new_json, features, package_input
+    ) -> list[str]:
         new = change["after"]["version"]
         if baseline.level == "L1":
             line = "같은 release line의 직전 stable"
         else:
             line = "이전 release line의 최신 stable"
         evidence = [f"비교: {baseline.version} → {new} ({line})"]
-        if change["before"] is None:
+        if package_input:
+            evidence.append("lockfile 없이 registry 정보로 검사")
+        elif change["before"] is None:
             evidence.append("lockfile에 새로 추가된 의존성")
         elif change["before"]["version"] != baseline.version:
             evidence.append(f"lockfile의 이전 버전은 {change['before']['version']}")
         if local:
             evidence.append("새 버전을 로컬 사본에서 읽음(registry 무결성 확인 안 함)")
 
-        old_scripts = old_json.get("scripts") or {}
-        new_scripts = new_json.get("scripts") or {}
+        if not isinstance(old_json, dict) or not isinstance(new_json, dict):
+            raise GuardError("Registry metadata of a compared version is not an object")
+        old_scripts = _object(old_json.get("scripts"), "scripts")
+        new_scripts = _object(new_json.get("scripts"), "scripts")
         for key in INSTALL_SCRIPT_KEYS:
             if key in new_scripts and key not in old_scripts:
                 evidence.append(_short(f"설치 스크립트 추가: {key} = {new_scripts[key]}"))

@@ -430,10 +430,11 @@ class GitBaseTests(Fixture):
         run.assert_not_called()
 
     def test_git_not_found_or_planted_in_current_directory(self):
+        expected = "git.exe not found on PATH" if os.name == "nt" else "Git executable not found"
         for which in (None, "git.exe", os.path.join(".", "git.exe")):
             with self.subTest(which=which):
                 run = self.git(which=which)
-                with self.assertRaises(GuardError):
+                with self.assertRaisesRegex(GuardError, expected):
                     plan_project(self.project)
                 run.assert_not_called()
 
@@ -461,8 +462,9 @@ class GitBaseTests(Fixture):
     def git_children(self, **parent):
         """Run plan_project through the real _run; each Git child is a harmless Python child.
 
-        Like Git, a child that inherits GIT_DIR answers from that other repository, whose
-        lockfile equals the project's, so a leaked variable would hide the real change.
+        Like Git, a child that inherits GIT_DIR or a graft file answers from that other
+        repository or history, whose lockfile equals the project's, so a leaked variable would
+        hide the real change.
         """
         os.environ.pop("GIT_NO_LAZY_FETCH", None)
         os.environ.update(parent)
@@ -473,7 +475,9 @@ class GitBaseTests(Fixture):
         def popen(argv, **kwargs):
             children.append((argv, kwargs["env"]))
             reply = next(replies)
-            if "GIT_DIR" in kwargs["env"] and reply != COMMIT_LINE[1]:
+            env = kwargs["env"]
+            grafted = env.get("GIT_GRAFT_FILE", os.devnull) != os.devnull
+            if ("GIT_DIR" in env or grafted) and reply != COMMIT_LINE[1]:
                 reply = self.head.read_bytes()
             code = f"import sys; sys.stdout.buffer.write({reply!r})"
             return REAL_POPEN([sys.executable, "-I", "-c", code], **kwargs)
@@ -500,13 +504,20 @@ class GitBaseTests(Fixture):
 
     def test_inherited_repository_variables_cannot_redirect_git(self):
         # git_children checks the request still shows the project's real change.
-        other = str(self.root / "other-repo" / ".git")
-        children = self.git_children(**dict.fromkeys(REPOSITORY_VARIABLES, other))
+        parent = dict.fromkeys(REPOSITORY_VARIABLES, str(self.root / "other-repo" / ".git"))
+        parent["GIT_GRAFT_FILE"] = str(self.root / "grafts")
+        parent["LC_ALL"] = "ko_KR.UTF-8"
+        children = self.git_children(**parent)
         self.assertEqual(len(children), 2)
         for argv, env in children:
             self.assertEqual(argv[:3], GIT_OPTIONS)
             self.assertFalse(set(REPOSITORY_VARIABLES) & env.keys())
             self.assertEqual(env["GIT_NO_LAZY_FETCH"], "1")
+            # An empty graft file also hides .git/info/grafts.
+            self.assertEqual(env["GIT_GRAFT_FILE"], os.devnull)
+            self.assertEqual(env["LC_ALL"], "C")  # untranslated messages for the 2.45 check
+        self.assertEqual(os.environ["GIT_GRAFT_FILE"], parent["GIT_GRAFT_FILE"])
+        self.assertEqual(os.environ["LC_ALL"], "ko_KR.UTF-8")
 
     def test_missing_blob_ends_with_exit_2(self):
         missing = b"fatal: unable to read 89abcdef (missing object, lazy fetch disabled)\n"
@@ -524,7 +535,7 @@ class GitBaseTests(Fixture):
         self.assertEqual(self.which.call_args.args[0], "git.exe" if os.name == "nt" else "git")
         if os.name == "nt":
             run = self.git(which=str(self.root / "bin" / "git.exe.cmd"))  # absolute, never run
-            with self.assertRaises(GuardError):
+            with self.assertRaisesRegex(GuardError, "git.exe not found on PATH"):
                 plan_project(self.project)
             run.assert_not_called()
 
@@ -538,6 +549,19 @@ class GitBaseTests(Fixture):
         self.assertEqual(code, 2)
         self.assertIn("Git 2.45 or later is required", json.loads(err.getvalue())["error"])
         self.assertEqual(run.call_count, 1)
+
+    def test_exit_129_without_unknown_option_keeps_the_git_error(self):
+        # 129 is any usage failure; Git 2.45+ also lists --no-lazy-fetch in its usage text.
+        usage = b"usage: git [-v | --version] [--no-lazy-fetch] [--no-replace-objects]\n"
+        self.git((129, b"", usage))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = main(["plan", str(self.project)])
+        message = json.loads(err.getvalue())["error"]
+        self.assertEqual(code, 2)
+        self.assertTrue(message.startswith("Git cannot resolve HEAD to a commit"))
+        self.assertIn("usage: git", message)
+        self.assertNotIn("2.45", message)
 
     def test_committed_lockfile_gets_the_same_json_checks(self):
         cases = {
