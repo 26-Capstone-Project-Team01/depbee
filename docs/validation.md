@@ -1,5 +1,12 @@
 # 검증 기록
 
+## 2026-11-05: Markdown 출력(DEV-02f)
+
+- `scan`과 `check`에 `--format markdown`을 추가했다. 테스트 114개 통과(skip 없음), `ruff check` 통과.
+- 새 테스트: 파이프, 역슬래시, 개행, 백틱 묶음, HTML 태그와 주석, 링크·이미지, 강조, 자동 링크(URL, `www.`, 이메일), HTML entity, 제목 기호, 제어·방향 문자를 패키지·버전·위치·근거·상세·model_id·이유·feature 이름과 값에 넣어도, CommonMark 규칙으로 code span을 뺀 나머지 출력이 평범한 문자열일 때와 같고 표의 칸 수가 그대로임을 확인한다. code span 처리나 표의 `|` 처리, 제어 문자 처리를 끄면 이 테스트가 실패하는 것도 확인했다. 그 밖에 판정별 순서, 점수 0과 없음, 삭제·보류 항목, 빈 결과, 시간 열, check의 출처 문구, JSON과 같은 종료 코드, `--output` JSON 파일과 덮어쓰기 거부, Markdown에서 진행 표시 없음.
+- 고정 clock으로 실행한 text·json 출력 12가지는 e 커밋(`84b6016`)의 출력과 바이트 단위로 같다. Markdown 출력 7가지도 같은 방식으로 기록했다.
+- 확인하지 않은 것: GitHub job summary의 실제 렌더링. 위 판단은 CommonMark·GFM 명세에 따른 것이고 GitHub 화면에서 보지 않았다.
+
 ## 2026-11-05: 분석 캐시와 소요 시간(DEV-02e)
 
 - `scan --extract`와 `check`에 추출한 feature의 실행 간 캐시(`--cache-dir`, 기본 `~/.cache/depbee`, `--no-cache`)와 소요 시간·캐시 사용 여부(`elapsed_seconds`, `cache_hit`)를 추가했다. 캐시 키와 우회 조건은 README와 연결 규약 4절에 있다. `--extract` 없는 `scan`과 `plan`에는 새 필드가 없다.

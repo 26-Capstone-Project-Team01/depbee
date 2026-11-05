@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -54,6 +55,9 @@ METRIC_LABELS = {
 }
 PART_LABELS = {"New": "새 버전", "Change": "변화량", "ChangedCode": "바뀐 코드"}
 STATUS_ORDER = {"flagged": 0, "incomplete": 1, "not_flagged": 2, "removed": 3}
+# --output is always a JSON file; markdown is a stdout format (e.g. a GitHub job summary).
+FORMATS = ("text", "json", "markdown")
+SAFETY_NOTE = "'통과'는 모델의 판정일 뿐 패키지가 안전하다는 보증이 아닙니다."
 
 
 def _cache_arguments(cmd: argparse.ArgumentParser) -> None:
@@ -109,7 +113,7 @@ def _parser() -> argparse.ArgumentParser:
                 "--local-root", type=Path, help="Directory that every --local-source must be in"
             )
             cmd.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
-            cmd.add_argument("--format", choices=("text", "json"), default="text")
+            cmd.add_argument("--format", choices=FORMATS, default="text")
             _cache_arguments(cmd)
     check = commands.add_parser(
         "check",
@@ -123,7 +127,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     check.add_argument("--output", type=Path, help="Write a NEW JSON file (never overwrite inputs)")
     check.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
-    check.add_argument("--format", choices=("text", "json"), default="text")
+    check.add_argument("--format", choices=FORMATS, default="text")
     _cache_arguments(check)
     return parser
 
@@ -236,7 +240,108 @@ def _print_text(report: dict) -> None:
                 f" (합계 {total:+.2f} → 점수 {row['score']:.3f})"
             )
     print()
-    print("'통과'는 모델의 판정일 뿐 패키지가 안전하다는 보증이 아닙니다.")
+    print(SAFETY_NOTE)
+
+
+def _md(value: object) -> str:
+    """Report text as a Markdown code span, so that no HTML, link, image, emphasis or autolink in
+    package data is rendered. Control characters are escaped as in text output; the fence is
+    longer than any backtick run inside, and the padding spaces are dropped by CommonMark."""
+    text = _clean(value)
+    fence = "`" * (max((len(run) for run in re.findall("`+", text)), default=0) + 1)
+    return f"{fence} {text} {fence}"
+
+
+def _md_label(labels: dict, value: object) -> str:
+    """Our Korean label, or the unknown value from the report as a code span."""
+    return labels[value] if value in labels else _md(value)
+
+
+def _cell(text: str) -> str:
+    # GFM splits table cells on every unescaped pipe, even inside code spans.
+    return text.replace("|", "\\|")
+
+
+def _print_markdown(report: dict) -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="backslashreplace")
+    package_input = report.get("input_kind") == "package"
+    timed = report.get("elapsed_seconds") is not None
+    lines = [
+        f"## depbee 검사 결과: {_md_label(OVERALL_LABELS, report['status'])}"
+        f" (종료 코드 {report['exit_code']})",
+        "",
+        f"- {_summary(report['results'], package_input)}",
+    ]
+    if report["model_id"]:
+        lines.append(f"- 모델: {_md(report['model_id'])}, 판정 기준 점수 {report['threshold']}")
+    checked = (
+        "lockfile 없이 registry 정보로 이 버전 하나만" if package_input
+        else "lockfile에서 바뀐 의존성만"
+    )  # fmt: skip
+    lines.append(f"- 범위: {checked} 검사했습니다. 프로젝트 전체의 안전성 평가가 아닙니다.")
+    if timed:
+        lines.append(f"- 소요 시간: {report['elapsed_seconds']:.3f}초")
+    rows = sorted(
+        report["results"],
+        key=lambda r: (STATUS_ORDER.get(r["status"], len(STATUS_ORDER)), -(r["score"] or 0.0)),
+    )
+    if rows:
+        header = ["판정", "패키지", "설치될 버전", "비교 버전", "점수", "이유", "위치"]
+        lines += ["", "| " + " | ".join(header + ["분석 시간"] * timed) + " |",
+                  "|" + " --- |" * (len(header) + timed)]  # fmt: skip
+    for row in rows:
+        cells = [
+            _md_label(STATUS_LABELS, row["status"]),
+            _md(row["package"]),
+            _md(row["after_version"]) if row["after_version"] is not None else "-",
+            _md(row["compared_version"]) if row.get("compared_version") is not None else "-",
+            f"{row['score']:.3f}" if row["score"] is not None else "-",
+            _md_label(REASON_LABELS, row["reason"]) if row.get("reason") else "-",
+            _md(row["location"]),
+        ]
+        if timed:
+            seconds = row.get("elapsed_seconds")
+            cache = ", 캐시 사용" if row.get("cache_hit") else ""
+            cells.append(f"{seconds:.3f}초{cache}" if seconds is not None else "-")
+        lines.append("| " + " | ".join(_cell(c) for c in cells) + " |")
+    for row in rows:
+        lines += _markdown_details(row)
+    lines += ["", f"> {SAFETY_NOTE}"]
+    print("\n".join(lines))
+
+
+def _markdown_details(row: dict) -> list[str]:
+    """Extracted facts and the model's explanation of one result, kept in separate lists."""
+    explanation, rest = row.get("explanation") or [], row.get("explanation_rest")
+    if not (row.get("detail") or row.get("evidence") or explanation or rest):
+        return []
+    target = _md(f"{row['package']}@{row['after_version'] or row['before_version']}")
+    lines = ["", f"### {_md_label(STATUS_LABELS, row['status'])}: {target}", ""]
+    if row.get("detail"):
+        lines.append(f"- 상세: {_md(row['detail'])}")
+    if row.get("evidence"):
+        lines.append("- 추출된 사실:")
+        lines += [f"  - {_md(evidence)}" for evidence in row["evidence"]]
+    if explanation or rest:
+        lines.append("- 모델 설명, 점수에 크게 작용한 특징(기여도 + 위험 쪽, - 정상 쪽):")
+        for item in explanation:
+            name = item["feature"]
+            label = _feature_label(name)
+            label = _md(name) if label == name else label
+            lines.append(
+                f"  - {label} = {_md(_feature_value(name, item['value']))}"
+                f" ({item['contribution']:+.2f})"
+            )
+        if rest:
+            shown = sum(item["contribution"] for item in explanation)
+            total = shown + rest["others_sum"] + rest["base_value"]
+            lines.append(
+                f"  - 나머지 특징 {rest['others_count']}개 합 {rest['others_sum']:+.2f},"
+                f" 모델 기준값 {rest['base_value']:+.2f}"
+                f" (합계 {total:+.2f} → 점수 {row['score']:.3f})"
+            )
+    return lines
 
 
 def _emit(report: dict, args: argparse.Namespace) -> None:
@@ -247,6 +352,9 @@ def _emit(report: dict, args: argparse.Namespace) -> None:
             stream.write(payload)
     if args.command == "plan" or args.format == "json":
         print(payload, end="")
+        return
+    if args.format == "markdown":
+        _print_markdown(report)
         return
     _print_text(report)
 

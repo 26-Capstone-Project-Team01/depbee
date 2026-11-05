@@ -15,7 +15,7 @@ npm 프로젝트에서 바뀐 의존성 버전을 찾아, 각 버전의 변경�
 | 분석 연결 | `--analysis`: 다른 분석기가 만든 JSON의 요청 ID·변경 ID·중복·상태·feature 형식 검증               |                                         |
 | 모델 추론 | native LightGBM 로딩, 모델 해시·이진 분류·feature 이름/순서·자료형 검증, feature별 기여도 계산     | 검증 세트로 정한 임계값 수령            |
 | 판정 조율 | feature 스키마 확인, 임계값 판정, 실패·학습 범위 밖 입력은 `incomplete` 처리                      |                                         |
-| CLI 출력  | `plan`/`scan`/`check`, 한국어 텍스트·JSON, 새 파일 저장, 종료 코드 0/1/2                          |                                         |
+| CLI 출력  | `plan`/`scan`/`check`, 한국어 텍스트·JSON·Markdown, 새 파일 저장, 종료 코드 0/1/2                 | GitHub job summary 화면 확인            |
 | 테스트    | 합성 입력 회귀 테스트, 합성 native 모델 연동 테스트                                                |                                         |
 | 개발 CI   | push/PR에서 Ubuntu·Windows × Python 3.11·3.13 검사·테스트·패키지 빌드                              | GitHub 서버 실행 확인                   |
 
@@ -93,6 +93,7 @@ Git 명령에는 30초 제한과 출력 크기 상한이 있습니다. 제한을
 `scan --extract`는 바뀌거나 새로 추가된 의존성마다 tarball을 받아 feature를 추출하고 모델로 판정합니다.
 텍스트 출력은 판정별 개수를 먼저 보여 주고 위험 → 보류 → 통과 순, 같은 판정 안에서는 점수 순으로 나열합니다. `--extract`로 분석하는 동안에는 진행 상황을 표준 오류에 표시합니다.
 `--format json`은 같은 결과를 lockfile 순서 그대로 JSON으로 출력하고(진행 표시 없음), `--output`은 결과를 새 파일에 저장합니다(기존 파일을 덮어쓰지 않습니다).
+`--format markdown`(`scan`, `check`)은 같은 결과를 GitHub job summary 등에 붙일 수 있는 한국어 Markdown(전체 판정, 결과 표, 항목별 추출된 사실과 모델 설명)으로 출력합니다. 순서는 텍스트와 같고 진행 표시는 없으며, `--output` 파일은 이때도 JSON입니다. 패키지 이름·버전·근거처럼 보고서에서 온 문자열은 모두 code span으로 감싸 HTML·링크·이미지·강조로 해석되지 않게 합니다.
 오류는 표준 오류에 JSON으로 나옵니다.
 tarball은 Python 임시 폴더에 풀었다가 지웁니다. 위치를 바꾸려면 `TMP`/`TEMP` 환경변수를 지정합니다.
 
