@@ -9,7 +9,10 @@ exited and only then raises TimeLimitError. The child sends its result back as J
 bytes), never as a pickle, because it has handled package data.
 
 budget() makes the steps of one analyzed change share ANALYSIS_SECONDS, counted from the first
-step: registry metadata, both tarball downloads, unpacking and feature extraction.
+step: registry metadata, both tarball downloads, unpacking and feature extraction. The parent's
+own synchronous work (pickling, starting a child, decoding, then parsing metadata, the cache and
+evidence) cannot be interrupted; run() and check() refuse its result once the deadline passed,
+so such work can overrun the deadline by its own length but never turns into a success.
 """
 
 import contextlib
@@ -56,11 +59,26 @@ def budget():
             _scope.reset(token)
 
 
-def _remaining() -> float:
+def _deadline() -> float:
+    """The current budget's deadline, set by its first run(); a run() outside any budget() gets
+    its own, fixed when it starts."""
     scope, now = _scope.get(), time.monotonic()
     if scope is None:
-        return ANALYSIS_SECONDS
-    return scope.setdefault("deadline", now + ANALYSIS_SECONDS) - now
+        return now + ANALYSIS_SECONDS
+    return scope.setdefault("deadline", now + ANALYSIS_SECONDS)
+
+
+def _remaining() -> float:
+    return _deadline() - time.monotonic()
+
+
+def check() -> None:
+    """Raise TimeLimitError if the current budget has run out. Callers use it before accepting
+    work the parent did after a run() (parsing, cache, evidence), which no child limits."""
+    scope = _scope.get()
+    # No clock read before the first run(): a change that started no step has nothing to time.
+    if scope is not None and "deadline" in scope and time.monotonic() > scope["deadline"]:
+        raise TimeLimitError(_limit_message())
 
 
 def run(function: Callable, args: tuple):
@@ -69,11 +87,22 @@ def run(function: Callable, args: tuple):
     function and args must be picklable (module-level functions, bound methods of picklable
     objects); the result must be bytes or JSON. A failure in the child raises StepError with its
     message; running out of time kills the child and raises TimeLimitError.
+
+    The parent's own steps here (pickling, starting the process, decoding the result) cannot be
+    interrupted, so the deadline is checked again after each: no child starts once it has
+    passed, a started child is killed, and a result that arrives or is decoded later is refused.
     """
-    seconds = _remaining()
-    if seconds <= 0:
-        raise TimeLimitError(_limit_message())
+    deadline = _deadline()
+
+    def left() -> float:
+        seconds = deadline - time.monotonic()
+        if seconds <= 0:
+            raise TimeLimitError(_limit_message())
+        return seconds
+
+    left()
     payload = pickle.dumps(sys.path) + pickle.dumps((function, args))
+    left()
     process = subprocess.Popen(
         [sys.executable, "-I", "-c", _BOOTSTRAP],
         stdin=subprocess.PIPE,
@@ -81,22 +110,25 @@ def run(function: Callable, args: tuple):
         stderr=subprocess.PIPE,
     )
     try:
-        out, err = process.communicate(payload, timeout=seconds)
+        out, err = process.communicate(payload, timeout=left())
     except subprocess.TimeoutExpired:
         raise TimeLimitError(_limit_message()) from None
     finally:
-        if process.poll() is None:  # timed out or interrupted: stop the work and its I/O
+        if process.poll() is None:  # out of time or interrupted: stop the work and its I/O
             process.kill()
             process.communicate()  # returns once the child has exited and its pipes are closed
     tag, body = out[:1], out[1:]
-    if tag == b"B":
-        return body
-    if tag == b"J":
-        return json.loads(body)
+    if tag not in (b"B", b"J", b"E"):
+        tail = err.decode("utf-8", "replace")[-_MAX_STDERR:]
+        raise StepError(f"Analysis process ended without a result (exit {process.returncode}): {tail}")
+    try:
+        value = body if tag == b"B" else json.loads(body)
+    except ValueError as exc:
+        raise StepError("Analysis process sent an unreadable result") from exc
+    left()  # the result is used only if it arrived and was decoded in time
     if tag == b"E":
-        raise StepError(json.loads(body))
-    tail = err.decode("utf-8", "replace")[-_MAX_STDERR:]
-    raise StepError(f"Analysis process ended without a result (exit {process.returncode}): {tail}")
+        raise StepError(value)
+    return value
 
 
 def _limit_message() -> str:

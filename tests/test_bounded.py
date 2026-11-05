@@ -5,22 +5,25 @@ the child; nothing reaches a registry. Slow jobs write heartbeats, so the tests 
 killed child's work and I/O stopped, not only that the caller got an error.
 """
 
+import contextlib
 import functools
 import importlib.util
 import json
 import subprocess
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import bounded_jobs
-from test_extract import packument
+from test_cache import Model
+from test_extract import FakeBackend, packument
 from test_registry import package_tgz, sri, tarball_url, tgz
 from test_workflow import Fixture
 
 from depbee.analysis import bounded
 from depbee.analysis.extractor import FeatureExtractorBackend
-from depbee.service import check_package
+from depbee.service import check_package, scan_project
 
 REAL_POPEN = subprocess.Popen
 
@@ -142,6 +145,93 @@ class BoundedTests(Fixture):
         self.assertIn("did not finish within 1.5 s", row["detail"])
         self.assertGreaterEqual(row["elapsed_seconds"], 1.5)
         self.assert_stopped()
+
+    def slow(self, target, attribute):
+        """Patch target.attribute to take 0.7 s (the parent's own step) before doing its work;
+        pickle.dumps is slowed only for the call payload, not for sys.path."""
+        real = getattr(target, attribute)
+
+        def delayed(*args, **kwargs):
+            if attribute != "dumps" or isinstance(args[0], tuple):
+                time.sleep(0.7)
+            return real(*args, **kwargs)
+
+        return mock.patch.object(target, attribute, side_effect=delayed)
+
+    def test_parent_steps_past_the_deadline_are_refused(self):
+        # Sol's review 02 cases: before the fix each returned the child's result after ~0.85 s.
+        steps = {
+            "pickling the call": (bounded.pickle, "dumps", 0),
+            "starting the process": (bounded.subprocess, "Popen", 1),
+            "decoding the result": (bounded.json, "loads", 1),
+        }
+        for label, (target, attribute, started) in steps.items():
+            for scoped in (True, False):  # a run() outside budget() keeps its own deadline
+                with self.subTest(label, scoped=scoped), self.limit(0.4):
+                    before = len(self.children)
+                    scope = bounded.budget() if scoped else contextlib.nullcontext()
+                    with scope, self.slow(target, attribute):
+                        with self.assertRaises(bounded.TimeLimitError):
+                            bounded.run(bounded_jobs.sleep_then, (0, "too late"))
+                    self.assertEqual(len(self.children) - before, started)
+                    self.assertTrue(all(child.poll() is not None for child in self.children))
+        # Within the budget the same calls still succeed.
+        with self.limit(5.0):
+            self.assertEqual(bounded.run(bounded_jobs.sleep_then, (0, [1, 2])), [1, 2])
+
+    def test_check_refuses_an_extraction_finished_after_its_budget(self):
+        backend = self.stand_in(bounded_jobs.quick_row)
+        backend.fetch_packument = functools.partial(bounded_jobs.give, self.doc())
+
+        def init(new):
+            vars(new).update(vars(backend))
+
+        with (
+            mock.patch.object(FeatureExtractorBackend, "__init__", init),
+            mock.patch("depbee.service.LightGBMPredictor", return_value=Model()),
+            self.limit(0.4),
+            self.slow(bounded.pickle, "dumps"),
+        ):
+            report = check_package("example", "1.1.0", model_dir=Path("m"), no_cache=True)
+        row = report["results"][0]
+        # Before the fix: status passed, exit code 0 (service_deadline.json).
+        self.assertEqual((report["exit_code"], row.get("reason")), (2, "analysis_failed"))
+        self.assertIn("did not finish within 0.4 s", row["detail"])
+        self.assertTrue(all(child.poll() is not None for child in self.children))
+
+    def test_a_cache_hit_after_the_budget_is_refused_and_not_stored(self):
+        # The metadata step uses up the budget in the parent (as parsing a large document would);
+        # a cache hit needs no further child step, so only the analyzer's check can refuse it.
+        doc = packument({"1.0.0": "2026-01-01T00:00:00Z", "1.0.1": "2026-01-02T00:00:00Z",
+                         "1.1.0": "2026-01-03T00:00:00Z"})  # fmt: skip
+        backend = FakeBackend(doc, features={"signal": 0.2, "obfChangedFileCount": 2})
+        backend.identity = {"commit": "c" * 40}
+        late = {"seconds": 0.0}
+
+        def fetch(name):
+            fetched = bounded.run(bounded_jobs.sleep_then, (0, doc))  # starts the budget
+            time.sleep(late["seconds"])
+            return fetched
+
+        backend.fetch_packument = fetch
+        cache_dir = self.root / "cache"
+        options = {"extract": True, "model_dir": Path("m"), "cache_dir": cache_dir}
+        with (
+            mock.patch("depbee.analysis.extractor.FeatureExtractorBackend", return_value=backend),
+            mock.patch("depbee.service.LightGBMPredictor", return_value=Model()),
+            self.limit(1.0),
+        ):
+            cold = scan_project(self.project, self.base, **options)["results"][0]
+            warm = scan_project(self.project, self.base, **options)["results"][0]
+            entry = next(cache_dir.glob("*.json")).read_bytes()
+            late["seconds"] = 1.3
+            expired = scan_project(self.project, self.base, **options)
+        self.assertEqual([cold["cache_hit"], warm["cache_hit"]], [False, True])
+        row = expired["results"][0]
+        self.assertEqual((expired["exit_code"], row.get("reason")), (2, "analysis_failed"))
+        self.assertIn("did not finish within 1.0 s", row["detail"])
+        self.assertEqual(len(backend.calls), 1)  # extracted once, on the cold run
+        self.assertEqual(next(cache_dir.glob("*.json")).read_bytes(), entry)
 
     @unittest.skipUnless(
         importlib.util.find_spec("feature_extractor"), "Install .[extract] for the pinned loader"

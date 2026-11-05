@@ -368,6 +368,9 @@ class ExtractorAnalyzer:
                 change, baseline, local, old_json, new_json, features, package_input
             ),
         }
+        # The parent parsed the metadata, read the cache and built the evidence after the last
+        # child step (a cache hit has none): a result finished past the budget is not used.
+        bounded.check()
         if key and not cache_hit and self._model_accepts(features):
             cache.store(self.cache_dir, key, features)
         return result, cache_hit
