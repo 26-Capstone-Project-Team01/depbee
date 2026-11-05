@@ -39,6 +39,10 @@ class Fixture(unittest.TestCase):
         self.root = self.test_runs / uuid.uuid4().hex
         self.root.mkdir(parents=True)
         self.addCleanup(self.cleanup_run)
+        # Code under test that unpacks tarballs uses tempfile; keep that inside this run too.
+        temp = mock.patch("tempfile.tempdir", str(self.root))
+        temp.start()
+        self.addCleanup(temp.stop)
         # A developer's DEPBEE_MODEL_DIR must not change service and CLI results.
         env = mock.patch.dict(os.environ)
         env.start()
