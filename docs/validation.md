@@ -1,5 +1,10 @@
 # 검증 기록
 
+## 2026-11-05: `--output` 충돌을 분석 전에 거부(PR #7 후속)
+
+- 이미 있는 `--output` 경로는 결과를 쓸 때(`open(..., "x")`)에야 거부돼, `check`와 `scan --extract`가 registry를 읽고 추출까지 마친 뒤 오류로 끝났다(PR #7 리뷰 nit 3). 이제 `plan`·`scan`·`check` 모두 명령을 실행하기 전에 경로가 있는지 확인하고, 같은 오류 문구(`[Errno 17] File exists: ...`)와 종료 코드 2로 끝난다. 확인과 쓰기 사이에 파일이 생기는 경우는 기존처럼 쓰기 단계의 `"x"` 모드가 막는다.
+- 테스트 134개 통과(skip 없음), `ruff check` 통과. 새 테스트는 text·json·markdown의 `check`에서 메타데이터 조회와 추출이 0회이고 진행 표시 없이 오류 한 줄만 나오는지, `scan --extract`에서 분석기를 만들지 않는지, 기존 파일이 그대로인지 본다. 수정 전 코드(`95cfb79`)에서는 이 테스트가 실패 3개, 오류 1개로 깨진다.
+
 ## 2026-11-05: 설치된 고정 feature-extractor의 loader 경계 테스트(PR #7 후속)
 
 - feature-extractor가 설치된 환경에서만 도는 테스트 3개(`PinnedLoaderTests`, `skipUnless`)를 더했다(PR #7 재검증 nit 2). 실제 `FeatureExtractorBackend`와 고정 커밋 c24761d의 `build_snapshot`, `build_row`, extractor 전체, `LocalArchiveSnapshotSource`를 합성 tarball로 실행하고, depbee의 registry 접근만 가짜 응답으로 바꾸며, feature-extractor 자신의 `requests.get`은 불리면 실패하게 둔다.

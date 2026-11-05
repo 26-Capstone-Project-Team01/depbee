@@ -1,5 +1,7 @@
 import argparse
+import errno
 import json
+import os
 import re
 import sys
 from collections import Counter
@@ -362,6 +364,10 @@ def _emit(report: dict, args: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        # Refuse a taken --output before any download or extraction; _emit's "x" mode still
+        # guards against a file created meanwhile. Same error text as that open().
+        if args.output is not None and args.output.exists():
+            raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(args.output))
         if args.command == "plan":
             _emit(plan_project(args.project, args.base_lock, base_ref=args.base_ref), args)
             return 0

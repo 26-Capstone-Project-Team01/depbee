@@ -640,6 +640,27 @@ class PackageCheckTests(Fixture):
         self.assertEqual(json.loads(err.splitlines()[-1])["status"], "error")
         self.assertEqual(output.read_bytes(), original)
 
+    def test_output_conflict_is_refused_before_any_registry_access(self):
+        output = self.root / "taken.json"
+        output.write_bytes(b"keep")
+        for fmt in ("text", "json", "markdown"):
+            with self.subTest(fmt):
+                code, out, err = self.run_check("example@1.1.0", "--format", fmt,
+                                                "--output", str(output))  # fmt: skip
+                self.assertEqual((code, out), (2, ""))
+                # One error line and no progress: nothing was fetched or extracted.
+                self.assertEqual(json.loads(err)["error"],
+                                 str(FileExistsError(17, os.strerror(17), str(output))))
+                self.assertEqual((self.backend.fetched, self.backend.calls), ([], []))
+        with mock.patch("depbee.analysis.extractor.ExtractorAnalyzer") as extractor:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                code = main(["scan", str(self.project), "--base-lock", str(self.base),
+                             "--extract", "--output", str(output)])  # fmt: skip
+        self.assertEqual((code, json.loads(err.getvalue())["status"]), (2, "error"))
+        extractor.assert_not_called()
+        self.assertEqual(output.read_bytes(), b"keep")
+
     def test_model_dir_then_variable_then_none(self):
         os.environ["DEPBEE_MODEL_DIR"] = "models/from-env"
         with mock.patch(
