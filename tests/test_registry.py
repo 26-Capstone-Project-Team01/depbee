@@ -6,6 +6,7 @@ few synthetic bytes; nothing in them is executed.
 
 import base64
 import contextlib
+import email.message
 import gzip
 import hashlib
 import http.client
@@ -15,12 +16,15 @@ import tarfile
 import unittest
 import urllib.error
 import urllib.request
+import urllib.response
 from unittest import mock
 
 from test_workflow import Fixture
 
 from depbee.analysis import registry
 from depbee.analysis.registry import RegistryError
+
+SECRET = "synthetic-secret-3f9c"  # a marker in refused URLs, not a real credential
 
 
 def tgz(files, *, symlink=None):
@@ -80,6 +84,25 @@ class FakeRegistry:
             raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
         served = self.files[url]
         return served if isinstance(served, Response) else Response(served, url)
+
+
+def https_stand_in(served):
+    """Replaces urllib's HTTPS connection (HTTPSHandler.https_open), so that the real opener,
+    redirect handler and error processing run without a socket. served maps a URL to bytes (200)
+    or to (code, Location) for a redirect; any other URL is a 404."""
+
+    def https_open(handler, request):
+        answer = served.get(request.full_url, (404, None))
+        code, location = (200, None) if isinstance(answer, bytes) else answer
+        headers = email.message.Message()
+        if location is not None:
+            headers["Location"] = location
+        body = io.BytesIO(answer if code == 200 else b"")
+        response = urllib.response.addinfourl(body, headers, request.full_url, code)
+        response.msg = http.client.responses[code]
+        return response
+
+    return mock.patch.object(urllib.request.HTTPSHandler, "https_open", https_open)
 
 
 def serve_tarballs(doc, name):
@@ -142,6 +165,66 @@ class UrlTests(unittest.TestCase):
                                lambda url: Response(b"{}", "https://evil.test/a")):  # fmt: skip
             with self.assertRaisesRegex(RegistryError, "outside https"):
                 registry.download("https://registry.npmjs.org/a", 100)
+
+    def test_refused_urls_show_only_their_scheme_and_host(self):
+        # Revy minor 2: refusals quoted up to 200 characters of the URL, which then went into the
+        # report's detail with credentials, path, query and fragment.
+        s, only = SECRET, " (scheme and host only)"
+        refused = {
+            f"https://user:{s}@evil.test:8443/{s}/a.tgz?token={s}#{s}": "https://evil.test:8443",
+            f"https://{s}@registry.npmjs.org/a": "https://registry.npmjs.org",
+            f"http://registry.npmjs.org/a?token={s}#{s}": "http://registry.npmjs.org",
+            f"ftp://evil.test/{s}": "ftp://evil.test",
+        }
+        request = urllib.request.Request("https://registry.npmjs.org/a")
+        for url, shown in refused.items():
+            for label, call in (
+                ("check", lambda url=url: registry._check_url(url)),
+                ("redirect", lambda url=url: registry._Redirects().redirect_request(
+                    request, None, 302, "Found", {}, url)),
+            ):  # fmt: skip
+                with self.subTest(label, url=url):
+                    with self.assertRaises(RegistryError) as error:
+                        call()
+                    self.assertEqual(str(error.exception),
+                                     f"Refusing a URL outside https://registry.npmjs.org: {shown}{only}")  # fmt: skip
+        expected = tarball_url("example", "1.0.0")
+        not_url = "a value that is not an absolute URL"
+        tarballs = [(u, f"{h}{only}") for u, h in refused.items()] + [
+            (f"{expected}?token={s}#{s}", f"https://registry.npmjs.org{only}"),
+            (f"user:{s}@evil.test/a?{s}", not_url),  # "user" parses as the scheme, no host
+            (f"//{s}@evil.test/a", not_url),
+            (f"https://[{s}/a", not_url),  # urlsplit raises ValueError
+            ([f"https://{s}@evil.test"], not_url),
+        ]
+        for url, shown in tarballs:
+            with self.subTest("tarball", url=url):
+                with self.assertRaises(RegistryError) as error:
+                    registry.tarball("example", "1.0.0", {"tarball": url})
+                self.assertEqual(str(error.exception),
+                                 f"example@1.0.0 tarball URL is not {expected}: {shown}")  # fmt: skip
+
+    def test_a_refused_redirect_keeps_its_target_out_of_the_error(self):
+        # Through the real opener: urllib refuses other schemes itself, with an HTTPError whose
+        # text quotes the whole target; the handler here refuses other hosts.
+        s, url = SECRET, "https://registry.npmjs.org/a"
+        for target, message in (
+            (f"javascript://user:{s}@evil.test/?t={s}",
+             f"Cannot download {url}: HTTP 302, redirect not followed"),
+            (f"https://user:{s}@evil.test/{s}?t={s}#{s}",
+             "Refusing a URL outside https://registry.npmjs.org: https://evil.test (scheme and "
+             "host only)"),
+        ):  # fmt: skip
+            with self.subTest(target=target), https_stand_in({url: (302, target)}):
+                with self.assertRaises(RegistryError) as error:
+                    registry.download(url, 100)
+                self.assertEqual(str(error.exception), message)
+        # The same stand-in follows a redirect on the registry; other errors keep urllib's text.
+        moved = "https://registry.npmjs.org/b"
+        with https_stand_in({url: (302, moved), moved: b"{}"}):
+            self.assertEqual(registry.download(url, 100), b"{}")
+            with self.assertRaisesRegex(RegistryError, r": HTTP Error 404: Not Found\Z"):
+                registry.download("https://registry.npmjs.org/c", 100)
 
 
 class DownloadTests(unittest.TestCase):

@@ -18,7 +18,17 @@ from types import SimpleNamespace
 from unittest import mock
 
 from test_contract import ExplainingPredictor
-from test_registry import FakeRegistry, Response, linked_tgz, serve_tarballs, sri, tarball_url, tgz
+from test_registry import (
+    SECRET,
+    FakeRegistry,
+    Response,
+    https_stand_in,
+    linked_tgz,
+    serve_tarballs,
+    sri,
+    tarball_url,
+    tgz,
+)
 from test_workflow import FakePredictor, Fixture, package
 
 from depbee.analysis import registry
@@ -741,6 +751,46 @@ class PackageCheckTests(Fixture):
         left = [p for p in self.root.rglob("*") if p.name.startswith("depbee_src_")
                 or p.is_file() and p.stat().st_size > 64 * 1024]  # fmt: skip
         self.assertEqual(left, [])  # no work folder, no large file
+
+    def test_refused_urls_keep_their_secrets_out_of_json_and_markdown(self):
+        # Revy minor 2 through check, the real opener and redirect handler (no socket): each
+        # refused URL went into the detail with its credentials, path, query and fragment.
+        s = SECRET
+        secret_url = f"https://user:{s}@evil.test/{s}/x.tgz?token={s}#{s}"
+        old, new = (tarball_url("example", v) for v in ("1.0.1", "1.1.0"))
+        other_host = "https://evil.test (scheme and host only)"
+        cases = (
+            ("baseline tarball URL", "1.0.1", secret_url, {},
+             f"example@1.0.1 tarball URL is not {old}: {other_host}"),
+            ("query on the new tarball URL", "1.1.0", f"{new}?token={s}#{s}", {},
+             f"example@1.1.0 tarball URL is not {new}: https://registry.npmjs.org (scheme and "
+             "host only)"),
+            ("redirect to another host", None, None, {old: (302, secret_url)},
+             f"Refusing a URL outside https://registry.npmjs.org: {other_host}"),
+            ("redirect urllib refuses", None, None,
+             {old: (302, f"javascript://user:{s}@evil.test/?t={s}")},
+             f"Cannot download {old}: HTTP 302, redirect not followed"),
+        )  # fmt: skip
+        for label, version, url, redirects, detail in cases:
+            doc = copy.deepcopy(self.doc)
+            files = {**serve_tarballs(doc, "example").files, **redirects}
+            if version:
+                doc["versions"][version]["dist"]["tarball"] = url
+            backend = stand_in_backend(lambda name, doc=doc: doc, [])
+            for form in ("json", "markdown"):
+                with self.subTest(label, form=form), mock.patch(
+                    "depbee.analysis.extractor.FeatureExtractorBackend", return_value=backend
+                ), https_stand_in(files):
+                    code, out, err = self.run_check("example@1.1.0", "--format", form,
+                                                    "--no-cache")  # fmt: skip
+                    self.assertEqual((code, err), (2, ""))
+                    self.assertNotIn(s, out)
+                    if form == "json":
+                        row = json.loads(out)["results"][0]
+                        self.assertEqual((row["reason"], row["detail"]),
+                                         ("analysis_failed", detail))  # fmt: skip
+                    else:
+                        self.assertIn(f"- 상세: ` {detail} `", out)
 
     def test_malformed_baseline_stops_before_the_pinned_loader(self):
         # Before the check, c24761d loader.py:100 raised AttributeError: a traceback and exit 1.

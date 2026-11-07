@@ -49,10 +49,22 @@ class RegistryError(GuardError):
     """A registry download that failed or did not pass a check."""
 
 
+def _shown(url: object) -> str:
+    """What an error message shows of a refused URL: its scheme and host. User information,
+    path, query and fragment are left out, as they can hold credentials or signed tokens."""
+    try:
+        parts = urlsplit(url) if isinstance(url, str) else None
+    except ValueError:  # e.g. an unclosed IPv6 bracket
+        parts = None
+    if parts is None or not parts.scheme or not parts.netloc:
+        return "a value that is not an absolute URL"
+    return f"{parts.scheme}://{parts.netloc.rpartition('@')[2]} (scheme and host only)"
+
+
 def _check_url(url: object) -> str:
     parts = urlsplit(url) if isinstance(url, str) else None
     if parts is None or parts.scheme != "https" or parts.netloc != HOST:
-        raise RegistryError(f"Refusing a URL outside https://{HOST}: {str(url)[:200]!r}")
+        raise RegistryError(f"Refusing a URL outside https://{HOST}: {_shown(url)}")
     return url
 
 
@@ -89,7 +101,11 @@ def download(url: str, limit: int) -> bytes:
                 data += chunk
                 if len(data) > limit:
                     raise RegistryError(f"{url} is larger than {limit} bytes")
-    except (OSError, http.client.HTTPException) as exc:  # URLError and HTTPError are OSErrors
+    except urllib.error.HTTPError as exc:
+        # urllib's text for a redirect it refused (another scheme) quotes the whole target.
+        detail = f"HTTP {exc.code}, redirect not followed" if 300 <= exc.code < 400 else exc
+        raise RegistryError(f"Cannot download {url}: {detail}") from exc
+    except (OSError, http.client.HTTPException) as exc:  # URLError is an OSError
         raise RegistryError(f"Cannot download {url}: {exc}") from exc
     return bytes(data)
 
@@ -138,7 +154,7 @@ def tarball(name: str, version: str, dist: dict) -> bytes:
     what = f"{name}@{version} tarball"
     expected = f"https://{HOST}/{name}/-/{name.rpartition('/')[2]}-{version}.tgz"
     if dist.get("tarball") != expected:
-        raise RegistryError(f"{what} URL is not {expected}: {str(dist.get('tarball'))[:200]!r}")
+        raise RegistryError(f"{what} URL is not {expected}: {_shown(dist.get('tarball'))}")
     data = download(expected, MAX_TARBALL_BYTES)
     verify(data, dist, what)
     return data
