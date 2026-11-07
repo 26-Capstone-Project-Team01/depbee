@@ -221,6 +221,25 @@ class IntegrityTests(unittest.TestCase):
             with self.subTest(dist=dist), self.assertRaisesRegex(RegistryError, "no sha512"):
                 registry.verify(self.DATA, dist, "x")
 
+    def test_a_present_integrity_never_falls_back_to_the_shasum(self):
+        # Revy minor 1: with a matching shasum each of these passed before the fix.
+        shasum = hashlib.sha1(self.DATA).hexdigest()
+        for integrity in ("md5-abc", "", " ", "sha3-abc", 5, False, ["sha512-x"], {"a": 1}):
+            with self.subTest(integrity=integrity):
+                with self.assertRaisesRegex(RegistryError, r"\Ax integrity has no sha512"):
+                    registry.verify(self.DATA, {"integrity": integrity, "shasum": shasum}, "x")
+        for integrity in ("sha512", f"md5-abc {sri(b'other')}"):  # a supported digest decides
+            with self.subTest(integrity=integrity):
+                with self.assertRaisesRegex(RegistryError, "does not match its sha512 integrity"):
+                    registry.verify(self.DATA, {"integrity": integrity, "shasum": shasum}, "x")
+        registry.verify(self.DATA, {"integrity": f"md5-abc {sri(self.DATA)}", "shasum": "0" * 40},
+                        "x")  # fmt: skip
+        # Missing or null is no integrity: only then the shasum decides.
+        for dist in ({"shasum": shasum}, {"integrity": None, "shasum": shasum}):
+            registry.verify(self.DATA, dist, "x")
+        with self.assertRaisesRegex(RegistryError, "does not match its sha1 shasum"):
+            registry.verify(self.DATA, {"integrity": None, "shasum": "0" * 40}, "x")
+
 
 class UnpackTests(Fixture):
     def unpack(self, data):

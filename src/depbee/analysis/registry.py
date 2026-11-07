@@ -109,7 +109,8 @@ def packument(name: str) -> dict:
 
 def verify(data: bytes, dist: dict, what: str) -> None:
     """Check data against dist.integrity like npm: the strongest listed algorithm decides, and
-    any of its digests may match. Without an integrity, the legacy sha1 dist.shasum is used."""
+    any of its digests may match. Only without an integrity (missing or null) is the legacy sha1
+    dist.shasum used; an integrity that is not text or lists no supported digest fails."""
     integrity = dist.get("integrity")
     digests: dict[str, set[str]] = {}
     for token in integrity.split() if isinstance(integrity, str) else ():
@@ -122,8 +123,10 @@ def verify(data: bytes, dist: dict, what: str) -> None:
             if actual not in digests[algorithm]:
                 raise RegistryError(f"{what} does not match its {algorithm} integrity")
             return
+    if integrity is not None:  # present but unusable: never fall back to the weaker shasum
+        raise RegistryError(f"{what} integrity has no sha512, sha384, sha256 or sha1 digest")
     shasum = dist.get("shasum")
-    if not digests and isinstance(shasum, str) and len(shasum) == 40:
+    if isinstance(shasum, str) and len(shasum) == 40:
         if hashlib.sha1(data).hexdigest() != shasum.lower():
             raise RegistryError(f"{what} does not match its sha1 shasum")
         return

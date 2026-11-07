@@ -1,5 +1,9 @@
 # 검증 기록
 
+## 2026-11-07: PR #8 Revy minor 후속(pr8_round2)
+
+- integrity가 있으면 옛 shasum으로 넘어가지 않는다(Revy minor 1). `verify`는 지원 알고리즘 값을 하나도 찾지 못하면 `dist.shasum`을 썼기 때문에, `dist.integrity`가 `md5-...`, 빈 문자열, 숫자처럼 쓸 수 없는 값이어도 sha1 shasum이 맞으면 통과했다. 이제 shasum은 `dist.integrity`가 없거나 null일 때만 쓴다. 값이 있으면 문자열이어야 하고 sha512·sha384·sha256·sha1 값이 하나 이상 있어야 하며, 그중 가장 강한 알고리즘이 판정한다(지원하지 않는 알고리즘이 섞여 있으면 무시하는 것은 전과 같다). 그렇지 않으면 분석 실패다. npm(pacote 21.0.3 `lib/registry.js`)은 JavaScript 참거짓으로 판단해 빈 문자열이나 `false`도 integrity가 없다고 보고 shasum으로 넘어가지만, depbee는 이런 값도 있는 값으로 보고 실패로 둔다. 새 회귀: 맞는 shasum이 있어도 쓸 수 없는 integrity 8가지(md5, 빈 문자열, 공백, sha3, 숫자, false, 배열, 객체)는 거부, 지원 알고리즘 값이 있으면 shasum과 관계없이 그 값으로 판정, 없음과 null만 shasum으로 판정. 이 회귀를 수정 전 코드(`baf28a4`)에 붙이면 쓸 수 없는 8가지가 모두 통과해 실패 8개다.
+
 ## 2026-11-05: tar 링크로 압축 해제 상한을 넘던 경계(PR #8 Revy major 1)
 
 - 리뷰가 Windows에서 symbolic link 권한이 없을 때 선언 크기 1 MiB인 tarball이 디스크에 약 53.5 MB를 쓰는 것을 재현했다. `unpack`은 member가 선언한 크기만 더했는데 링크 member의 크기는 0이고, tarfile은 링크를 만들 수 없으면 대상 member의 내용을 복사하므로 그 복사본이 상한에 들지 않았다. hard link도 `os.link`가 실패하면 같았다.
