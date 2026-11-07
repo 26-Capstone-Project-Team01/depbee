@@ -114,6 +114,9 @@ class BoundedTests(Fixture):
         self.assertEqual(new_json["version"], "1.1.0")
 
     def test_one_budget_is_shared_by_the_steps_of_a_change(self):
+        # Real children and clocks. Whether a step starts once the budget is spent is decided
+        # below with a fixed clock: subprocess times the child on time.monotonic, which can end
+        # its wait before bounded._clock reaches the deadline (PR #8 CI, Windows, Python 3.11).
         with self.limit(3.0), bounded.budget():
             self.assertEqual(bounded.run(bounded_jobs.sleep_then, (1.5, "first step")),
                              "first step")  # fmt: skip
@@ -121,14 +124,59 @@ class BoundedTests(Fixture):
             with self.assertRaises(bounded.TimeLimitError):
                 bounded.run(bounded_jobs.stuck_download, (str(self.heartbeat), True))
             self.assertLess(time.monotonic() - began, 2.5)  # what was left, not a fresh 3 s
-            started = len(self.children)
-            with bounded.budget(), self.assertRaises(bounded.TimeLimitError):  # nested: no reset
-                bounded.run(bounded_jobs.sleep_then, (0, None))
-            self.assertEqual(len(self.children), started)  # nothing starts once it is spent
+        self.assertEqual(len(self.children), 2)
         self.assert_stopped()
         # A new budget (the next change) starts afresh.
         with self.limit(3.0), bounded.budget():
             self.assertIsNone(bounded.run(bounded_jobs.sleep_then, (0, None)))
+
+    def test_a_spent_budget_starts_no_child_and_a_nested_budget_keeps_its_deadline(self):
+        # bounded._clock is fixed and Popen gives a child that answers at once, so only the
+        # deadline decides: run() needs time left (> 0), check() refuses once it has passed.
+        now, children = [1000.0], []
+
+        class Child:
+            def __init__(self, *args, **kwargs):
+                children.append(self)
+
+            def communicate(self, payload=None, timeout=None):
+                self.timeout = timeout
+                return b'J"done"', b""
+
+            def poll(self):
+                return 0
+
+        def run():
+            return bounded.run(bounded_jobs.sleep_then, (0, "done"))
+
+        with (
+            self.limit(3.0),
+            mock.patch.object(bounded, "_clock", lambda: now[0]),
+            mock.patch.object(bounded.subprocess, "Popen", Child),
+        ):
+            with bounded.budget():  # deadline 1003
+                with bounded.budget():  # nested: the same deadline, not a fresh 3 s
+                    now[0] = 1002.0
+                    self.assertEqual(run(), "done")
+                    self.assertEqual(children[-1].timeout, 1.0)
+                    now[0] = 1003.0  # at the deadline
+                    with self.assertRaises(bounded.TimeLimitError):
+                        run()
+                    bounded.check()
+                    now[0] = 1003.5  # past it
+                    with self.assertRaises(bounded.TimeLimitError):
+                        bounded.check()
+                    with self.assertRaises(bounded.TimeLimitError):
+                        run()
+                with self.assertRaises(bounded.TimeLimitError):  # the outer budget: same
+                    run()
+            self.assertEqual(len(children), 1)  # nothing started once it was spent
+            with bounded.budget():  # the next change: 3 s from now
+                self.assertEqual(run(), "done")
+            bounded.check()  # outside any budget nothing is checked
+            self.assertEqual(run(), "done")  # and run() gets its own 3 s
+            self.assertEqual([child.timeout for child in children], [1.0, 3.0, 3.0])
+        self.assertEqual(self.children, [])  # no real process
 
     def test_check_fails_closed_when_its_change_runs_out_of_time(self):
         backend = self.stand_in(bounded_jobs.slow_row)
