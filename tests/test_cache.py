@@ -12,7 +12,9 @@ import io
 import itertools
 import json
 import math
+import os
 import re
+import stat
 import threading
 from pathlib import Path
 from unittest import mock
@@ -307,6 +309,43 @@ class CacheTests(CacheFixture):
         cache.store(self.cache_dir, key, {"signal": 0.5, "name": "x", "flag": True, "none": None})
         self.assertEqual(cache.load(self.cache_dir, key),
                          {"signal": 0.5, "name": "x", "flag": True, "none": None})  # fmt: skip
+
+    def test_only_a_regular_file_is_read_and_its_open_does_not_wait(self):
+        # Revy minor 5: a plain open() of a FIFO at an entry's path waits for a writer, and the
+        # parent with it. No real FIFO is made (if this broke, the test would hang): the opened
+        # descriptor is reported as other file types instead.
+        key, features = {"package": "example"}, {"signal": 0.5}
+        cache.store(self.cache_dir, key, features)
+        opened, real_open, real_fstat = [], os.open, os.fstat
+
+        def spy(path, flags, *args):
+            opened.append((flags, real_open(path, flags, *args)))
+            return opened[-1][1]
+
+        with self.subTest("open flags"), mock.patch.object(cache.os, "open", side_effect=spy):
+            self.assertEqual(cache.load(self.cache_dir, key), features)
+            self.assertEqual(len(opened), 1)
+            for flag in ("O_NONBLOCK", "O_BINARY"):  # each where the platform has it
+                self.assertEqual(opened[0][0] & getattr(os, flag, 0), getattr(os, flag, 0), flag)
+        for label, kind in (("FIFO", stat.S_IFIFO), ("character device", stat.S_IFCHR),
+                            ("socket", stat.S_IFSOCK)):  # fmt: skip
+            with self.subTest(label):
+                opened.clear()
+
+                def fstat(fd, kind=kind):
+                    result = real_fstat(fd)
+                    return os.stat_result((kind | 0o644, *result[1:10]))
+
+                with (mock.patch.object(cache.os, "open", side_effect=spy),
+                      mock.patch.object(cache.os, "fstat", side_effect=fstat)):  # fmt: skip
+                    self.assertIsNone(cache.load(self.cache_dir, key))  # not read
+                self.assertEqual(len(opened), 1)
+                with self.assertRaises(OSError):  # the descriptor was closed
+                    real_fstat(opened[0][1])
+        other = {"package": "other"}
+        cache._path(self.cache_dir, other).mkdir()  # a real directory at an entry's path
+        self.assertIsNone(cache.load(self.cache_dir, other))
+        self.assertEqual(cache.load(self.cache_dir, key), features)
 
     def test_write_failures_only_skip_caching(self):
         self.cache_dir.write_bytes(b"not a directory")

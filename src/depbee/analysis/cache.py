@@ -10,6 +10,7 @@ import contextlib
 import json
 import math
 import os
+import stat
 import tempfile
 from pathlib import Path
 
@@ -37,10 +38,22 @@ def _feature(value: object) -> bool:
     return value is None or isinstance(value, (bool, int, str))
 
 
+def _nonblocking(path: str, flags: int) -> int:
+    """os.open for open(opener=...): a FIFO opened for reading would wait for a writer, and the
+    parent with it, unless O_NONBLOCK is set (Windows has no FIFOs here and no such flag)."""
+    return os.open(path, flags | getattr(os, "O_NONBLOCK", 0))
+
+
 def load(directory: Path, key: dict) -> dict | None:
-    """Features stored under key; None (a miss) if absent, unreadable, too large or malformed."""
+    """Features stored under key; None (a miss) if absent, unreadable, too large or malformed.
+
+    Only a regular file is read, checked on the opened descriptor itself, so a FIFO or device
+    at the path is a miss and nothing can swap the file between the check and the read.
+    """
     try:
-        with _path(directory, key).open("rb") as stream:
+        with open(_path(directory, key), "rb", opener=_nonblocking) as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return None
             raw = stream.read(MAX_ENTRY_BYTES + 1)
         if len(raw) > MAX_ENTRY_BYTES:
             return None
