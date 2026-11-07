@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from .. import __version__
 from ..contracts import SCHEMA_VERSION, GuardError, digest, elapsed_since
 from . import bounded, cache, registry
 from .artifact import validate
@@ -304,12 +305,16 @@ class ExtractorAnalyzer:
     def _cache_key(self, name: str, new: str, baseline: str, packument: dict) -> dict:
         """Everything the features depend on; any change makes a new key (a miss).
 
+        depbee's own code (downloads, unpacking, the calls into feature-extractor) is covered by
+        its version, and within one version only by cache.FORMAT, which is raised by hand.
+
         Not the request, the lockfile's previous version or the location: the same compared pair
         yields the same features, and evidence about the request is rebuilt on every run.
         """
         versions, times = packument["versions"], packument["time"]
         return {
             "format": cache.FORMAT,
+            "depbee": __version__,
             "feature_schema": FEATURE_SCHEMA,
             "extractor": self.backend.identity,
             "model": self.cache_model.identity,

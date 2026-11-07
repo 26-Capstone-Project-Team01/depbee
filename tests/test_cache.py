@@ -20,10 +20,10 @@ from unittest import mock
 from test_extract import FakeBackend, PackagePredictor, packument
 from test_workflow import Fixture, package
 
-from depbee.analysis import cache
+from depbee.analysis import cache, extractor
 from depbee.analysis.extractor import _installed_identity
 from depbee.cli import main
-from depbee.contracts import GuardError, OutOfScopeError, elapsed_since
+from depbee.contracts import GuardError, OutOfScopeError, digest, elapsed_since
 from depbee.service import check_package, scan_project
 
 EXTRACTOR = {"commit": "c" * 40, "url": "https://example.test/fx", "files_sha256": "f" * 64,
@@ -178,6 +178,41 @@ class CacheTests(CacheFixture):
                 row = self.scan()["results"][0]
                 self.assertEqual((row["cache_hit"], len(self.backend.calls)), (False, calls + 1))
                 self.assertEqual(len(self.entries()), 2)
+
+    def test_a_new_depbee_version_or_cache_format_extracts_again(self):
+        # Revy minor 4: the key had no depbee version, so features that older depbee code had
+        # extracted (unpacking, downloads) were reused after an upgrade.
+        self.scan()
+        self.assertTrue(self.scan()["results"][0]["cache_hit"])
+        for label, change in (
+            ("depbee version", mock.patch.object(extractor, "__version__", "0.1.1")),
+            ("cache format", mock.patch.object(cache, "FORMAT", cache.FORMAT + 1)),
+        ):
+            with self.subTest(label), change:
+                calls = len(self.backend.calls)
+                hits = [self.scan()["results"][0]["cache_hit"] for _ in range(2)]
+                self.assertEqual((hits, len(self.backend.calls)), ([False, True], calls + 1))
+        self.assertTrue(self.scan()["results"][0]["cache_hit"])  # the current entry is still used
+        self.assertEqual(len(self.entries()), 3)  # older entries stay; nothing removes them
+
+    def test_entries_written_before_this_policy_are_not_used(self):
+        # An entry as baf28a4 wrote it (format 1, no depbee version in the key; 4aa005f, before
+        # its symbolic link policy, wrote the same) for the same pair, with other features.
+        self.scan()
+        [entry] = self.entries()
+        key = json.loads(entry.read_bytes())["key"]
+        old_key = {**{k: v for k, v in key.items() if k != "depbee"}, "format": 1}
+        old = {"format": 1, "key": old_key, "features": {"signal": 0.9, "obfChangedFileCount": 7}}
+        self.cache_dir = self.root / "older-cache"
+        self.cache_dir.mkdir()
+        written = self.cache_dir / f"{digest(old_key)}.json"
+        written.write_bytes(json.dumps(old, ensure_ascii=True, allow_nan=False,
+                                       sort_keys=True).encode())  # fmt: skip
+        row = self.scan()["results"][0]
+        self.assertEqual((row["cache_hit"], row["features"]["signal"], len(self.backend.calls)),
+                         (False, 0.2, 2))  # fmt: skip
+        self.assertEqual(json.loads(written.read_bytes()), old)  # left as it was
+        self.assertEqual(len(self.entries()), 2)
 
     def test_uncached_paths_read_and_write_nothing(self):
         self.scan()

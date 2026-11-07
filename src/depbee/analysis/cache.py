@@ -16,7 +16,10 @@ from pathlib import Path
 from ..contracts import GuardError, digest, parse_json
 from . import bounded
 
-FORMAT = 2  # 2: features keep the extractor's key order (format 1 stored them sorted)
+# In every key, next to the depbee version (ExtractorAnalyzer._cache_key). Raise it by hand when
+# a change alters stored entries or the features depbee extracts without a new depbee version;
+# nothing detects such a change. 2: features keep the extractor's key order (1 sorted them).
+FORMAT = 2
 MAX_ENTRY_BYTES = 1024 * 1024
 
 
