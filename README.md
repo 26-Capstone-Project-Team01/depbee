@@ -145,7 +145,7 @@ registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때�
 
 - 로컬 `package-lock.json` v2/v3만 지원합니다. 기준 lockfile은 파일이나 Git 커밋에서 읽고, 저장소 하위 폴더의 단일 프로젝트는 지원하지만 npm workspaces 전체를 한 번에 비교하지는 않습니다.
 - npm 공식 registry 의존성만 분석합니다. workspace/link, Git·file·사설 레지스트리 의존성, 같은 버전의 아카이브 변경은 `incomplete`입니다.
-- 설치될 버전은 lockfile integrity가 registry 메타데이터의 값과 같은지 보고, 받은 tarball 바이트는 registry 메타데이터의 `dist.integrity`와 대조합니다(이 필드가 없거나 null일 때만 옛 `dist.shasum`, 값이 있는데 쓸 수 있는 해시가 없으면 분석 실패). `check`는 대조할 lockfile이 없어 registry 값만 쓰며(registry 문서상 2017년 4월부터 기록된 값), 새 버전에 이 값이 없으면 검사하지 못합니다.
+- 설치될 버전은 lockfile integrity가 registry 메타데이터의 값과 같은지 보고, 받은 tarball 바이트는 registry 메타데이터의 `dist.integrity`와 대조합니다(`integrity` 키가 없을 때만 옛 `dist.shasum`, 키가 있는데 null이거나 쓸 수 있는 해시가 없으면 분석 실패). `check`는 대조할 lockfile이 없어 registry 값만 쓰며(registry 문서상 2017년 4월부터 기록된 값), 새 버전에 이 값이 없으면 검사하지 못합니다.
 - 시간 예산을 넘긴 작업은 그 프로세스를 종료해 멈추므로 결과는 남기지 않습니다. 메타데이터 조회와 추출마다 Python 프로세스를 하나씩 새로 띄우므로 변경 하나에 약 0.3~0.5초가 더 걸립니다(합성 측정).
 - 학습 데이터와 달리 비교 기준 후보를 OSV 악성 목록과 대조하지 않고, 새 버전 직전 24시간 안의 후보도 별도로 검증하지 않습니다.
 - typosquat처럼 패키지 자체가 악성인 경우는 "업데이트 변경점"을 보는 이 모델의 범위가 아닙니다.
