@@ -49,20 +49,26 @@ class RegistryError(GuardError):
     """A registry download that failed or did not pass a check."""
 
 
+def _split(url: object):
+    """urlsplit of a text URL, or None: not text, or refused by urlsplit (an unclosed IPv6
+    bracket, or a host that changes under NFKC, whose ValueError quotes the whole netloc)."""
+    try:
+        return urlsplit(url) if isinstance(url, str) else None
+    except ValueError:
+        return None
+
+
 def _shown(url: object) -> str:
     """What an error message shows of a refused URL: its scheme and host. User information,
     path, query and fragment are left out, as they can hold credentials or signed tokens."""
-    try:
-        parts = urlsplit(url) if isinstance(url, str) else None
-    except ValueError:  # e.g. an unclosed IPv6 bracket
-        parts = None
+    parts = _split(url)
     if parts is None or not parts.scheme or not parts.netloc:
         return "a value that is not an absolute URL"
     return f"{parts.scheme}://{parts.netloc.rpartition('@')[2]} (scheme and host only)"
 
 
 def _check_url(url: object) -> str:
-    parts = urlsplit(url) if isinstance(url, str) else None
+    parts = _split(url)
     if parts is None or parts.scheme != "https" or parts.netloc != HOST:
         raise RegistryError(f"Refusing a URL outside https://{HOST}: {_shown(url)}")
     return url
@@ -101,13 +107,22 @@ def download(url: str, limit: int) -> bytes:
                 data += chunk
                 if len(data) > limit:
                     raise RegistryError(f"{url} is larger than {limit} bytes")
-    except urllib.error.HTTPError as exc:
-        # urllib's text for a redirect it refused (another scheme) quotes the whole target.
-        detail = f"HTTP {exc.code}, redirect not followed" if 300 <= exc.code < 400 else exc
-        raise RegistryError(f"Cannot download {url}: {detail}") from exc
-    except (OSError, http.client.HTTPException) as exc:  # URLError is an OSError
-        raise RegistryError(f"Cannot download {url}: {exc}") from exc
+    except (OSError, http.client.HTTPException) as exc:  # URLError and HTTPError are OSErrors
+        raise RegistryError(f"Cannot download {url}: {_failure(exc)}") from exc
     return bytes(data)
+
+
+def _failure(exc: Exception) -> str:
+    """A download error without text from the server or another URL: the HTTP status, or the
+    error's type with the OS error number and text. Left out: the status reason or a malformed
+    status line the server sent, and urllib's text for a refused redirect (the whole target)."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"HTTP {exc.code}" + (", redirect not followed" if 300 <= exc.code < 400 else "")
+    if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, OSError):
+        exc = exc.reason  # the connection's own error: a timeout, a name lookup, TLS
+    if isinstance(exc, OSError) and exc.errno is not None:
+        return f"{type(exc).__name__} [Errno {exc.errno}] {exc.strerror}"
+    return type(exc).__name__
 
 
 def packument(name: str) -> dict:

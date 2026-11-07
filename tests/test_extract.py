@@ -23,6 +23,7 @@ from test_registry import (
     FakeRegistry,
     Response,
     https_stand_in,
+    https_wire,
     linked_tgz,
     serve_tarballs,
     sri,
@@ -791,6 +792,56 @@ class PackageCheckTests(Fixture):
                                          ("analysis_failed", detail))  # fmt: skip
                     else:
                         self.assertIn(f"- 상세: ` {detail} `", out)
+
+    def test_server_text_and_unparsable_urls_stay_out_of_every_output(self):
+        # Sol's round 2 review R2. The server's status reason and a malformed status line, parsed
+        # by the real http.client (no socket), reached the detail; an NFKC-invalid host in the
+        # metadata or the lockfile reached the error JSON through urlparse's ValueError.
+        s = SECRET
+        secret_url = f"https://user:{s}@registry.npmjs.org/x?token={s}#{s}"
+        old = tarball_url("example", "1.0.1")
+        backend = stand_in_backend(self.backend.fetch_packument, [])
+        for label, wire, detail in (
+            ("status reason", f"HTTP/1.1 404 Missing {secret_url}\r\nContent-Length: 0\r\n\r\n",
+             f"Cannot download {old}: HTTP 404"),
+            ("malformed status line", f"Unexpected {secret_url}\r\n\r\n",
+             f"Cannot download {old}: BadStatusLine"),
+        ):  # fmt: skip
+            for form in ("json", "markdown"):
+                with self.subTest(label, form=form), mock.patch(
+                    "depbee.analysis.extractor.FeatureExtractorBackend", return_value=backend
+                ), https_wire(wire.encode()):
+                    code, out, err = self.run_check("example@1.1.0", "--format", form,
+                                                    "--no-cache")  # fmt: skip
+                    self.assertEqual((code, err), (2, ""))
+                    self.assertNotIn(s, out)
+                    if form == "json":
+                        row = json.loads(out)["results"][0]
+                        self.assertEqual((row["reason"], row["detail"]),
+                                         ("analysis_failed", detail))  # fmt: skip
+                    else:
+                        self.assertIn(f"- 상세: ` {detail} `", out)
+        nfkc = f"https://user:{s}@registry.npmjs.org／evil.test/x.tgz?token={s}#{s}"
+        error = {"status": "error", "exit_code": 2,
+                 "error": "The tarball URL of example@1.1.0 cannot be parsed"}  # fmt: skip
+        self.doc["versions"]["1.1.0"]["dist"]["tarball"] = nfkc
+        for form in ("json", "markdown"):
+            with self.subTest("metadata", form=form):
+                code, out, err = self.run_check("example@1.1.0", "--format", form, "--no-cache")
+                self.assertEqual((code, out), (2, ""))
+                self.assertNotIn(s, err)
+                self.assertEqual(json.loads(err), error)
+        self.new["packages"]["node_modules/example"]["resolved"] = nfkc
+        self.save_locks()
+        for command in (["plan"], ["scan", "--format", "json"]):  # the same input check
+            with self.subTest("lockfile", command=command[0]):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = main([command[0], str(self.project), "--base-lock", str(self.base),
+                                 *command[1:]])  # fmt: skip
+                self.assertEqual((code, out.getvalue()), (2, ""))
+                self.assertNotIn(s, err.getvalue())
+                self.assertEqual(json.loads(err.getvalue()), error)
 
     def test_malformed_baseline_stops_before_the_pinned_loader(self):
         # Before the check, c24761d loader.py:100 raised AttributeError: a traceback and exit 1.

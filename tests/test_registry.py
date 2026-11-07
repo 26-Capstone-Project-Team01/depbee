@@ -12,6 +12,7 @@ import hashlib
 import http.client
 import io
 import json
+import socket
 import tarfile
 import unittest
 import urllib.error
@@ -101,6 +102,31 @@ def https_stand_in(served):
         response = urllib.response.addinfourl(body, headers, request.full_url, code)
         response.msg = http.client.responses[code]
         return response
+
+    return mock.patch.object(urllib.request.HTTPSHandler, "https_open", https_open)
+
+
+def https_wire(wire):
+    """urllib's HTTPS handler with a connection that connects nowhere and drops the request,
+    while urllib's do_open and the real http.client.HTTPResponse parse wire, the raw bytes of one
+    response (status line, headers, body)."""
+
+    class Socket:
+        def sendall(self, data):
+            pass
+
+        def makefile(self, *args, **kwargs):
+            return io.BytesIO(wire)
+
+        def close(self):
+            pass
+
+    class Connection(http.client.HTTPSConnection):
+        def connect(self):
+            self.sock = Socket()
+
+    def https_open(handler, request):  # HTTPSHandler.https_open with this connection class
+        return handler.do_open(Connection, request, context=handler._context)
 
     return mock.patch.object(urllib.request.HTTPSHandler, "https_open", https_open)
 
@@ -219,12 +245,31 @@ class UrlTests(unittest.TestCase):
                 with self.assertRaises(RegistryError) as error:
                     registry.download(url, 100)
                 self.assertEqual(str(error.exception), message)
-        # The same stand-in follows a redirect on the registry; other errors keep urllib's text.
+        # The same stand-in follows a redirect on the registry; other HTTP errors give the status.
         moved = "https://registry.npmjs.org/b"
         with https_stand_in({url: (302, moved), moved: b"{}"}):
             self.assertEqual(registry.download(url, 100), b"{}")
-            with self.assertRaisesRegex(RegistryError, r": HTTP Error 404: Not Found\Z"):
+            with self.assertRaisesRegex(RegistryError, r": HTTP 404\Z"):
                 registry.download("https://registry.npmjs.org/c", 100)
+
+    def test_a_host_that_changes_under_nfkc_is_refused_without_its_text(self):
+        # Sol's round 2 review R2: urlsplit refuses such a netloc with a ValueError that quotes
+        # all of it, user information included, and _check_url passed that error on.
+        nfkc = f"https://user:{SECRET}@registry.npmjs.org／evil.test/a?token={SECRET}"
+        request = urllib.request.Request("https://registry.npmjs.org/a")
+        not_url = "a value that is not an absolute URL"
+        refused = f"Refusing a URL outside https://registry.npmjs.org: {not_url}"
+        for label, call, message in (
+            ("check", lambda: registry._check_url(nfkc), refused),
+            ("redirect", lambda: registry._Redirects().redirect_request(
+                request, None, 302, "Found", {}, nfkc), refused),
+            ("tarball", lambda: registry.tarball("example", "1.0.0", {"tarball": nfkc}),
+             f"example@1.0.0 tarball URL is not {tarball_url('example', '1.0.0')}: {not_url}"),
+        ):  # fmt: skip
+            with self.subTest(label):
+                with self.assertRaises(RegistryError) as error:
+                    call()
+                self.assertEqual(str(error.exception), message)
 
 
 class DownloadTests(unittest.TestCase):
@@ -258,6 +303,38 @@ class DownloadTests(unittest.TestCase):
                 with mock.patch.object(registry, "_open", side_effect=error):
                     with self.assertRaisesRegex(RegistryError, "Cannot download"):
                         registry.download(self.URL, 100)
+
+    def test_errors_carry_no_text_from_the_server(self):
+        # Sol's round 2 review R2: the server's status reason, a malformed status line or an
+        # unknown protocol went into the message, and so into the report's detail, as they were.
+        secret_url = f"https://user:{SECRET}@registry.npmjs.org/x?token={SECRET}#{SECRET}"
+        for label, wire, shown in (
+            ("status reason", f"HTTP/1.1 404 Missing {secret_url}\r\nContent-Length: 0\r\n\r\n",
+             "HTTP 404"),
+            ("malformed status line", f"Unexpected {secret_url}\r\n\r\n", "BadStatusLine"),
+            ("unknown protocol", f"HTTP/{secret_url} 200 OK\r\n\r\n", "UnknownProtocol"),
+        ):  # fmt: skip
+            with self.subTest(label), https_wire(wire.encode()):
+                with self.assertRaises(RegistryError) as error:
+                    registry.download(self.URL, 100)
+                self.assertEqual(str(error.exception), f"Cannot download {self.URL}: {shown}")
+        with https_wire(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"):  # the same stand-in
+            self.assertEqual(registry.download(self.URL, 100), b"{}")
+        # Errors of this machine keep their kind and OS error; a URLError gives its cause.
+        for error, shown in (
+            (urllib.error.HTTPError(self.URL, 503, f"Busy {secret_url}", {}, None), "HTTP 503"),
+            (urllib.error.URLError(socket.gaierror(11001, "getaddrinfo failed")),
+             "gaierror [Errno 11001] getaddrinfo failed"),
+            (urllib.error.URLError(f"unknown {secret_url}"), "URLError"),
+            (TimeoutError("timed out"), "TimeoutError"),
+            (ConnectionResetError(10054, "connection reset"),
+             "ConnectionResetError [Errno 10054] connection reset"),
+            (http.client.IncompleteRead(b"x", 10), "IncompleteRead"),
+        ):  # fmt: skip
+            with self.subTest(shown), mock.patch.object(registry, "_open", side_effect=error):
+                with self.assertRaises(RegistryError) as raised:
+                    registry.download(self.URL, 100)
+                self.assertEqual(str(raised.exception), f"Cannot download {self.URL}: {shown}")
 
     def test_packument_is_capped_json(self):
         url = "https://registry.npmjs.org/@scope/pkg"
