@@ -16,7 +16,7 @@ from pathlib import Path
 from ..contracts import GuardError, digest, parse_json
 from . import bounded
 
-FORMAT = 1
+FORMAT = 2  # 2: features keep the extractor's key order (format 1 stored them sorted)
 MAX_ENTRY_BYTES = 1024 * 1024
 
 
@@ -65,7 +65,8 @@ def store(directory: Path, key: dict, features: dict) -> None:
         return
     entry = {"format": FORMAT, "key": key, "features": features}
     try:
-        raw = json.dumps(entry, ensure_ascii=True, allow_nan=False, sort_keys=True).encode()
+        # Not sorted: a cache hit reports the features in the order a cold run does.
+        raw = json.dumps(entry, ensure_ascii=True, allow_nan=False).encode()
     except (TypeError, ValueError):
         return
     if len(raw) > MAX_ENTRY_BYTES:

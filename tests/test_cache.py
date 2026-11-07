@@ -12,6 +12,7 @@ import io
 import itertools
 import json
 import math
+import re
 import threading
 from pathlib import Path
 from unittest import mock
@@ -98,6 +99,8 @@ class CacheTests(CacheFixture):
         self.assertEqual([r["cache_hit"] for r in (cold, warm) for r in r["results"]],
                          [False, True])  # fmt: skip
         self.assertEqual(self.verdict(warm), self.verdict(cold))
+        self.assertEqual([list(r["results"][0]["features"]) for r in (cold, warm)],
+                         [list(self.backend.features)] * 2)  # fmt: skip
         self.assertIn("lockfile의 이전 버전은 1.0.0", warm["results"][0]["evidence"])
         # Another request, location and previous version still reuse the features, while the
         # evidence and ids are rebuilt for the current request.
@@ -110,6 +113,32 @@ class CacheTests(CacheFixture):
         self.assertNotEqual(moved["change_id"], cold["results"][0]["change_id"])
         self.assertNotIn("lockfile의 이전 버전", "\n".join(moved["evidence"]))
         self.assertEqual(moved["features"], cold["results"][0]["features"])
+
+    def test_cold_and_warm_json_differ_only_in_time_and_cache_hit(self):
+        # Revy minor 3: the cache stored the features with sorted keys, so a cache hit reported
+        # them in another order than the extraction. The raw JSON output of check is compared
+        # line by line; only the intended fields elapsed_seconds and cache_hit may differ.
+        self.assertNotEqual(list(self.backend.features), sorted(self.backend.features))
+
+        def check():
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = main(["check", "example@1.1.0", "--model-dir", "m", "--format", "json",
+                             "--cache-dir", str(self.cache_dir)])  # fmt: skip
+            self.assertEqual(code, 0)
+            return out.getvalue()
+
+        cold, warm = check(), check()
+        rows = [json.loads(output)["results"][0] for output in (cold, warm)]
+        self.assertEqual([row["cache_hit"] for row in rows], [False, True])
+        block = re.compile(r'\n      "features": \{\n.*?\n      \}', re.DOTALL)
+        self.assertEqual(block.search(warm).group().encode(), block.search(cold).group().encode())
+        changed = [pair for pair in zip(cold.splitlines(), warm.splitlines(), strict=True)
+                   if pair[0] != pair[1]]  # fmt: skip
+        self.assertIn(('      "cache_hit": false', '      "cache_hit": true'), changed)
+        for line in (line for pair in changed for line in pair):
+            self.assertRegex(line, r'\A *"(elapsed_seconds|cache_hit)": ')
+        self.assertEqual([list(row["features"]) for row in rows], [list(self.backend.features)] * 2)
 
     def test_every_input_of_the_features_is_part_of_the_key(self):
         def edit_doc(edit):
@@ -198,7 +227,7 @@ class CacheTests(CacheFixture):
             "not utf-8": b"\xff\xfe",
             "duplicate key": b'{"format": 1, "format": 1}',
             "array": b"[]",
-            "other format": json.dumps({**good, "format": 2}).encode(),
+            "other format": json.dumps({**good, "format": cache.FORMAT + 1}).encode(),
             "other key": json.dumps({**good, "key": {**good["key"], "version": "9.9.9"}}).encode(),
             "extra field": json.dumps({**good, "note": 1}).encode(),
             "no features": json.dumps({**good, "features": {}}).encode(),
