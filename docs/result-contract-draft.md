@@ -46,7 +46,7 @@ CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 �
 | `status`(`passed`/`flagged`/`incomplete`), `exit_code` | 최상위 | 그대로. 지금 계산 규칙(미완료 2 > 위험 1 > 0)을 바꾸지 않는다 |
 | `model_id`, `threshold` | 최상위 | ML 모델 식별과 임계값. `ml` 안에 복사하지 않는다 |
 | `analyzer_version` | 최상위 | 그대로. null이면 분석기가 연결되지 않은 실행이다(4.1절). feature-extractor 출처의 상세는 `provenance.feature_extractor`(SVC-02 후보)에 둔다 |
-| `elapsed_seconds` | 최상위·결과 항목 | 그대로. 이 값에 탐지기 시간을 넣지 않고, 필요하면 탐지기별 필드를 따로 둔다(채택(D-11)) |
+| `elapsed_seconds` | 최상위·결과 항목 | 그대로. 채택(D-11)은 결과 항목의 값(그 항목의 메타데이터 조회·캐시 조회·추출 시간, 추론 제외)에 탐지기 시간을 넣지 않고 필요하면 탐지기별 필드를 따로 둔다는 것이다. 항목 값은 `ExtractorAnalyzer`가 변경마다 잰 시간(`extractor.py` 268~271행)이라 `pipeline.scan()` 안에서 돈 탐지기 시간은 들어가지 않는다. 최상위 값은 [연결 규약](contracts.md) 4절 정의대로 서비스 함수 호출부터 판정 완료까지의 전체 시간(`service._timed()`의 `elapsed_since(started)`)이므로, 탐지기를 `pipeline.scan()` 안에서 실행하면 그 시간이 포함된다. 최상위에서도 탐지기 시간을 빼려면 별도의 동작 변경과 확인이 필요하다 |
 | `status`(`flagged`/`not_flagged`/`incomplete`/`removed`) | 결과 항목 | 그대로. 현행 코드는 ML 경로(분석·추론)로만 정한다. 채택(D-2)·채택(D-7)을 적용하면 기지 악성 `hit`과 연결된 탐지기의 `failed`도 반영되며(9.1절), 그 뒤에도 ML 경로만의 결과는 `ml.status`가 나타낸다 |
 | `score` | 결과 항목 | ML 위험 점수. `ml`에 복사하지 않는다 |
 | `reason`, `detail` | 결과 항목 | 그대로 ML 경로의 미완료·삭제 이유. `ml.status`가 `not_run`/`failed`인 이유는 이 두 필드를 본다 |
@@ -65,7 +65,7 @@ CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 �
 - 최상위: 기존 `analyzer_version` 다음에 `detectors`, `provenance`, 그다음 (있으면) `elapsed_seconds`, 마지막에 `results`.
 - 결과 항목: `pipeline.scan()`이 만드는 기존 필드(경로에 따라 `reason`·`detail`, 또는 `compared_version`·`features`·`explanation`·`explanation_rest`까지) 다음에 `known_malicious`, `rules`, `ml`, `rule_ml_agreement`, 그다음 (있으면) `elapsed_seconds`, `cache_hit`.
 
-구현할 때는 새 필드를 `pipeline.scan()`에서 항목 dict와 최상위 dict에 넣고(항목은 `results.append()` 전, 최상위는 `analyzer_version` 다음), `_timed()`는 고치지 않는다. 그러면 위 순서가 그대로 나온다. 새 필드를 `service.py` 쪽에서 넣는 경우(SVC-00 계획은 SVC-02의 `provenance`를 service 조립부에 넣는 안과 pipeline 최상위에 넣는 안을 함께 적었다)에는 `_timed()`가 `results`를 다시 붙이는 방식처럼 `elapsed_seconds`와 `results` 앞에 넣는다. 8절 예시 JSON은 이 순서를 따른다.
+구현할 때는 새 필드를 `pipeline.scan()`에서 항목 dict와 최상위 dict에 넣고(항목은 `results.append()` 전, 최상위는 `analyzer_version` 다음), `_timed()`는 고치지 않는다. 그러면 위 순서가 그대로 나온다. 이때 최상위 `elapsed_seconds`에는 `pipeline.scan()` 안에서 실행한 탐지기 시간도 들어가고, 결과 항목의 `elapsed_seconds`에는 들어가지 않는다(2절 표). 새 필드를 `service.py` 쪽에서 넣는 경우(SVC-00 계획은 SVC-02의 `provenance`를 service 조립부에 넣는 안과 pipeline 최상위에 넣는 안을 함께 적었다)에는 `_timed()`가 `results`를 다시 붙이는 방식처럼 `elapsed_seconds`와 `results` 앞에 넣는다. 8절 예시 JSON은 이 순서를 따른다.
 
 ### 3.1 최상위
 
@@ -181,7 +181,7 @@ CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 �
 | 탐지기 미연결(`not_run`, `detector_not_configured`) | 바꾸지 않음 | 바꾸지 않음 | 채택(D-6). 정책 파일이 생기면 필수 여부를 거기서 정한다 |
 | 규칙 `hit`, 규칙/ML 불일치 | 바꾸지 않음 | 바꾸지 않음 | 채택(D-4) |
 
-기지 악성 `hit`이 이미 `incomplete`인 항목(예: `no_baseline`, 채택(D-5)로 대조)에 나오면 항목 `status`를 `flagged`와 `incomplete` 중 무엇으로 둘지는 정하지 않았다. 최상위 `exit_code`는 미완료 2 > 위험 1 규칙상 어느 쪽이든 2이고, 기지 악성 경고는 `known_malicious`에 남는다.
+기지 악성 `hit`이 이미 `incomplete`인 항목(예: `no_baseline`, 채택(D-5)로 대조)에 나올 때 항목 `status`와 최상위 집계를 어떻게 할지는 정해지지 않았고, 구현 전에 확인해야 한다. 현행 집계(`pipeline.py` 76~78행)는 최종 항목 `status`만 본다. `incomplete` 항목이 하나라도 있으면 2, 없고 `flagged`가 있으면 1이다. 그래서 그 항목을 `flagged`로 덮으면 다른 미완료 항목이 없을 때 최상위는 `flagged`/1이 되고, `status`·`exit_code`만 보는 소비자에게 그 항목의 미완료가 드러나지 않는다. `incomplete`로 두면 최상위는 2지만 기지 악성 일치는 `status`·`exit_code`에 드러나지 않는다. 어느 쪽이든 일치 내용은 `known_malicious`에 남는다(1절 계약 문장).
 
 ### 4.3 규칙/ML 불일치: `rule_ml_agreement`
 
@@ -305,7 +305,7 @@ CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 �
 | D-8 | 규칙 근거 위치 형식 | `{"file", "line"}` / 열·범위 추가 / 위치 없이 문자열만 | `{"file", "line"}`에서 시작. 규칙 후보(R_download_exec 등)의 근거 형태를 보고 확정 |
 | D-9 | ruleset·rule 버전 표기 | SemVer / 날짜 / 커밋 해시 | 규칙 저장 위치가 정해진 뒤 결정. 그 전에는 문자열 |
 | D-10 | `provenance` 위치와 범위(SVC-02) | `provenance` 객체 / 최상위 평면 필드(`model_sha256` 등). feature-extractor의 `url` 포함 여부 | `provenance` 객체, `url`은 제외(고정 커밋은 depbee 메타데이터에 이미 있고, 설치 기록의 URL을 보고서에 옮기지 않음) |
-| D-11 | 탐지기 소요 시간 | 결과 항목 `elapsed_seconds`에 포함 / 탐지기별 시간 필드 / 기록 안 함 | 기존 `elapsed_seconds`의 뜻(추론 제외 분석 시간)을 바꾸지 않고, 필요하면 탐지기별로 따로 추가 |
+| D-11 | 탐지기 소요 시간 | 결과 항목 `elapsed_seconds`에 포함 / 탐지기별 시간 필드 / 기록 안 함 | 기존 `elapsed_seconds`의 뜻(추론 제외 분석 시간)을 바꾸지 않고, 필요하면 탐지기별로 따로 추가. 대상은 결과 항목의 값이며, 최상위 전체 시간에는 `pipeline.scan()` 안의 탐지기 시간이 들어간다(2절 표) |
 | D-12 | `ml.status`를 보고서에 둘지, 기존 보고서의 `analysis_missing` 해석 | 필드로 둠 / 4.1절 표로 진입점이 계산. 기존 보고서의 `analysis_missing`은 최상위 `analyzer_version` 유무로 미실행·실패를 나눔 / 항목 `reason`을 `analyzer_missing` 같은 새 코드로 나눔(기존 `reason` 변경) | 필드로 둠. 판정 해석을 `pipeline.scan()` 한 곳에 두고, `analyzer_version`에 기댄 구분은 계약이 아닌 90a61bb 코드의 성질이라 기존 보고서 해석에만 참고로 쓴다. 기존 `reason`은 바꾸지 않는다 |
 | D-13 | 표시 순서와 강조(텍스트·Markdown·대시보드) | 기지 경고를 맨 앞에 / 지금 순서 유지 후 강조만 | 지금 순서(위험 → 보류 → 통과 → 삭제, 같은 모델 점수 내림차순)를 유지하고 기지 경고·미완료를 강조 |
 | D-14 | top-k 보기 | 없음 / 선택 보기로 제공 | 선택 보기. 전체 목록을 유지하고 동점을 모두 포함하며 실제 건수 표시 |
