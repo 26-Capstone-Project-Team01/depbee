@@ -76,7 +76,10 @@ def _unsupported(before: dict | None, after: dict | None) -> str | None:
     version = after["version"]
     if after["link"] or not version or not VERSION.fullmatch(version):
         return "workspace_or_non_registry_version"
-    source = urlparse(after["resolved"] or "")
+    try:
+        source = urlparse(after["resolved"] or "")
+    except ValueError:  # e.g. the NFKC host check, whose message quotes the whole netloc
+        raise GuardError(f"The tarball URL of {after['name']}@{version} cannot be parsed") from None
     if source.scheme != "https" or source.netloc != "registry.npmjs.org":
         return "unsupported_registry_source"
     if not after["integrity"]:

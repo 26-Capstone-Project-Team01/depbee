@@ -1,0 +1,2 @@
+# setuptools puts tests/test*.py in the sdist by default; test_bounded.py also imports this.
+include tests/bounded_jobs.py

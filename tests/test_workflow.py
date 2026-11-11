@@ -33,12 +33,25 @@ def package(version="1.0.0"):
 
 
 class Fixture(unittest.TestCase):
+    # analysis.bounded runs steps in child processes, which do not see this process's mock
+    # patches (a patched registry would be the real one there). Tests run them in-process;
+    # test_bounded.py turns this off and gives its child jobs their own synthetic I/O.
+    bounded_in_process = True
+
     def setUp(self):
         # Keep synthetic test outputs inside the workspace, with inherited directory ACLs.
         self.test_runs = Path(__file__).resolve().parents[1] / "artifacts" / "test-runs"
         self.root = self.test_runs / uuid.uuid4().hex
         self.root.mkdir(parents=True)
         self.addCleanup(self.cleanup_run)
+        # Code under test that unpacks tarballs uses tempfile; keep that inside this run too.
+        temp = mock.patch("tempfile.tempdir", str(self.root))
+        temp.start()
+        self.addCleanup(temp.stop)
+        if self.bounded_in_process:
+            here = mock.patch("depbee.analysis.bounded.run", side_effect=lambda f, args: f(*args))
+            here.start()
+            self.addCleanup(here.stop)
         # A developer's DEPBEE_MODEL_DIR must not change service and CLI results.
         env = mock.patch.dict(os.environ)
         env.start()
@@ -248,6 +261,7 @@ class ServiceTests(Fixture):
         progress = mock.Mock()
         with mock.patch("depbee.analysis.extractor.ExtractorAnalyzer") as extractor:
             extractor.return_value.analyze.return_value = self.artifact()
+            extractor.return_value.measurements = {}
             report = scan_project(
                 self.project, self.base, extract=True, local_root=self.root,
                 local_sources=["example@1.1.0=src"], progress=progress,
@@ -266,6 +280,7 @@ class ServiceTests(Fixture):
                 mock.patch("depbee.analysis.extractor.ExtractorAnalyzer") as extractor,
             ):
                 extractor.return_value.analyze.return_value = self.artifact()
+                extractor.return_value.measurements = {}
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
                     code = main(["scan", str(self.project), "--base-lock", str(self.base),
                                  "--extract", "--format", fmt])
@@ -669,6 +684,12 @@ class LightGBMTests(Fixture):
         expected = scan(self.request(), ArtifactAnalyzer(analysis), LightGBMPredictor(self.root))
         self.assertEqual(report, expected)
         self.assertEqual(report["results"][0]["status"], "flagged")
+
+    def test_identity_is_the_verified_file_hashes(self):
+        # The feature cache keys on these (DEV-02e).
+        manifest = hashlib.sha256((self.root / "manifest.json").read_bytes()).hexdigest()
+        self.assertEqual(LightGBMPredictor(self.root).identity,
+                         {"model_sha256": self.manifest["model_sha256"], "manifest_sha256": manifest})
 
     def test_hash_order_and_missing_features(self):
         predictor = LightGBMPredictor(self.root)

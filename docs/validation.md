@@ -1,5 +1,123 @@
 # 검증 기록
 
+## 2026-11-07: PR #8 Revy minor 후속(pr8_round2)
+
+- integrity가 있으면 옛 shasum으로 넘어가지 않는다(Revy minor 1). `verify`는 지원 알고리즘 값을 하나도 찾지 못하면 `dist.shasum`을 썼기 때문에, `dist.integrity`가 `md5-...`, 빈 문자열, 숫자처럼 쓸 수 없는 값이어도 sha1 shasum이 맞으면 통과했다. 이제 shasum은 `dist`에 `integrity` 키가 없을 때만 쓴다. 키가 있으면 null이어도 integrity로 보고, 문자열이어야 하며 sha512·sha384·sha256·sha1 값이 하나 이상 있어야 하며, 그중 가장 강한 알고리즘이 판정한다(지원하지 않는 알고리즘이 섞여 있으면 무시하는 것은 전과 같다). 그렇지 않으면 분석 실패다. npm(pacote 21.0.3 `lib/registry.js`)은 JavaScript 참거짓으로 판단해 빈 문자열, `false`, null도 integrity가 없다고 보고 shasum으로 넘어가지만, depbee는 이런 값도 있는 값으로 보고 실패로 둔다. 새 회귀: 맞는 shasum이 있어도 쓸 수 없는 integrity 9가지(md5, 빈 문자열, 공백, sha3, 숫자, false, 배열, 객체, null)는 거부, 지원 알고리즘 값이 있으면 shasum과 관계없이 그 값으로 판정, 키가 없을 때만 shasum으로 판정. 첫 구현(`95cd9ca`)은 null을 키가 없는 것과 같이 보아 shasum으로 넘겼고, Sol의 round 2 재리뷰가 승인 계약(존재하는 integrity는 fallback 없음) 위반으로 지적해 고쳤다. 처음 회귀 8가지를 수정 전 코드(`baf28a4`)에 붙이면 모두 통과해 실패 8개, null 경우를 `a6664e8`에 붙이면 실패 1개다.
+- 거부한 URL은 오류에 scheme과 host만 쓴다(Revy minor 2). registry 밖 주소 거부(요청 주소, redirect 대상, 마지막 응답 주소)와 tarball 주소 불일치 오류가 URL 앞 200자를 그대로 넣어, 그 안의 사용자 정보·경로·query·fragment(자격 증명이나 서명 토큰이 들 수 있다)가 JSON·Markdown·텍스트 보고서의 `detail`에 남았다. urllib이 http·https·ftp가 아닌 scheme으로의 redirect를 스스로 거부할 때 내는 `HTTPError`의 문구도 대상 URL 전체를 담아 `Cannot download <주소>: <오류>`로 전해졌다. 이제 거부한 URL은 `https://evil.test (scheme and host only)`처럼 scheme과 host(포트 포함, 사용자 정보 제외)만 쓰고, 절대 URL로 읽을 수 없는 값이면 그렇다고만 쓴다. 다운로드 오류는 서버나 다른 URL에서 온 문구를 옮기지 않는다. HTTP 오류는 `HTTP 404`처럼 상태 코드만(3xx는 `HTTP 302, redirect not followed`), 그 밖에는 오류 종류와 이 컴퓨터의 OS 오류 번호·문구만 쓴다(`gaierror [Errno 11001] getaddrinfo failed`, `TimeoutError`, `BadStatusLine`). 주소를 읽을 수 없는 값(urlsplit이 거부하는 값)도 `_check_url`은 같은 거부 문구로 끝낸다.
+- 첫 구현(`4031f31`)은 3xx만 상태 코드로 바꾸고 나머지 오류 문구와 URL 파싱 오류를 그대로 옮겼다. Sol의 round 2 재리뷰(R2)가 합성 표식으로 세 경로를 재현했다. (1) 서버의 상태 사유 문구(`HTTP/1.1 404 Missing <URL>`)가 `HTTP Error 404: Missing <URL>`로, (2) 잘못된 상태 줄이 `BadStatusLine`의 문구로 `detail`에 남았다(실제 http.client가 합성 응답 바이트를 해석, 실제 자식 프로세스 경유). (3) NFKC 정규화로 바뀌는 host(전각 `／` 등)가 든 메타데이터의 tarball 주소는 `urlparse`의 ValueError가 netloc 전체(사용자 정보 포함)를 담아 CLI 오류 JSON으로 나갔다. 이제 (1)(2)는 위 규칙으로, (3)은 입력 검사(`inputs/npm.py`)가 `The tarball URL of <이름>@<버전> cannot be parsed` 입력 오류(오류 JSON, 종료 코드 2, 전과 같은 분류)로 끝내며 lockfile의 `resolved`도 같다. 실제 HTTP 헤더는 ISO-8859-1로 읽히고 그 범위의 문자는 NFKC로 `/?#@:`가 되지 않아(Python 3.13.5, Unicode 15.1에서 확인) redirect의 `Location`으로는 (3)이 생기지 않는다.
+- 오류 경로를 다시 확인했다. 남는 URL은 depbee가 만든 registry 주소(메타데이터 `https://registry.npmjs.org/<이름>`, tarball 경로)뿐이다. host가 정확히 `registry.npmjs.org`여야 받으므로 사용자 정보가 들어갈 수 없고, 경로는 lockfile이나 명령의 패키지 이름·버전에서 온다. lockfile과 `check`의 registry 출처 거부는 원래 URL을 쓰지 않는다. 고정 feature-extractor의 LoaderError 중 URL을 담는 것은 그 자체 다운로드 경로인데 depbee는 그 경로를 쓰지 않는다. 자식 프로세스의 오류는 같은 문구를 그대로 전한다. 압축 해제 오류(`Cannot unpack ...`)는 tarball 안의 이름 등 패키지 자료를 담을 수 있으나 URL은 아니며 이번 범위에서 바꾸지 않았다.
+- 새 회귀는 합성 표식 문자열을 쓴다. 단위: 표식을 사용자 정보·경로·query·fragment에 넣은 URL 4가지를 주소 검사와 redirect handler가 거부하고, tarball 주소 9가지(같은 host의 query, scheme 없는 값, IPv6 괄호가 닫히지 않은 값, 문자열이 아닌 값 포함)가 불일치로 거부될 때 오류 문구가 정확히 scheme과 host만 담는다. 소켓 없이 실제 urllib opener와 redirect handler를 거치는 다운로드(HTTPS 연결만 대체)에서 다른 scheme과 다른 host로의 redirect가 표식 없이 거부되고, registry 안의 redirect는 따라가며 404는 `HTTP 404`다. `check` 명령: 비교 기준 tarball 주소, 새 버전 tarball 주소의 query, 다른 host로의 redirect, urllib이 거부하는 redirect 4가지에서 JSON과 Markdown 출력 모두 표식이 없고 `detail`이 정해진 문구이며 종료 코드 2다. 이 회귀를 수정 전 코드(`baf28a4`)에 붙이면 모든 경우가 표식을 내보내 실패 27개다. R2 회귀: 실제 http.client가 해석하는 합성 응답 바이트(상태 사유, 잘못된 상태 줄, 알 수 없는 protocol)와 그 밖의 전송 오류 6가지의 문구가 정확히 정해진 값이고, NFKC host는 주소 검사·redirect handler·tarball 불일치에서 거부 문구로 끝나며, `check`의 JSON·Markdown(상태 사유, 잘못된 상태 줄), 메타데이터 NFKC 주소의 오류 JSON(두 형식), lockfile NFKC 주소의 `plan`·`scan` 오류 JSON 어디에도 표식이 없다. 이 회귀를 `a6664e8`에 붙이면 실패 18개와 오류 2개다.
+- 캐시 hit의 feature 키 순서를 추출 때와 같게 했다(Revy minor 3). 캐시는 항목을 `sort_keys=True`로 저장해, warm 실행의 `features`가 알파벳 순서가 되어 cold 실행의 JSON 출력과 바이트가 달랐다(값은 같았다). 이제 항목은 키 순서를 그대로 저장하고 읽으므로 feature-extractor가 낸 순서가 유지된다. 이미 있던 형식 1 항목은 정렬된 순서를 담고 있어 캐시 형식(`cache.FORMAT`)을 2로 올렸다. 형식 1 항목은 형식 검사에서 miss가 되어 다시 추출한다. 캐시 파일의 경로는 키를 정렬해 만든 해시라 이 변경과 관계없다. 새 회귀: `check`를 같은 캐시 폴더로 두 번 실행한 JSON 출력을 줄 단위 원본 그대로 비교해, 다른 줄은 `elapsed_seconds`와 `cache_hit` 줄뿐이고(`cache_hit`는 false에서 true로) `features` 블록은 바이트가 같으며 키 순서가 추출 순서와 같다. `scan --extract` 경로(서비스 함수)의 cold/warm도 키 순서가 같다. 이 회귀를 수정 전 코드(`baf28a4`)에 붙이면 실패 2개다(warm의 `features` 블록이 정렬된 순서).
+- 캐시 무효화 정책(Revy minor 4). 키에 depbee 자신의 버전이 없어, depbee의 다운로드·압축 해제·feature-extractor 호출이 바뀌어도 이전 depbee가 만든 feature를 다시 썼다. 이제 키에 `depbee.__version__`(CLI `--version`과 같은 값)이 들어가 depbee 버전이 바뀌면 모든 항목이 miss다. 코드 해시나 자동 추적은 하지 않는다. 같은 버전 안에서 저장 항목이나 추출 결과를 바꾸는 변경(개발 중 커밋, 배포 전 수정)은 `cache.FORMAT`을 개발자가 직접 올려야만 무효화되며, 이를 감지하는 장치는 없다(`cache.py`의 FORMAT 주석에 같은 규칙을 적었다). feature-extractor 쪽은 전과 같이 설치 출처(고정 커밋, 설치 파일 해시, Python 버전)로 키가 바뀐다.
+- 이번 PR의 이전 항목: round 1의 symbolic link 정책(`baf28a4`)은 symbolic link 권한이 없는 Windows에서 추출 결과를 바꿀 수 있는데 버전과 형식은 그대로였다. `4aa005f`와 `baf28a4`의 캐시 코드는 같고 둘 다 형식 1, depbee 버전 없는 키로 쓴다. 이번에 형식을 2로 올렸고 키에 버전이 더해져, 그 항목은 경로부터 달라 읽지 않는다. 지우지도 않는다. 실제 확인: `baf28a4` 코드로 합성 `check`를 실행해 항목을 쓴 폴더를 이 코드로 다시 쓰면 첫 실행이 miss(추출 1회)이고 이전 항목은 바이트 그대로이며, 그 뒤 `baf28a4` 코드는 자기 항목을 그대로 hit한다(합성 backend와 모델, 네트워크 없음).
+- 새 회귀: hit 상태에서 depbee 버전만 바꾸거나 `cache.FORMAT`만 올리면 다시 추출하고 그다음은 hit이며, 원래 값으로 돌아오면 원래 항목이 hit이고 이전 항목은 남는다. `baf28a4`가 쓰던 그대로의 항목(형식 1, 버전 없는 키, 같은 쌍, 다른 feature 값)이 있는 폴더에서는 그 항목을 쓰지 않고 다시 추출하며 그 파일은 바뀌지 않는다. 이 회귀를 수정 전 코드에 붙이면 오류 1개(버전 값이 모듈에 없음)와 실패 2개(이전 항목을 그대로 씀)다.
+- 캐시 읽기는 일반 파일만 읽는다(Revy minor 5). 캐시 읽기는 자식 프로세스가 아닌 부모에서 하는데, 항목 경로에 FIFO가 있으면 일반 `open()`이 쓰는 쪽을 기다리며 멈추고 부모도 함께 멈춘다. 이제 항목은 `O_NONBLOCK`을 더해 열고(Linux·macOS의 FIFO는 쓰는 쪽 없이 바로 열린다), 연 descriptor 자체를 `fstat`해 일반 파일이 아니면(FIFO, 장치, socket 등) 읽지 않고 miss로 둔다. 검사와 읽기가 같은 descriptor라 그 사이에 파일이 바뀌는 경우가 없고, descriptor는 모든 경우에 닫힌다(`open(opener=...)`이라 Python이 Windows의 `O_BINARY`·상속 금지 등 평소 플래그를 그대로 준다). Windows에는 `O_NONBLOCK`이 없어 여는 방식이 전과 같고, 일반 파일 검사만 더해진다. 일반 파일의 읽기는 `O_NONBLOCK`과 관계없이 동작한다.
+- 남는 제한: 응답하지 않는 NFS(hard mount)나 아주 느린 디스크에서는 `open`, `fstat`, `read`와 캐시 쓰기의 `mkdir`, 임시 파일 쓰기, `os.replace` 같은 OS 동기 호출 자체가 멈출 수 있고, 이것은 부모에서 끊을 수 없다. 늦게 끝난 결과는 전과 같이 예산 확인에서 거부되지만 그 호출이 끝날 때까지 기다린다. 캐시 폴더는 로컬 디스크에 두기를 권한다.
+- 새 회귀는 실제 FIFO를 만들지 않는다(고장 나면 시험이 멈추기 때문). 실제 os.open을 감싸 항목을 열 때 `O_NONBLOCK`(있는 플랫폼)과 `O_BINARY`(Windows)가 전달되는지, 연 descriptor를 FIFO·문자 장치·socket으로 알리도록 `os.fstat`을 바꾸면 내용이 정상이어도 읽지 않고 miss이며 그 descriptor가 닫혔는지, 항목 경로에 실제 디렉터리가 있으면 miss인지 본다. 이 확인은 Windows Python 3.13.5에서 실행했다(Linux·macOS의 실제 FIFO 동작은 확인하지 않았다). 이 회귀를 수정 전 코드에 붙이면 실패 4개다(비차단 열기 없음, 세 종류 모두 읽음).
+
+## 2026-11-05: tar 링크로 압축 해제 상한을 넘던 경계(PR #8 Revy major 1)
+
+- 리뷰가 Windows에서 symbolic link 권한이 없을 때 선언 크기 1 MiB인 tarball이 디스크에 약 53.5 MB를 쓰는 것을 재현했다. `unpack`은 member가 선언한 크기만 더했는데 링크 member의 크기는 0이고, tarfile은 링크를 만들 수 없으면 대상 member의 내용을 복사하므로 그 복사본이 상한에 들지 않았다. hard link도 `os.link`가 실패하면 같았다.
+- 처리 정책과 이유, 정상 입력 영향은 아래 "registry 다운로드" 기록의 상한 절("링크 처리")에 적었다. symbolic link는 "data" filter 검사 뒤 풀지 않고, hard link는 tarfile이 복사할 대상의 크기로 센다.
+- 테스트 152개 통과(skip 없음), `ruff check` 통과. 새 회귀 3개(상한 128 KiB, 합성 tarball): `os.symlink`를 실패시켜도 64 KiB 파일을 가리키는 symbolic link 8개와 순환하는 두 링크가 풀리지 않고 `os.symlink`가 불리지 않음, 폴더 밖 symbolic link는 전과 같이 거부. `os.link`를 실패시킨 hard link 복사 8개, 연쇄, 같은 이름 두 member 중 링크 앞의 큰 것이 상한을 넘으면 `RegistryError`로 거부하고 아무 파일도 쓰지 않음, 상한 안의 연쇄와 중복 이름은 `os.link`와 복사 두 경우 모두 풀리고 링크가 앞쪽 마지막 member의 내용을 가짐, 파일이 아닌 대상(symbolic link, 디렉터리, 없는 이름)의 hard link는 생략, 폴더 밖·절대 경로 hard link는 거부. `check`에서 상한을 넘는 hard link tarball은 `analysis_failed`·종료 코드 2이고 작업 폴더와 큰 파일이 남지 않음. 이 회귀만 수정 전 코드(`4aa005f`)에 붙이면 실패 5개와 오류 2개다: 링크 복사본이 풀림(symbolic link 576 KiB), hard link 거부 없음, 순환 링크에서 RecursionError, 없는 이름을 가리키는 hard link에서 KeyError(`RegistryError`가 아님), `check`는 판정까지 가서 종료 코드 1.
+
+## 2026-11-05: 변경마다 시작하는 예산과 캐시 게시 경계(PR 전 교차 리뷰 03 M1 잔여)
+
+- 리뷰가 두 경계를 재현했다. (A) 완료 결과 확인 뒤에 캐시용 모델 입력 검사와 `cache.store`가 실행돼, 예산 1초에 그 단계만 1.3초 늦어도 캐시 항목이 쓰이고 `passed`·종료 코드 0이었다. (B) 예산은 첫 자식 단계에서 시작했기 때문에, 같은 패키지의 두 번째 위치처럼 메타데이터와 feature를 모두 재사용하는 변경에는 deadline이 없어 늦은 캐시 읽기도 통과했다.
+- 이제 예산은 변경 하나를 분석하기 시작할 때(`check`는 메타데이터 조회를 시작할 때) 바로 정해지고, 자식 단계가 있든 없든 그 변경의 부모 작업에도 적용된다. `scan --extract`의 다음 변경은 새 예산을 쓴다. 확인 지점은 자식 단계 사이와 결과 해석 뒤(아래 기록), 캐시용 모델 입력 검사 뒤(늦었으면 아무것도 쓰지 않는다), `cache.store`에서 파일을 다 쓰고 게시할 경로까지 계산한 뒤 `os.replace` 바로 앞(늦었으면 임시 파일만 지우고 게시하지 않는다), 완료 결과를 받아들이기 전(캐시 hit, 추출, `--no-cache` 모두)이다. 늦은 결과는 분석 실패(종료 코드 2)다.
+- 끊을 수 없는 경계: 부모의 동기 작업과 OS의 파일 이름 바꾸기는 중간에 멈출 수 없다. 마지막 확인은 `os.replace`를 부르기 직전이고 그 사이에 다른 작업은 없다. 이 확인을 통과해 예산 안에 시작한 게시가 늦게 끝나면 이미 끝난 rename을 취소하지 않는다. 그 항목은 남고(그 feature는 예산 안에 만든 것이다) 이번 결과만 마지막 확인에서 거부한다. 예산이 지난 뒤에는 새 게시를 시작하지 않는다. 이미 있던 캐시 항목(손상된 것 포함)은 지우거나 되돌리지 않는다.
+- 시계: deadline은 `time.perf_counter`(Windows에서 QueryPerformanceCounter, 단조 시계)로 재고, 보고서의 `elapsed_seconds`는 전과 같이 `time.monotonic`으로 잰다. 고정 clock 근거 실행이 바꿔 넣는 `time.monotonic`을 deadline 확인이 소비하지 않으므로 그 출력은 바뀌지 않는다(정규화 없이 원본 비교).
+- 테스트 149개 통과(skip 없음), `ruff check` 통과. 새 회귀 6개는 캐시용 모델 검사 지연(항목 없음), 게시 경로 계산과 임시 파일 쓰기 지연(게시 안 함, 손상된 기존 항목과 다른 항목 그대로, 임시 파일 없음), 게시가 늦게 끝남(항목은 남고 결과는 거부, 다음 실행은 hit), 같은 패키지 두 번째 위치의 캐시 hit와 `--no-cache`(첫 위치는 통과, 두 번째는 거부), `check`가 메타데이터 조회부터 한 예산을 나눠 씀(자식 없이), 메타데이터를 실제 자식으로 받는 두 번째 위치를 본다. 이 회귀만 수정 전 코드(`8868916`)에 붙이면 실패 8개(모두 늦은 결과가 통과)다.
+
+## 2026-11-05: 시간 예산이 지난 뒤의 결과 거부(PR 전 교차 리뷰 02 M1 잔여)
+
+- 아래 기록의 첫 구현은 `bounded.run()`이 남은 시간을 한 번만 계산해, 부모가 호출을 pickle로 만들거나 자식을 시작하는 동안 쓴 시간을 자식 대기 시간에 다시 반영하지 않았고 결과를 해석한 뒤에도 확인하지 않았다. 리뷰가 예산 0.4초에 이 단계마다 0.7초를 더해 약 0.85초 뒤의 정상 결과가 받아들여지고, 실제 `check_package`가 `passed`·종료 코드 0을 내는 것을 재현했다. 또 메타데이터를 해석한 뒤 캐시 hit이면 다음 자식 단계가 없어 그 뒤의 부모 작업이 예산을 넘겨도 확인할 곳이 없었다.
+- 이제 `run()`은 시작할 때 정한 절대 deadline(예산 안이면 그 변경의 것, 예산 밖에서 부르면 그 호출의 것) 하나를 쓰고, 시작 전, pickle 뒤, 자식 대기 직전, 결과 해석 뒤에 다시 확인한다. 이미 지났으면 자식을 시작하지 않고, 시작한 자식은 종료한 뒤, 결과는 버리고 `TimeLimitError`를 낸다. 분석기는 완료 결과를 받아들이고 캐시에 저장하기 전에 같은 deadline을 확인한다(`bounded.check()`, 캐시 hit 포함). 이 확인은 그 변경에서 자식 단계가 하나라도 시작된 뒤에만 시계를 읽는다(이후 예산은 변경을 시작할 때 정하고 별도 시계로 재도록 바꿈, 위 기록).
+- 보장과 남는 한계: 자식 안의 작업(다운로드, 압축 해제, feature 추출)은 deadline에 종료된다. 부모가 직접 하는 동기 작업(pickle, 프로세스 시작, 결과 해석, 메타데이터 JSON 해석, 비교 기준·캐시·근거 처리)은 중간에 끊을 수 없어 그 작업 시간만큼 deadline을 넘길 수 있다. 다만 그렇게 늦게 끝난 결과는 받아들이지 않으므로 통과나 캐시 저장으로 바뀌지 않고 그 항목은 분석 실패(종료 코드 2)다. 추론과 보고서 작성은 예산에 들지 않는다.
+- 테스트 143개 통과(skip 없음), `ruff check` 통과. 새 회귀 3개는 실제 자식 프로세스로 pickle, 프로세스 시작, 결과 해석 지연을 예산 안·밖에서 각각 넣어 오류와 자식 시작 여부·종료를 보고, 실제 `check_package`가 늦은 추출 결과를 `analysis_failed`·종료 코드 2로 끝내는지, 메타데이터 단계가 예산을 다 쓴 뒤의 캐시 hit이 거부되고 캐시 항목이 바뀌지 않는지 본다. 이 회귀만 수정 전 코드(`0b96311`)에 붙이면 실패 8개다(오류가 나지 않음 6개, 통과로 끝남 2개).
+
+## 2026-11-05: 변경 하나의 전체 시간 예산과 작업 종료(PR 전 교차 리뷰 M1)
+
+- 이전 구현(아래 "registry 다운로드" 기록)은 다운로드마다 120초를 따로 두고, 시간이 지나면 기다리던 쪽만 오류를 내고 작업 스레드와 연결은 그대로 두었다. 압축 해제와 feature 추출에는 시간 상한이 없었다. 교차 리뷰가 합성 재현으로 확인했다(시간 뒤에도 작업 스레드가 살아 있고, 가상 시계로 121초 걸린 압축 해제와 feature 추출도 통과).
+- 이제 분석하는 변경 하나에 시간 예산 하나를 둔다. 메타데이터 다운로드, tarball 두 개 다운로드, 압축 해제, feature 추출이 그 예산을 함께 쓰고, 처음 단계가 시작될 때부터 잰다(이후 변경을 시작할 때부터로 바꿈, 위 "변경마다 시작하는 예산" 기록). `scan --extract`는 변경마다, `check`는 메타데이터 조회와 분석을 합쳐 하나다. 캐시 hit이면 메타데이터 조회만 예산을 쓴다. 이 단계들은 자식 Python 프로세스(`subprocess`, `python -I`)에서 실행하고, 예산이 끝나면 자식을 강제로 종료(Windows TerminateProcess, 그 밖 SIGKILL)한 뒤 끝난 것을 확인하고 나서 그 항목을 분석 실패(`incomplete`, 종료 코드 2)로 둔다. 그래서 자식이 하던 연결, 파일 쓰기, 계산이 함께 멈춘다. 압축을 푸는 폴더는 부모가 만들어 자식이 종료돼도 지운다. 다운로드마다 따로 두던 120초와 스레드 대기는 없앴다.
+- 예산 값 300초의 근거(이 PC, Windows 11, 실시간 백신 켜짐, 합성 tarball과 설치된 고정 feature-extractor를 자식 프로세스에서 실행, 네트워크 없음): 크기 상한 안의 로컬 작업은 파일 20,000개 압축 해제 16초(feature-extractor는 소스 파일 5,000개를 넘으면 거부해 19초), JS 파일 4,998개 두 버전 10.8초, 63 MiB JS 파일 두 버전 16.7초, 작은 변경 0.29초였다. 두 버전 모두 파일 20,000개인 경우를 합쳐도 로컬 작업은 약 40초다. 나머지 약 260초는 크기 상한까지의 다운로드(메타데이터 128 MiB와 tarball 128 MiB 두 개, 합계 384 MiB)를 약 1.5 MB/s에서 받는 시간이다. 지금까지 관측한 가장 큰 경우(tarball 28.8 MB 두 개와 메타데이터 1.5 MB)는 약 0.25 MB/s에서도 들어간다. 더 짧은 예산이면 크기 상한까지의 입력은 빠른 연결에서만 분석된다. 실제 registry에서 이 값을 확인하지는 않았다.
+- 자식 프로세스 비용: 아무것도 하지 않는 호출 10번의 중앙값 0.138초, 최대 0.149초. 변경 하나에 메타데이터 조회와 추출로 두 번 띄우므로 약 0.3~0.5초가 더 걸린다.
+- 테스트 140개 통과(skip 없음), `ruff check` 통과. 새 `tests/test_bounded.py`는 실제 자식 프로세스로 확인한다: 결과(JSON·바이트)와 오류·비정상 종료 전달, 연결·헤더 단계에 멈춘 다운로드와 1바이트씩 오는 본문, 느린 압축 해제, 끝나지 않는 feature 추출(실제 `FeatureExtractorBackend.extract`, feature-extractor 부분만 stand-in), 두 단계가 나눠 쓰는 예산(남은 시간만 쓰고 다 쓴 뒤에는 새 프로세스를 띄우지 않음), 예산을 넘긴 `check`가 `analysis_failed`·종료 코드 2로 끝남, 설치된 고정 feature-extractor 추출을 자식에서 실행. 멈춘 경우마다 오류만이 아니라 자식이 종료됐고 작업이 남긴 heartbeat 파일이 더 이상 늘지 않으며 작업 폴더가 남지 않았음을 본다. 자식은 부모의 mock을 물려받지 않으므로 각 작업이 자식 안에서 네트워크 연결을 막고 합성 응답을 쓴다. 그 밖의 테스트는 이 경계를 같은 프로세스 안에서 실행하게 바꿔(공통 Fixture) 기존 mock과 고정 loader 테스트가 그대로 돈다.
+- 확인하지 않은 것: 실제 registry와 느린 실제 네트워크에서의 종료, Linux·macOS에서의 프로세스 종료(SIGKILL 경로는 개발 CI에서만 실행), 메모리 상한(자식 프로세스의 메모리는 제한하지 않는다).
+
+## 2026-11-05: 학습 범위 밖 결과의 캐시 제외(DEV-02e 후속)
+
+- 분석 캐시 계획은 실패와 unsupported 결과를 캐시하지 않는다. 캐시 항목의 모델 입력 검사를 넣을 때 학습에 없던 범주 값(모델의 `OutOfScopeError`, 보고서의 `out_of_training_scope`)은 손상이 아니라고 보고 저장·재사용했는데, 이것도 모델이 점수를 내지 않는 unsupported 결과라 계획과 맞지 않았다. 이제 모델 입력 변환이 거부하는 feature는 이유와 상관없이 저장하지도, 캐시에서 쓰지도 않는다. 판정은 전과 같이 `out_of_training_scope`(`incomplete`, 종료 코드 2)다.
+- 저장은 근거를 만든 뒤, 분석 결과 전체의 검사(`artifact.validate`)보다 먼저 일어난다. 그래서 모델이 쓰지 않는 feature가 JSON 값 형식을 벗어나도(리스트 등) 저장될 수 있었다(읽을 때는 miss로 거부). 이제 `cache.store`는 `cache.load`가 받아들이는 feature만 쓴다. 테스트 135개 통과.
+- 테스트 134개 통과(skip 없음), `ruff check` 통과. 학습에 없던 범주를 두 번 검사하면 두 번 모두 추출하고(`cache_hit` false), 캐시 항목이 생기지 않으며, 판정은 두 번 모두 `out_of_training_scope`임을 확인한다.
+
+## 2026-11-05: `--output` 충돌을 분석 전에 거부(PR #7 후속)
+
+- 이미 있는 `--output` 경로는 결과를 쓸 때(`open(..., "x")`)에야 거부돼, `check`와 `scan --extract`가 registry를 읽고 추출까지 마친 뒤 오류로 끝났다(PR #7 리뷰 nit 3). 이제 `plan`·`scan`·`check` 모두 명령을 실행하기 전에 경로가 있는지 확인하고, 같은 오류 문구(`[Errno 17] File exists: ...`)와 종료 코드 2로 끝난다. 확인과 쓰기 사이에 파일이 생기는 경우는 기존처럼 쓰기 단계의 `"x"` 모드가 막는다.
+- 테스트 134개 통과(skip 없음), `ruff check` 통과. 새 테스트는 text·json·markdown의 `check`에서 메타데이터 조회와 추출이 0회이고 진행 표시 없이 오류 한 줄만 나오는지, `scan --extract`에서 분석기를 만들지 않는지, 기존 파일이 그대로인지 본다. 수정 전 코드(`95cfb79`)에서는 이 테스트가 실패 3개, 오류 1개로 깨진다.
+
+## 2026-11-05: 설치된 고정 feature-extractor의 loader 경계 테스트(PR #7 후속)
+
+- feature-extractor가 설치된 환경에서만 도는 테스트 3개(`PinnedLoaderTests`, `skipUnless`)를 더했다(PR #7 재검증 nit 2). 실제 `FeatureExtractorBackend`와 고정 커밋 c24761d의 `build_snapshot`, `build_row`, extractor 전체, `LocalArchiveSnapshotSource`를 합성 tarball로 실행하고, depbee의 registry 접근만 가짜 응답으로 바꾸며, feature-extractor 자신의 `requests.get`은 불리면 실패하게 둔다.
+- 확인하는 것: `check`와 `scan --extract` 모두 메타데이터 요청 1회와 tarball 2개만 받고 feature-extractor는 registry에 접근하지 않음, feature 29개, `installScriptAdded`가 tarball의 package.json이 아니라 확인한 registry 메타데이터에서 나옴, 바뀐 JS 수가 푼 tarball에서 나옴, 비교 기준 manifest·`dist`·`versions`·`time` 형식 오류가 tarball 요청 전에 종료 코드 2로 끝남(전에는 loader.py 100행의 `AttributeError`), 로컬 사본을 고정 `LocalArchiveSnapshotSource`로 읽음.
+- 백엔드가 feature-extractor의 `RegistrySnapshotSource`로 다시 메타데이터를 받게 바꾸면 이 테스트가 실패함을 확인했다. pin을 바꿀 때 같은 회귀를 잡는다.
+- 이 개발 환경(`.[dev,ml,extract]`, feature-extractor를 Git 커밋 c24761d에서 설치)에서 테스트 133개 통과, skip 없음, `ruff check` 통과. 네트워크 연결을 실패하게 바꾼 전체 실행에서도 133개가 통과했고 실제 backend는 11번 만들어졌다. `.[extract]` 없이 도는 개발 CI에서는 이 3개가 skip된다.
+
+## 2026-11-05: 캐시 항목의 모델 입력 검사와 check의 메타데이터 시간(DEV-02e 후속)
+
+- 캐시는 JSON 값의 형식(숫자, 문자열, bool, null, NaN·무한대 아님)만 검사해서, 모델 feature가 빠졌거나 숫자 자리에 문자열이 든 항목도 hit로 쓰였다. 그러면 다시 추출하지 않고 매번 추론 실패(`incomplete`)로 끝났다. 이제 캐시한 feature를 검증한 모델의 입력 변환(`LightGBMPredictor.encode`, 이름·순서·boolean·범주·결측 규칙)에 넣어 보고, 받지 못하면 miss로 보고 다시 추출한다. 새로 추출한 feature도 모델이 받지 못하면 저장하지 않는다. 학습에 없던 범주 값은 처음에 저장하고 다시 썼으나, 계획의 실패·unsupported 캐시 제외에 맞춰 저장하지 않게 바꿨다(위 2026-11-05 "학습 범위 밖 결과의 캐시 제외" 기록). 저장은 근거를 만든 뒤, 추론 전에 한다.
+- `check`는 요청을 만들기 전에 메타데이터를 받으므로 그 시간이 결과의 `elapsed_seconds`에 빠져 있었다(연결 규약은 항목별 시간에 메타데이터 조회를 포함한다고 정한다). 이제 그 조회 시간을 결과의 값에 더한다. `scan --extract`는 분석 중에 메타데이터를 받으므로 바뀌지 않는다.
+- 테스트 130개 통과(skip 없음), `ruff check` 통과. 모델 feature가 빠지거나 문자열·bool이 숫자 자리에 든 항목이 miss가 되고 다시 저장됨, 모델이 받지 못하는 새 feature는 저장되지 않음, 학습에 없던 범주의 저장·재사용(뒤에 제외로 바꿈), 고정 clock에서 `check`의 결과 시간이 메타데이터 조회와 분석 시간의 합임을 확인한다. 모델 검사를 끄거나 메타데이터 시간을 빼면 이 테스트들이 실패하는 것도 확인했다.
+
+## 2026-11-05: registry 다운로드의 integrity, 주소, 크기·시간 상한(PR #7 후속)
+
+- 고정 feature-extractor(c24761d)의 loader는 받은 tarball을 해시하지 않고, redirect를 제한하지 않으며, 크기·파일 수·전체 시간 상한 없이 받고 풀었다(아래 2026-11-04 기록의 제한). 이제 registry 메타데이터와 tarball은 depbee(`analysis/registry.py`)가 받고, feature-extractor에는 고정 loader의 공개 함수 `build_snapshot()`으로 만든 snapshot과 검사한 tarball을 푼 폴더만 넘긴다. feature-extractor는 registry에 접근하지 않으며, 이전 기록의 비공개 `_packument_cache` 의존도 없어졌다.
+- 받은 tarball 바이트는 풀기 전에 그 버전의 `dist.integrity`와 대조한다. npm(ssri)처럼 나열된 알고리즘 중 가장 강한 것(sha512 → sha384 → sha256 → sha1)으로만 판정하고 그 알고리즘의 값 중 하나가 맞으면 통과한다. integrity가 없으면 옛 `dist.shasum`(sha1)을 쓰고, 둘 다 없으면 분석 실패다. 설치될 버전은 전과 같이 lockfile integrity가 registry 값과 같은 값을 공유해야 한다.
+- 주소: 메타데이터와 tarball 모두 `https://registry.npmjs.org`에서만 받는다. redirect마다 새 주소를 검사하고 마지막 응답 주소도 다시 검사한다. tarball 주소는 비교 기준 버전도 포함해 `https://registry.npmjs.org/<이름>/-/<scope를 뺀 이름>-<버전>.tgz`와 정확히 같아야 한다.
+- 상한값과 근거(코드 상수, CLI 옵션 없음). 표본은 이 작업 공간에 이미 있던 자료이고 파일 크기만 읽었다.
+
+| 상한 | 값 | 근거 |
+| --- | --- | --- |
+| 메타데이터 크기 | 128 MiB | 로컬에 보관한 packument 3,146개(baseline 점검 때 받은 캐시)의 중앙값 3 KB, p99 0.43 MB, 최대 1.49 MB. 버전이 수천 개인 대형 패키지가 거의 없는 표본이라 실제 최대치를 대표하지 못해 넉넉히 잡았다. JSON을 메모리에 올리므로 최악의 메모리 사용은 이 값의 몇 배다. |
+| tarball 크기 | 128 MiB | 3차 수집 때 받은 원본 tarball 119개의 최대 28.8 MB(p99 11.9 MB)의 약 4배 |
+| 풀린 크기 | 512 MiB | pair archive의 버전 트리 2,334개(Git tree의 파일 크기 합)의 최대 261 MB(p99 84 MB)의 약 2배. 압축을 이 크기 넘게 풀지 않고, member가 선언한 크기의 합도 같은 상한으로 본다(링크는 표 아래 "링크 처리"). |
+| 파일 수 | 20,000 | 같은 표본의 최대 9,152개(p99 2,502개)의 약 2배 |
+| 다운로드 하나의 벽시계 시간(이후 변경 하나의 예산 300초로 바뀜, 위 기록) | 120초 | 관측한 최대 tarball 28.8 MB를 1 MB/s에서 약 29초에 받는다. 128 MiB tarball은 약 1.1 MB/s 이상이어야 이 안에 받는다. 소켓 동작별 30초 제한은 feature-extractor와 같다. |
+
+- 링크 처리(PR #8 Revy major 1, 위 기록에서 추가). 선언 크기의 합은 링크가 쓰는 바이트를 세지 못했다. tarfile은 링크를 만들 수 없으면(Windows에서 symbolic link 권한이 없을 때, hard link를 지원하지 않는 파일 시스템) 대상 member를 복사한다.
+  - symbolic link는 풀지 않는다. "data" filter를 먼저 적용하므로 폴더 밖이나 절대 경로를 가리키는 링크는 전과 같이 거부하고, 통과한 symbolic link만 건너뛴다. 이유: npm은 tarball의 링크를 설치하지 않는다(이 PC의 npm 11.6.1에 든 pacote 21.0.3 `lib/fetcher.js`의 tar filter가 `SymbolicLink`·`Link` 항목을 버린다). 고정 feature-extractor도 소스 파일을 모을 때 symbolic link를 건너뛴다(`core/source_files.py`의 `_walk_source_paths`). 그래서 링크를 만들 수 있는 OS에서는 feature에 쓰이지 않았고, 링크를 만들 수 없는 Windows에서만 복사본이 일반 파일로 읽혀 OS마다 feature가 달라질 수 있었다. 대상 크기를 더하는 방식은 tarfile의 symbolic link 대상 해석(아카이브 전체에서 찾기, 연쇄)을 따라 해야 하고, 서로를 가리키는 링크는 링크를 만들 수 없을 때 tarfile 자체가 RecursionError로 끝났다.
+  - hard link는 대상의 크기로 센다. tarfile은 hard link의 대상을 그 링크보다 앞에 있는 member 중 경로를 정규화한 이름이 같은 마지막 것으로 찾고(`TarFile._find_link_target`), `os.link`가 실패하면 그 member를 복사한다. depbee는 링크마다 그 member의 크기를 더한다(대상이 hard link이면 그 링크가 센 크기). `os.link`가 성공해 디스크를 더 쓰지 않을 때도 같은 값을 세므로 OS와 관계없이 같은 판정이 난다. 일반 파일이나 그런 hard link가 아닌 것(symbolic link, 디렉터리, 없는 이름)을 가리키는 hard link는 풀지 않고, 폴더 밖이나 절대 경로를 가리키면 "data" filter로 거부한다. hard link는 OS와 관계없이 대상 내용을 가진 파일이 되고 feature-extractor가 일반 파일로 읽으므로 남긴다.
+  - 정상 입력 영향: 링크가 없는 tarball의 처리는 그대로다. 링크가 든 tarball은 symbolic link 없는 트리로 분석하고, package.json이 symbolic link이면 패키지 루트를 찾지 못해 분석 실패다. hard link는 대상 크기만큼 상한에 더 가까워진다. 실제 registry tarball에 링크가 얼마나 있는지는 확인하지 않았다.
+
+- 시간 범위의 구분(이 기록 당시의 구현이며, 위 "변경 하나의 전체 시간 예산" 기록에서 바꿨다):
+  - 다운로드: 메타데이터 하나, tarball 하나가 각각 120초다. 요청을 스레드에서 실행하고 depbee는 최대 120초만 기다리므로 이름 조회, 연결, TLS, 헤더, redirect, 본문이 모두 이 안에 든다. 소켓 제한만으로는 데이터가 조금씩 계속 오면 이 시간이 끝나지 않는다. 스레드도 읽기(한 번에 소켓 읽기 하나인 `read1`)마다, 본문 끝에서도 시간을 확인하고 멈춘다. 시간이 지났을 때 아직 돌던 스레드는 버려 둔다. 본문을 받던 스레드는 다음 읽기에서 멈추고(읽기 하나는 데이터 없이 최대 30초), 연결·TLS·헤더 단계에서 데이터가 조금씩 계속 오면 그 단계가 끝나거나 프로세스가 끝날 때까지 남는다(이 경우의 스레드 수명은 확인하지 않았다). 한 항목은 메타데이터 하나와 tarball 두 개를 받으므로 다운로드만으로 최대 약 360초다.
+  - 압축 해제: 시간 상한이 없고 크기와 파일 수 상한만 있다. 합성 측정(Windows 11, NTFS, 실시간 백신 켜짐)에서 512 MiB에 가까운 파일 하나는 1.0초, 16바이트 파일 20,000개는 16.1초 걸렸다.
+  - feature 추출(feature-extractor의 extractor 실행): 시간 상한이 없다.
+- 테스트 128개 통과(skip 없음), `ruff check` 통과. 모두 합성 I/O다(`_open`을 가짜 응답으로 바꿈): 다운로드 시간 상한은 합성 clock으로 본문 끝에서 시간이 지난 경우, 1바이트씩 오는 응답, 늦게 끝난 연결·redirect를 거절하고, 실제 시간 0.3초 상한으로 연결 단계와 본문 읽기에 멈춘 요청을 5초 안에 오류로 끝낸다. 그 밖에 redirect handler와 마지막 주소 재검사, 크기와 `Content-Length`, 전송 오류, integrity 알고리즘 순서와 shasum, 압축 해제의 크기·파일 수·선언 크기 상한, 경로 밖 파일과 링크 거부("data" filter), 패키지 루트 규칙, lockfile 경로와 `check`의 통합(실제 `FeatureExtractorBackend`와 depbee source, feature-extractor 부분만 stand-in)을 확인한다.
+- 확인하지 않은 것: 실제 registry 접근(대형 packument, 실제 redirect, 느린 네트워크), Linux·macOS, 모든 실제 패키지의 tarball 주소 형식(옛 버전에 `http://` 주소가 남아 있으면 그 항목은 분석 실패가 된다).
+
+## 2026-11-05: lockfile 경로의 registry 메타데이터 형식 검사(PR #7 재검증 후속)
+
+- `scan --extract`에서 packument 자체나 `versions`가 리스트·문자열·숫자·null이거나 `time`이 리스트·문자열·숫자이면 `AttributeError`가 분석기 밖으로 나가 traceback과 종료 코드 1이 될 수 있었다(PR #7 재검증 minor 1). 이제 `ExtractorAnalyzer.packument()`가 받은 메타데이터가 객체이고 그 `versions`·`time`이 객체인지 확인하고, 아니면 `GuardError`로 그 항목을 분석 실패(`incomplete`, 종료 코드 2)로 둔다. `check`에서는 같은 검사가 요청을 만들기 전에 걸려 오류 JSON과 종료 코드 2로 끝난다(`build_package_request`와 같은 규칙). `versions`나 `time`이 아예 없을 때도 전과 같이 분석 실패이고 오류 문구만 바뀐다(전에는 "Registry no longer serves" 또는 "no publish time"). `AttributeError`를 잡는 코드는 넣지 않았다.
+- 테스트 115개 통과(skip 없음), `ruff check` 통과. 새 scan 경로 회귀 테스트(subTest 12개)는 실제 `cli.main`과 FakeBackend로 종료 코드 2, 빈 stderr, `analysis_failed`, feature-extractor 미호출을 확인한다. 테스트만 수정 전 코드(`9e7f989`)에 붙이면 오류 9개(모두 `AttributeError`)와 실패 3개(다른 오류 문구)로 깨진다.
+- 비교할 manifest와 `dist`의 형식 회귀에 숫자, 실수, null, bool, 빈 리스트·객체를 더했다(PR #7 재검증 nit 1). 이 형식들은 수정 전 코드에서도 통과했다(2026-11-04 기록의 검사로 이미 막혀 있었다).
+
+## 2026-11-05: Markdown 출력(DEV-02f)
+
+- `scan`과 `check`에 `--format markdown`을 추가했다. 테스트 114개 통과(skip 없음), `ruff check` 통과.
+- 새 테스트: 파이프, 역슬래시, 개행, 백틱 묶음, HTML 태그와 주석, 링크·이미지, 강조, 자동 링크(URL, `www.`, 이메일), HTML entity, 제목 기호, 제어·방향 문자를 패키지·버전·위치·근거·상세·model_id·이유·feature 이름과 값에 넣어도, CommonMark 규칙으로 code span을 뺀 나머지 출력이 평범한 문자열일 때와 같고 표의 칸 수가 그대로임을 확인한다. code span 처리나 표의 `|` 처리, 제어 문자 처리를 끄면 이 테스트가 실패하는 것도 확인했다. 그 밖에 판정별 순서, 점수 0과 없음, 삭제·보류 항목, 빈 결과, 시간 열, check의 출처 문구, JSON과 같은 종료 코드, `--output` JSON 파일과 덮어쓰기 거부, Markdown에서 진행 표시 없음.
+- 고정 clock으로 실행한 text·json 출력 12가지는 e 커밋(`84b6016`)의 출력과 바이트 단위로 같다. Markdown 출력 7가지도 같은 방식으로 기록했다.
+- 확인하지 않은 것: GitHub job summary의 실제 렌더링. 위 판단은 CommonMark·GFM 명세에 따른 것이고 GitHub 화면에서 보지 않았다.
+
+## 2026-11-05: 분석 캐시와 소요 시간(DEV-02e)
+
+- `scan --extract`와 `check`에 추출한 feature의 실행 간 캐시(`--cache-dir`, 기본 `~/.cache/depbee`, `--no-cache`)와 소요 시간·캐시 사용 여부(`elapsed_seconds`, `cache_hit`)를 추가했다. 캐시 키와 우회 조건은 README와 연결 규약 4절에 있다. `--extract` 없는 `scan`과 `plan`에는 새 필드가 없다.
+- 테스트 109개 통과(skip 없음), `ruff check` 통과. 새 테스트는 FakeBackend와 합성 메타데이터로 돈다: 같은 쌍의 cold/warm에서 추출 1회와 같은 판정·feature·근거, 요청·위치·lockfile 이전 버전이 달라도 재사용하며 근거는 현재 요청으로 다시 만듦, 모델 파일·manifest, feature-extractor 출처, integrity, 두 manifest, 배포 시각, 비교 기준 중 하나만 바뀌어도 다시 추출, `--no-cache`·모델 없음·출처 미확인·로컬 사본·`--analysis`에서 읽기와 쓰기 없음, 추출 실패는 저장하지 않고 다음 실행에서 다시 추출, 잘리거나 키·형식·feature 값(NaN, 무한대, 객체)이 틀리거나 상한을 넘는 항목은 miss, 쓰기 실패는 캐시만 건너뜀, 스레드 여러 개가 같은 항목을 동시에 쓰고 읽어도 부분 파일을 읽지 않음, 고정 clock의 항목별·전체 시간과 삭제·미지원·실패 항목의 값, 시간 값이 음수나 NaN이 되지 않음, 설치 출처 확인(고정 커밋 VCS 설치만 인정, 편집 가능·로컬 폴더·다른 커밋·다른 URL·설치 후 수정은 거부), 검증한 모델의 해시.
+- 이 개발 환경에서는 `pip install -e ".[dev,ml,extract]"`가 feature-extractor를 Git 커밋 `c24761d`에서 설치했고(`direct_url.json`의 `vcs_info`), 설치 출처 확인을 통과했다.
+- 합성 측정(실제 성능 아님): 고정 feature를 즉시 돌려주는 합성 backend와 D04-E00으로 `scan --extract`를 바뀐 패키지 1·5·20개에 cold, warm, `--no-cache` 순서로 실행했다. 추출 횟수는 cold 1·5·20, warm 0·0·0, `--no-cache` 1·5·20이고 메타데이터 조회는 매번 패키지 수만큼이며, 세 실행의 판정·점수·feature·근거가 같다(시간·캐시 필드를 뺀 의미 비교). 벽시계 시간은 cold 0.474·0.122·0.163초, warm 0.108·0.115·0.138초였고 첫 cold에는 LightGBM import가 들어 있다. 추출이 즉시 끝나는 합성 backend라 이 값은 depbee 자체의 처리 시간이며 실제 npm 다운로드·추출 시간이나 캐시로 줄어드는 시간이 아니다.
+- 고정 clock으로 `check`와 `scan --extract`를 subprocess에서 12가지 실행한 출력(cold/warm, `--no-cache`, 모델 없음, pre-release, 잘못된 배포 시각, `--output`)은 두 번 실행해 바이트 단위로 같다.
+- 확인하지 않은 것: 실제 registry에서의 추출 시간과 캐시 효과, 여러 OS 파일시스템에서의 동시 쓰기·내구성(Windows NTFS에서 스레드로만 확인), 캐시 폴더의 크기 증가(자동 정리 없음).
+
 ## 2026-11-04: 비교할 manifest의 사전 검사, 다운로드 상한 없음(PR #7 리뷰 후속)
 
 - 비교 기준 버전의 manifest가 문자열이거나 그 `dist`가 리스트이면, 고정 feature-extractor(c24761d) `loader.py` 100행이 형식 검사 없이 `dist.tarball`을 읽다가 `AttributeError`를 냈다. 이 예외는 분석 실패로 바뀌지 않아 traceback과 종료 코드 1(위험 판정과 같은 코드)로 끝났다(PR #7 리뷰 minor 1). 아래 기록의 "비교한 두 버전의 manifest가 객체가 아니면 분석 실패"는 FakeBackend 기준이었고, 실제 loader를 거치면 비교 기준 쪽은 지켜지지 않았다.

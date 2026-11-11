@@ -11,11 +11,11 @@ npm 프로젝트에서 바뀐 의존성 버전을 찾아, 각 버전의 변경�
 | 영역      | 현재 구현 내용                                                                                    | 남은 연결·검증                          |
 | --------- | ------------------------------------------------------------------------------------------------- | --------------------------------------- |
 | 입력 처리 | lockfile v2/v3 비교(기준은 파일·Git 커밋), 직접·중첩 의존성 변경·추가 추출, 변경·요청 ID와 해시. lockfile 없이 registry의 버전 하나(`check`) | 추가 입력 형식                          |
-| 분석      | `--extract`: feature-extractor로 설치될 버전과 그 직전 stable을 비교해 feature·근거 추출          | tarball 자체의 integrity 검증           |
+| 분석      | `--extract`: feature-extractor로 설치될 버전과 그 직전 stable을 비교해 feature·근거 추출, 받은 tarball의 integrity·주소·크기·시간 검사, 추출한 feature를 실행 사이에 재사용하는 캐시와 소요 시간 | 실제 registry에서의 상한값 검증         |
 | 분석 연결 | `--analysis`: 다른 분석기가 만든 JSON의 요청 ID·변경 ID·중복·상태·feature 형식 검증               |                                         |
 | 모델 추론 | native LightGBM 로딩, 모델 해시·이진 분류·feature 이름/순서·자료형 검증, feature별 기여도 계산     | 검증 세트로 정한 임계값 수령            |
 | 판정 조율 | feature 스키마 확인, 임계값 판정, 실패·학습 범위 밖 입력은 `incomplete` 처리                      |                                         |
-| CLI 출력  | `plan`/`scan`/`check`, 한국어 텍스트·JSON, 새 파일 저장, 종료 코드 0/1/2                          |                                         |
+| CLI 출력  | `plan`/`scan`/`check`, 한국어 텍스트·JSON·Markdown, 새 파일 저장, 종료 코드 0/1/2                 | GitHub job summary 화면 확인            |
 | 테스트    | 합성 입력 회귀 테스트, 합성 native 모델 연동 테스트                                                |                                         |
 | 개발 CI   | push/PR에서 Ubuntu·Windows × Python 3.11·3.13 검사·테스트·패키지 빌드                              | GitHub 서버 실행 확인                   |
 
@@ -32,6 +32,8 @@ src/depbee/
   inputs/git.py           # Git 커밋에서 기준 lockfile 읽기
   analysis/extractor.py   # feature-extractor 호출, 근거 정리
   analysis/baseline.py    # 비교 기준 버전(직전 stable) 선정
+  analysis/cache.py       # 추출한 feature의 실행 간 캐시
+  analysis/registry.py    # registry 메타데이터·tarball 다운로드와 검사, 압축 해제
   analysis/artifact.py    # 분석 결과 검증, 미리 만든 분석 JSON 연결
   inference/lightgbm.py   # 학습 완료 모델 로딩·검증·추론·기여도
   pipeline.py             # 입력→분석→추론 처리 조율
@@ -91,16 +93,26 @@ Git 명령에는 30초 제한과 출력 크기 상한이 있습니다. 제한을
 `plan`은 바뀐 버전 쌍과 `request_id`를 JSON으로 출력합니다.
 `scan --extract`는 바뀌거나 새로 추가된 의존성마다 tarball을 받아 feature를 추출하고 모델로 판정합니다.
 텍스트 출력은 판정별 개수를 먼저 보여 주고 위험 → 보류 → 통과 순, 같은 판정 안에서는 점수 순으로 나열합니다. `--extract`로 분석하는 동안에는 진행 상황을 표준 오류에 표시합니다.
-`--format json`은 같은 결과를 lockfile 순서 그대로 JSON으로 출력하고(진행 표시 없음), `--output`은 결과를 새 파일에 저장합니다(기존 파일을 덮어쓰지 않습니다).
+`--format json`은 같은 결과를 lockfile 순서 그대로 JSON으로 출력하고(진행 표시 없음), `--output`은 결과를 새 파일에 저장합니다(기존 파일을 덮어쓰지 않습니다). 이미 있는 경로를 주면 다운로드나 분석을 시작하기 전에 오류(종료 코드 2)로 끝납니다.
+`--format markdown`(`scan`, `check`)은 같은 결과를 GitHub job summary 등에 붙일 수 있는 한국어 Markdown(전체 판정, 결과 표, 항목별 추출된 사실과 모델 설명)으로 출력합니다. 순서는 텍스트와 같고 진행 표시는 없으며, `--output` 파일은 이때도 JSON입니다. 패키지 이름·버전·근거처럼 보고서에서 온 문자열은 모두 code span으로 감싸 HTML·링크·이미지·강조로 해석되지 않게 합니다.
 오류는 표준 오류에 JSON으로 나옵니다.
 tarball은 Python 임시 폴더에 풀었다가 지웁니다. 위치를 바꾸려면 `TMP`/`TEMP` 환경변수를 지정합니다.
+registry 메타데이터와 tarball은 depbee가 직접 받습니다(feature-extractor는 받은 것을 읽기만 합니다). `https://registry.npmjs.org`에서만, redirect 뒤에도 그 주소에서만 받고, tarball 주소는 그 패키지·버전의 registry 경로(`/<이름>/-/<이름>-<버전>.tgz`)여야 합니다. 거부한 주소는 오류에 scheme과 host만 적고 다운로드 오류는 HTTP 상태 코드나 오류 종류만 적어, 주소나 서버 응답에 든 자격 증명·토큰이 보고서에 옮겨지지 않습니다. 받은 tarball 바이트는 그 버전의 `dist.integrity`(가장 강한 해시 알고리즘, npm과 같은 방식)와 대조한 뒤에만 풉니다.
+다운로드는 메타데이터 128 MiB, tarball 128 MiB를 넘으면 멈추고, 압축 해제는 풀린 크기 512 MiB와 파일 20,000개를 넘으면 멈춥니다. tarball 안의 symbolic link는 풀지 않고(npm도 설치하지 않습니다), hard link는 가리키는 파일의 크기로 셉니다.
+분석하는 변경 하나(메타데이터 조회, tarball 두 개 다운로드, 압축 해제, feature 추출, 그 결과와 캐시의 처리)에는 그 변경을 분석하기 시작할 때부터 재는 시간 예산 300초가 있습니다(`check`는 메타데이터 조회부터). 같은 패키지가 여러 위치에 있어 메타데이터나 캐시를 재사용하는 변경도 따로 예산을 씁니다. 이 작업들은 별도의 Python 프로세스에서 실행되고, 예산이 끝나면 그 프로세스를 강제로 종료해 진행 중이던 연결과 파일 작업도 함께 멈춥니다. depbee 자신이 하는 짧은 작업(호출 준비, 프로세스 시작, 결과와 메타데이터 해석, 캐시 읽기·검사·쓰기, 근거 정리)은 중간에 끊지 못해 예산을 그만큼 넘길 수 있지만, 예산이 지난 뒤 끝난 결과는 쓰지 않고 새 캐시 항목도 게시하지 않습니다. 예산 안에 시작한 캐시 파일 게시(파일 이름 바꾸기)가 늦게 끝나면 그 항목은 남지만(예산 안에 만든 feature입니다) 이번 결과는 쓰지 않습니다. 이미 있던 캐시 항목은 지우거나 되돌리지 않습니다. 하나라도 넘거나 맞지 않으면 그 항목은 분석 실패(`incomplete`, 종료 코드 2)입니다. 값의 근거는 [검증 기록](docs/validation.md)에 있습니다.
 
 `check NAME@VERSION`은 lockfile 없이 npm 공식 registry의 버전 하나를 `scan --extract`와 같은 방식(같은 release line의 직전 stable과 비교)으로 검사합니다. 설치 전에 특정 버전을 확인할 때 씁니다.
 `lodash@4.17.21`이나 `@scope/name@1.0.0`처럼 정확한 이름과 버전만 받고, 범위(`^1.0.0`)·태그(`latest`)·URL·Git·파일 경로·사설 registry는 네트워크에 접근하기 전에 오류(종료 코드 2)로 거부합니다.
 버전은 npm이 버전을 표시하는 build metadata 없는 형식(`1.2.3`, `1.2.3-beta.1`)만 지원합니다. `1.2.3+build.1`처럼 `+`가 붙은 버전은 SemVer 문법상 유효하지만 이 명령의 지원 범위가 아니라서 거부합니다. 숫자로만 된 pre-release 식별자의 선행 0(`1.0.0-01`)처럼 SemVer에 맞지 않는 버전도 거부합니다.
-registry 메타데이터는 한 번만 받아 요청, 분석, feature 추출(feature-extractor의 registry source)에 함께 씁니다. 그 버전이 registry에 없거나, tarball 주소가 `https://registry.npmjs.org`가 아니거나, `dist.integrity`가 없거나, 메타데이터 형식이 잘못됐으면 오류(종료 코드 2)로 끝납니다.
+registry 메타데이터는 한 번만 받아 요청, 분석, feature 추출(feature-extractor의 snapshot)에 함께 씁니다. 그 버전이 registry에 없거나, tarball 주소가 `https://registry.npmjs.org`가 아니거나, `dist.integrity`가 없거나, 메타데이터 형식이 잘못됐으면 오류(종료 코드 2)로 끝납니다.
 pre-release와 비교할 이전 stable이 없는 버전은 `scan`과 같이 `incomplete`입니다.
 결과에는 "lockfile 없이 registry 정보로 검사"했다는 범위(`input_kind: "package"`)와 근거가 표시됩니다. 출력 형식, `--output`, 진행 표시(텍스트만), 종료 코드는 `scan`과 같습니다.
+
+`scan --extract`와 `check`는 추출한 feature를 캐시 폴더(기본 `~/.cache/depbee`, `--cache-dir`로 변경)에 저장해, 같은 두 버전을 다시 비교할 때 tarball을 다시 받거나 추출하지 않습니다. registry 메타데이터는 매번 다시 받아 확인하고, 판정·점수·근거는 매번 새로 계산합니다.
+캐시 키는 패키지와 비교한 두 버전, 두 버전의 registry manifest·integrity·배포 시각, feature 스키마, depbee 버전과 캐시 형식 번호, 설치된 feature-extractor의 출처(고정 커밋, 설치 파일 해시, Python 버전), 모델 파일과 manifest의 해시입니다. 하나라도 다르면 다시 추출합니다. depbee 코드는 해시하지 않으므로, 버전을 올리지 않고 추출 결과를 바꾸는 변경은 개발자가 캐시 형식 번호를 올려야 이전 항목을 쓰지 않습니다([검증 기록](docs/validation.md)).
+모델이 없을 때, feature-extractor가 고정 커밋 그대로 설치됐는지 확인할 수 없을 때(편집 가능 설치, 로컬 폴더 설치, 설치 후 수정), 로컬 사본(`--local-source`)으로 읽은 버전, 분석에 실패한 항목은 캐시를 쓰지 않습니다. `--no-cache`는 캐시를 읽지도 쓰지도 않습니다.
+캐시한 feature는 모델이 점수를 낼 수 있는 이름과 자료형인지 다시 확인하고, 아니면 쓰지 않고 다시 추출합니다. 모델이 받지 못하거나 학습에 없던 범주 값이라 점수를 내지 않는 feature는 처음부터 저장하지 않습니다. 캐시 항목은 일반 파일일 때만 읽고(FIFO·장치 파일은 기다리지 않고 건너뜀), 형식과 키만 검사하므로 누가 썼는지는 보증하지 못합니다. 다른 사람이나 PR이 쓸 수 있는 폴더를 캐시로 지정하지 않습니다. 캐시는 자동으로 지우지 않으므로 필요하면 폴더를 직접 지웁니다.
+두 명령의 결과에는 전체 소요 시간(`elapsed_seconds`)과, 항목별로 메타데이터 조회·캐시 조회·추출에 걸린 시간(추론 제외)과 캐시 사용 여부(`cache_hit`)가 붙습니다. `--extract` 없는 `scan`과 `plan`의 출력은 바뀌지 않습니다.
 
 `scan`과 `check`에서 `--model-dir`을 생략하면 환경 변수 `DEPBEE_MODEL_DIR`의 모델 폴더를 씁니다. `--model-dir`이 항상 우선하고, 둘 다 없거나 환경 변수가 빈 값이면 모델 없이 처리합니다(분석할 변경이 있으면 `incomplete`).
 지정한 경로가 잘못되면 다른 모델로 대체하지 않고 오류(종료 코드 2)로 끝납니다. 대상 프로젝트의 설정에서는 모델 경로를 읽지 않습니다.
@@ -133,7 +145,8 @@ registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때�
 
 - 로컬 `package-lock.json` v2/v3만 지원합니다. 기준 lockfile은 파일이나 Git 커밋에서 읽고, 저장소 하위 폴더의 단일 프로젝트는 지원하지만 npm workspaces 전체를 한 번에 비교하지는 않습니다.
 - npm 공식 registry 의존성만 분석합니다. workspace/link, Git·file·사설 레지스트리 의존성, 같은 버전의 아카이브 변경은 `incomplete`입니다.
-- integrity는 lockfile과 registry 메타데이터를 비교합니다. 받은 tarball 자체의 해시는 아직 검증하지 않습니다. `check`는 대조할 lockfile이 없어 registry 메타데이터에 `dist.integrity`가 있는지만 확인하며(registry 문서상 2017년 4월부터 기록된 값), 이 값이 없는 버전은 검사하지 못합니다.
+- 설치될 버전은 lockfile integrity가 registry 메타데이터의 값과 같은지 보고, 받은 tarball 바이트는 registry 메타데이터의 `dist.integrity`와 대조합니다(`integrity` 키가 없을 때만 옛 `dist.shasum`, 키가 있는데 null이거나 쓸 수 있는 해시가 없으면 분석 실패). `check`는 대조할 lockfile이 없어 registry 값만 쓰며(registry 문서상 2017년 4월부터 기록된 값), 새 버전에 이 값이 없으면 검사하지 못합니다.
+- 시간 예산을 넘긴 작업은 그 프로세스를 종료해 멈추므로 결과는 남기지 않습니다. 메타데이터 조회와 추출마다 Python 프로세스를 하나씩 새로 띄우므로 변경 하나에 약 0.3~0.5초가 더 걸립니다(합성 측정).
 - 학습 데이터와 달리 비교 기준 후보를 OSV 악성 목록과 대조하지 않고, 새 버전 직전 24시간 안의 후보도 별도로 검증하지 않습니다.
 - typosquat처럼 패키지 자체가 악성인 경우는 "업데이트 변경점"을 보는 이 모델의 범위가 아닙니다.
 - `package.json`만 있는 프로젝트, yarn/pnpm, Git URL 입력은 후속 범위입니다.
@@ -148,6 +161,7 @@ registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때�
 ```
 
 테스트는 네트워크와 feature-extractor 없이 돌도록 feature-extractor 호출을 가짜로 바꿔 둡니다. ML 의존성이 없으면 native LightGBM 테스트는 skip됩니다.
+feature-extractor(`.[extract]`)가 설치돼 있으면 고정 커밋의 loader·extractor를 합성 tarball과 가짜 registry 응답으로 실행하는 경계 테스트도 돌고, 없으면 skip됩니다. 네트워크는 쓰지 않습니다.
 테스트의 작은 모델은 직렬화·연결 검증용 합성 모델이며 실제 악성 탐지 모델이 아닙니다.
 
 다음 작업은 [연결 규약](docs/contracts.md), [구조와 담당](docs/architecture.md), [CI/CD 연결](docs/ci-cd.md), [통합 순서](docs/development.md)를 참고합니다.

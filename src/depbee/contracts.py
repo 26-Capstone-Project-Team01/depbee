@@ -3,6 +3,7 @@
 import hashlib
 import json
 import math
+import time
 from pathlib import Path
 from typing import Protocol
 
@@ -61,6 +62,12 @@ def finite_number(value: object, label: str) -> float:
     if not math.isfinite(number):
         raise GuardError(f"{label} must be finite")
     return number
+
+
+def elapsed_since(started: float) -> float:
+    """Seconds on the monotonic clock since started, in milliseconds; always finite and >= 0."""
+    seconds = time.monotonic() - started
+    return round(seconds, 3) if math.isfinite(seconds) and seconds > 0 else 0.0
 
 
 class Analyzer(Protocol):

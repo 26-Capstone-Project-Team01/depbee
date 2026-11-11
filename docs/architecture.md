@@ -16,7 +16,7 @@
 
 `service.py`의 `plan_project()`·`scan_project()`가 위 단계를 조립하는 공통 진입점이다. CLI와 이후 Actions·MCP·대시보드는 이 함수를 호출하고, 판정은 `pipeline.scan()`에만 둔다.
 
-`check_package()`(`depbee check NAME@VERSION`)는 lockfile 대신 registry 메타데이터에서 같은 형식의 요청을 만든다. 이름과 버전을 네트워크 전에 검사하고, `ExtractorAnalyzer.packument()`로 메타데이터를 한 번 받아 `inputs/npm.py`의 `build_package_request()`(새로 추가된 의존성 하나, `input_kind: "package"`)와 분석에 함께 쓴 뒤, 같은 `pipeline.scan()`으로 판정한다. `FeatureExtractorBackend.extract()`는 받은 메타데이터를 feature-extractor `RegistrySnapshotSource`의 캐시에 넣어 old/new snapshot도 같은 문서를 쓰게 한다. 고정 버전(c24761d)에는 이를 넘기는 공개 API가 없어 그 캐시 속성(`_packument_cache`)에 의존하고, 속성이 없으면 다시 조회하지 않고 분석 실패로 둔다(`scan --extract`도 같다). 모델 경로 선택(`--model-dir` → `DEPBEE_MODEL_DIR` → 없음)은 `scan_project()`와 같은 함수를 쓴다.
+`check_package()`(`depbee check NAME@VERSION`)는 lockfile 대신 registry 메타데이터에서 같은 형식의 요청을 만든다. 이름과 버전을 네트워크 전에 검사하고, `ExtractorAnalyzer.packument()`로 메타데이터를 한 번 받아 `inputs/npm.py`의 `build_package_request()`(새로 추가된 의존성 하나, `input_kind: "package"`)와 분석에 함께 쓴 뒤, 같은 `pipeline.scan()`으로 판정한다. registry 메타데이터와 tarball은 `analysis/registry.py`가 받는다(`https://registry.npmjs.org`만, redirect 뒤에도 검사, 크기 상한, tarball 주소 경로와 `dist.integrity` 대조, 압축 해제 크기·파일 수 상한, symbolic link는 풀지 않고 hard link는 대상 크기로 셈). 메타데이터 다운로드와 추출 단계(tarball 두 개, 압축 해제, feature 추출)는 `analysis/bounded.py`가 자식 Python 프로세스에서 실행한다. 분석하는 변경 하나는 그 변경을 시작할 때 정해지는 시간 예산 하나를 함께 쓰고(`bounded.budget()`, `ExtractorAnalyzer.analyze()`의 변경마다, `check`는 메타데이터 조회부터, 자식 단계가 없어도 적용), 예산이 끝나면 자식 프로세스를 종료하고 끝난 것을 확인한 뒤 오류를 낸다. 부모가 직접 하는 단계(호출 준비, 결과 해석, 캐시·근거 처리)는 끊지 못하므로, `run()`이 단계 사이와 결과 해석 뒤에, 분석기가 캐시용 모델 입력 검사 뒤, `cache.store`가 게시(`os.replace`) 직전, 완료 결과를 받아들이기 전에(`bounded.check()`) deadline을 다시 확인해 늦은 결과를 버린다. 부모는 자식에 함수와 인자를 pickle로 넘기고, 자식은 결과를 JSON이나 바이트로만 돌려준다(패키지 자료를 다룬 프로세스의 pickle을 읽지 않는다). 압축을 푸는 작업 폴더는 부모가 만들고 지운다. `FeatureExtractorBackend.extract()`는 feature-extractor의 `RegistrySnapshotSource` 대신 depbee의 source를 넘긴다. 이 source는 고정 loader의 공개 함수 `build_snapshot()`으로 받은 메타데이터에서 snapshot을 만들고(tarball을 받지 않는 호출), 소스 트리는 검사한 다운로드를 푼 폴더로 채운다. 그래서 feature-extractor는 registry에 접근하지 않고 old/new snapshot도 요청을 만든 문서를 쓴다(`scan --extract`도 같다). 예전의 비공개 캐시 속성(`_packument_cache`) 의존은 없다. 모델 경로 선택(`--model-dir` → `DEPBEE_MODEL_DIR` → 없음)은 `scan_project()`와 같은 함수를 쓴다.
 
 | 영역 | 담당 | 인계할 결과물 |
 |---|---|---|
@@ -25,6 +25,7 @@
 | 서비스 연결 | 사용자 | 프로젝트 입력, 비교 기준 선정, 분석기 연결, 추론, CLI, CI/CD |
 
 `ExtractorAnalyzer`는 feature-extractor의 `build_row()`를 직접 호출한다. 패키지 코드는 읽기만 하고 실행하지 않는다.
+`analysis/cache.py`는 추출한 feature를 실행 사이에 재사용하는 작은 JSON 파일 캐시다(키 digest가 파일 이름, 임시 파일 뒤 `os.replace`로 저장). 키는 `ExtractorAnalyzer`가 비교한 두 버전의 메타데이터, 검증한 모델의 해시(`LightGBMPredictor.identity`), 설치 출처를 확인한 feature-extractor의 식별 정보(`FeatureExtractorBackend.identity`)로 만들고, 셋 중 하나라도 없으면 캐시를 쓰지 않는다. 캐시에서 읽거나 저장할 feature는 그 모델의 입력 변환(`LightGBMPredictor.encode()`)으로 다시 확인한다. 서비스는 분석기가 잰 항목별 시간과 캐시 사용 여부를 보고서에 붙인다(`service._timed`). 판정은 그대로 `pipeline.scan()`이 한다.
 `ArtifactAnalyzer`는 다른 분석기가 파일로 넘긴 결과를 받는 연결부다.
 새 분석기는 `Analyzer.analyze(request)`를 구현한다. 임의 플러그인 자동 검색이나 대상 프로젝트 설정의 명령 실행은 하지 않는다.
 

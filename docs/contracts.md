@@ -15,7 +15,7 @@
 - `reason`: 분석하지 않는 이유(삭제·미지원 출처 등)
 
 중첩 의존성은 경로별로 식별한다. alias는 name과 설치 경로를 구분한다.
-분석기는 `analyzable=true`인 항목만 처리하고, 다운로드한 버전이 lockfile integrity와 일치하는지 확인해야 한다. 예시의 가상 integrity를 실제 데이터로 사용하지 않는다.
+분석기는 `analyzable=true`인 항목만 처리하고, 다운로드한 버전이 lockfile integrity와 일치하는지 확인해야 한다. 내장 분석기는 lockfile integrity가 registry 메타데이터의 `dist.integrity`와 같은 값을 공유하는지 확인하고, 받은 tarball 바이트를 그 registry 값(가장 강한 알고리즘)과 대조한다. 예시의 가상 integrity를 실제 데이터로 사용하지 않는다.
 
 ### 1.1 lockfile 없는 단일 패키지 요청 (`depbee check NAME@VERSION`)
 
@@ -43,7 +43,7 @@
 - `input_kind: "package"`로 lockfile 요청과 구분한다. lockfile 요청에는 이 필드가 없다.
 - lockfile이 없으므로 `base_lock_sha256`·`head_lock_sha256`이 없다. 존재하지 않는 파일의 해시를 만들지 않는다.
 - 이름과 버전은 네트워크 접근 전에 검사한다. scope가 있거나 없는 registry 이름과, 숫자 부분과 숫자로만 된 pre-release 식별자에 선행 0이 없는 SemVer 버전을 받는다. build metadata(`+...`)가 붙은 버전은 SemVer 문법상 유효하지만 이 명령의 지원 범위 밖이라 거부한다. 이것은 npm이 버전을 표시하는 형식에 맞춘 지원 정책이며, registry의 저장 규칙 전체를 검증한 결과는 아니다.
-- `after`는 registry 메타데이터의 그 버전 manifest에서 만든다. manifest의 `name`·`version`이 요청과 같고, `dist.tarball`이 `https://registry.npmjs.org`이며, `dist.integrity`가 있어야 한다. 하나라도 어긋나면 요청을 만들지 않고 오류(종료 코드 2)다. 이 integrity는 registry 메타데이터 값이며 받은 tarball 바이트의 해시가 아니다.
+- `after`는 registry 메타데이터의 그 버전 manifest에서 만든다. manifest의 `name`·`version`이 요청과 같고, `dist.tarball`이 `https://registry.npmjs.org`이며, `dist.integrity`가 있어야 한다. 하나라도 어긋나면 요청을 만들지 않고 오류(종료 코드 2)다. 이 integrity는 registry 메타데이터 값이고, 분석기는 받은 tarball 바이트를 이 값과 대조한 뒤에 푼다.
 - 분석기는 lockfile 요청의 새로 추가된 의존성과 같은 방식으로 처리하고(같은 release line의 직전 stable과 비교), 근거에 "lockfile 없이 registry 정보로 검사"를 넣는다. 요청을 만든 메타데이터를 비교 기준 선정과 feature 추출(old/new snapshot)에도 그대로 쓰고 registry를 다시 조회하지 않는다. 분석 결과(2절)와 모델 manifest(3절) 형식은 같다.
 
 ## 2. 분석기 → CLI
@@ -119,6 +119,20 @@ SHA-256은 파일 변조·혼동 확인용이다. 모델은 신뢰하는 팀원�
 점수가 나온 항목에는 `compared_version`(비교 기준 버전), `features`, `evidence`(추출된 사실), `explanation`(점수에 크게 작용한 feature 3개와 SHAP 기여도, log-odds 단위)이 있다. 추출된 사실과 모델 설명은 구분한다.
 `explanation_rest`는 `explanation`에 없는 feature의 기여도 합(`others_sum`)과 개수(`others_count`), 모델 기준값(`base_value`)이다. `explanation`의 기여도와 이 두 값을 모두 더하면 점수의 log-odds가 된다.
 `incomplete` 항목에는 `reason`과, 있으면 `detail`이 있다. 학습 범위 밖 입력은 `out_of_training_scope` 또는 `no_baseline`이다.
+
+feature를 추출한 보고서(`scan --extract`, `check`)에만 소요 시간과 캐시 사용 여부가 더 있다. 그 밖의 필드와 순서는 그대로이고, `--extract` 없는 `scan`과 `plan`의 출력에는 이 필드가 없다.
+
+- 최상위 `elapsed_seconds`: `analyzer_version` 다음, `results` 앞. 서비스 함수(`scan_project`, `check_package`) 호출부터 판정 완료까지의 시간이다.
+- 각 결과의 끝 `elapsed_seconds`: 그 항목의 메타데이터 조회·캐시 조회·추출 시간이며 추론 시간은 들어가지 않는다. 분석하지 않은 항목(삭제, 미지원 출처 등)은 null이다. `check`는 요청을 만들기 전에 받은 메타데이터의 조회 시간도 그 결과의 값에 더한다.
+- 각 결과의 끝 `cache_hit`: 캐시한 feature를 썼으면 true, 추출했거나 분석하지 않았거나 실패한 항목은 false다.
+- 시간은 단조 시계(`time.monotonic`)로 재며 초 단위, 소수 셋째 자리까지, 항상 유한한 0 이상의 값이다. 실행마다 달라지므로 보고서끼리 비교할 때는 이 필드를 빼고 비교한다.
+- 캐시 파일 형식은 depbee 내부 형식이며 이 규약에 속하지 않는다. 캐시는 추출한 feature만 담고, 판정·점수·근거·설명은 매번 다시 계산한다. 캐시한 feature를 쓴 결과의 `features`도 추출한 결과와 키 순서와 값이 같아, 같은 요청의 JSON 출력은 위 시간 필드와 `cache_hit`만 다르다.
+
+`--format markdown`(`scan`, `check`)은 같은 보고서를 GitHub Flavored Markdown으로 보여 주는 표시 형식이며 위 JSON 구조는 바뀌지 않는다. `--output`은 이 형식에서도 JSON 파일이고, 진행 표시는 텍스트에서만 나온다.
+
+- 순서: 제목(전체 판정과 종료 코드), 개수·모델·범위·소요 시간 목록, 결과 표(판정, 패키지, 설치될 버전, 비교 버전, 점수, 이유, 위치, 시간이 있으면 분석 시간), 근거나 설명이 있는 결과별 절(상세, 추출된 사실, 모델 설명), 안전 보증이 아니라는 문구. 결과 순서는 텍스트와 같은 위험 → 보류 → 통과 → 삭제, 같은 판정 안에서는 점수 순이다.
+- 점수가 없으면 `-`, 0이면 `0.000`이다. 추출된 사실과 모델 설명은 서로 다른 목록이다.
+- 보고서에서 온 문자열(패키지, 버전, 위치, 근거, 상세, model_id, 알 수 없는 이유 코드, feature 이름과 값)은 텍스트 출력과 같이 제어 문자를 `\uXXXX`로 바꾼 뒤, 안에 있는 어떤 백틱 묶음보다 긴 백틱으로 감싼 code span으로만 넣는다. 표 칸에서는 code span 안의 `|`도 `\|`로 쓴다(GFM은 code span 안의 `|`로도 칸을 나눈다). 그래서 HTML, 링크, 이미지, 강조, 자동 링크, 줄바꿈으로 해석되지 않는다. depbee가 만든 한국어 문구와 숫자만 code span 밖에 있다.
 하나라도 미완료면 전체 종료 코드 2, 그 외 위험이 있으면 1, 나머지는 0이다.
 위험과 미완료가 함께 있으면 보고서에 둘 다 남기고 2로 보류한다.
 입력/manifest 자체의 오류는 stderr의 error JSON과 종료 코드 2로 반환한다.
