@@ -7,7 +7,6 @@
   "model_id": "example-model-001",
   "threshold": 0.5,
   "analyzer_version": "feature-extractor 0.1.0",
-  "elapsed_seconds": 2.012,
   "detectors": {
     "known_malicious": {
       "source": "EXAMPLE-KNOWN-MALICIOUS-LIST",
@@ -29,6 +28,7 @@
       "python": "3.13.0"
     }
   },
+  "elapsed_seconds": 2.012,
   "results": [
     {
       "change_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -97,8 +97,6 @@
         "others_count": 26,
         "base_value": -1.0
       },
-      "elapsed_seconds": 1.874,
-      "cache_hit": false,
       "known_malicious": {
         "status": "not_hit",
         "reason": null,
@@ -142,7 +140,9 @@
       "ml": {
         "status": "not_hit"
       },
-      "rule_ml_agreement": "rule_only"
+      "rule_ml_agreement": "rule_only",
+      "elapsed_seconds": 1.874,
+      "cache_hit": false
     }
   ]
 }

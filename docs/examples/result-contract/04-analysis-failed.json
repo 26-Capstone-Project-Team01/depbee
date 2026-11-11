@@ -7,7 +7,6 @@
   "model_id": "example-model-001",
   "threshold": 0.5,
   "analyzer_version": "feature-extractor 0.1.0",
-  "elapsed_seconds": 2.587,
   "detectors": {
     "known_malicious": {
       "source": "EXAMPLE-KNOWN-MALICIOUS-LIST",
@@ -29,6 +28,7 @@
       "python": "3.13.0"
     }
   },
+  "elapsed_seconds": 2.587,
   "results": [
     {
       "change_id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
@@ -41,8 +41,6 @@
       "evidence": [],
       "reason": "analysis_failed",
       "detail": "example-logger@0.9.4 tarball does not match its sha512 integrity",
-      "elapsed_seconds": 0.932,
-      "cache_hit": false,
       "known_malicious": {
         "status": "not_hit",
         "reason": null,
@@ -58,7 +56,9 @@
       "ml": {
         "status": "failed"
       },
-      "rule_ml_agreement": "undetermined"
+      "rule_ml_agreement": "undetermined",
+      "elapsed_seconds": 0.932,
+      "cache_hit": false
     },
     {
       "change_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
@@ -126,8 +126,6 @@
         "others_count": 26,
         "base_value": -1.0
       },
-      "elapsed_seconds": 1.517,
-      "cache_hit": true,
       "known_malicious": {
         "status": "not_hit",
         "reason": null,
@@ -160,7 +158,9 @@
       "ml": {
         "status": "not_hit"
       },
-      "rule_ml_agreement": "neither_hit"
+      "rule_ml_agreement": "neither_hit",
+      "elapsed_seconds": 1.517,
+      "cache_hit": true
     }
   ]
 }
