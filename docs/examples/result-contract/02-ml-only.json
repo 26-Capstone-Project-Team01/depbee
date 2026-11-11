@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "request_id": "1111111111111111111111111111111111111111111111111111111111111111",
+  "scope": "changed npm lockfile entries only; not a whole-project safety assessment",
+  "status": "flagged",
+  "exit_code": 1,
+  "model_id": "example-model-001",
+  "threshold": 0.5,
+  "analyzer_version": "feature-extractor 0.1.0",
+  "elapsed_seconds": 3.341,
+  "detectors": {
+    "known_malicious": {
+      "source": "EXAMPLE-KNOWN-MALICIOUS-LIST",
+      "list_as_of": "2026-11-01T00:00:00Z",
+      "list_sha256": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+    },
+    "rules": {
+      "ruleset_version": "example-ruleset-0.0.0"
+    }
+  },
+  "provenance": {
+    "model": {
+      "model_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "manifest_sha256": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+    },
+    "feature_extractor": {
+      "commit": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      "files_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      "python": "3.13.0"
+    }
+  },
+  "results": [
+    {
+      "change_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "location": "node_modules/demo-color-utils",
+      "package": "demo-color-utils",
+      "before_version": "3.2.0",
+      "after_version": "3.3.0",
+      "status": "flagged",
+      "score": 0.91,
+      "evidence": [
+        "비교: 3.2.0 → 3.3.0 (같은 release line의 직전 stable)",
+        "새 의존성 1개: example-helper-lib",
+        "추가·수정된 JS 파일 5개"
+      ],
+      "compared_version": "3.2.0",
+      "features": {
+        "installScriptPresent": false,
+        "installScriptAdded": false,
+        "scriptEntryAdded": false,
+        "newDependencyAdded": true,
+        "newDependencyCount": 1,
+        "updateType": "minor",
+        "updateInterval": 1209600,
+        "obfChangedFileCount": 5,
+        "obfHexIdentRatioNew": 0.05,
+        "obfHexIdentRatioChange": 0.03,
+        "obfHexIdentRatioChangedCode": 0.35,
+        "obfHexNumberRatioNew": 0.06,
+        "obfHexNumberRatioChange": 0.03,
+        "obfHexNumberRatioChangedCode": 0.36,
+        "obfBracketAccessRatioNew": 0.07,
+        "obfBracketAccessRatioChange": 0.03,
+        "obfBracketAccessRatioChangedCode": 0.37,
+        "obfEscapeDensityNew": 0.08,
+        "obfEscapeDensityChange": 0.03,
+        "obfEscapeDensityChangedCode": 0.38,
+        "obfShortIdentRatioNew": 0.09,
+        "obfShortIdentRatioChange": 0.03,
+        "obfShortIdentRatioChangedCode": 0.39,
+        "obfMeanIdentLengthNew": 6.55,
+        "obfMeanIdentLengthChange": 0.03,
+        "obfMeanIdentLengthChangedCode": 6.85,
+        "obfWhitespaceRatioNew": 0.11,
+        "obfWhitespaceRatioChange": 0.03,
+        "obfWhitespaceRatioChangedCode": 0.41
+      },
+      "explanation": [
+        {
+          "feature": "obfHexIdentRatioChangedCode",
+          "value": 0.35,
+          "contribution": 1.6
+        },
+        {
+          "feature": "obfEscapeDensityChangedCode",
+          "value": 0.38,
+          "contribution": 0.95
+        },
+        {
+          "feature": "newDependencyAdded",
+          "value": true,
+          "contribution": 0.55
+        }
+      ],
+      "explanation_rest": {
+        "others_sum": 0.213635,
+        "others_count": 26,
+        "base_value": -1.0
+      },
+      "elapsed_seconds": 3.205,
+      "cache_hit": false,
+      "known_malicious": {
+        "status": "not_hit",
+        "reason": null,
+        "detail": null,
+        "matches": []
+      },
+      "rules": {
+        "status": "not_hit",
+        "reason": null,
+        "detail": null,
+        "checks": [
+          {
+            "rule_id": "EXAMPLE-RULE-0001",
+            "rule_version": "0.0.0-example",
+            "status": "not_hit",
+            "evidence": [],
+            "locations": [],
+            "detail": null
+          },
+          {
+            "rule_id": "EXAMPLE-RULE-0002",
+            "rule_version": "0.0.0-example",
+            "status": "not_hit",
+            "evidence": [],
+            "locations": [],
+            "detail": null
+          }
+        ]
+      },
+      "ml": {
+        "status": "hit"
+      },
+      "rule_ml_agreement": "ml_only"
+    }
+  ]
+}
