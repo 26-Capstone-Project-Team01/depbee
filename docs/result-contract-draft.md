@@ -45,7 +45,7 @@ CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 �
 | `request_id`, `input_kind`, `scope` | 최상위 | 그대로 |
 | `status`(`passed`/`flagged`/`incomplete`), `exit_code` | 최상위 | 그대로. 지금 계산 규칙(미완료 2 > 위험 1 > 0)을 바꾸지 않는다 |
 | `model_id`, `threshold` | 최상위 | ML 모델 식별과 임계값. `ml` 안에 복사하지 않는다 |
-| `analyzer_version` | 최상위 | 그대로. feature-extractor 출처의 상세는 `provenance.feature_extractor`(SVC-02 후보)에 둔다 |
+| `analyzer_version` | 최상위 | 그대로. null이면 분석기가 연결되지 않은 실행이다(4.1절). feature-extractor 출처의 상세는 `provenance.feature_extractor`(SVC-02 후보)에 둔다 |
 | `elapsed_seconds` | 최상위·결과 항목 | 그대로. 탐지기 시간 포함 여부는 D-11 |
 | `status`(`flagged`/`not_flagged`/`incomplete`/`removed`) | 결과 항목 | 그대로. 지금처럼 ML 경로(분석·추론)로만 정한다 |
 | `score` | 결과 항목 | ML 위험 점수. `ml`에 복사하지 않는다 |
@@ -99,7 +99,7 @@ CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 �
 | `rules.checks[].locations` | array | 아니오 | 근거 위치. 원소는 `{"file": string, "line": integer 또는 null}`, `file`은 tarball 안의 경로. 형식은 D-8 |
 | `rules.checks[].detail` | string | 예 | 이 규칙이 `failed`일 때 설명 |
 | `ml` | object | 아니오 | ML 위험 점수 경로의 상태 |
-| `ml.status` | string | 아니오 | `hit`, `not_hit`, `not_run`, `failed`. 기존 `status`·`reason`에서 4절 표대로 정한다. 점수·임계값·모델·이유는 기존 필드를 본다 |
+| `ml.status` | string | 아니오 | `hit`, `not_hit`, `not_run`, `failed`. 기존 `status`·`reason`과 분석기 연결 여부로 4.1절 표대로 정한다. 점수·임계값·모델·이유는 기존 필드를 본다 |
 | `rule_ml_agreement` | string | 아니오 | `both_hit`, `rule_only`, `ml_only`, `neither_hit`, `undetermined`(4.3절). `rule_only`·`ml_only`가 불일치다 |
 
 `rules.status` 정하기: 탐지기를 실행하지 않았으면 `not_run`, 필요한 입력을 얻지 못했거나 탐지기 자체가 오류로 끝났으면 `failed`이고, 두 경우 모두 이유 코드가 있고 `checks`는 빈 배열이다. 실행했으면 `checks`에서 집계한다. 하나라도 `hit`이면 `hit`, 아니고 하나라도 `failed`면 `failed`(이유 `detector_failed`, 설명은 그 규칙의 `checks[].detail`), 모두 `not_hit`이면 `not_hit`이다. `hit`과 `failed`가 함께 있어도 실패한 규칙은 `checks`에 남는다. 일부 규칙의 실패를 어떻게 다룰지는 D-7이다. `known_malicious.status`도 앞의 두 경우(`not_run`, `failed`)는 같고, 대조를 마쳤으면 `matches`가 있을 때 `hit`, 없을 때 `not_hit`이다.
@@ -115,14 +115,20 @@ CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 �
 | `detector_not_configured` | `not_run` | 이 실행에 탐지기가 연결되지 않음(최상위 `detectors`의 해당 값이 null). 지금 main의 상태 |
 | `not_installed_in_head` | `not_run` | 삭제된 의존성이라 설치될 버전이 없음(항목 `status`가 `removed`). 기존 코드 값을 같은 뜻으로 재사용 |
 | `not_analyzable` | `not_run` | 요청에서 `analyzable=false`인 변경(미지원 출처 등). 항목 `reason`에 원래 이유가 있다. 기지 악성 대조를 이 경우에도 할지는 D-5 |
-| `input_failed` | `failed` | 탐지기에 필요한 분석 입력(tarball, 추출)을 얻지 못함. 항목 `reason`·`detail`에 원래 실패가 있다 |
+| `analyzer_not_configured` | `not_run` | 탐지기에 필요한 분석 입력(tarball, 추출)을 만드는 분석기가 이 실행에 연결되지 않음(`--analysis`·`--extract` 없는 `scan`, 항목 `reason`은 `analysis_missing`, 최상위 `analyzer_version`은 null). 이름·버전만 쓰는 기지 악성 대조에는 해당하지 않는다 |
+| `input_failed` | `failed` | 연결된 분석기에서 탐지기에 필요한 분석 입력을 얻지 못함(항목 `reason`이 `analysis_failed`이거나, 분석기가 연결됐는데 `analysis_missing`). 항목 `reason`·`detail`에 원래 실패가 있다 |
 | `detector_failed` | `failed` | 탐지기 자체가 오류로 끝났거나(`detail`에 설명), 실행한 규칙 중 적중 없이 실패한 규칙이 있음(`checks[].detail`에 설명) |
 
 ## 4. 상태 의미표
 
 ### 4.1 ML 위험 점수: `ml.status`와 기존 필드
 
-`ml.status`는 기존 `status`·`reason`에서 기계적으로 정해지는 값이다. 이 표가 기존 보고서(새 필드 없음)를 해석하는 규칙도 된다.
+`ml.status`는 기존 `status`·`reason`과 분석기 연결 여부에서 정해지는 값이다. 새 필드를 만드는 `pipeline.scan()`은 분석기 연결 여부를 인자(`analyzer`가 None인지)로 직접 안다.
+
+`analysis_missing`은 90a61bb 코드에서 두 경로로 나온다.
+
+- 분석기 미연결: `service.scan_project()`는 `--analysis`와 `--extract`가 모두 없으면 분석기를 None으로 넘기고, `pipeline.scan()`은 분석 대상인 모든 변경을 `analysis_missing`(`incomplete`, 종료 코드 2)으로 둔다. 최상위 `analyzer_version`은 null이다. 분석기가 실행되지 않았으므로 `ml.status`는 `not_run`이다.
+- 연결된 분석기의 결과 누락: `--analysis` 파일이 어떤 분석 대상 변경의 결과를 담지 않으면 `analysis.artifact.validate()`가 통과시키고 `pipeline.scan()`이 그 변경을 `analysis_missing`으로 둔다. 최상위 `analyzer_version`은 문자열이다. 연결된 분석기가 결과를 내지 못한 것이므로 `ml.status`는 `failed`다. `--extract`(`ExtractorAnalyzer`)와 `check`는 분석 대상 변경마다 결과(`complete`·`failed`·`unsupported`)를 만들므로 이 경로로 `analysis_missing`을 내지 않는다.
 
 | 기존 항목 `status` | 기존 항목 `reason` | `ml.status` | `score` | 항목의 종료 코드 기여(지금 규칙) |
 |---|---|---|---|---|
@@ -131,10 +137,14 @@ CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 �
 | `incomplete` | `model_missing` | `not_run` | null | 2 |
 | `incomplete` | `out_of_training_scope`, `no_baseline` | `not_run` | null | 2 |
 | `incomplete` | 변경의 이유(`package_identity_changed`, `workspace_or_non_registry_version`, `unsupported_registry_source`, `missing_integrity`, `same_version_artifact_changed`) | `not_run` | null | 2 |
-| `incomplete` | `analysis_missing`, `analysis_failed`, `inference_failed` | `failed` | null | 2 |
+| `incomplete` | `analysis_missing`, 분석기 미연결(최상위 `analyzer_version` null) | `not_run` | null | 2 |
+| `incomplete` | `analysis_missing`, 분석기 연결됨(최상위 `analyzer_version` 문자열) | `failed` | null | 2 |
+| `incomplete` | `analysis_failed`, `inference_failed` | `failed` | null | 2 |
 | `removed` | `not_installed_in_head` | `not_run` | null | 0 |
 
-`ml.status`가 `not_run`이어도 항목은 지금처럼 `incomplete`(종료 코드 2)이므로 미실행이 통과로 바뀌지 않는다. `ml.status`를 따로 두는 이유는 미실행(모델·범위 문제)과 실패(분석·추론 오류)를 진입점마다 다시 나누지 않게 하려는 것이다. 이 필드 없이 위 표로 매번 계산할지는 D-12다.
+기존 보고서(새 필드 없음) 해석의 한계: 위 표는 기존 보고서에도 적용할 수 있지만, `analysis_missing` 두 행의 구분은 항목 필드만으로는 안 되고 최상위 `analyzer_version`에 기댄다. 이것은 90a61bb 코드의 성질(분석기가 None일 때만 null이고, 연결된 분석기의 결과는 `validate()`가 비어 있지 않은 문자열을 요구함)에서 나온 추론이며 보고서 계약으로 정한 규칙이 아니다. 분석기를 여럿 연결하거나 `analyzer_version` 없이 결과를 받는 경로가 생기면 기존 보고서만으로는 확실히 구분할 수 없다. 그래서 기존 보고서를 이 표로 해석한 `not_run`/`failed`는 참고값이고, 확정 값은 새 필드 `ml.status`다(D-12). 기존 `reason`, `status`, `exit_code`는 바꾸지 않는다.
+
+`ml.status`가 `not_run`이어도 항목은 지금처럼 `incomplete`(종료 코드 2)이므로 미실행이 통과로 바뀌지 않는다. `ml.status`를 따로 두는 이유는 미실행(분석기·모델 미연결, 범위 밖 입력)과 실패(분석·추론 오류, 연결된 분석기의 결과 누락)를 진입점마다 다시 나누지 않게 하려는 것이다. 이 필드 없이 위 표로 매번 계산할지는 D-12다.
 
 ### 4.2 기지 악성과 규칙: 지금 규칙에서의 관계
 
@@ -173,7 +183,7 @@ CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 �
 ## 6. 호환성
 
 - 기존 소비자가 새 필드를 무시해도 뜻이 그대로다. `status`, `reason`, `score`, `exit_code`는 지금과 같은 규칙으로 계산되고, 새 필드는 그 값에서 아무것도 빼거나 덮지 않는다.
-- 새 필드가 없는 보고서(이 초안 이전 출력)는 "정보 없음"으로 해석한다. `known_malicious`나 `rules`가 없다는 것을 `not_hit`으로 읽지 않는다. 표시할 때는 "확인 안 됨"으로 쓴다. `ml`이 없으면 4.1절 표로 기존 필드에서 구한다.
+- 새 필드가 없는 보고서(이 초안 이전 출력)는 "정보 없음"으로 해석한다. `known_malicious`나 `rules`가 없다는 것을 `not_hit`으로 읽지 않는다. 표시할 때는 "확인 안 됨"으로 쓴다. `ml`이 없으면 4.1절 표로 기존 필드에서 구하되, `analysis_missing`의 미실행·실패 구분은 최상위 `analyzer_version`에 기댄 참고값이다(4.1절의 한계, D-12).
 - 필드가 있고 값이 `not_run`이면 그 실행에서 탐지기가 돌지 않았다는 뜻이고, 이유가 함께 있다. "필드 없음"(구버전)과 구분한다.
 - 텍스트·Markdown 출력과 결과 순서(위험 → 보류 → 통과 → 삭제, 같은 판정 안에서는 점수 순)는 이 초안에서 바뀌지 않는다. 새 칸의 표시는 SVC-04에서 정한다(D-13).
 - 보고서 JSON 전체를 비교하는 기존 테스트가 있으면 새 필드가 생기는 단계(SVC-02·SVC-03)에서 기대값을 함께 고쳐야 한다. 이 초안은 코드와 테스트를 바꾸지 않는다.
@@ -258,7 +268,7 @@ CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 �
 | D-9 | ruleset·rule 버전 표기 | SemVer / 날짜 / 커밋 해시 | 규칙 저장 위치가 정해진 뒤 결정. 그 전에는 문자열 |
 | D-10 | `provenance` 위치와 범위(SVC-02) | `provenance` 객체 / 최상위 평면 필드(`model_sha256` 등). feature-extractor의 `url` 포함 여부 | `provenance` 객체, `url`은 제외(고정 커밋은 depbee 메타데이터에 이미 있고, 설치 기록의 URL을 보고서에 옮기지 않음) |
 | D-11 | 탐지기 소요 시간 | 결과 항목 `elapsed_seconds`에 포함 / 탐지기별 시간 필드 / 기록 안 함 | 기존 `elapsed_seconds`의 뜻(추론 제외 분석 시간)을 바꾸지 않고, 필요하면 탐지기별로 따로 추가 |
-| D-12 | `ml.status`를 보고서에 둘지 | 필드로 둠 / 4.1절 표로 진입점이 계산 | 필드로 둠. 판정 해석을 `pipeline.scan()` 한 곳에 둔다는 원칙과 맞는다 |
+| D-12 | `ml.status`를 보고서에 둘지, 기존 보고서의 `analysis_missing` 해석 | 필드로 둠 / 4.1절 표로 진입점이 계산. 기존 보고서의 `analysis_missing`은 최상위 `analyzer_version` 유무로 미실행·실패를 나눔 / 항목 `reason`을 `analyzer_missing` 같은 새 코드로 나눔(기존 `reason` 변경) | 필드로 둠. 판정 해석을 `pipeline.scan()` 한 곳에 두고, `analyzer_version`에 기댄 구분은 계약이 아닌 90a61bb 코드의 성질이라 기존 보고서 해석에만 참고로 쓴다. 기존 `reason`은 바꾸지 않는다 |
 | D-13 | 표시 순서와 강조(텍스트·Markdown·대시보드) | 기지 경고를 맨 앞에 / 지금 순서 유지 후 강조만 | 지금 순서(위험 → 보류 → 통과 → 삭제, 같은 모델 점수 내림차순)를 유지하고 기지 경고·미완료를 강조 |
 | D-14 | top-k 보기 | 없음 / 선택 보기로 제공 | 선택 보기. 전체 목록을 유지하고 동점을 모두 포함하며 실제 건수 표시 |
 | D-15 | 규칙 결과의 전달 경로 | 분석 결과 JSON(연결 규약 2절)에 규칙 결과 추가 / `pipeline.scan()`에 별도 탐지기 인자 | 별도 탐지기 인자(SVC-03 계획). 2절과 schema_version을 건드리지 않는다 |
