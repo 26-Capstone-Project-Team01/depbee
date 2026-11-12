@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "request_id": "1111111111111111111111111111111111111111111111111111111111111111",
+  "scope": "changed npm lockfile entries only; not a whole-project safety assessment",
+  "status": "passed",
+  "exit_code": 0,
+  "model_id": "example-model-001",
+  "threshold": 0.5,
+  "analyzer_version": "feature-extractor 0.1.0",
+  "detectors": {
+    "known_malicious": null,
+    "rules": null
+  },
+  "provenance": {
+    "model": {
+      "model_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "manifest_sha256": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+    },
+    "feature_extractor": {
+      "commit": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      "files_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      "python": "3.13.0"
+    }
+  },
+  "elapsed_seconds": 1.502,
+  "results": [
+    {
+      "change_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "location": "node_modules/demo-date-format",
+      "package": "demo-date-format",
+      "before_version": "5.0.2",
+      "after_version": "5.0.3",
+      "status": "not_flagged",
+      "score": 0.08,
+      "evidence": [
+        "비교: 5.0.2 → 5.0.3 (같은 release line의 직전 stable)",
+        "추가·수정된 JS 파일 1개"
+      ],
+      "compared_version": "5.0.2",
+      "features": {
+        "installScriptPresent": false,
+        "installScriptAdded": false,
+        "scriptEntryAdded": false,
+        "newDependencyAdded": false,
+        "newDependencyCount": 0,
+        "updateType": "patch",
+        "updateInterval": 172800,
+        "obfChangedFileCount": 1,
+        "obfHexIdentRatioNew": 0.01,
+        "obfHexIdentRatioChange": 0.0,
+        "obfHexIdentRatioChangedCode": 0.01,
+        "obfHexNumberRatioNew": 0.02,
+        "obfHexNumberRatioChange": 0.0,
+        "obfHexNumberRatioChangedCode": 0.02,
+        "obfBracketAccessRatioNew": 0.03,
+        "obfBracketAccessRatioChange": 0.0,
+        "obfBracketAccessRatioChangedCode": 0.03,
+        "obfEscapeDensityNew": 0.04,
+        "obfEscapeDensityChange": 0.0,
+        "obfEscapeDensityChangedCode": 0.04,
+        "obfShortIdentRatioNew": 0.05,
+        "obfShortIdentRatioChange": 0.0,
+        "obfShortIdentRatioChangedCode": 0.05,
+        "obfMeanIdentLengthNew": 6.51,
+        "obfMeanIdentLengthChange": 0.0,
+        "obfMeanIdentLengthChangedCode": 6.51,
+        "obfWhitespaceRatioNew": 0.07,
+        "obfWhitespaceRatioChange": 0.0,
+        "obfWhitespaceRatioChangedCode": 0.07
+      },
+      "explanation": [
+        {
+          "feature": "installScriptAdded",
+          "value": false,
+          "contribution": -1.2
+        },
+        {
+          "feature": "updateInterval",
+          "value": 172800,
+          "contribution": -0.5
+        },
+        {
+          "feature": "obfChangedFileCount",
+          "value": 1,
+          "contribution": 0.15
+        }
+      ],
+      "explanation_rest": {
+        "others_sum": 0.107653,
+        "others_count": 26,
+        "base_value": -1.0
+      },
+      "known_malicious": {
+        "status": "not_run",
+        "reason": "detector_not_configured",
+        "detail": null,
+        "matches": []
+      },
+      "rules": {
+        "status": "not_run",
+        "reason": "detector_not_configured",
+        "detail": null,
+        "checks": []
+      },
+      "ml": {
+        "status": "not_hit"
+      },
+      "rule_ml_agreement": "undetermined",
+      "elapsed_seconds": 1.433,
+      "cache_hit": false
+    },
+    {
+      "change_id": "9999999999999999999999999999999999999999999999999999999999999999",
+      "location": "node_modules/example-old-dep",
+      "package": "example-old-dep",
+      "before_version": "1.0.0",
+      "after_version": null,
+      "status": "removed",
+      "score": null,
+      "evidence": [],
+      "reason": "not_installed_in_head",
+      "known_malicious": {
+        "status": "not_run",
+        "reason": "detector_not_configured",
+        "detail": null,
+        "matches": []
+      },
+      "rules": {
+        "status": "not_run",
+        "reason": "detector_not_configured",
+        "detail": null,
+        "checks": []
+      },
+      "ml": {
+        "status": "not_run"
+      },
+      "rule_ml_agreement": "undetermined",
+      "elapsed_seconds": null,
+      "cache_hit": false
+    }
+  ]
+}

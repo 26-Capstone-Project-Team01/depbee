@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "request_id": "1111111111111111111111111111111111111111111111111111111111111111",
+  "input_kind": "package",
+  "scope": "one npm registry version checked without a lockfile; not a whole-project safety assessment",
+  "status": "passed",
+  "exit_code": 0,
+  "model_id": "example-model-001",
+  "threshold": 0.5,
+  "analyzer_version": "feature-extractor 0.1.0",
+  "detectors": {
+    "known_malicious": {
+      "source": "EXAMPLE-KNOWN-MALICIOUS-LIST",
+      "list_as_of": "2026-11-01T00:00:00Z",
+      "list_sha256": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+    },
+    "rules": {
+      "ruleset_version": "example-ruleset-0.0.0"
+    }
+  },
+  "provenance": {
+    "model": {
+      "model_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "manifest_sha256": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+    },
+    "feature_extractor": {
+      "commit": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      "files_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      "python": "3.13.0"
+    }
+  },
+  "elapsed_seconds": 2.468,
+  "results": [
+    {
+      "change_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "location": "registry.npmjs.org",
+      "package": "demo-config-loader",
+      "before_version": null,
+      "after_version": "2.0.1",
+      "status": "not_flagged",
+      "score": 0.04,
+      "evidence": [
+        "비교: 2.0.0 → 2.0.1 (같은 release line의 직전 stable)",
+        "lockfile 없이 registry 정보로 검사",
+        "추가·수정된 JS 파일 1개"
+      ],
+      "compared_version": "2.0.0",
+      "features": {
+        "installScriptPresent": false,
+        "installScriptAdded": false,
+        "scriptEntryAdded": false,
+        "newDependencyAdded": false,
+        "newDependencyCount": 0,
+        "updateType": "patch",
+        "updateInterval": 604800,
+        "obfChangedFileCount": 1,
+        "obfHexIdentRatioNew": 0.03,
+        "obfHexIdentRatioChange": 0.0,
+        "obfHexIdentRatioChangedCode": 0.03,
+        "obfHexNumberRatioNew": 0.04,
+        "obfHexNumberRatioChange": 0.0,
+        "obfHexNumberRatioChangedCode": 0.04,
+        "obfBracketAccessRatioNew": 0.05,
+        "obfBracketAccessRatioChange": 0.0,
+        "obfBracketAccessRatioChangedCode": 0.05,
+        "obfEscapeDensityNew": 0.06,
+        "obfEscapeDensityChange": 0.0,
+        "obfEscapeDensityChangedCode": 0.06,
+        "obfShortIdentRatioNew": 0.07,
+        "obfShortIdentRatioChange": 0.0,
+        "obfShortIdentRatioChangedCode": 0.07,
+        "obfMeanIdentLengthNew": 6.53,
+        "obfMeanIdentLengthChange": 0.0,
+        "obfMeanIdentLengthChangedCode": 6.53,
+        "obfWhitespaceRatioNew": 0.09,
+        "obfWhitespaceRatioChange": 0.0,
+        "obfWhitespaceRatioChangedCode": 0.09
+      },
+      "explanation": [
+        {
+          "feature": "installScriptAdded",
+          "value": false,
+          "contribution": -1.4
+        },
+        {
+          "feature": "installScriptPresent",
+          "value": false,
+          "contribution": -0.9
+        },
+        {
+          "feature": "obfChangedFileCount",
+          "value": 1,
+          "contribution": 0.2
+        }
+      ],
+      "explanation_rest": {
+        "others_sum": -0.078054,
+        "others_count": 26,
+        "base_value": -1.0
+      },
+      "known_malicious": {
+        "status": "hit",
+        "reason": null,
+        "detail": null,
+        "matches": [
+          {
+            "advisory_id": "EXAMPLE-ADVISORY-0001",
+            "match_kind": "listed_version",
+            "affected": "2.0.1"
+          }
+        ]
+      },
+      "rules": {
+        "status": "not_hit",
+        "reason": null,
+        "detail": null,
+        "checks": [
+          {
+            "rule_id": "EXAMPLE-RULE-0001",
+            "rule_version": "0.0.0-example",
+            "status": "not_hit",
+            "evidence": [],
+            "locations": [],
+            "detail": null
+          },
+          {
+            "rule_id": "EXAMPLE-RULE-0002",
+            "rule_version": "0.0.0-example",
+            "status": "not_hit",
+            "evidence": [],
+            "locations": [],
+            "detail": null
+          }
+        ]
+      },
+      "ml": {
+        "status": "not_hit"
+      },
+      "rule_ml_agreement": "neither_hit",
+      "elapsed_seconds": 2.101,
+      "cache_hit": false
+    }
+  ]
+}

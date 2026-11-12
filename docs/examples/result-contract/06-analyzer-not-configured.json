@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "request_id": "1111111111111111111111111111111111111111111111111111111111111111",
+  "scope": "changed npm lockfile entries only; not a whole-project safety assessment",
+  "status": "incomplete",
+  "exit_code": 2,
+  "model_id": "example-model-001",
+  "threshold": 0.5,
+  "analyzer_version": null,
+  "detectors": {
+    "known_malicious": {
+      "source": "EXAMPLE-KNOWN-MALICIOUS-LIST",
+      "list_as_of": "2026-11-01T00:00:00Z",
+      "list_sha256": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+    },
+    "rules": {
+      "ruleset_version": "example-ruleset-0.0.0"
+    }
+  },
+  "provenance": {
+    "model": {
+      "model_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "manifest_sha256": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+    },
+    "feature_extractor": null
+  },
+  "results": [
+    {
+      "change_id": "7777777777777777777777777777777777777777777777777777777777777777",
+      "location": "node_modules/example-net-client",
+      "package": "example-net-client",
+      "before_version": "4.1.0",
+      "after_version": "4.2.0",
+      "status": "incomplete",
+      "score": null,
+      "evidence": [],
+      "reason": "analysis_missing",
+      "known_malicious": {
+        "status": "not_hit",
+        "reason": null,
+        "detail": null,
+        "matches": []
+      },
+      "rules": {
+        "status": "not_run",
+        "reason": "analyzer_not_configured",
+        "detail": null,
+        "checks": []
+      },
+      "ml": {
+        "status": "not_run"
+      },
+      "rule_ml_agreement": "undetermined"
+    }
+  ]
+}

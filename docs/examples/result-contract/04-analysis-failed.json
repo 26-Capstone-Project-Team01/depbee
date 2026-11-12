@@ -1,0 +1,166 @@
+{
+  "schema_version": 1,
+  "request_id": "1111111111111111111111111111111111111111111111111111111111111111",
+  "scope": "changed npm lockfile entries only; not a whole-project safety assessment",
+  "status": "incomplete",
+  "exit_code": 2,
+  "model_id": "example-model-001",
+  "threshold": 0.5,
+  "analyzer_version": "feature-extractor 0.1.0",
+  "detectors": {
+    "known_malicious": {
+      "source": "EXAMPLE-KNOWN-MALICIOUS-LIST",
+      "list_as_of": "2026-11-01T00:00:00Z",
+      "list_sha256": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+    },
+    "rules": {
+      "ruleset_version": "example-ruleset-0.0.0"
+    }
+  },
+  "provenance": {
+    "model": {
+      "model_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "manifest_sha256": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+    },
+    "feature_extractor": {
+      "commit": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      "files_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      "python": "3.13.0"
+    }
+  },
+  "elapsed_seconds": 2.587,
+  "results": [
+    {
+      "change_id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "location": "node_modules/example-logger",
+      "package": "example-logger",
+      "before_version": "0.9.3",
+      "after_version": "0.9.4",
+      "status": "incomplete",
+      "score": null,
+      "evidence": [],
+      "reason": "analysis_failed",
+      "detail": "example-logger@0.9.4 tarball does not match its sha512 integrity",
+      "known_malicious": {
+        "status": "not_hit",
+        "reason": null,
+        "detail": null,
+        "matches": []
+      },
+      "rules": {
+        "status": "failed",
+        "reason": "input_failed",
+        "detail": null,
+        "checks": []
+      },
+      "ml": {
+        "status": "failed"
+      },
+      "rule_ml_agreement": "undetermined",
+      "elapsed_seconds": 0.932,
+      "cache_hit": false
+    },
+    {
+      "change_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "location": "node_modules/demo-string-pad",
+      "package": "demo-string-pad",
+      "before_version": "1.1.0",
+      "after_version": "1.1.1",
+      "status": "not_flagged",
+      "score": 0.21,
+      "evidence": [
+        "비교: 1.1.0 → 1.1.1 (같은 release line의 직전 stable)",
+        "추가·수정된 JS 파일 0개"
+      ],
+      "compared_version": "1.1.0",
+      "features": {
+        "installScriptPresent": false,
+        "installScriptAdded": false,
+        "scriptEntryAdded": false,
+        "newDependencyAdded": false,
+        "newDependencyCount": 0,
+        "updateType": "patch",
+        "updateInterval": 172800,
+        "obfChangedFileCount": 0,
+        "obfHexIdentRatioNew": 0.02,
+        "obfHexIdentRatioChange": 0.0,
+        "obfHexIdentRatioChangedCode": null,
+        "obfHexNumberRatioNew": 0.03,
+        "obfHexNumberRatioChange": 0.0,
+        "obfHexNumberRatioChangedCode": null,
+        "obfBracketAccessRatioNew": 0.04,
+        "obfBracketAccessRatioChange": 0.0,
+        "obfBracketAccessRatioChangedCode": null,
+        "obfEscapeDensityNew": 0.05,
+        "obfEscapeDensityChange": 0.0,
+        "obfEscapeDensityChangedCode": null,
+        "obfShortIdentRatioNew": 0.06,
+        "obfShortIdentRatioChange": 0.0,
+        "obfShortIdentRatioChangedCode": null,
+        "obfMeanIdentLengthNew": 6.52,
+        "obfMeanIdentLengthChange": 0.0,
+        "obfMeanIdentLengthChangedCode": null,
+        "obfWhitespaceRatioNew": 0.08,
+        "obfWhitespaceRatioChange": 0.0,
+        "obfWhitespaceRatioChangedCode": null
+      },
+      "explanation": [
+        {
+          "feature": "updateInterval",
+          "value": 172800,
+          "contribution": -0.7
+        },
+        {
+          "feature": "obfChangedFileCount",
+          "value": 0,
+          "contribution": -0.45
+        },
+        {
+          "feature": "updateType",
+          "value": "patch",
+          "contribution": 0.3
+        }
+      ],
+      "explanation_rest": {
+        "others_sum": 0.525075,
+        "others_count": 26,
+        "base_value": -1.0
+      },
+      "known_malicious": {
+        "status": "not_hit",
+        "reason": null,
+        "detail": null,
+        "matches": []
+      },
+      "rules": {
+        "status": "not_hit",
+        "reason": null,
+        "detail": null,
+        "checks": [
+          {
+            "rule_id": "EXAMPLE-RULE-0001",
+            "rule_version": "0.0.0-example",
+            "status": "not_hit",
+            "evidence": [],
+            "locations": [],
+            "detail": null
+          },
+          {
+            "rule_id": "EXAMPLE-RULE-0002",
+            "rule_version": "0.0.0-example",
+            "status": "not_hit",
+            "evidence": [],
+            "locations": [],
+            "detail": null
+          }
+        ]
+      },
+      "ml": {
+        "status": "not_hit"
+      },
+      "rule_ml_agreement": "neither_hit",
+      "elapsed_seconds": 1.517,
+      "cache_hit": true
+    }
+  ]
+}
