@@ -113,7 +113,8 @@ SHA-256은 파일 변조·혼동 확인용이다. 모델은 신뢰하는 팀원�
 
 ## 4. CLI → 사용자·CI
 
-보고서는 request_id, model_id, threshold, analyzer_version, scope, results를 포함한다.
+보고서는 request_id, model_id, threshold, analyzer_version, provenance, scope, results를 포함한다.
+`provenance`는 `analyzer_version` 바로 다음에 오는 출처 객체이며 `model`과 `feature_extractor` 두 키가 항상 있다. `model`은 확인한 모델 파일과 manifest의 SHA-256(`model_sha256`, `manifest_sha256`)이고 모델 없이 실행하면 null이다. `feature_extractor`는 설치된 feature-extractor의 고정 커밋(`commit`), 설치 파일 해시(`files_sha256`), Python 버전(`python`)이고, feature를 추출하지 않는 실행(`--extract` 없는 `scan`, `--analysis`)이거나 고정 커밋 그대로 설치됐는지 확인하지 못하면(편집 가능 설치, 로컬 폴더 설치, 설치 후 수정) null이다. 설치 주소(URL)는 넣지 않는다. `plan`의 출력(요청)과 오류 JSON에는 없다.
 `check`의 보고서에만 `input_kind: "package"`가 request_id 다음에 더 있고, scope는 `one npm registry version checked without a lockfile; not a whole-project safety assessment`다. lockfile 보고서의 필드와 scope 문구는 그대로다.
 패키지 상태는 `flagged`, `not_flagged`, `incomplete`, `removed`다.
 점수가 나온 항목에는 `compared_version`(비교 기준 버전), `features`, `evidence`(추출된 사실), `explanation`(점수에 크게 작용한 feature 3개와 SHAP 기여도, log-odds 단위)이 있다. 추출된 사실과 모델 설명은 구분한다.
@@ -122,7 +123,7 @@ SHA-256은 파일 변조·혼동 확인용이다. 모델은 신뢰하는 팀원�
 
 feature를 추출한 보고서(`scan --extract`, `check`)에만 소요 시간과 캐시 사용 여부가 더 있다. 그 밖의 필드와 순서는 그대로이고, `--extract` 없는 `scan`과 `plan`의 출력에는 이 필드가 없다.
 
-- 최상위 `elapsed_seconds`: `analyzer_version` 다음, `results` 앞. 서비스 함수(`scan_project`, `check_package`) 호출부터 판정 완료까지의 시간이다.
+- 최상위 `elapsed_seconds`: `provenance` 다음, `results` 앞. 서비스 함수(`scan_project`, `check_package`) 호출부터 판정 완료까지의 시간이다.
 - 각 결과의 끝 `elapsed_seconds`: 그 항목의 메타데이터 조회·캐시 조회·추출 시간이며 추론 시간은 들어가지 않는다. 분석하지 않은 항목(삭제, 미지원 출처 등)은 null이다. `check`는 요청을 만들기 전에 받은 메타데이터의 조회 시간도 그 결과의 값에 더한다.
 - 각 결과의 끝 `cache_hit`: 캐시한 feature를 썼으면 true, 추출했거나 분석하지 않았거나 실패한 항목은 false다.
 - 시간은 단조 시계(`time.monotonic`)로 재며 초 단위, 소수 셋째 자리까지, 항상 유한한 0 이상의 값이다. 실행마다 달라지므로 보고서끼리 비교할 때는 이 필드를 빼고 비교한다.
@@ -137,4 +138,4 @@ feature를 추출한 보고서(`scan --extract`, `check`)에만 소요 시간과
 위험과 미완료가 함께 있으면 보고서에 둘 다 남기고 2로 보류한다.
 입력/manifest 자체의 오류는 stderr의 error JSON과 종료 코드 2로 반환한다.
 
-기지 악성·규칙 근거·ML 위험 점수·미완료를 구분해 담는 필드는 [결과 계약 초안](result-contract-draft.md)에 있다. 결정은 채택됐지만 구현되지 않았으며, 구현 전까지 위 보고서 구조와 상태·종료 코드 규칙은 그대로다.
+기지 악성·규칙 근거·ML 위험 점수·미완료를 구분해 담는 필드는 [결과 계약 초안](result-contract-draft.md)에 있다. 결정은 채택됐지만 그중 위 `provenance`만 구현됐고, 나머지는 구현 전까지 위 보고서 구조와 상태·종료 코드 규칙이 그대로다.

@@ -1,6 +1,6 @@
 # 결과 계약 초안: 기지 악성·규칙 근거·ML 위험 점수·미완료
 
-> **구현되지 않은 초안이다.** 이 문서의 필드는 아직 어떤 명령도 출력하지 않는다. 지금 구현과 일치하는 규약은 [연결 규약](contracts.md)이고, 이 초안은 그 규약을 바꾸지 않는다.
+> **대부분 구현되지 않은 초안이다.** 3.1절의 `provenance`(SVC-02에서 구현)를 뺀 이 문서의 필드는 아직 어떤 명령도 출력하지 않는다. 지금 구현과 일치하는 규약은 [연결 규약](contracts.md)이고, 이 초안은 그 규약을 바꾸지 않는다.
 > 기준 코드: main `90a61bb`. 9절의 결정 16개는 하람이 2026-11-11에 권장안대로 모두 채택했다(이 문서에서는 "채택(D-n)"으로 적는다). 채택한 내용 중 현행 동작을 바꾸는 것은 9.1절의 구현 단계에서 적용하며, 그 전까지 코드와 8절 예시 JSON은 현행 동작이다.
 
 CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 네 근거와 네 상태를 구분해 담는 방법을 제안한다. 판정과 결합은 지금처럼 `pipeline.scan()` 한 곳에서만 만들고, 진입점은 같은 보고서를 표시만 한다.
@@ -45,7 +45,7 @@ CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 �
 | `request_id`, `input_kind`, `scope` | 최상위 | 그대로 |
 | `status`(`passed`/`flagged`/`incomplete`), `exit_code` | 최상위 | 그대로. 지금 계산 규칙(미완료 2 > 위험 1 > 0)을 바꾸지 않는다 |
 | `model_id`, `threshold` | 최상위 | ML 모델 식별과 임계값. `ml` 안에 복사하지 않는다 |
-| `analyzer_version` | 최상위 | 그대로. null이면 분석기가 연결되지 않은 실행이다(4.1절). feature-extractor 출처의 상세는 `provenance.feature_extractor`(SVC-02 후보)에 둔다 |
+| `analyzer_version` | 최상위 | 그대로. null이면 분석기가 연결되지 않은 실행이다(4.1절). feature-extractor 출처의 상세는 `provenance.feature_extractor`(SVC-02에서 구현)에 둔다 |
 | `elapsed_seconds` | 최상위·결과 항목 | 그대로. 채택(D-11)은 결과 항목의 값(그 항목의 메타데이터 조회·캐시 조회·추출 시간, 추론 제외)에 탐지기 시간을 넣지 않고 필요하면 탐지기별 필드를 따로 둔다는 것이다. 항목 값은 `ExtractorAnalyzer`가 변경마다 잰 시간(`extractor.py` 268~271행)이라 `pipeline.scan()` 안에서 돈 탐지기 시간은 들어가지 않는다. 최상위 값은 [연결 규약](contracts.md) 4절 정의대로 서비스 함수 호출부터 판정 완료까지의 전체 시간(`service._timed()`의 `elapsed_since(started)`)이므로, 탐지기를 `pipeline.scan()` 안에서 실행하면 그 시간이 포함된다. 최상위에서도 탐지기 시간을 빼려면 별도의 동작 변경과 확인이 필요하다 |
 | `status`(`flagged`/`not_flagged`/`incomplete`/`removed`) | 결과 항목 | 그대로. 현행 코드는 ML 경로(분석·추론)로만 정한다. 채택(D-2)·채택(D-7)을 적용하면 기지 악성 `hit`과 연결된 탐지기의 `failed`도 반영되며(9.1절), 그 뒤에도 ML 경로만의 결과는 `ml.status`가 나타낸다 |
 | `score` | 결과 항목 | ML 위험 점수. `ml`에 복사하지 않는다 |
@@ -65,7 +65,7 @@ CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 �
 - 최상위: 기존 `analyzer_version` 다음에 `detectors`, `provenance`, 그다음 (있으면) `elapsed_seconds`, 마지막에 `results`.
 - 결과 항목: `pipeline.scan()`이 만드는 기존 필드(경로에 따라 `reason`·`detail`, 또는 `compared_version`·`features`·`explanation`·`explanation_rest`까지) 다음에 `known_malicious`, `rules`, `ml`, `rule_ml_agreement`, 그다음 (있으면) `elapsed_seconds`, `cache_hit`.
 
-구현할 때는 새 필드를 `pipeline.scan()`에서 항목 dict와 최상위 dict에 넣고(항목은 `results.append()` 전, 최상위는 `analyzer_version` 다음), `_timed()`는 고치지 않는다. 그러면 위 순서가 그대로 나온다. 이때 최상위 `elapsed_seconds`에는 `pipeline.scan()` 안에서 실행한 탐지기 시간도 들어가고, 결과 항목의 `elapsed_seconds`에는 들어가지 않는다(2절 표). 새 필드를 `service.py` 쪽에서 넣는 경우(SVC-00 계획은 SVC-02의 `provenance`를 service 조립부에 넣는 안과 pipeline 최상위에 넣는 안을 함께 적었다)에는 `_timed()`가 `results`를 다시 붙이는 방식처럼 `elapsed_seconds`와 `results` 앞에 넣는다. 8절 예시 JSON은 이 순서를 따른다.
+구현할 때는 새 필드를 `pipeline.scan()`에서 항목 dict와 최상위 dict에 넣고(항목은 `results.append()` 전, 최상위는 `analyzer_version` 다음), `_timed()`는 고치지 않는다. 그러면 위 순서가 그대로 나온다. 이때 최상위 `elapsed_seconds`에는 `pipeline.scan()` 안에서 실행한 탐지기 시간도 들어가고, 결과 항목의 `elapsed_seconds`에는 들어가지 않는다(2절 표). 새 필드를 `service.py` 쪽에서 넣는 경우(SVC-00 계획은 SVC-02의 `provenance`를 service 조립부에 넣는 안과 pipeline 최상위에 넣는 안을 함께 적었고, SVC-02는 `pipeline.scan()` 최상위에 넣었다)에는 `_timed()`가 `results`를 다시 붙이는 방식처럼 `elapsed_seconds`와 `results` 앞에 넣는다. 8절 예시 JSON은 이 순서를 따른다.
 
 ### 3.1 최상위
 
@@ -78,9 +78,9 @@ CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 �
 | `detectors.known_malicious.list_sha256` | string | 예 | 사용한 목록 스냅샷 파일의 SHA-256. 스냅샷 없이 조회하면 null(채택(D-3)) |
 | `detectors.rules` | object | 예 | null이면 규칙 탐지기가 연결되지 않음 |
 | `detectors.rules.ruleset_version` | string | 아니오 | 규칙 묶음의 버전. 표기 형식은 규칙 저장 위치가 정해진 뒤 정하고 그 전에는 문자열(채택(D-9)) |
-| `provenance` | object | 아니오 | **SVC-02에서 보고서에 넣는다(채택(D-10)).** 지금 코드에 있지만 보고서에 없는 출처 정보 |
+| `provenance` | object | 아니오 | **SVC-02에서 구현했다(채택(D-10)).** 코드가 이미 확인하던 출처 정보(모델 파일 해시, feature-extractor 설치 출처). `pipeline.scan()`이 `analyzer_version` 다음에 넣는다 |
 | `provenance.model` | object | 예 | `LightGBMPredictor.identity`를 그대로 옮긴 `{"model_sha256", "manifest_sha256"}`. 모델이 없으면 null. `model_id`·`threshold`는 기존 최상위 필드에 있으므로 넣지 않는다 |
-| `provenance.feature_extractor` | object | 예 | `FeatureExtractorBackend.identity`에서 `commit`, `files_sha256`, `python`만 옮긴다. `--extract`가 아니거나 설치 출처를 확인하지 못하면(identity가 None) null. `url`은 설치 기록(`direct_url.json`)에서 온 값이라 넣지 않는다(채택(D-10)) |
+| `provenance.feature_extractor` | object | 예 | `FeatureExtractorBackend.identity`에서 `commit`, `files_sha256`, `python`만 옮긴다. feature-extractor로 추출하지 않는 실행(`--extract` 없는 `scan`, `--analysis`)이거나 설치 출처를 확인하지 못하면(identity가 None) null. `url`은 설치 기록(`direct_url.json`)에서 온 값이라 넣지 않는다(채택(D-10)) |
 
 ### 3.2 결과 항목
 
@@ -307,7 +307,7 @@ CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 �
 | D-7 | 탐지기 `failed`의 종료 코드 영향과 일부 규칙 실패 | 영향 없음 / 항목 `incomplete`·2 / 일부 규칙만 실패하면 경고 | 연결된 탐지기의 `failed`는 `incomplete`·2(실패를 정상으로 대체하지 않는 원칙). 이때 항목 `reason` 값은 새로 정해야 함 | SVC-03에서 적용한다(하람 확정, 11/11). 한 항목에 D-2와 함께 걸리면 D-2가 우선하고 실패는 탐지기 칸에 남는다(4.2절). 새 항목 `reason` 값은 아직 정해지지 않았다 |
 | D-8 | 규칙 근거 위치 형식 | `{"file", "line"}` / 열·범위 추가 / 위치 없이 문자열만 | `{"file", "line"}`에서 시작. 규칙 후보(R_download_exec 등)의 근거 형태를 보고 확정 | |
 | D-9 | ruleset·rule 버전 표기 | SemVer / 날짜 / 커밋 해시 | 규칙 저장 위치가 정해진 뒤 결정. 그 전에는 문자열 | |
-| D-10 | `provenance` 위치와 범위(SVC-02) | `provenance` 객체 / 최상위 평면 필드(`model_sha256` 등). feature-extractor의 `url` 포함 여부 | `provenance` 객체, `url`은 제외(고정 커밋은 depbee 메타데이터에 이미 있고, 설치 기록의 URL을 보고서에 옮기지 않음) | |
+| D-10 | `provenance` 위치와 범위(SVC-02) | `provenance` 객체 / 최상위 평면 필드(`model_sha256` 등). feature-extractor의 `url` 포함 여부 | `provenance` 객체, `url`은 제외(고정 커밋은 depbee 메타데이터에 이미 있고, 설치 기록의 URL을 보고서에 옮기지 않음) | SVC-02에서 구현했다(9.1절) |
 | D-11 | 탐지기 소요 시간 | 결과 항목 `elapsed_seconds`에 포함 / 탐지기별 시간 필드 / 기록 안 함 | 기존 `elapsed_seconds`의 뜻(추론 제외 분석 시간)을 바꾸지 않고, 필요하면 탐지기별로 따로 추가 | 대상은 결과 항목의 값이며, 최상위 전체 시간에는 `pipeline.scan()` 안의 탐지기 시간이 들어간다(2절 표) |
 | D-12 | `ml.status`를 보고서에 둘지, 기존 보고서의 `analysis_missing` 해석 | 필드로 둠 / 4.1절 표로 진입점이 계산. 기존 보고서의 `analysis_missing`은 최상위 `analyzer_version` 유무로 미실행·실패를 나눔 / 항목 `reason`을 `analyzer_missing` 같은 새 코드로 나눔(기존 `reason` 변경) | 필드로 둠. 판정 해석을 `pipeline.scan()` 한 곳에 두고, `analyzer_version`에 기댄 구분은 계약이 아닌 90a61bb 코드의 성질이라 기존 보고서 해석에만 참고로 쓴다. 기존 `reason`은 바꾸지 않는다 | |
 | D-13 | 표시 순서와 강조(텍스트·Markdown·대시보드) | 기지 경고를 맨 앞에 / 지금 순서 유지 후 강조만 | 지금 순서(위험 → 보류 → 통과 → 삭제, 같은 모델 점수 내림차순)를 유지하고 기지 경고·미완료를 강조 | |
@@ -330,4 +330,4 @@ SVC-03 완료 기준 변경: D-2·D-7을 SVC-03에서 적용하기로 확정되�
 | D-13 | 현행 출력에는 탐지기 칸이 없다. 결과 순서는 유지하고 기지 경고·미완료 강조를 더한다 | SVC-04(텍스트·JSON·Markdown, 계획에 "기지 경고·미완료 강조" 명시). 대시보드는 SVC-07 |
 | D-14 | 현행 출력에 top-k 보기가 없다 | SVC-00 계획의 SVC-02~07 범위에 top-k가 없어 단계가 정해지지 않았다 |
 
-나머지 항목은 기존 필드의 값을 바꾸지 않는다. D-1·D-8·D-12·D-15는 새 필드의 이름·형식·전달 경로라 새 필드를 만드는 SVC-03에서, D-10은 SVC-02에서 반영한다. D-3·D-4·D-9·D-11·D-16은 채택안이 현행을 유지하거나 결정을 명세·실험·후속 판단으로 미룬 것이라 지금 적용할 동작 변경이 없다.
+나머지 항목은 기존 필드의 값을 바꾸지 않는다. D-1·D-8·D-12·D-15는 새 필드의 이름·형식·전달 경로라 새 필드를 만드는 SVC-03에서 반영하고, D-10은 SVC-02에서 반영했다. D-3·D-4·D-9·D-11·D-16은 채택안이 현행을 유지하거나 결정을 명세·실험·후속 판단으로 미룬 것이라 지금 적용할 동작 변경이 없다.
