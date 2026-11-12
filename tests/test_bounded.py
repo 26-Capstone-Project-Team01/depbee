@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 import bounded_jobs
-from test_cache import CacheFixture, Model
+from test_cache import EXTRACTOR, CacheFixture, Model
 from test_extract import FakeBackend, packument
 from test_registry import package_tgz, sri, tarball_url, tgz
 from test_workflow import Fixture, package
@@ -253,7 +253,7 @@ class BoundedTests(Fixture):
         doc = packument({"1.0.0": "2026-01-01T00:00:00Z", "1.0.1": "2026-01-02T00:00:00Z",
                          "1.1.0": "2026-01-03T00:00:00Z"})  # fmt: skip
         backend = FakeBackend(doc, features={"signal": 0.2, "obfChangedFileCount": 2})
-        backend.identity = {"commit": "c" * 40}
+        backend.identity = dict(EXTRACTOR)
         late = {"seconds": 0.0}
 
         def fetch(name):
@@ -291,7 +291,7 @@ class BoundedTests(Fixture):
         doc = packument({"1.0.0": "2026-01-01T00:00:00Z", "1.0.1": "2026-01-02T00:00:00Z",
                          "1.1.0": "2026-01-03T00:00:00Z"})  # fmt: skip
         backend = FakeBackend(doc, features={"signal": 0.2, "obfChangedFileCount": 2})
-        backend.identity = {"commit": "c" * 40}
+        backend.identity = dict(EXTRACTOR)
         backend.fetch_packument = lambda name: bounded.run(bounded_jobs.sleep_then, (0, doc))
         real_load, loads = cache.load, []
 

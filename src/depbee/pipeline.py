@@ -78,6 +78,10 @@ def scan(request: dict, analyzer: Analyzer | None, predictor: Predictor | None) 
     exit_code = 2 if incomplete else 1 if flagged else 0
     # Only a package request (check, no lockfile) adds input_kind; lockfile reports are unchanged.
     package = {"input_kind": "package"} if request.get("input_kind") == "package" else {}
+    # Verified identities only: a model without one, or an analyzer without a verified
+    # feature-extractor backend (--analysis, unverified install), gives null. No install URL (D-10).
+    model = getattr(predictor, "identity", None)
+    extractor = getattr(getattr(analyzer, "backend", None), "identity", None)
     return {
         "schema_version": SCHEMA_VERSION,
         "request_id": request["request_id"],
@@ -88,5 +92,16 @@ def scan(request: dict, analyzer: Analyzer | None, predictor: Predictor | None) 
         "model_id": predictor.model_id if predictor else None,
         "threshold": predictor.threshold if predictor else None,
         "analyzer_version": artifact["analyzer_version"] if artifact else None,
+        # Before results, so service._timed() puts elapsed_seconds after it unchanged.
+        "provenance": {
+            "model": {key: model[key] for key in ("model_sha256", "manifest_sha256")}
+            if isinstance(model, dict)
+            else None,
+            "feature_extractor": {
+                key: extractor[key] for key in ("commit", "files_sha256", "python")
+            }
+            if isinstance(extractor, dict)
+            else None,
+        },
         "results": results,
     }
