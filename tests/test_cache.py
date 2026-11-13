@@ -26,7 +26,7 @@ from depbee.analysis import cache, extractor
 from depbee.analysis.extractor import _installed_identity
 from depbee.cli import main
 from depbee.contracts import GuardError, OutOfScopeError, digest, elapsed_since
-from depbee.service import check_package, scan_project
+from depbee.service import check_package, plan_project, scan_project
 
 EXTRACTOR = {"commit": "c" * 40, "url": "https://example.test/fx", "files_sha256": "f" * 64,
              "python": "3.13.5"}  # fmt: skip
@@ -453,6 +453,99 @@ class TimeTests(CacheFixture):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stop:
             main(["check", "example@1.1.0", "--no-cache", "--cache-dir", "x"])
         self.assertEqual(stop.exception.code, 2)
+
+
+class ReportProvenanceTests(CacheFixture):
+    """The report's provenance object (SVC-02, contract D-10) on every report path."""
+
+    VERIFIED = {"model": MODEL, "feature_extractor": {
+        "commit": EXTRACTOR["commit"], "files_sha256": EXTRACTOR["files_sha256"],
+        "python": EXTRACTOR["python"]}}  # fmt: skip
+
+    def tail(self, report):
+        return list(report)[list(report).index("analyzer_version") :]
+
+    def analysis(self):
+        path = self.root / "analysis.json"
+        self.write(path, {**self.artifact({"signal": 0.2}), "feature_schema": "depbee-features-v1"})
+        return path
+
+    def test_every_report_path_has_provenance_in_contract_order(self):
+        timed = ["analyzer_version", "provenance", "elapsed_seconds", "results"]
+        untimed = ["analyzer_version", "provenance", "results"]
+        no_extractor = {**self.VERIFIED, "feature_extractor": None}
+        for label, run, provenance, keys in (
+            ("scan --extract", lambda: self.scan(no_cache=True), self.VERIFIED, timed),
+            ("check", lambda: check_package("example", "1.1.0", model_dir=Path("m"), no_cache=True),
+             self.VERIFIED, timed),
+            ("scan --analysis", lambda: scan_project(self.project, self.base, analysis=self.analysis(),
+                                                     model_dir=Path("m")), no_extractor, untimed),
+            ("scan, no analyzer", lambda: scan_project(self.project, self.base, model_dir=Path("m")),
+             no_extractor, untimed),
+            ("scan, no analyzer or model", lambda: scan_project(self.project, self.base),
+             {"model": None, "feature_extractor": None}, untimed),
+            ("scan --extract, no model", lambda: self.scan(model_dir=None),
+             {**self.VERIFIED, "model": None}, timed),
+        ):  # fmt: skip
+            with self.subTest(label):
+                report = run()
+                self.assertEqual(report["provenance"], provenance)
+                self.assertEqual(self.tail(report), keys)
+                self.assertNotIn("url", report["provenance"]["feature_extractor"] or {})
+                self.assertNotIn(EXTRACTOR["url"], json.dumps(report))
+
+    def test_unverified_extractor_or_model_without_identity_is_null(self):
+        self.backend.identity = None  # editable or local install, or changed after install
+        report = self.scan(no_cache=True)
+        self.assertEqual(report["provenance"], {"model": MODEL, "feature_extractor": None})
+        self.model = PackagePredictor()  # a predictor without verified hashes
+        report = self.scan(no_cache=True)
+        self.assertEqual(report["provenance"], {"model": None, "feature_extractor": None})
+        self.assertEqual(report["results"][0]["status"], "not_flagged")  # still scored
+
+    def test_provenance_is_a_copy_of_the_identities(self):
+        report = self.scan(no_cache=True)
+        report["provenance"]["model"]["model_sha256"] = "changed"
+        report["provenance"]["feature_extractor"]["commit"] = "changed"
+        self.assertEqual((self.model.identity, self.backend.identity), (MODEL, EXTRACTOR))
+
+    def test_existing_fields_without_extract_are_unchanged(self):
+        # SVC-02 adds only provenance: the other fields and their order are those of 755e7d2.
+        request = self.request()
+        change = request["changes"][0]
+        report = scan_project(self.project, self.base, model_dir=Path("m"))
+        self.assertEqual({k: v for k, v in report.items() if k != "provenance"}, {
+            "schema_version": 1, "request_id": request["request_id"],
+            "scope": "changed npm lockfile entries only; not a whole-project safety assessment",
+            "status": "incomplete", "exit_code": 2, "model_id": "unit-test", "threshold": 0.5,
+            "analyzer_version": None,
+            "results": [{"change_id": change["change_id"], "location": "node_modules/example",
+                         "package": "example", "before_version": "1.0.0", "after_version": "1.1.0",
+                         "status": "incomplete", "score": None, "evidence": [],
+                         "reason": "analysis_missing"}],
+        })  # fmt: skip
+        self.assertEqual(list(report), ["schema_version", "request_id", "scope", "status",
+                                        "exit_code", "model_id", "threshold", "analyzer_version",
+                                        "provenance", "results"])  # fmt: skip
+        plan = plan_project(self.project, self.base)  # plan is the request, not a report
+        self.assertEqual(plan, request)
+        self.assertNotIn("provenance", plan)
+
+    def test_cli_json_has_provenance_and_the_error_json_does_not(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(["scan", str(self.project), "--base-lock", str(self.base), "--extract",
+                         "--model-dir", "m", "--no-cache", "--format", "json"])  # fmt: skip
+        report = json.loads(out.getvalue())
+        self.assertEqual((code, report["provenance"]), (0, self.VERIFIED))
+        self.assertEqual(self.tail(report), ["analyzer_version", "provenance", "elapsed_seconds",
+                                             "results"])  # fmt: skip
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = main(["scan", str(self.root / "missing"), "--format", "json"])
+        self.assertEqual(
+            (code, list(json.loads(err.getvalue()))), (2, ["status", "exit_code", "error"])
+        )
 
 
 def b64(data: bytes) -> str:
