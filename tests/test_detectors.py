@@ -3,6 +3,8 @@
 Synthetic only: fake detectors, FakePredictor and analysis JSON; no list, rule or package code.
 """
 
+import copy
+
 from test_workflow import FakePredictor, Fixture, package
 
 from depbee.contracts import GuardError
@@ -232,8 +234,67 @@ class ExitCodeTests(DetectorFixture):
         item = self.scan_with(known_malicious=Dated())["results"][0]
         self.assertEqual(item["known_malicious"]["status"], "not_hit")
 
+    def test_list_date_edges(self):
+        # Revy R2 n3: the exact form with a real date and time; the current behaviour.
+        for as_of, status in (
+            ("2026-11-01T00:00:00Z\n", "failed"),
+            ("2026-11-01T00:00:00.1234567Z", "failed"),
+            ("2026-11-01T00:00:00.123456Z", "not_hit"),
+            ("2026-11-01T00:00:60Z", "failed"),
+            ("2028-02-29T00:00:00Z", "not_hit"),  # leap year
+            ("2026-02-29T00:00:00Z", "failed"),
+        ):
+            Listed = type("Listed", (KnownList,), {"list_as_of": as_of})
+            with self.subTest(as_of):
+                report = self.scan_with(0.1, known_malicious=Listed())
+                self.assertEqual(report["results"][0]["known_malicious"]["status"], status)
+                self.assertEqual(report["detectors"]["known_malicious"]["list_as_of"], as_of)
+        for as_of in (None, 20261101, b"2026-11-01T00:00:00Z", ["2026-11-01T00:00:00Z"]):
+            Listed = type("Listed", (KnownList,), {"list_as_of": as_of})
+            with self.subTest(as_of), self.assertRaises(GuardError):
+                self.scan_with(known_malicious=Listed())
+
+    def test_failed_lists_keep_not_run_and_input_failed_items(self):
+        # Revy R2 n3: an undated list (or one that raises) fails only the changes it checked;
+        # not_run and input_failed changes stay as they were, next to detector_failed.
+        self.old["packages"]["node_modules/gone"] = package()
+        self.old["packages"]["node_modules/other"] = package()
+        self.new["packages"]["node_modules/other"] = {
+            **package("2.0.0"),
+            "resolved": "https://evil.test/a.tgz",
+        }
+        self.old["packages"]["node_modules/x"] = {**package(), "name": "x"}
+        self.new["packages"]["node_modules/x"] = {
+            **package(),
+            "name": "y",
+            "resolved": "https://[::1",
+        }
+        self.save_locks()
+        Undated = type("Undated", (KnownList,), {"list_as_of": "2026-11-01"})
+        for label, known, cause in (
+            ("undated", Undated(), "list_as_of"),
+            ("raises", KnownList(error=OSError("list unreadable")), "unreadable"),
+        ):
+            with self.subTest(label):
+                report = self.scan_with(0.1, known_malicious=known, rules=Rules())
+                slots = {r["location"].rsplit("/", 1)[-1]: r["known_malicious"]
+                         for r in report["results"]}  # fmt: skip
+                self.assertEqual({name: (s["status"], s["reason"]) for name, s in slots.items()}, {
+                    "example": ("failed", "detector_failed"),
+                    "gone": ("not_run", "not_installed_in_head"),
+                    "other": ("not_run", "not_analyzable"),
+                    "x": ("failed", "input_failed"),
+                })  # fmt: skip
+                self.assertIn(cause, slots["example"]["detail"])
+                self.assertIn("cannot be parsed", slots["x"]["detail"])
+                self.assertEqual(known.calls, [("example", "1.1.0")])
+                self.assertEqual((report["status"], report["exit_code"]), ("incomplete", 2))
+
     def test_a_rule_detector_cannot_change_the_report(self):
-        # SVC-03-FIX-01 n1: the detector gets copies of the change and the analysis result.
+        # SVC-03-FIX-01 n1: the detector gets copies of the change and the analysis result, so
+        # neither the caller's request nor the report's features and evidence change. The
+        # report's after_version is copied before the detector runs, so the request is checked
+        # instead (Revy R2 n2).
         class Mutating(Rules):
             def check(self, change, analysis):
                 change["after"]["version"] = "9.9.9"
@@ -242,9 +303,13 @@ class ExitCodeTests(DetectorFixture):
                 return super().check(change, analysis)
 
         expected = self.scan_with(rules=Rules())["results"][0]
-        item = self.scan_with(rules=Mutating())["results"][0]
-        self.assertEqual((item["after_version"], item["features"], item["evidence"]),
-                         (expected["after_version"], expected["features"], expected["evidence"]))  # fmt: skip
+        request = self.request()
+        kept = copy.deepcopy(request)
+        item = scan(request, self.adapter(self.artifact({"signal": 0.1})), FakePredictor(),
+                    rules=Mutating())["results"][0]  # fmt: skip
+        self.assertEqual(request, kept)
+        self.assertEqual((item["features"], item["evidence"]),
+                         (expected["features"], expected["evidence"]))  # fmt: skip
         self.assertEqual(item["rules"]["status"], "not_hit")
 
     def test_an_interrupt_is_not_a_detector_result(self):

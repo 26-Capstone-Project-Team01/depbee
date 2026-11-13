@@ -117,7 +117,7 @@ SVC-03 구현(`pipeline.py`의 `_known_malicious()`, `_rules()`): 탐지기가 �
 
 ### 3.3 탐지기 이유 코드(초안)
 
-`known_malicious.reason`과 `rules.reason`에 쓴다. 항목의 기존 `reason` 코드와 이름공간이 다르다. 코드 목록은 채택(D-1)에 포함된다. `analysis_unsupported`는 채택(2026-11-11) 뒤 리뷰 지적(M3)을 반영해 추가한 코드이며, 하람 승인(11/11, Clover 전달)을 받았다.
+`known_malicious.reason`과 `rules.reason`에 쓴다. 항목의 기존 `reason` 코드와 이름공간이 다르다. 코드 목록은 채택(D-1)에 포함된다. `analysis_unsupported`는 채택(2026-11-11) 뒤 리뷰 지적(M3)을 반영해 추가한 코드이며, 하람 승인(11/11, Clover 전달)을 받았다. `input_failed`의 뜻을 기지 악성 칸까지 넓힌 것(SVC-03-FIX-01 m1)은 PR #11 병합으로 승인된 것으로 처리한다(Clover, 11/14).
 
 | 코드 | 상태 | 뜻 |
 |---|---|---|
@@ -127,7 +127,7 @@ SVC-03 구현(`pipeline.py`의 `_known_malicious()`, `_rules()`): 탐지기가 �
 | `analyzer_not_configured` | `not_run` | 탐지기에 필요한 분석 입력(tarball, 추출)을 만드는 분석기가 이 실행에 연결되지 않음(`--analysis`·`--extract` 없는 `scan`, 항목 `reason`은 `analysis_missing`, 최상위 `analyzer_version`은 null). 이름·버전만 쓰는 기지 악성 대조에는 해당하지 않는다 |
 | `analysis_unsupported` | `not_run` | 연결된 분석기가 이 변경을 `unsupported`로 돌려줘 탐지기에 필요한 분석 입력을 만들지 않음. 항목 `reason`·`detail`에 분석기의 이유가 있다(`ExtractorAnalyzer`는 prerelease면 `out_of_training_scope`, 비교할 이전 stable이 없으면 `no_baseline`). 기지 악성 대조에는 해당하지 않는다(채택(D-5)대로 `no_baseline`도 이름·버전으로 대조) |
 | `input_failed` | `failed` | 탐지기에 필요한 입력을 얻지 못함. 규칙: 연결된 분석기에서 분석 입력을 얻지 못함(항목 `reason`이 `analysis_failed`이거나, 분석기가 연결됐는데 `analysis_missing`). 항목 `reason`·`detail`에 원래 실패가 있다. 기지 악성: 분석 대상이 아닌 변경의 출처 검사(`registry_version_problem()`)가 tarball URL을 파싱하지 못해 대조할 registry 이름·버전을 확정하지 못함(SVC-03-FIX-01 m1). 원인은 `known_malicious.detail`에 있다 |
-| `detector_failed` | `failed` | 탐지기 자체가 오류로 끝났거나(`detail`에 설명), 실행한 규칙 중 적중 없이 실패한 규칙이 있음(`checks[].detail`에 설명) |
+| `detector_failed` | `failed` | 탐지기 자체가 오류로 끝났거나(`detail`에 설명), 실행한 규칙 중 적중 없이 실패한 규칙이 있음(`checks[].detail`에 설명). 기지 악성: 최상위 `detectors.known_malicious.list_as_of`가 문자열이지만 형식이 어긋난 목록으로 대조해 일치가 없음(`detail`에 설명, 3.1절, SVC-03-FIX-01 n3) |
 
 `analysis_unsupported`를 새로 둔 이유: 기존 `not_analyzable`은 분석기를 부르기 전 요청 단계(`analyzable=false`)의 이유라 분석기의 판단과 섞지 않는다. 항목 `reason` 값(`no_baseline` 등)을 그대로 쓰지 않는 것은 위 이름공간 구분 때문이다. 근거 코드: `ExtractorAnalyzer._analyze_change()`는 prerelease면 registry 조회 전에(`extractor.py` 332~337행), 이전 stable이 없으면 baseline 선정 직후 다운로드 전에(347~353행) `unsupported`를 돌려주므로 규칙이 볼 tarball이 없다. 새 버전 하나만으로 규칙을 실행하도록 바꿀지는 정하지 않았다(SVC-00 계획에 없음). 추론 단계의 `out_of_training_scope`(4.1절, `OutOfScopeError`)는 분석을 마친 뒤라 규칙 입력이 있으므로 이 코드를 쓰지 않는다.
 
@@ -182,7 +182,7 @@ SVC-03 구현(`pipeline.py`의 `_known_malicious()`, `_rules()`): 탐지기가 �
 | 연결된 탐지기의 `failed` | `incomplete`. ML 경로가 완료(`flagged`/`not_flagged`)였으면 항목 `reason`은 `detection_failed`(SVC-03에서 정함, 하람 승인(11/13))이고 `score`는 지우지 않는다. ML 경로가 이미 `incomplete`면 그 `reason`·`detail`을 유지한다 | 2 | 채택(D-7) |
 | 탐지기 미연결(`not_run`, `detector_not_configured`) | 바꾸지 않음 | 바꾸지 않음 | 채택(D-6). 정책 파일이 생기면 필수 여부를 거기서 정한다 |
 | 규칙 `hit`, 규칙/ML 불일치 | 바꾸지 않음 | 바꾸지 않음 | 채택(D-4) |
-| 규칙 일부 `failed`와 다른 규칙 `hit`이 함께 있음(`rules.status`는 `hit`) | 바꾸지 않음. 실패한 규칙은 `checks[]`에 `failed`로 남는다 | 바꾸지 않음 | 채택(D-7)의 해석(SVC-03-FIX-01 m3, Clover 결정 11/13). 아래 문단 |
+| 규칙 일부 `failed`와 다른 규칙 `hit`이 함께 있음(`rules.status`는 `hit`) | 바꾸지 않음. 실패한 규칙은 `checks[]`에 `failed`로 남는다 | 바꾸지 않음 | 'hit 우선, 실패한 규칙은 따로 표시'는 Clover 결정(11/13, SVC-03-FIX-01 m3). 그 결과 ML 점수가 낮으면 항목이 `not_flagged`·0인 것은 Clover 결정이 아니라 3.2절의 규칙 집계(SVC-03 이전 계약 `0ccd0f9`와 같음)와 채택(D-4)을 따른 결과다. 아래 문단 |
 | 한 항목에 기지 악성 `hit`(D-2)과 연결된 탐지기의 `failed`(D-7)가 함께 있음 | `flagged`(종료 코드 기여 1이 우선) | 1 이상(다른 항목이 미완료면 2) | 하람·Clover 확정(11/11, Clover 전달 작업 지시) |
 | 한 항목에 기지 악성 `hit`과 ML 경로의 미완료가 함께 있고 D-7은 없음 | `flagged`. ML 경로의 `reason`·`detail`과 `ml.status`(4.1절 값 그대로: ML이 실행되지 않았으면 `not_run`, 실행하려다 실패했으면 `failed`)는 남긴다 | 1 이상(다른 항목이 미완료면 2) | 11/13 Clover 지시로 확정(SVC-03), `ml.status`는 4.1절·채택(D-12) |
 
@@ -192,7 +192,11 @@ SVC-03 구현(`pipeline.py`의 `_known_malicious()`, `_rules()`): 탐지기가 �
 
 기지 악성 `hit`과 ML 경로의 미완료가 한 항목에 함께 있고 D-7(연결된 탐지기의 `failed`)은 걸리지 않는 경우에는 항목 `flagged`, 종료 코드 기여 1이다(11/13 Clover 지시로 확정, SVC-03에서 적용). ML 경로의 미완료는 기존 `reason`·`detail`과 `ml.status`에 남는다. `ml.status`는 4.1절 표의 값을 그대로 쓰며 기지 악성 `hit`으로 바뀌지 않는다(3.2절, 채택(D-12)). 그래서 11/13 Clover 지시의 "ML `not_run`"은 ML이 실행되지 않은 경우의 값이다(`no_baseline` 등 분석기의 `unsupported`, `model_missing`, 추론 단계의 `out_of_training_scope`, 분석기 미연결의 `analysis_missing`, 분석 대상이 아닌 변경). 예: `no_baseline` 항목을 채택(D-5)대로 대조해 `hit`이 나오고 규칙은 `not_run`이면 `ml.status`는 `not_run`이다. ML을 실행하려다 실패한 경우(4.1절이 `failed`로 정하는 `analysis_failed`, 분석기가 연결된 `analysis_missing`, `inference_failed`)에는 기지 악성 `hit`이어도 `ml.status`는 `failed`로 남고 판정은 `flagged`/1이다(SVC-03-FIX-01 m2, Clover 확인, 동작 변경 없음). 이 중 D-7 없이 나오는 경로는 규칙 탐지기가 연결되지 않은 실행의 `analysis_failed`·`analysis_missing`, 그리고 `inference_failed`(규칙 탐지기가 분석 결과로 정상 실행된 경우 포함)다. 규칙 탐지기가 연결된 실행의 `analysis_failed`·`analysis_missing`은 규칙이 `input_failed`라 D-7이 함께 걸리고, 판정은 위 문단대로 같은 `flagged`/1이다. 최상위 집계는 최종 항목 `status`만 보므로 다른 미완료 항목이 없으면 최상위는 `flagged`/1이고, `status`·`exit_code`만 보는 소비자에게 그 항목의 ML 미완료는 드러나지 않는다(항목 `reason`과 `ml.status`에 있다). 일치 내용은 `known_malicious`에 남는다(1절 계약 문장).
 
-규칙 일부 실패의 해석(채택(D-7) 항목 이름의 "일부 규칙 실패", SVC-03-FIX-01 m3, Clover 결정 11/13): 채택(D-7)은 `rules.status`가 `failed`일 때만 걸린다. 실행한 규칙 중 적중 없이 실패한 규칙이 있으면 `rules.status`가 `failed`(`detector_failed`)라 항목은 `incomplete`·2다. 다른 규칙이 `hit`이면 `rules.status`는 `hit`(3.2절 집계)이고 채택(D-7)은 걸리지 않는다. 이때 실패한 규칙은 `checks[]`에 `failed`와 `detail`로 따로 남아 실패를 정상으로 바꾸지 않는다. 경고 근거가 실패를 덮되 실패를 숨기지 않는다는 점에서 위 D-2·D-7 겹침과 같은 원칙이다. 다만 규칙 `hit`은 채택(D-4)대로 항목 `status`를 바꾸지 않으므로, ML 점수가 기준 미만이면 그 항목은 `not_flagged`(종료 코드 기여 0)이고 규칙 적중과 실패는 `rules` 칸과 `rule_ml_agreement`(`rule_only`)에서만 드러난다.
+규칙 일부 실패의 해석(채택(D-7) 항목 이름의 "일부 규칙 실패", SVC-03-FIX-01 m3): 결정 출처를 나눠 적는다(REV-SVC-03-R2 M1).
+
+- Clover 결정(11/13): 규칙 `hit`이 실패한 규칙보다 우선하고(`rules.status`는 `hit`), 실패한 규칙은 따로 표시한다. 채택(D-7)은 `rules.status`가 `failed`일 때만 걸린다. 실행한 규칙 중 적중 없이 실패한 규칙이 있으면 `rules.status`가 `failed`(`detector_failed`)라 항목은 `incomplete`·2다. 다른 규칙이 `hit`이면 채택(D-7)은 걸리지 않고, 실패한 규칙은 `checks[]`에 `failed`와 `detail`로 따로 남아 실패를 정상으로 바꾸지 않는다. 경고 근거가 실패를 덮되 실패를 숨기지 않는다는 점에서 위 D-2·D-7 겹침과 같은 원칙이다.
+- Clover 결정이 아닌 부분: 규칙 `hit`은 채택(D-4)대로 항목 `status`를 바꾸지 않으므로, ML 점수가 기준 미만이면 그 항목은 `not_flagged`(종료 코드 기여 0)이고 규칙 적중과 실패는 `rules` 칸과 `rule_ml_agreement`(`rule_only`)에서만 드러난다. 이것은 SVC-03 이전 계약(`0ccd0f9`의 이 문서 112행)의 규칙 집계(하나라도 `hit`이면 `hit`)와 채택(D-4)을 함께 적용한 결과다. 새 OR·AND 결합 정책이 아니다.
+- 이 조합의 성질(사실 기록, 정책 판단 아님): 기지 악성 일치가 없고 ML 점수가 기준 미만일 때, 규칙이 `[failed]`뿐이면 항목은 `incomplete`·2(`detection_failed`)인데 여기에 적중한 규칙 하나를 더한 `[hit, failed]`는 `not_flagged`·0이다. 규칙 근거가 늘었는데 종료 코드가 2에서 0으로 내려가므로 종료 코드는 규칙 결과에 단조적이지 않다(`pipeline.py`의 `_rules()` 집계와 D-7 분기, `tests/test_detectors.py`의 `test_a_rule_hit_with_a_failed_rule_is_not_d7`). 이 효과를 의도한 것으로 볼지는 정해지지 않았다(SVC-04 보고의 결정 필요 항목).
 
 ### 4.3 규칙/ML 불일치: `rule_ml_agreement`
 
