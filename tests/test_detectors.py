@@ -212,6 +212,41 @@ class ExitCodeTests(DetectorFixture):
             with self.subTest(detectors), self.assertRaises(GuardError):
                 self.scan_with(**detectors)
 
+    def test_a_list_date_out_of_format_fails_without_lowering_a_hit(self):
+        # SVC-03-FIX-01 n3: list_as_of must be ISO 8601 UTC with Z (contract 3.1).
+        for as_of in ("2026-11-01", "2026-11-01T00:00:00+00:00", "2026-13-01T00:00:00Z",
+                      "2026-11-01T00:00:00z", "2026-11-01T00:00Z"):  # fmt: skip
+            Undated = type("Undated", (KnownList,), {"list_as_of": as_of})
+            with self.subTest(as_of):
+                report = self.scan_with(0.1, known_malicious=Undated())
+                item = report["results"][0]
+                self.assertEqual((item["known_malicious"]["status"], item["known_malicious"]["reason"],
+                                  item["status"], item["reason"], report["exit_code"]),
+                                 ("failed", "detector_failed", "incomplete", "detection_failed", 2))  # fmt: skip
+                self.assertIn("list_as_of", item["known_malicious"]["detail"])
+                self.assertEqual(report["detectors"]["known_malicious"]["list_as_of"], as_of)
+                report = self.scan_with(0.1, known_malicious=Undated((ADVISORY,)))
+                self.assertEqual(self.verdict(report)[:3], ("flagged", "flagged", 1))
+                self.assertEqual(report["results"][0]["known_malicious"]["matches"], [ADVISORY])
+        Dated = type("Dated", (KnownList,), {"list_as_of": "2026-11-01T00:00:00.123Z"})
+        item = self.scan_with(known_malicious=Dated())["results"][0]
+        self.assertEqual(item["known_malicious"]["status"], "not_hit")
+
+    def test_a_rule_detector_cannot_change_the_report(self):
+        # SVC-03-FIX-01 n1: the detector gets copies of the change and the analysis result.
+        class Mutating(Rules):
+            def check(self, change, analysis):
+                change["after"]["version"] = "9.9.9"
+                analysis["features"].clear()
+                analysis["evidence"].append("planted")
+                return super().check(change, analysis)
+
+        expected = self.scan_with(rules=Rules())["results"][0]
+        item = self.scan_with(rules=Mutating())["results"][0]
+        self.assertEqual((item["after_version"], item["features"], item["evidence"]),
+                         (expected["after_version"], expected["features"], expected["evidence"]))  # fmt: skip
+        self.assertEqual(item["rules"]["status"], "not_hit")
+
     def test_an_interrupt_is_not_a_detector_result(self):
         with self.assertRaises(KeyboardInterrupt):
             self.scan_with(rules=Rules(error=KeyboardInterrupt()))
@@ -302,6 +337,19 @@ class AgreementTests(DetectorFixture):
                 self.assertEqual(self.verdict(report), verdict)
                 self.assertEqual(report["results"][0]["rules"]["status"], rules)
 
+    def test_a_rule_hit_with_a_failed_rule_is_not_d7(self):
+        # SVC-03-FIX-01 m3: a hit with failed rules is rules hit, so D-7 does not apply and a low
+        # score stays not_flagged; the failed rule is still shown in checks with its detail.
+        report = self.scan_with(
+            0.1, rules=Rules((rule("hit"), rule("failed", "R2", detail="timeout")))
+        )
+        item = report["results"][0]
+        self.assertEqual(self.verdict(report), ("not_flagged", "passed", 0, "not_hit", "rule_only"))
+        self.assertEqual((item["rules"]["status"], item["rules"]["reason"]), ("hit", None))
+        self.assertEqual([(c["status"], c["detail"]) for c in item["rules"]["checks"]],
+                         [("hit", None), ("failed", "timeout")])  # fmt: skip
+        self.assertNotIn("reason", item)
+
     def test_rule_status_from_its_checks(self):
         for result, status, reason in (
             ((rule("hit"), rule("failed", "R2", detail="timeout")), "hit", None),
@@ -360,6 +408,34 @@ class InputTests(DetectorFixture):
             ],
         )
         self.assertEqual(len(rules.calls), 1)
+
+    def test_an_unparsable_url_fails_only_that_change(self):
+        # SVC-03-FIX-01 m1 (Revy's case): a renamed change whose tarball URL cannot be parsed
+        # fails its own known malicious slot; the scan goes on and the other change's hit stays.
+        class OnlyExample(KnownList):
+            def match(self, name, version):
+                return super().match(name, version) if name == "example" else []
+
+        self.old["packages"]["node_modules/x"] = {**package(), "name": "x"}
+        self.new["packages"]["node_modules/x"] = {
+            **package(),
+            "name": "y",
+            "resolved": "https://[::1",
+        }
+        self.save_locks()
+        known = OnlyExample((ADVISORY,))
+        report = self.scan_with(known_malicious=known, rules=Rules())
+        self.assertEqual((report["status"], report["exit_code"]), ("incomplete", 2))
+        rows = {r["location"]: r for r in report["results"]}
+        self.assertEqual(rows["node_modules/example"]["status"], "flagged")
+        renamed = rows["node_modules/x"]
+        self.assertEqual(
+            (renamed["status"], renamed["reason"]), ("incomplete", "package_identity_changed")
+        )
+        self.assertEqual((renamed["known_malicious"]["status"], renamed["known_malicious"]["reason"]),
+                         ("failed", "input_failed"))  # fmt: skip
+        self.assertIn("cannot be parsed", renamed["known_malicious"]["detail"])
+        self.assertEqual(known.calls, [("example", "1.1.0")])
 
     def test_rules_without_analysis_input(self):
         report = self.scan_with(analyzer=False, known_malicious=KnownList(), rules=Rules())

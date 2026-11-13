@@ -1,6 +1,8 @@
 """Orchestration independent of terminal, analyzer implementation, or ML framework."""
 
 import copy
+import re
+from datetime import datetime
 
 from .contracts import (
     SCHEMA_VERSION,
@@ -73,6 +75,23 @@ def _detector_info(detector: object, fields: dict, what: str) -> dict | None:
     return _record({k: getattr(detector, k) for k in fields if hasattr(detector, k)}, fields, what)
 
 
+UTC_TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{1,6})?Z", re.ASCII)
+
+
+def _list_as_of_problem(info: dict | None) -> str | None:
+    """Why list_as_of is not ISO 8601 UTC with Z (contract 3.1), else None."""
+    value = info and info["list_as_of"]
+    if value is None:
+        return None
+    try:
+        if UTC_TIME.fullmatch(value):
+            datetime.strptime(value[:19], "%Y-%m-%dT%H:%M:%S")
+            return None
+    except ValueError:  # e.g. month 13
+        pass
+    return "Known malicious list_as_of is not an ISO 8601 UTC time ending in Z"
+
+
 def _slot(status: str, reason: str | None = None, detail: str | None = None, **found) -> dict:
     return {"status": status, "reason": reason, "detail": detail, **found}
 
@@ -81,14 +100,21 @@ def _failure(exc: Exception) -> str:
     return str(exc) or type(exc).__name__
 
 
-def _known_malicious(detector: KnownMaliciousDetector | None, change: dict) -> dict:
+def _known_malicious(
+    detector: KnownMaliciousDetector | None, change: dict, list_problem: str | None = None
+) -> dict:
     if detector is None:
         return _slot("not_run", "detector_not_configured", matches=[])
     if change["kind"] == "removed":
         return _slot("not_run", "not_installed_in_head", matches=[])
     # D-5: an exact registry name and version is checked even if it is not analyzed.
-    if not change["analyzable"] and registry_version_problem(change["after"]):
-        return _slot("not_run", "not_analyzable", matches=[])
+    if not change["analyzable"]:
+        try:
+            problem = registry_version_problem(change["after"])
+        except GuardError as exc:  # e.g. an unparsable tarball URL: this change only fails
+            return _slot("failed", "input_failed", str(exc), matches=[])
+        if problem:
+            return _slot("not_run", "not_analyzable", matches=[])
     try:
         found = detector.match(change["after"]["name"], change["after"]["version"])
         if not isinstance(found, list):
@@ -96,6 +122,8 @@ def _known_malicious(detector: KnownMaliciousDetector | None, change: dict) -> d
         matches = [_record(match, MATCH, "known malicious match") for match in found]
     except Exception as exc:  # any detector error is failed, never not_hit
         return _slot("failed", "detector_failed", _failure(exc), matches=[])
+    if list_problem and not matches:  # an undated list cannot give not_hit; a hit still stands
+        return _slot("failed", "detector_failed", list_problem, matches=[])
     return _slot("hit" if matches else "not_hit", matches=matches)
 
 
@@ -115,7 +143,8 @@ def _rules(
     if row is None or row["status"] == "failed":
         return _slot("failed", "input_failed", checks=[])
     try:
-        found = detector.check(change, row)
+        # Copies, so a detector cannot change the request or the report's features and evidence.
+        found = detector.check(copy.deepcopy(change), copy.deepcopy(row))
         if not isinstance(found, list):
             raise GuardError("Rule detector must return a list")
         checks = [_record(check, CHECK, "rule check") for check in found]
@@ -144,6 +173,7 @@ def scan(
         "known_malicious": _detector_info(known_malicious, KNOWN_MALICIOUS_INFO, "list identity"),
         "rules": _detector_info(rules, RULES_INFO, "ruleset version"),
     }
+    list_problem = _list_as_of_problem(detectors["known_malicious"])
     artifact = analyzer.analyze(request) if analyzer else None
     if artifact and predictor and artifact["feature_schema"] != predictor.feature_schema:
         raise GuardError("Analyzer feature_schema does not match model feature_schema")
@@ -202,7 +232,7 @@ def scan(
                     status="incomplete", score=None, reason="inference_failed", detail=str(exc)
                 )
                 ml = "failed"
-        malicious = _known_malicious(known_malicious, change)
+        malicious = _known_malicious(known_malicious, change, list_problem)
         rule = _rules(rules, change, analyzer, row)
         if malicious["status"] == "hit":
             # D-2, ahead of D-7: a low score or an unfinished ML path never cancels it. The ML
