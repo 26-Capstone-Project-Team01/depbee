@@ -691,6 +691,14 @@ class LightGBMTests(Fixture):
         self.assertEqual(LightGBMPredictor(self.root).identity,
                          {"model_sha256": self.manifest["model_sha256"], "manifest_sha256": manifest})
 
+    def test_report_provenance_from_the_native_predictor(self):
+        # Review m2 of PR #10: the real LightGBMPredictor path, with this synthetic model.
+        self.adapter()
+        report = scan_project(self.project, self.base, analysis=self.root / "analysis.json",
+                              model_dir=self.root)
+        self.assertEqual(report["provenance"],
+                         {"model": LightGBMPredictor(self.root).identity, "feature_extractor": None})
+
     def test_hash_order_and_missing_features(self):
         predictor = LightGBMPredictor(self.root)
         with self.assertRaises(GuardError):

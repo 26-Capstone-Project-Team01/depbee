@@ -94,14 +94,15 @@ def scan(request: dict, analyzer: Analyzer | None, predictor: Predictor | None) 
         "analyzer_version": artifact["analyzer_version"] if artifact else None,
         # Before results, so service._timed() puts elapsed_seconds after it unchanged.
         "provenance": {
-            "model": {key: model[key] for key in ("model_sha256", "manifest_sha256")}
-            if isinstance(model, dict)
-            else None,
-            "feature_extractor": {
-                key: extractor[key] for key in ("commit", "files_sha256", "python")
-            }
-            if isinstance(extractor, dict)
-            else None,
+            "model": _identity(model, ("model_sha256", "manifest_sha256")),
+            "feature_extractor": _identity(extractor, ("commit", "files_sha256", "python")),
         },
         "results": results,
     }
+
+
+def _identity(value: object, keys: tuple[str, ...]) -> dict | None:
+    """Those keys of a verified identity; null unless every one is a string (contract 3.1)."""
+    if isinstance(value, dict) and all(isinstance(value.get(key), str) for key in keys):
+        return {key: value[key] for key in keys}
+    return None

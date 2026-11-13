@@ -503,6 +503,37 @@ class ReportProvenanceTests(CacheFixture):
         self.assertEqual(report["provenance"], {"model": None, "feature_extractor": None})
         self.assertEqual(report["results"][0]["status"], "not_flagged")  # still scored
 
+    def test_a_cache_hit_reports_the_same_provenance(self):
+        cold, warm = self.scan(), self.scan()
+        self.assertEqual([r["cache_hit"] for r in cold["results"] + warm["results"]], [False, True])
+        self.assertEqual((cold["provenance"], warm["provenance"]), (self.VERIFIED,) * 2)
+
+    def test_check_without_a_model(self):
+        report = check_package("example", "1.1.0", no_cache=True)
+        self.assertEqual(report["provenance"], {**self.VERIFIED, "model": None})
+        self.assertEqual((report["results"][0]["reason"], report["exit_code"]), ("model_missing", 2))
+
+    def test_an_incomplete_identity_is_null_not_an_error(self):
+        # Review m1 of PR #10: a missing or non-string key gave KeyError, a traceback and exit 1.
+        for label, model, installed in (
+            ("model key missing", {"model_sha256": "a" * 64}, EXTRACTOR),
+            ("extractor key missing", MODEL, {"commit": "c" * 40, "python": "3.13.5"}),
+            ("non-string values", {**MODEL, "manifest_sha256": None}, {**EXTRACTOR, "python": 3}),
+        ):  # fmt: skip
+            with self.subTest(label):
+                self.model.identity, self.backend.identity = dict(model), dict(installed)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    code = main(["scan", str(self.project), "--base-lock", str(self.base),
+                                 "--extract", "--model-dir", "m", "--no-cache", "--format",
+                                 "json"])  # fmt: skip
+                provenance = json.loads(out.getvalue())["provenance"]
+                self.assertEqual(code, 0)
+                self.assertEqual(provenance["model"], None if model is not MODEL else MODEL)
+                self.assertEqual(provenance["feature_extractor"],
+                                 None if installed is not EXTRACTOR
+                                 else self.VERIFIED["feature_extractor"])  # fmt: skip
+
     def test_provenance_is_a_copy_of_the_identities(self):
         report = self.scan(no_cache=True)
         report["provenance"]["model"]["model_sha256"] = "changed"
