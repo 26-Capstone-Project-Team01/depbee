@@ -471,8 +471,8 @@ class ReportProvenanceTests(CacheFixture):
         return path
 
     def test_every_report_path_has_provenance_in_contract_order(self):
-        timed = ["analyzer_version", "provenance", "elapsed_seconds", "results"]
-        untimed = ["analyzer_version", "provenance", "results"]
+        timed = ["analyzer_version", "detectors", "provenance", "elapsed_seconds", "results"]
+        untimed = ["analyzer_version", "detectors", "provenance", "results"]
         no_extractor = {**self.VERIFIED, "feature_extractor": None}
         for label, run, provenance, keys in (
             ("scan --extract", lambda: self.scan(no_cache=True), self.VERIFIED, timed),
@@ -541,11 +541,16 @@ class ReportProvenanceTests(CacheFixture):
         self.assertEqual((self.model.identity, self.backend.identity), (MODEL, EXTRACTOR))
 
     def test_existing_fields_without_extract_are_unchanged(self):
-        # SVC-02 adds only provenance: the other fields and their order are those of 755e7d2.
+        # SVC-02 adds only provenance and SVC-03 only the detector fields: the other fields and
+        # their order are those of 755e7d2.
         request = self.request()
         change = request["changes"][0]
         report = scan_project(self.project, self.base, model_dir=Path("m"))
-        self.assertEqual({k: v for k, v in report.items() if k != "provenance"}, {
+        new = ("known_malicious", "rules", "ml", "rule_ml_agreement")
+        self.assertEqual([list(r)[-4:] for r in report["results"]], [list(new)])
+        old = {k: v for k, v in report.items() if k not in ("detectors", "provenance")}
+        old["results"] = [{k: v for k, v in r.items() if k not in new} for r in old["results"]]
+        self.assertEqual(old, {
             "schema_version": 1, "request_id": request["request_id"],
             "scope": "changed npm lockfile entries only; not a whole-project safety assessment",
             "status": "incomplete", "exit_code": 2, "model_id": "unit-test", "threshold": 0.5,
@@ -557,7 +562,7 @@ class ReportProvenanceTests(CacheFixture):
         })  # fmt: skip
         self.assertEqual(list(report), ["schema_version", "request_id", "scope", "status",
                                         "exit_code", "model_id", "threshold", "analyzer_version",
-                                        "provenance", "results"])  # fmt: skip
+                                        "detectors", "provenance", "results"])  # fmt: skip
         plan = plan_project(self.project, self.base)  # plan is the request, not a report
         self.assertEqual(plan, request)
         self.assertNotIn("provenance", plan)
@@ -569,8 +574,8 @@ class ReportProvenanceTests(CacheFixture):
                          "--model-dir", "m", "--no-cache", "--format", "json"])  # fmt: skip
         report = json.loads(out.getvalue())
         self.assertEqual((code, report["provenance"]), (0, self.VERIFIED))
-        self.assertEqual(self.tail(report), ["analyzer_version", "provenance", "elapsed_seconds",
-                                             "results"])  # fmt: skip
+        self.assertEqual(self.tail(report), ["analyzer_version", "detectors", "provenance",
+                                             "elapsed_seconds", "results"])  # fmt: skip
         err = io.StringIO()
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
             code = main(["scan", str(self.root / "missing"), "--format", "json"])

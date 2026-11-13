@@ -65,14 +65,11 @@ def _snapshot(loaded: tuple[dict, str]) -> tuple[dict, str]:
     return entries, sha256
 
 
-def _unsupported(before: dict | None, after: dict | None) -> str | None:
-    if after is None:
-        return "removed"
-    if before is not None and before["name"] != after["name"]:
-        return "package_identity_changed"
-    # The analyzer compares the installed version with its registry predecessor, not with the
-    # previous lock entry, so only the version that will be installed must be a registry tarball.
-    # Newly added dependencies are therefore analyzable too.
+def registry_version_problem(after: dict) -> str | None:
+    """Why after is not a version from an npm registry tarball (a request reason), else None.
+
+    pipeline.scan() also uses it to check unanalyzed changes against known malicious records.
+    """
     version = after["version"]
     if after["link"] or not version or not VERSION.fullmatch(version):
         return "workspace_or_non_registry_version"
@@ -82,6 +79,20 @@ def _unsupported(before: dict | None, after: dict | None) -> str | None:
         raise GuardError(f"The tarball URL of {after['name']}@{version} cannot be parsed") from None
     if source.scheme != "https" or source.netloc != "registry.npmjs.org":
         return "unsupported_registry_source"
+    return None
+
+
+def _unsupported(before: dict | None, after: dict | None) -> str | None:
+    if after is None:
+        return "removed"
+    if before is not None and before["name"] != after["name"]:
+        return "package_identity_changed"
+    # The analyzer compares the installed version with its registry predecessor, not with the
+    # previous lock entry, so only the version that will be installed must be a registry tarball.
+    # Newly added dependencies are therefore analyzable too.
+    problem = registry_version_problem(after)
+    if problem:
+        return problem
     if not after["integrity"]:
         return "missing_integrity"
     if before is not None and before["version"] == after["version"]:
