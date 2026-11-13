@@ -116,8 +116,8 @@ class MarkdownLayoutTests(Fixture):
         output = render(report)
         rows = [line for line in output.split("\n") if line.startswith("| ")][2:]  # no header
         self.assertEqual([r.split(" | ")[0] for r in rows], ["| 위험", "| 보류", "| 통과", "| 삭제"])
-        self.assertIn("| 통과 | ` example ` | ` 1.1.0 ` | - | 0.000 | - |", output)  # score 0
-        self.assertIn("| 보류 | ` local ` | ` 1.0.0 ` | - | - | npm 공식 registry가 아닌 출처 |",
+        self.assertIn("| 통과 | ` example ` | ` 1.1.0 ` | - | 0.000 (기준 미만) | - |", output)  # 0
+        self.assertIn("| 보류 | ` local ` | ` 1.0.0 ` | - | 없음(미실행) | npm 공식 registry가 아닌 출처 |",
                       output)  # fmt: skip
         self.assertIn("| 삭제 | ` gone ` | - | - | - | 현재 lockfile에서 삭제됨 |", output)
         self.assertIn("- 바뀐 의존성 4개: 위험 1, 통과 1, 보류 1, 삭제 1\n", output)
@@ -174,7 +174,7 @@ class MarkdownCliTests(Fixture):
                 self.assertEqual((code, err), (json_code, ""))  # no progress in markdown
                 self.assertEqual(output.read_bytes(), json_out.encode())  # --output stays JSON
                 self.assertTrue(out.startswith("## depbee 검사 결과: 위험 판정 있음 (종료 코드 1)\n"))
-                self.assertIn("| ` example ` | ` 1.1.0 ` | ` 1.0.1 ` | 0.900 |", out)
+                self.assertIn("| ` example ` | ` 1.1.0 ` | ` 1.0.1 ` | 0.900 (기준 이상) |", out)
                 self.assertIn("- 소요 시간: 0.000초\n", out)
                 original = output.read_bytes()
                 code, out, err = self.cli(*args, "--format", "markdown", "--output", str(output))
