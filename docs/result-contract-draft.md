@@ -49,7 +49,7 @@ CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 �
 | `elapsed_seconds` | 최상위·결과 항목 | 그대로. 채택(D-11)은 결과 항목의 값(그 항목의 메타데이터 조회·캐시 조회·추출 시간, 추론 제외)에 탐지기 시간을 넣지 않고 필요하면 탐지기별 필드를 따로 둔다는 것이다. 항목 값은 `ExtractorAnalyzer`가 변경마다 잰 시간(`extractor.py` 268~271행)이라 `pipeline.scan()` 안에서 돈 탐지기 시간은 들어가지 않는다. 최상위 값은 [연결 규약](contracts.md) 4절 정의대로 서비스 함수 호출부터 판정 완료까지의 전체 시간(`service._timed()`의 `elapsed_since(started)`)이므로, 탐지기를 `pipeline.scan()` 안에서 실행하면 그 시간이 포함된다. 최상위에서도 탐지기 시간을 빼려면 별도의 동작 변경과 확인이 필요하다 |
 | `status`(`flagged`/`not_flagged`/`incomplete`/`removed`) | 결과 항목 | 값은 그대로. SVC-03부터 ML 경로(분석·추론)와 연결된 탐지기의 기지 악성 `hit`(채택(D-2))·`failed`(채택(D-7))로 정한다(4.2절). 탐지기 미연결이면 ML 경로로만 정해진 그 전 값과 같다. ML 경로만의 결과는 `ml.status`가 나타낸다 |
 | `score` | 결과 항목 | ML 위험 점수. `ml`에 복사하지 않는다. 채택(D-2)·채택(D-7)로 항목 `status`가 바뀌어도 지우지 않는다 |
-| `reason`, `detail` | 결과 항목 | 그대로 ML 경로의 미완료·삭제 이유. `ml.status`가 `not_run`/`failed`인 이유는 이 두 필드를 본다. 예외: ML 경로가 완료(`flagged`/`not_flagged`)된 항목이 채택(D-7)로 `incomplete`가 되면 `reason`은 `detection_failed`이고 `detail`은 없다(설명은 실패한 탐지기 칸에 있다). 이 값은 SVC-03에서 정했고 하람 확인이 필요하다 |
+| `reason`, `detail` | 결과 항목 | 그대로 ML 경로의 미완료·삭제 이유. `ml.status`가 `not_run`/`failed`인 이유는 이 두 필드를 본다. 예외: ML 경로가 완료(`flagged`/`not_flagged`)된 항목이 채택(D-7)로 `incomplete`가 되면 `reason`은 `detection_failed`이고 `detail`은 없다(설명은 실패한 탐지기 칸에 있다). 이 값은 SVC-03에서 정했다(하람 승인(11/13)) |
 | `compared_version`, `features` | 결과 항목 | 그대로 |
 | `evidence` | 결과 항목 | 그대로 "추출된 사실"(분석기가 만든 사실). 규칙 근거를 여기에 섞지 않고 `rules.checks[].evidence`에 따로 둔다 |
 | `explanation`, `explanation_rest` | 결과 항목 | 그대로 ML 모델 설명(SHAP, log-odds) |
@@ -74,11 +74,11 @@ SVC-03은 새 필드를 `pipeline.scan()`에서 항목 dict와 최상위 dict에
 | `detectors` | object | 아니오 | 이 실행에 연결된 ML 외 탐지기. ML 모델은 기존 `model_id`·`threshold`가 나타낸다 |
 | `detectors.known_malicious` | object | 예 | null이면 기지 악성 탐지기가 이 실행에 연결되지 않음. 연결되면 아래 세 필드 |
 | `detectors.known_malicious.source` | string | 아니오 | 기지 악성 목록의 출처 식별자. 출처는 채택(D-3)대로 소은 명세를 따른다 |
-| `detectors.known_malicious.list_as_of` | string | 아니오 | 목록의 기준 시점, ISO 8601 UTC(`Z`). 이 시점 뒤에 알려진 기록은 반영되지 않았다는 뜻이다 |
+| `detectors.known_malicious.list_as_of` | string | 아니오 | 목록의 기준 시점, ISO 8601 UTC(`Z`). 이 시점 뒤에 알려진 기록은 반영되지 않았다는 뜻이다. `pipeline.scan()`은 `YYYY-MM-DDTHH:MM:SS`(소수 초 1~6자리는 선택)에 대문자 `Z`로 끝나는 실제 날짜·시각인지 검사한다(SVC-03-FIX-01 n3). 문자열이 아니면 설정 오류(3.2절 아래 SVC-03 구현 문단)다. 문자열인데 형식만 어긋나면 이 값은 받은 그대로 두고, 대조를 마쳤는데 일치가 없는 항목의 `known_malicious`를 `not_hit` 대신 `failed`(`detector_failed`, `detail`에 설명)로 둔다. 기준 시점을 모르는 목록으로는 미적중을 확정할 수 없기 때문이다. 일치(`hit`)는 낮추지 않고, 대조하지 않은 항목(`not_run`)은 그대로다. `detectors.known_malicious`를 null로 바꾸지 않는 것은 null이 "연결되지 않음"을 뜻하기 때문이다 |
 | `detectors.known_malicious.list_sha256` | string | 예 | 사용한 목록 스냅샷 파일의 SHA-256. 스냅샷 없이 조회하면 null(채택(D-3)) |
 | `detectors.rules` | object | 예 | null이면 규칙 탐지기가 연결되지 않음 |
 | `detectors.rules.ruleset_version` | string | 아니오 | 규칙 묶음의 버전. 표기 형식은 규칙 저장 위치가 정해진 뒤 정하고 그 전에는 문자열(채택(D-9)) |
-| `provenance` | object | 아니오 | **SVC-02에서 구현했다(채택(D-10)).** 코드가 이미 확인하던 출처 정보(모델 파일 해시, feature-extractor 설치 출처). `pipeline.scan()`이 `analyzer_version` 다음에 넣는다 |
+| `provenance` | object | 아니오 | **SVC-02에서 구현했다(채택(D-10)).** 코드가 이미 확인하던 출처 정보(모델 파일 해시, feature-extractor 설치 출처). `pipeline.scan()`이 `detectors` 다음에 넣는다(SVC-02에서는 `analyzer_version` 바로 다음이었고, SVC-03이 그 사이에 `detectors`를 넣었다) |
 | `provenance.model` | object | 예 | `LightGBMPredictor.identity`를 그대로 옮긴 `{"model_sha256", "manifest_sha256"}`. 모델이 없거나, identity가 두 키를 모두 문자열로 갖지 않으면(주입한 예측기, PR #10 리뷰 m1) null. `model_id`·`threshold`는 기존 최상위 필드에 있으므로 넣지 않는다 |
 | `provenance.feature_extractor` | object | 예 | `FeatureExtractorBackend.identity`에서 `commit`, `files_sha256`, `python`만 옮긴다. feature-extractor로 추출하지 않는 실행(`--extract` 없는 `scan`, `--analysis`)이거나 설치 출처를 확인하지 못하면(identity가 None이거나 세 키를 모두 문자열로 갖지 않음) null. `url`은 설치 기록(`direct_url.json`)에서 온 값이라 넣지 않는다(채택(D-10)). 설치 출처이므로 이번 실행에서 추출한 변경이 0건이거나 모두 실패해도 값이 있다(`analyzer_version`과 같음, PR #10 리뷰 n3) |
 
@@ -89,7 +89,7 @@ SVC-03은 새 필드를 `pipeline.scan()`에서 항목 dict와 최상위 dict에
 | `known_malicious` | object | 아니오 | 기지 악성 대조 결과 |
 | `known_malicious.status` | string | 아니오 | `hit`, `not_hit`, `not_run`, `failed` |
 | `known_malicious.reason` | string | 예 | `not_run`·`failed`의 이유 코드(3.3절). `hit`·`not_hit`이면 null. 항목의 `reason`과 별개이며 서로 복사하지 않는다 |
-| `known_malicious.detail` | string | 예 | 이유가 `detector_failed`일 때 설명. 그 밖에는 null(`input_failed`면 항목 `detail`을 본다) |
+| `known_malicious.detail` | string | 예 | 이유가 `detector_failed`일 때 설명. 요청의 출처 검사가 실패한 `input_failed`(3.3절)도 그 항목에 `detail`이 없으므로 여기에 원인을 적는다. 그 밖에는 null |
 | `known_malicious.matches` | array | 아니오 | `hit`일 때 일치한 기록, 그 밖에는 빈 배열 |
 | `known_malicious.matches[].advisory_id` | string | 아니오 | 기록 식별자(예시는 `EXAMPLE-ADVISORY-0001`) |
 | `known_malicious.matches[].match_kind` | string | 아니오 | `listed_version`(기록의 버전 목록에 있음) 또는 `affected_range`(검증한 영향 범위에 들어감) |
@@ -109,9 +109,9 @@ SVC-03은 새 필드를 `pipeline.scan()`에서 항목 dict와 최상위 dict에
 | `ml.status` | string | 아니오 | `hit`, `not_hit`, `not_run`, `failed`. `pipeline.scan()`이 ML 경로의 결과(분석·추론 상태, 점수와 임계값 비교)로 정하며 값은 4.1절 표의 ML 경로 값과 같다. 탐지기 결과로 바뀌지 않는다. 점수·임계값·모델·이유는 기존 필드를 본다 |
 | `rule_ml_agreement` | string | 아니오 | `both_hit`, `rule_only`, `ml_only`, `neither_hit`, `undetermined`(4.3절). `rule_only`·`ml_only`가 불일치다 |
 
-`rules.status` 정하기: 탐지기를 실행하지 않았으면 `not_run`, 필요한 입력을 얻지 못했거나 탐지기 자체가 오류로 끝났으면 `failed`이고, 두 경우 모두 이유 코드가 있고 `checks`는 빈 배열이다. 실행했으면 `checks`에서 집계한다. 하나라도 `hit`이면 `hit`, 아니고 하나라도 `failed`면 `failed`(이유 `detector_failed`, 설명은 그 규칙의 `checks[].detail`), 모두 `not_hit`이면 `not_hit`이다. `hit`과 `failed`가 함께 있어도 실패한 규칙은 `checks`에 남는다. 연결된 탐지기의 `failed`는 채택(D-7)대로 다룬다. 실행하지 않은 이유는 3.3절 표에서 고른다. 분석 입력이 필요한 규칙 탐지기는 분석기가 연결되지 않은 실행에서 `analyzer_not_configured`, 연결된 분석기가 그 변경을 `unsupported`로 돌려준 경우(`ExtractorAnalyzer`의 `no_baseline`, prerelease의 `out_of_training_scope` 등)에 `analysis_unsupported`를 쓴다. `known_malicious.status`도 앞의 두 경우(`not_run`, `failed`)는 같고, 대조를 마쳤으면 `matches`가 있을 때 `hit`, 없을 때 `not_hit`이다.
+`rules.status` 정하기: 탐지기를 실행하지 않았으면 `not_run`, 필요한 입력을 얻지 못했거나 탐지기 자체가 오류로 끝났으면 `failed`이고, 두 경우 모두 이유 코드가 있고 `checks`는 빈 배열이다. 실행했으면 `checks`에서 집계한다. 하나라도 `hit`이면 `hit`, 아니고 하나라도 `failed`면 `failed`(이유 `detector_failed`, 설명은 그 규칙의 `checks[].detail`), 모두 `not_hit`이면 `not_hit`이다. 탐지기가 실행됐는데 규칙 목록이 비어 있으면(`checks`가 빈 배열) 적중도 실패도 없으므로 `not_hit`이다(SVC-03-FIX-01 n2). `hit`과 `failed`가 함께 있으면 `rules.status`는 `hit`이고, 실패한 규칙은 숨기지 않고 `checks[]`에 `failed`와 `detail`로 남는다. 이때 `rules.status`는 `failed`가 아니므로 채택(D-7)은 걸리지 않는다(4.2절의 해석, SVC-03-FIX-01 m3). 연결된 탐지기의 `failed`는 채택(D-7)대로 다룬다. 실행하지 않은 이유는 3.3절 표에서 고른다. 분석 입력이 필요한 규칙 탐지기는 분석기가 연결되지 않은 실행에서 `analyzer_not_configured`, 연결된 분석기가 그 변경을 `unsupported`로 돌려준 경우(`ExtractorAnalyzer`의 `no_baseline`, prerelease의 `out_of_training_scope` 등)에 `analysis_unsupported`를 쓴다. `known_malicious.status`도 앞의 두 경우(`not_run`, `failed`)는 같고, 대조를 마쳤으면 `matches`가 있을 때 `hit`, 없을 때 `not_hit`이다.
 
-SVC-03 구현(`pipeline.py`의 `_known_malicious()`, `_rules()`): 탐지기가 예외를 내거나 잘못된 형태(목록이 아님, 계약 필드가 없거나 자료형·값이 다름)를 돌려주면 그 칸은 `failed`(`detector_failed`, 칸의 `detail`에 설명)이고 `not_hit`이 되지 않는다. 탐지기 기록은 계약 필드만 계약 순서로 복사하고 나머지 키는 버린다. 규칙 탐지기는 분석이 완료된 변경에만 실행하며 그 변경의 요청 항목과 분석 결과를 받는다(`contracts.RuleDetector`). 최상위 `detectors`에 들어갈 탐지기 값(목록 출처·기준 시점, 규칙 묶음 버전)이 없거나 문자열이 아니면 결과가 아니라 설정 오류(`GuardError`, 종료 코드 2의 오류 JSON)다.
+SVC-03 구현(`pipeline.py`의 `_known_malicious()`, `_rules()`): 탐지기가 예외를 내거나 잘못된 형태(목록이 아님, 계약 필드가 없거나 자료형·값이 다름)를 돌려주면 그 칸은 `failed`(`detector_failed`, 칸의 `detail`에 설명)이고 `not_hit`이 되지 않는다. 탐지기 기록은 계약 필드만 계약 순서로 복사하고 나머지 키는 버린다. 규칙 탐지기는 분석이 완료된 변경에만 실행하며 그 변경의 요청 항목과 분석 결과의 복사본을 받는다(`contracts.RuleDetector`). 탐지기가 받은 값을 바꿔도 보고서의 `features`·`evidence`는 바뀌지 않는다(SVC-03-FIX-01 n1). 분석 대상이 아닌 변경을 기지 악성과 대조하기 전의 출처 검사가 그 변경의 tarball URL을 파싱하지 못하면(`GuardError`) 그 변경의 `known_malicious`만 `failed`(`input_failed`)이고 실행은 계속된다(SVC-03-FIX-01 m1). 이 검사의 다른 예외는 잡지 않는다. 최상위 `detectors`에 들어갈 탐지기 값(목록 출처·기준 시점, 규칙 묶음 버전)이 없거나 문자열이 아니면 결과가 아니라 설정 오류(`GuardError`, 종료 코드 2의 오류 JSON)다.
 
 `not_run` 이유가 여럿 해당하면 3.3절 표의 위쪽 코드 하나를 쓴다(예: 탐지기가 연결되지 않은 실행의 삭제 항목은 `detector_not_configured`).
 
@@ -123,10 +123,10 @@ SVC-03 구현(`pipeline.py`의 `_known_malicious()`, `_rules()`): 탐지기가 �
 |---|---|---|
 | `detector_not_configured` | `not_run` | 이 실행에 탐지기가 연결되지 않음(최상위 `detectors`의 해당 값이 null). 지금 main의 상태 |
 | `not_installed_in_head` | `not_run` | 삭제된 의존성이라 설치될 버전이 없음(항목 `status`가 `removed`). 기존 코드 값을 같은 뜻으로 재사용 |
-| `not_analyzable` | `not_run` | 요청에서 `analyzable=false`인 변경(미지원 출처 등). 항목 `reason`에 원래 이유가 있다. 기지 악성 대조에서는 채택(D-5)대로 출처가 registry가 아닌 경우에만 이 코드를 쓴다(registry 이름·버전이 확실하면 대조한다). SVC-03은 요청의 출처 검사(`inputs/npm.py`의 `registry_version_problem()`)가 문제를 돌려주는 변경(workspace·link, semver가 아닌 버전, registry 밖 tarball)만 이 코드로 두고, `missing_integrity`·`same_version_artifact_changed`와 registry tarball인 `package_identity_changed`는 대조한다 |
+| `not_analyzable` | `not_run` | 요청에서 `analyzable=false`인 변경(미지원 출처 등). 항목 `reason`에 원래 이유가 있다. 기지 악성 대조에서는 채택(D-5)대로 출처가 registry가 아닌 경우에만 이 코드를 쓴다(registry 이름·버전이 확실하면 대조한다). SVC-03은 요청의 출처 검사(`inputs/npm.py`의 `registry_version_problem()`)가 문제를 돌려주는 변경(workspace·link, semver가 아닌 버전, registry 밖 tarball)만 이 코드로 두고, `missing_integrity`·`same_version_artifact_changed`와 registry tarball인 `package_identity_changed`는 대조한다. 출처 검사가 URL을 파싱하지 못하면 이 코드가 아니라 `input_failed`다 |
 | `analyzer_not_configured` | `not_run` | 탐지기에 필요한 분석 입력(tarball, 추출)을 만드는 분석기가 이 실행에 연결되지 않음(`--analysis`·`--extract` 없는 `scan`, 항목 `reason`은 `analysis_missing`, 최상위 `analyzer_version`은 null). 이름·버전만 쓰는 기지 악성 대조에는 해당하지 않는다 |
 | `analysis_unsupported` | `not_run` | 연결된 분석기가 이 변경을 `unsupported`로 돌려줘 탐지기에 필요한 분석 입력을 만들지 않음. 항목 `reason`·`detail`에 분석기의 이유가 있다(`ExtractorAnalyzer`는 prerelease면 `out_of_training_scope`, 비교할 이전 stable이 없으면 `no_baseline`). 기지 악성 대조에는 해당하지 않는다(채택(D-5)대로 `no_baseline`도 이름·버전으로 대조) |
-| `input_failed` | `failed` | 연결된 분석기에서 탐지기에 필요한 분석 입력을 얻지 못함(항목 `reason`이 `analysis_failed`이거나, 분석기가 연결됐는데 `analysis_missing`). 항목 `reason`·`detail`에 원래 실패가 있다 |
+| `input_failed` | `failed` | 탐지기에 필요한 입력을 얻지 못함. 규칙: 연결된 분석기에서 분석 입력을 얻지 못함(항목 `reason`이 `analysis_failed`이거나, 분석기가 연결됐는데 `analysis_missing`). 항목 `reason`·`detail`에 원래 실패가 있다. 기지 악성: 분석 대상이 아닌 변경의 출처 검사(`registry_version_problem()`)가 tarball URL을 파싱하지 못해 대조할 registry 이름·버전을 확정하지 못함(SVC-03-FIX-01 m1). 원인은 `known_malicious.detail`에 있다 |
 | `detector_failed` | `failed` | 탐지기 자체가 오류로 끝났거나(`detail`에 설명), 실행한 규칙 중 적중 없이 실패한 규칙이 있음(`checks[].detail`에 설명) |
 
 `analysis_unsupported`를 새로 둔 이유: 기존 `not_analyzable`은 분석기를 부르기 전 요청 단계(`analyzable=false`)의 이유라 분석기의 판단과 섞지 않는다. 항목 `reason` 값(`no_baseline` 등)을 그대로 쓰지 않는 것은 위 이름공간 구분 때문이다. 근거 코드: `ExtractorAnalyzer._analyze_change()`는 prerelease면 registry 조회 전에(`extractor.py` 332~337행), 이전 stable이 없으면 baseline 선정 직후 다운로드 전에(347~353행) `unsupported`를 돌려주므로 규칙이 볼 tarball이 없다. 새 버전 하나만으로 규칙을 실행하도록 바꿀지는 정하지 않았다(SVC-00 계획에 없음). 추론 단계의 `out_of_training_scope`(4.1절, `OutOfScopeError`)는 분석을 마친 뒤라 규칙 입력이 있으므로 이 코드를 쓰지 않는다.
@@ -142,7 +142,7 @@ SVC-03 구현(`pipeline.py`의 `_known_malicious()`, `_rules()`): 탐지기가 �
 - 분석기 미연결: `service.scan_project()`는 `--analysis`와 `--extract`가 모두 없으면 분석기를 None으로 넘기고, `pipeline.scan()`은 분석 대상인 모든 변경을 `analysis_missing`(`incomplete`, 종료 코드 2)으로 둔다. 최상위 `analyzer_version`은 null이다. 분석기가 실행되지 않았으므로 `ml.status`는 `not_run`이다.
 - 연결된 분석기의 결과 누락: `--analysis` 파일이 어떤 분석 대상 변경의 결과를 담지 않으면 `analysis.artifact.validate()`가 통과시키고 `pipeline.scan()`이 그 변경을 `analysis_missing`으로 둔다. 최상위 `analyzer_version`은 문자열이다. 연결된 분석기가 결과를 내지 못한 것이므로 `ml.status`는 `failed`다. `--extract`(`ExtractorAnalyzer`)와 `check`는 분석 대상 변경마다 결과(`complete`·`failed`·`unsupported`)를 만들므로 이 경로로 `analysis_missing`을 내지 않는다.
 
-분석기가 `unsupported`를 돌려준 변경은 `pipeline.scan()` 45~46행이 항목 `status`를 `incomplete`로 두고 `reason`에 분석기의 이유 코드, `detail`에 분석기의 설명을 옮긴다(`score`는 null, 종료 코드 2). `analysis.artifact.validate()`(45~49행)는 이유 코드가 비어 있지 않은 문자열인지만 검사한다. [연결 규약](contracts.md) 2절은 `out_of_training_scope`, `no_baseline`을 쓴다고 정하고 `ExtractorAnalyzer`도 이 둘만 내지만, `--analysis` 파일은 다른 코드를 담아도 통과한다. 분석기가 모델의 범위 밖이라고 판단해 ML을 실행하지 않은 것이므로 이유 코드와 관계없이 `ml.status`는 `not_run`이다.
+분석기가 `unsupported`를 돌려준 변경은 `pipeline.scan()`의 `unsupported` 분기가 항목 `status`를 `incomplete`로 두고 `reason`에 분석기의 이유 코드, `detail`에 분석기의 설명을 옮긴다(`score`는 null, 종료 코드 2). `analysis.artifact.validate()`는 이유 코드가 비어 있지 않은 문자열인지만 검사한다. [연결 규약](contracts.md) 2절은 `out_of_training_scope`, `no_baseline`을 쓴다고 정하고 `ExtractorAnalyzer`도 이 둘만 내지만, `--analysis` 파일은 다른 코드를 담아도 통과한다. 분석기가 모델의 범위 밖이라고 판단해 ML을 실행하지 않은 것이므로 이유 코드와 관계없이 `ml.status`는 `not_run`이다.
 
 | ML 경로의 항목 `status` | ML 경로의 항목 `reason` | `ml.status` | `score` | 항목의 종료 코드 기여(탐지기 반영 전) |
 |---|---|---|---|---|
@@ -165,7 +165,7 @@ SVC-03 구현(`pipeline.py`의 `_known_malicious()`, `_rules()`): 탐지기가 �
 
 ### 4.2 기지 악성과 규칙: 항목 `status`·종료 코드와의 관계
 
-아래 첫 표는 채택(D-2)·채택(D-7)을 적용하기 전(SVC-02까지 초안의 규칙)의 관계이고 기록으로 남긴다. SVC-03부터는 그다음 표(채택 후)가 구현이다(`pipeline.py` 205~215행).
+아래 첫 표는 채택(D-2)·채택(D-7)을 적용하기 전(SVC-02까지 초안의 규칙)의 관계이고 기록으로 남긴다. SVC-03부터는 그다음 표(채택 후)가 구현이다(`pipeline.scan()`에서 `_known_malicious()`·`_rules()`의 결과로 항목 `status`를 고치는 D-2·D-7 분기).
 
 | `known_malicious.status` / `rules.status` | 항목 `status` | 최상위 `exit_code` | 표시 |
 |---|---|---|---|
@@ -179,17 +179,20 @@ SVC-03 구현(`pipeline.py`의 `_known_malicious()`, `_rules()`): 탐지기가 �
 | 탐지기 결과 | 채택 후 항목 `status` | 채택 후 최상위 `exit_code` | 근거 |
 |---|---|---|---|
 | 기지 악성 `hit` | `flagged`. `score`는 그대로 남는다 | 1 이상(다른 항목이 미완료면 2) | 채택(D-2) |
-| 연결된 탐지기의 `failed` | `incomplete`. ML 경로가 완료(`flagged`/`not_flagged`)였으면 항목 `reason`은 `detection_failed`(SVC-03에서 정함, 하람 확인 필요)이고 `score`는 지우지 않는다. ML 경로가 이미 `incomplete`면 그 `reason`·`detail`을 유지한다 | 2 | 채택(D-7) |
+| 연결된 탐지기의 `failed` | `incomplete`. ML 경로가 완료(`flagged`/`not_flagged`)였으면 항목 `reason`은 `detection_failed`(SVC-03에서 정함, 하람 승인(11/13))이고 `score`는 지우지 않는다. ML 경로가 이미 `incomplete`면 그 `reason`·`detail`을 유지한다 | 2 | 채택(D-7) |
 | 탐지기 미연결(`not_run`, `detector_not_configured`) | 바꾸지 않음 | 바꾸지 않음 | 채택(D-6). 정책 파일이 생기면 필수 여부를 거기서 정한다 |
 | 규칙 `hit`, 규칙/ML 불일치 | 바꾸지 않음 | 바꾸지 않음 | 채택(D-4) |
+| 규칙 일부 `failed`와 다른 규칙 `hit`이 함께 있음(`rules.status`는 `hit`) | 바꾸지 않음. 실패한 규칙은 `checks[]`에 `failed`로 남는다 | 바꾸지 않음 | 채택(D-7)의 해석(SVC-03-FIX-01 m3, Clover 결정 11/13). 아래 문단 |
 | 한 항목에 기지 악성 `hit`(D-2)과 연결된 탐지기의 `failed`(D-7)가 함께 있음 | `flagged`(종료 코드 기여 1이 우선) | 1 이상(다른 항목이 미완료면 2) | 하람·Clover 확정(11/11, Clover 전달 작업 지시) |
-| 한 항목에 기지 악성 `hit`과 ML 경로의 미완료가 함께 있고 D-7은 없음 | `flagged`. ML 경로의 `reason`·`detail`과 `ml.status`는 남긴다 | 1 이상(다른 항목이 미완료면 2) | 11/13 Clover 지시로 확정(SVC-03) |
+| 한 항목에 기지 악성 `hit`과 ML 경로의 미완료가 함께 있고 D-7은 없음 | `flagged`. ML 경로의 `reason`·`detail`과 `ml.status`(4.1절 값 그대로: ML이 실행되지 않았으면 `not_run`, 실행하려다 실패했으면 `failed`)는 남긴다 | 1 이상(다른 항목이 미완료면 2) | 11/13 Clover 지시로 확정(SVC-03), `ml.status`는 4.1절·채택(D-12) |
 
 `detection_failed`를 고른 이유: 항목 `reason`의 기존 실패 코드가 단계 이름에 `_failed`를 붙인 꼴(`analysis_failed`, `inference_failed`)이라 같은 꼴로 탐지 단계를 나타냈다. 탐지기 칸의 이유 코드 `detector_failed`(3.3절)와는 이름공간이 달라 같은 이름을 쓰지 않았다. 어느 탐지기가 왜 실패했는지는 그 탐지기 칸의 `status`·`reason`·`detail`에 있다.
 
-한 항목에 채택(D-2)과 채택(D-7)이 함께 걸리면 항목은 `flagged`, 종료 코드 기여 1이 우선한다. 근거는 1절 계약 문장 "낮은 ML 점수는 기지 악성 경고를 취소하지 않는다"에 담긴, 기지 악성 경고를 다른 결과로 취소하지 않는다는 원칙이고, 이 우선순위는 Clover가 전달한 이번 작업 지시(하람·Clover 확정, 11/11)로 정해졌다. 이때도 실패한 탐지기는 자기 칸(`rules.status`의 `failed`와 `rules.reason`의 이유 코드처럼 해당 탐지기 칸의 `failed`와 이유 코드)에 실패 근거로 따로 보여 준다. 최상위 집계(`pipeline.py` 223~225행, 미완료 2 > 위험 1 > 0, SVC-03에서 바꾸지 않음)대로면 다른 미완료 항목이 없을 때 최상위는 `flagged`/1이므로, 그 탐지기의 실패는 `status`·`exit_code`가 아니라 탐지기 칸에서 드러난다. 이 우선순위에는 조건이 없다. 항목이 ML 경로에서 이미 `incomplete`여도(예: 규칙이 `input_failed`인 `analysis_failed` 항목에 기지 악성 `hit`이 나온 경우) D-2와 D-7이 함께 성립하면 항목은 `flagged`, 종료 코드 기여 1이다. 이때 ML 경로의 미완료는 기존 `reason`·`detail`과 `ml.status`에, 실패한 탐지기는 그 탐지기 칸에 각각 따로 남는다.
+한 항목에 채택(D-2)과 채택(D-7)이 함께 걸리면 항목은 `flagged`, 종료 코드 기여 1이 우선한다. 근거는 1절 계약 문장 "낮은 ML 점수는 기지 악성 경고를 취소하지 않는다"에 담긴, 기지 악성 경고를 다른 결과로 취소하지 않는다는 원칙이고, 이 우선순위는 Clover가 전달한 이번 작업 지시(하람·Clover 확정, 11/11)로 정해졌다. 이때도 실패한 탐지기는 자기 칸(`rules.status`의 `failed`와 `rules.reason`의 이유 코드처럼 해당 탐지기 칸의 `failed`와 이유 코드)에 실패 근거로 따로 보여 준다. 최상위 집계(`pipeline.scan()` 끝의 `exit_code` 계산, 미완료 2 > 위험 1 > 0, SVC-03에서 바꾸지 않음)대로면 다른 미완료 항목이 없을 때 최상위는 `flagged`/1이므로, 그 탐지기의 실패는 `status`·`exit_code`가 아니라 탐지기 칸에서 드러난다. 이 우선순위에는 조건이 없다. 항목이 ML 경로에서 이미 `incomplete`여도(예: 규칙이 `input_failed`인 `analysis_failed` 항목에 기지 악성 `hit`이 나온 경우) D-2와 D-7이 함께 성립하면 항목은 `flagged`, 종료 코드 기여 1이다. 이때 ML 경로의 미완료는 기존 `reason`·`detail`과 `ml.status`에, 실패한 탐지기는 그 탐지기 칸에 각각 따로 남는다.
 
-기지 악성 `hit`과 ML 경로의 미완료가 한 항목에 함께 있고 D-7(연결된 탐지기의 `failed`)은 걸리지 않는 경우(예: `no_baseline` 항목을 채택(D-5)대로 대조했고 규칙은 `not_run`)에는 항목 `flagged`, 종료 코드 기여 1이다(11/13 Clover 지시로 확정, SVC-03에서 적용). ML 경로의 미완료는 기존 `reason`·`detail`과 `ml.status`에 남는다. `ml.status`는 4.1절 값을 그대로 쓰므로 위 예처럼 대개 `not_run`이지만, 4.1절이 `failed`로 정하는 경로에서는 `failed`로 남고 `not_run`으로 바꾸지 않는다. 그런 경로는 규칙 탐지기가 연결되지 않은 실행의 `analysis_failed`·연결된 분석기의 `analysis_missing`·`inference_failed`, 그리고 규칙 탐지기가 분석 결과로 정상 실행된 뒤 추론만 실패한 `inference_failed`다(규칙 탐지기가 연결된 실행의 `analysis_failed`·`analysis_missing`은 규칙이 `input_failed`라 D-7이 함께 걸린다). 최상위 집계(`pipeline.py` 223~225행)는 최종 항목 `status`만 보므로 다른 미완료 항목이 없으면 최상위는 `flagged`/1이고, `status`·`exit_code`만 보는 소비자에게 그 항목의 ML 미완료는 드러나지 않는다(항목 `reason`과 `ml.status`에 있다). 일치 내용은 `known_malicious`에 남는다(1절 계약 문장).
+기지 악성 `hit`과 ML 경로의 미완료가 한 항목에 함께 있고 D-7(연결된 탐지기의 `failed`)은 걸리지 않는 경우에는 항목 `flagged`, 종료 코드 기여 1이다(11/13 Clover 지시로 확정, SVC-03에서 적용). ML 경로의 미완료는 기존 `reason`·`detail`과 `ml.status`에 남는다. `ml.status`는 4.1절 표의 값을 그대로 쓰며 기지 악성 `hit`으로 바뀌지 않는다(3.2절, 채택(D-12)). 그래서 11/13 Clover 지시의 "ML `not_run`"은 ML이 실행되지 않은 경우의 값이다(`no_baseline` 등 분석기의 `unsupported`, `model_missing`, 추론 단계의 `out_of_training_scope`, 분석기 미연결의 `analysis_missing`, 분석 대상이 아닌 변경). 예: `no_baseline` 항목을 채택(D-5)대로 대조해 `hit`이 나오고 규칙은 `not_run`이면 `ml.status`는 `not_run`이다. ML을 실행하려다 실패한 경우(4.1절이 `failed`로 정하는 `analysis_failed`, 분석기가 연결된 `analysis_missing`, `inference_failed`)에는 기지 악성 `hit`이어도 `ml.status`는 `failed`로 남고 판정은 `flagged`/1이다(SVC-03-FIX-01 m2, Clover 확인, 동작 변경 없음). 이 중 D-7 없이 나오는 경로는 규칙 탐지기가 연결되지 않은 실행의 `analysis_failed`·`analysis_missing`, 그리고 `inference_failed`(규칙 탐지기가 분석 결과로 정상 실행된 경우 포함)다. 규칙 탐지기가 연결된 실행의 `analysis_failed`·`analysis_missing`은 규칙이 `input_failed`라 D-7이 함께 걸리고, 판정은 위 문단대로 같은 `flagged`/1이다. 최상위 집계는 최종 항목 `status`만 보므로 다른 미완료 항목이 없으면 최상위는 `flagged`/1이고, `status`·`exit_code`만 보는 소비자에게 그 항목의 ML 미완료는 드러나지 않는다(항목 `reason`과 `ml.status`에 있다). 일치 내용은 `known_malicious`에 남는다(1절 계약 문장).
+
+규칙 일부 실패의 해석(채택(D-7) 항목 이름의 "일부 규칙 실패", SVC-03-FIX-01 m3, Clover 결정 11/13): 채택(D-7)은 `rules.status`가 `failed`일 때만 걸린다. 실행한 규칙 중 적중 없이 실패한 규칙이 있으면 `rules.status`가 `failed`(`detector_failed`)라 항목은 `incomplete`·2다. 다른 규칙이 `hit`이면 `rules.status`는 `hit`(3.2절 집계)이고 채택(D-7)은 걸리지 않는다. 이때 실패한 규칙은 `checks[]`에 `failed`와 `detail`로 따로 남아 실패를 정상으로 바꾸지 않는다. 경고 근거가 실패를 덮되 실패를 숨기지 않는다는 점에서 위 D-2·D-7 겹침과 같은 원칙이다. 다만 규칙 `hit`은 채택(D-4)대로 항목 `status`를 바꾸지 않으므로, ML 점수가 기준 미만이면 그 항목은 `not_flagged`(종료 코드 기여 0)이고 규칙 적중과 실패는 `rules` 칸과 `rule_ml_agreement`(`rule_only`)에서만 드러난다.
 
 ### 4.3 규칙/ML 불일치: `rule_ml_agreement`
 
@@ -214,7 +217,7 @@ SVC-03 구현(`pipeline.py`의 `_known_malicious()`, `_rules()`): 탐지기가 �
 
 ## 6. 호환성
 
-- 새 필드만 추가하는 단계(SVC-02)와 SVC-03의 탐지기 미연결 실행에서는 기존 소비자가 새 필드를 무시해도 뜻이 그대로다. `status`, `reason`, `score`, `exit_code`는 지금과 같은 규칙으로 계산되고, 새 필드는 그 값에서 아무것도 빼거나 덮지 않는다. SVC-03은 채택(D-2)·채택(D-7)을 적용하므로 탐지기가 연결된 실행에서는 기존 `status`·`exit_code`의 계산이 바뀐다(4.2절의 우선순위, 9.1절, 7절의 C안 재검토).
+- 새 필드만 추가하는 단계(SVC-02)와 SVC-03의 탐지기 미연결 실행에서는 기존 소비자가 새 필드를 무시해도 뜻이 그대로다. `status`, `reason`, `score`, `exit_code`는 지금과 같은 규칙으로 계산되고, 새 필드는 그 값에서 아무것도 빼거나 덮지 않는다. SVC-03은 채택(D-2)·채택(D-7)을 적용하므로 탐지기가 연결된 실행에서는 기존 `status`·`exit_code`의 계산이 바뀐다(4.2절의 우선순위, 9.1절, `schema_version`은 7절).
 - 새 필드가 없는 보고서(이 초안 이전 출력)는 "정보 없음"으로 해석한다. `known_malicious`나 `rules`가 없다는 것을 `not_hit`으로 읽지 않는다. 표시할 때는 "확인 안 됨"으로 쓴다. `ml`이 없으면 4.1절 표로 기존 필드에서 구하되, `analysis_missing`의 미실행·실패 구분과 분석기 `unsupported` 이유의 해석은 참고값이다(4.1절의 한계, 채택(D-12)).
 - 필드가 있고 값이 `not_run`이면 그 실행에서 탐지기가 돌지 않았다는 뜻이고, 이유가 함께 있다. "필드 없음"(구버전)과 구분한다.
 - 텍스트·Markdown 출력과 결과 순서(위험 → 보류 → 통과 → 삭제, 같은 판정 안에서는 점수 순)는 이 초안에서 바뀌지 않는다. 새 칸의 표시는 채택(D-13)대로 SVC-04에서 넣는다.
@@ -230,7 +233,13 @@ SVC-03 구현(`pipeline.py`의 `_known_malicious()`, `_rules()`): 탐지기가 �
 | B. 공유 값을 2로 올림 | `SCHEMA_VERSION = 2` | 이미 만든 manifest와 분석 JSON이 거부된다. 보고서만 바뀌는데 모델 재발급이 필요해진다 |
 | C. 보고서 버전을 따로 둠 | 보고서에 별도 버전 필드(예: `report_version`)를 추가하거나 보고서용 상수를 분리 | 공유 값과 분리돼 다른 파일에 영향이 없다. 버전 필드 하나가 늘고 [연결 규약](contracts.md)의 "필드를 바꿀 때 `schema_version`을 올린다" 문장의 대상을 고쳐야 한다 |
 
-채택안: A. 이유는 추가만 하는 변경이고 같은 방식의 선례가 있으며, B는 보고서와 무관한 모델·분석 파일을 깨뜨린다. 권장안은 "기존 필드의 뜻을 바꾸는 결정(D-2 등)이 채택되면 그때 C를 다시 검토한다"였는데, D-2가 같은 날 함께 채택됐다. 따라서 C 재검토는 채택(D-2)·채택(D-7)을 적용하는 SVC-03(하람 확정, 11/11)을 시작하기 전에 해야 한다. 재검토 담당은 이 문서에서 정하지 않는다. SVC-03 구현은 A(`schema_version` 1)를 그대로 두었고, C 재검토의 결과는 이 문서에 기록되지 않았다(확인 필요).
+채택안: A. 이유는 추가만 하는 변경이고 같은 방식의 선례가 있으며, B는 보고서와 무관한 모델·분석 파일을 깨뜨린다. 권장안은 "기존 필드의 뜻을 바꾸는 결정(D-2 등)이 채택되면 그때 C를 다시 검토한다"였는데, D-2가 같은 날 함께 채택됐다. 따라서 C 재검토는 채택(D-2)·채택(D-7)을 적용하는 SVC-03(하람 확정, 11/11)을 시작하기 전에 해야 한다. C 재검토의 결과: 하람이 11/13에 `schema_version` 1 유지(A)로 정했고 C는 채택하지 않았다(Clover 전달, SVC-03-FIX-01 m4). 하람의 결정에는 이유가 따로 적혀 있지 않다. 아래는 이 문서에 이미 있는 근거이며 하람의 말이 아니다.
+
+- 새 필드는 모두 추가만 한다. 기존 키의 이름·값·순서를 바꾸지 않는다(3절).
+- 기존 필드의 계산이 바뀌는 것(채택(D-2)·채택(D-7))은 탐지기가 연결된 실행에서만 생기고, 지금 진입점(CLI 등)은 탐지기를 연결하지 않으므로 지금 출력의 `status`·`exit_code`는 그 전과 같다(1절 계약 문장, 6절).
+- B는 보고서와 무관한 모델 manifest·분석 파일을 깨뜨린다(위 표).
+
+남는 영향: 채택(D-2)로 `flagged`의 뜻이 "ML 위험 점수가 기준 이상"에서 "ML 위험 점수가 기준 이상이거나 기지 악성 기록과 일치"로 넓어졌다(8절 예시 3). `schema_version`으로는 이 차이를 구분할 수 없으므로, 소비자는 `known_malicious.status`(`hit`이면 기지 악성 일치)와 `ml.status`(ML 경로만의 결과)로 어느 근거인지 구분한다. 이 필드가 없는 보고서는 SVC-03 이전 출력이며 `flagged`는 ML 경로만의 판정이다(6절).
 
 ## 8. 예시
 
@@ -303,13 +312,13 @@ SVC-03 구현(`pipeline.py`의 `_known_malicious()`, `_rules()`): 탐지기가 �
 
 | ID | 항목 | 선택지(기록) | 채택안 | 주석(Devy, 승인 대상 아님) |
 |---|---|---|---|---|
-| D-1 | 필드 이름과 schema_version | 이 문서의 이름 그대로 / 다른 이름. schema_version은 7절 A·B·C | 이름은 리뷰 뒤 하람 승인, 버전은 A(1 유지) | 필드 이름의 하람 승인은 PR #9 병합 검토에서 받는다 |
+| D-1 | 필드 이름과 schema_version | 이 문서의 이름 그대로 / 다른 이름. schema_version은 7절 A·B·C | 이름은 리뷰 뒤 하람 승인, 버전은 A(1 유지) | 필드 이름의 하람 승인은 PR #9 병합 검토에서 받는다. 7절의 C안 재검토 결과는 1 유지다(하람, 11/13, 7절) |
 | D-2 | 기지 악성 `hit`의 항목 `status`·`exit_code` 매핑 | (a) 지금처럼 바꾸지 않고 경고로만 표시 (b) `hit`이면 항목을 `flagged`, 종료 코드 1 (c) (a)에 최상위 경고 개수 필드를 더함 | (b). 종료 코드만 보는 CI가 경고를 놓치지 않고 "1 = 위험 판정 있음"의 뜻과 맞는다. 채택 전까지는 (a)다 | SVC-03에서 적용했다(하람 확정, 11/11). 그 전까지는 (a)였다. 한 항목에 D-7과 함께 걸리면 D-2(`flagged`, 종료 코드 기여 1)가 우선한다(4.2절, 하람·Clover 확정). ML 경로 미완료와만 겹쳐도 `flagged`다(4.2절, 11/13 Clover 지시). 9.1절 참고 |
 | D-3 | 기지 악성 목록의 출처·기준 시점 | 출처(OSV의 악성 기록 등)·오프라인 스냅샷 파일 / 실행 시 조회, 철회 기록 제외 방법, 갱신 주기 | 소은의 기지 악성 일치 명세를 따른다. 서비스는 `source`·`list_as_of`·`list_sha256` 칸과 `not_run`만 준비 | |
 | D-4 | 규칙/ML 불일치 표기와 처리 | 근거별 표시 유지 / OR / AND / 검증된 규칙 종류별 우선순위 | 실험 전까지 근거별 표시 유지와 `rule_ml_agreement` 표기만. 단일 통합 판정 보류 | |
 | D-5 | 분석 대상이 아닌 변경의 기지 악성 대조 | `analyzable=false`(미지원 출처, integrity 없음 등)와 `no_baseline` 항목도 이름·버전으로 대조 / 하지 않음 | registry 이름·버전이 확실한 항목은 대조(이전 버전 없이도 경고 가능). 출처가 registry가 아니면 `not_run`, `not_analyzable` | |
 | D-6 | 탐지기 `not_run`(미연결)의 종료 코드 영향 | 영향 없음 / 정책으로 필수 지정 시 `incomplete`·2 | 탐지기가 배포되기 전까지 영향 없음. 정책 파일(client-dev 4.6절)이 생기면 필수 여부를 거기서 정함 | |
-| D-7 | 탐지기 `failed`의 종료 코드 영향과 일부 규칙 실패 | 영향 없음 / 항목 `incomplete`·2 / 일부 규칙만 실패하면 경고 | 연결된 탐지기의 `failed`는 `incomplete`·2(실패를 정상으로 대체하지 않는 원칙). 이때 항목 `reason` 값은 새로 정해야 함 | SVC-03에서 적용했다(하람 확정, 11/11). 한 항목에 D-2와 함께 걸리면 D-2가 우선하고 실패는 탐지기 칸에 남는다(4.2절). 새 항목 `reason` 값은 SVC-03에서 `detection_failed`로 정했다(ML 경로가 완료된 항목에만 쓰고 점수는 남김, 하람 확인 필요, 4.2절) |
+| D-7 | 탐지기 `failed`의 종료 코드 영향과 일부 규칙 실패 | 영향 없음 / 항목 `incomplete`·2 / 일부 규칙만 실패하면 경고 | 연결된 탐지기의 `failed`는 `incomplete`·2(실패를 정상으로 대체하지 않는 원칙). 이때 항목 `reason` 값은 새로 정해야 함 | SVC-03에서 적용했다(하람 확정, 11/11). 한 항목에 D-2와 함께 걸리면 D-2가 우선하고 실패는 탐지기 칸에 남는다(4.2절). 새 항목 `reason` 값은 SVC-03에서 `detection_failed`로 정했다(ML 경로가 완료된 항목에만 쓰고 점수는 남김, 하람 승인(11/13), 4.2절). "일부 규칙 실패"는 `rules.status`가 `failed`일 때만 해당한다고 해석한다(4.2절, SVC-03-FIX-01 m3) |
 | D-8 | 규칙 근거 위치 형식 | `{"file", "line"}` / 열·범위 추가 / 위치 없이 문자열만 | `{"file", "line"}`에서 시작. 규칙 후보(R_download_exec 등)의 근거 형태를 보고 확정 | |
 | D-9 | ruleset·rule 버전 표기 | SemVer / 날짜 / 커밋 해시 | 규칙 저장 위치가 정해진 뒤 결정. 그 전에는 문자열 | |
 | D-10 | `provenance` 위치와 범위(SVC-02) | `provenance` 객체 / 최상위 평면 필드(`model_sha256` 등). feature-extractor의 `url` 포함 여부 | `provenance` 객체, `url`은 제외(고정 커밋은 depbee 메타데이터에 이미 있고, 설치 기록의 URL을 보고서에 옮기지 않음) | SVC-02(PR #10)에서 구현했다(3.1절). 현행 동작을 바꾸지 않아 9.1절 표에는 없다 |
@@ -328,8 +337,8 @@ SVC-03 완료 기준 변경: D-2·D-7을 SVC-03에서 적용하기로 확정되�
 
 | ID | 현행 코드와의 차이 | 적용 단계 |
 |---|---|---|
-| D-2 | 현행 코드에는 기지 악성 탐지기가 없어 `hit`이 나오지 않고, 항목 `status`·`exit_code`는 ML 경로로만 정해진다. 채택안은 `hit`을 `flagged`·1로 연결하므로 탐지기가 연결된 실행의 판정과 종료 코드가 바뀐다(예시 3: `passed`/0 → `flagged`/1) | SVC-03에서 적용했다(하람 확정, 11/11, `pipeline.py` 207~210행). 판정은 `pipeline.scan()`에만 두므로 탐지기 칸을 만드는 SVC-03에서 함께 적용했고, SVC-03 완료 기준은 위 문단대로 바뀌었다. 한 항목에 D-7과 함께 걸리면 D-2가 우선한다(4.2절, 하람·Clover 확정). 실제 기지 악성 목록을 구현하는 단계는 계획에 없다(SVC-03은 가짜 탐지기로만 테스트했고, 목록은 채택(D-3)대로 소은 명세를 따른다). 실제 탐지기와 그 연결 옵션이 없으므로 지금 CLI의 판정은 그 전과 같다 |
-| D-7 | 현행 코드에는 탐지기가 없어 탐지기 `failed`가 없다. 채택안은 연결된 탐지기의 `failed`를 항목 `incomplete`·2로 바꾸며, 이때 쓸 항목 `reason` 값이 새로 필요하다 | SVC-03에서 적용했다(하람 확정, 11/11, `pipeline.py` 211~214행). 탐지기 예외와 잘못된 형태의 반환값은 `failed`(not_hit 아님)이고, 연결된 탐지기의 `failed`는 항목 `incomplete`·2다. 한 항목에 D-2와 함께 걸리면 D-2(`flagged`, 종료 코드 기여 1)가 우선하고, 실패는 그 탐지기 칸의 `failed`와 이유 코드로 보여 준다(4.2절). 새 항목 `reason` 값은 `detection_failed`로 정했다(SVC-03에서 정함, 하람 확인 필요). ML 경로가 이미 미완료면 그 `reason`을 유지한다 |
+| D-2 | 현행 코드에는 기지 악성 탐지기가 없어 `hit`이 나오지 않고, 항목 `status`·`exit_code`는 ML 경로로만 정해진다. 채택안은 `hit`을 `flagged`·1로 연결하므로 탐지기가 연결된 실행의 판정과 종료 코드가 바뀐다(예시 3: `passed`/0 → `flagged`/1) | SVC-03에서 적용했다(하람 확정, 11/11, `pipeline.scan()`의 D-2 분기). 판정은 `pipeline.scan()`에만 두므로 탐지기 칸을 만드는 SVC-03에서 함께 적용했고, SVC-03 완료 기준은 위 문단대로 바뀌었다. 한 항목에 D-7과 함께 걸리면 D-2가 우선한다(4.2절, 하람·Clover 확정). 실제 기지 악성 목록을 구현하는 단계는 계획에 없다(SVC-03은 가짜 탐지기로만 테스트했고, 목록은 채택(D-3)대로 소은 명세를 따른다). 실제 탐지기와 그 연결 옵션이 없으므로 지금 CLI의 판정은 그 전과 같다 |
+| D-7 | 현행 코드에는 탐지기가 없어 탐지기 `failed`가 없다. 채택안은 연결된 탐지기의 `failed`를 항목 `incomplete`·2로 바꾸며, 이때 쓸 항목 `reason` 값이 새로 필요하다 | SVC-03에서 적용했다(하람 확정, 11/11, `pipeline.scan()`의 D-7 분기). 탐지기 예외와 잘못된 형태의 반환값은 `failed`(not_hit 아님)이고, 연결된 탐지기의 `failed`는 항목 `incomplete`·2다. 한 항목에 D-2와 함께 걸리면 D-2(`flagged`, 종료 코드 기여 1)가 우선하고, 실패는 그 탐지기 칸의 `failed`와 이유 코드로 보여 준다(4.2절). 새 항목 `reason` 값은 `detection_failed`로 정했다(SVC-03에서 정함, 하람 승인(11/13)). 규칙 일부 실패는 `rules.status`가 `failed`일 때만 D-7이다(4.2절, SVC-03-FIX-01 m3). ML 경로가 이미 미완료면 그 `reason`을 유지한다 |
 | D-5 | 현행 코드는 어떤 항목도 기지 악성과 대조하지 않는다. 채택안은 `analyzable=false` 중 registry 이름·버전이 확실한 항목과 `no_baseline` 항목도 대조한다. D-2와 함께 적용되면 이런 항목의 경고가 판정에 반영된다(4.2절) | SVC-03에서 적용했다. `no_baseline`을 포함해 분석 대상인 변경은 모두 대조하고, `analyzable=false`는 요청의 출처 검사(`inputs/npm.py`의 `registry_version_problem()`)를 통과한 변경만 대조한다(3.3절 `not_analyzable`). `analyzable=false` 항목의 대조 범위는 계획에 명시되지 않아 SVC-03에서 이렇게 정했다 |
 | D-6 | 현행과 같다(탐지기 미연결은 영향 없음). 정책 파일로 탐지기를 필수로 지정하면 `incomplete`·2가 될 수 있다 | 정책 파일(client-dev 4.6절)은 SVC-00 계획이 순서에 넣지 않았으므로 적용 단계가 정해지지 않았다 |
 | D-13 | 현행 출력에는 탐지기 칸이 없다. 결과 순서는 유지하고 기지 경고·미완료 강조를 더한다 | SVC-04(텍스트·JSON·Markdown, 계획에 "기지 경고·미완료 강조" 명시). 대시보드는 SVC-07 |
