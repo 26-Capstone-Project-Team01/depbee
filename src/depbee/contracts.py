@@ -83,3 +83,30 @@ class Predictor(Protocol):
     model_id: str
 
     def predict(self, features: dict[str, object]) -> float: ...
+
+
+class KnownMaliciousDetector(Protocol):
+    """Known malicious records (docs/result-contract-draft.md 3). The attributes are the report's
+    detectors.known_malicious. pipeline.scan() reports an exception or a malformed return value
+    as failed, never as not_hit."""
+
+    source: str
+    list_as_of: str  # ISO 8601 UTC with Z
+    list_sha256: str | None
+
+    def match(self, name: str, version: str) -> list[dict]:
+        """Records naming this npm registry version, each {advisory_id: str, match_kind:
+        "listed_version" or "affected_range", affected: str or None}; empty if none."""
+        ...
+
+
+class RuleDetector(Protocol):
+    """Rules run on a change and its complete analysis result (contract 3, D-15)."""
+
+    ruleset_version: str
+
+    def check(self, change: dict, analysis: dict) -> list[dict]:
+        """One record per rule run: {rule_id: str, rule_version: str, status: "hit", "not_hit"
+        or "failed", evidence: [str], locations: [{file: str, line: int or None}], detail: str
+        or None}."""
+        ...
