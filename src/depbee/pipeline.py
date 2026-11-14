@@ -238,8 +238,11 @@ def scan(
             # D-2, ahead of D-7: a low score or an unfinished ML path never cancels it. The ML
             # path's reason and detail stay, and a failed detector stays in its own slot.
             item["status"] = "flagged"
-        elif "failed" in (malicious["status"], rule["status"]):
-            # D-7. An unfinished ML path keeps its reason; a finished one keeps its score.
+        elif "failed" in (malicious["status"], rule["status"]) or any(
+            check["status"] == "failed" for check in rule["checks"]
+        ):
+            # D-7, also for a failed rule beside a hit (DEC-01 B). An unfinished ML path keeps
+            # its reason; a finished one keeps its score.
             if item["status"] != "incomplete":
                 item.update(status="incomplete", reason="detection_failed")
         item.update(

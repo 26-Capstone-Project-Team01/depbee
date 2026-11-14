@@ -402,18 +402,19 @@ class AgreementTests(DetectorFixture):
                 self.assertEqual(self.verdict(report), verdict)
                 self.assertEqual(report["results"][0]["rules"]["status"], rules)
 
-    def test_a_rule_hit_with_a_failed_rule_is_not_d7(self):
-        # SVC-03-FIX-01 m3: a hit with failed rules is rules hit, so D-7 does not apply and a low
-        # score stays not_flagged; the failed rule is still shown in checks with its detail.
+    def test_a_rule_hit_with_a_failed_rule_is_d7(self):
+        # DEC-01 B (Haram, 2026-11-14): a failed rule applies D-7 even beside a hit. rules.status
+        # stays hit (hit > failed > not_hit) and the failed rule is shown in checks with its detail.
         report = self.scan_with(
             0.1, rules=Rules((rule("hit"), rule("failed", "R2", detail="timeout")))
         )
         item = report["results"][0]
-        self.assertEqual(self.verdict(report), ("not_flagged", "passed", 0, "not_hit", "rule_only"))
+        self.assertEqual(self.verdict(report),
+                         ("incomplete", "incomplete", 2, "not_hit", "rule_only"))  # fmt: skip
         self.assertEqual((item["rules"]["status"], item["rules"]["reason"]), ("hit", None))
         self.assertEqual([(c["status"], c["detail"]) for c in item["rules"]["checks"]],
                          [("hit", None), ("failed", "timeout")])  # fmt: skip
-        self.assertNotIn("reason", item)
+        self.assertEqual((item["reason"], item["score"]), ("detection_failed", 0.1))
 
     def test_rule_status_from_its_checks(self):
         for result, status, reason in (
@@ -427,6 +428,78 @@ class AgreementTests(DetectorFixture):
                 self.assertEqual((slot["status"], slot["reason"], slot["detail"]),
                                  (status, reason, None))  # fmt: skip
                 self.assertEqual(len(slot["checks"]), len(result))
+
+
+# DEC-01 decision table (temp DEC-01 document 2.2): one change, known malicious x ML path x
+# rules. Cells are item "status" or "status:reason"; numbers 1 to 45 run in this order.
+KNOWN = {"hit": lambda: KnownList((ADVISORY,)), "not_hit": KnownList,
+         "failed": lambda: KnownList(error=OSError("list unreadable"))}  # fmt: skip
+ML_PATH = {"flagged": 0.9, "not_flagged": 0.1, "incomplete": 1.5}  # 1.5 is inference_failed
+RULE_SETS = {
+    "[failed]": (rule("failed", detail="timeout"),),
+    "[hit,failed]": (rule("hit"), rule("failed", "R2", detail="timeout")),
+    "[hit]": (rule("hit"),),
+    "[not_hit]": (rule(),),
+    "not_run": None,
+}
+F, NF, FI = "flagged", "not_flagged", "flagged:inference_failed"
+DF, IF = "incomplete:detection_failed", "incomplete:inference_failed"
+# Option A, the behaviour before DEC-01, kept to count what B changes.
+BEFORE_B = {
+    ("hit", "flagged"): (F, F, F, F, F),
+    ("hit", "not_flagged"): (F, F, F, F, F),
+    ("hit", "incomplete"): (FI, FI, FI, FI, FI),
+    ("not_hit", "flagged"): (DF, F, F, F, F),
+    ("not_hit", "not_flagged"): (DF, NF, NF, NF, NF),
+    ("not_hit", "incomplete"): (IF, IF, IF, IF, IF),
+    ("failed", "flagged"): (DF, DF, DF, DF, DF),
+    ("failed", "not_flagged"): (DF, DF, DF, DF, DF),
+    ("failed", "incomplete"): (IF, IF, IF, IF, IF),
+}
+# Option B, decided by Haram on 2026-11-14 13:40 KST: the current behaviour.
+CURRENT = {
+    ("hit", "flagged"): (F, F, F, F, F),
+    ("hit", "not_flagged"): (F, F, F, F, F),
+    ("hit", "incomplete"): (FI, FI, FI, FI, FI),
+    ("not_hit", "flagged"): (DF, DF, F, F, F),
+    ("not_hit", "not_flagged"): (DF, DF, NF, NF, NF),
+    ("not_hit", "incomplete"): (IF, IF, IF, IF, IF),
+    ("failed", "flagged"): (DF, DF, DF, DF, DF),
+    ("failed", "not_flagged"): (DF, DF, DF, DF, DF),
+    ("failed", "incomplete"): (IF, IF, IF, IF, IF),
+}
+EXIT_CODE = {"flagged": 1, "not_flagged": 0, "incomplete": 2}
+
+
+def numbered(table):
+    """{number: (known, ml, rules, cell)} in the document's order."""
+    cells = [(known, ml, rules, table[known, ml][i])
+             for known in KNOWN for ml in ML_PATH for i, rules in enumerate(RULE_SETS)]  # fmt: skip
+    return dict(enumerate(cells, 1))
+
+
+class DecisionTableTests(DetectorFixture):
+    def test_the_45_combinations(self):
+        for n, (known, ml, rules, cell) in numbered(CURRENT).items():
+            with self.subTest(n=n, known=known, ml=ml, rules=rules):
+                result = RULE_SETS[rules]
+                report = self.scan_with(ML_PATH[ml], known_malicious=KNOWN[known](),
+                                        **({} if result is None else {"rules": Rules(result)}))  # fmt: skip
+                item = report["results"][0]
+                status, _, reason = cell.partition(":")
+                self.assertEqual((item["status"], item.get("reason")), (status, reason or None))
+                self.assertEqual(report["exit_code"], EXIT_CODE[status])
+                self.assertEqual(item["known_malicious"]["status"], known)
+                self.assertEqual(item["ml"]["status"], {"flagged": "hit", "not_flagged":
+                                 "not_hit"}.get(ml, "failed"))  # fmt: skip
+
+    def test_b_changes_exactly_two_cells(self):
+        before, now = numbered(BEFORE_B), numbered(CURRENT)
+        changed = {n: (before[n][3], now[n][3]) for n in now if before[n] != now[n]}
+        self.assertEqual(changed, {17: (F, DF), 22: (NF, DF)})
+        self.assertEqual([now[n][:3] for n in changed],
+                         [("not_hit", "flagged", "[hit,failed]"),
+                          ("not_hit", "not_flagged", "[hit,failed]")])  # fmt: skip
 
 
 class InputTests(DetectorFixture):
