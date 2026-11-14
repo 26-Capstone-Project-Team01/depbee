@@ -65,6 +65,8 @@ jobs:
           lock examples/project/package-lock.json
           fails lock 'examples\project\package-lock.json'
           fails lock -examples/project/package-lock.json
+          # A real LF, which $(dirname ...) would trim off a folder name (review F2).
+          fails lock $'examples/project\n/package-lock.json'
           printf 'synthetic' > "$RUNNER_TEMP/model.txt"
           fails run verify "$RUNNER_TEMP/model.txt" "$(printf '0%.0s' $(seq 64))"
           run verify "$RUNNER_TEMP/model.txt" "$(sha256sum "$RUNNER_TEMP/model.txt" | cut -d' ' -f1)"

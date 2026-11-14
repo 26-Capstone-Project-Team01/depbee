@@ -48,7 +48,7 @@ jobs:
 
 | 입력 | 기본값 | 내용 |
 |---|---|---|
-| `lockfile` | `package-lock.json` | 검사할 `package-lock.json`의 저장소 루트 기준 경로. 이름이 `package-lock.json`이어야 하고 workspace 안의 파일이어야 한다. 구분자는 `/`만 받고(`\`는 거부), `-`로 시작하는 경로 구성 요소도 받지 않는다. |
+| `lockfile` | `package-lock.json` | 검사할 `package-lock.json`의 저장소 루트 기준 경로. 이름이 `package-lock.json`이어야 하고 workspace 안의 파일이어야 한다. 구분자는 `/`만 받고(`\`는 거부), `-`로 시작하는 경로 구성 요소도 받지 않는다. 제어 문자(줄바꿈, 탭 등 U+0000~U+001F와 DEL)가 든 경로도 받지 않는다. |
 | `fail-on` | 빈 값 | 실패로 더할 조건. `ml-hit`(ML 위험 점수 기준 이상), `incomplete`(보류). 쉼표나 공백으로 구분한다. 그 밖의 값은 입력 오류다. |
 | `max-changes` | `20` | 바뀐 lockfile 항목이 이보다 많으면 검사하지 않고 실패한다. 양의 정수. |
 | `model-version` | 없음(필수) | `model.txt`·`manifest.json`이 첨부된 depbee Release의 태그. |

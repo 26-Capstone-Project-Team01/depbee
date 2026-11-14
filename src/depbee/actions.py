@@ -71,6 +71,9 @@ def parse_fail_on(text: str) -> set[str]:
 def _relative_file(value: str, what: str, workspace: Path) -> Path:
     # The shell steps pass this value unchanged to dirname, which on Linux keeps "\" in a name
     # and reads a leading "-" as an option: check exactly the path the shell will see.
+    # $(dirname ...) also drops trailing newlines, turning "app<LF>/..." into "app".
+    if any(char < " " or char == "\x7f" for char in value):
+        raise ActionError(f"{what} must not contain control characters: {value!r}")
     if "\\" in value:
         raise ActionError(f"{what} must use / as the path separator: {value!r}")
     path = PurePosixPath(value)

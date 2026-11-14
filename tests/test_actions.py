@@ -287,6 +287,31 @@ class InputsTest(unittest.TestCase):
             with self.subTest(value=value), self.assertRaisesRegex(actions.ActionError, message):
                 actions.check_inputs(self.env | {name: value}, self.tmp)
 
+    def test_paths_with_control_characters_are_rejected(self):
+        # Review F2: $(dirname -- "app<LF>/package-lock.json") drops the trailing LF and gives
+        # "app", so plan and scan would check another folder. Rejected before the file lookup.
+        cases = [
+            ("LOCKFILE", "app\n/package-lock.json"),
+            ("LOCKFILE", "app\r/package-lock.json"),
+            ("LOCKFILE", "app\t/package-lock.json"),
+            ("LOCKFILE", "app\x7f/package-lock.json"),
+            ("REPORT", "report.json\n"),
+            ("REPORT", "report\r.json"),
+        ]
+        for name, value in cases:
+            with self.subTest(value=value), self.assertRaisesRegex(actions.ActionError, "control"):
+                actions.check_inputs(self.env | {name: value}, self.tmp)
+        actions.check_inputs(self.env | {"LOCKFILE": "app/package-lock.json"}, self.tmp)
+
+    @unittest.skipIf(os.name == "nt", "Windows file names cannot contain LF")
+    def test_folder_ending_in_lf_next_to_its_trimmed_twin(self):
+        # Both app/ (from setUp) and "app<LF>" exist, the case where the shell would silently
+        # scan app/ instead of the requested lockfile.
+        (self.tmp / "app\n").mkdir()
+        (self.tmp / "app\n" / "package-lock.json").write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(actions.ActionError, "control"):
+            actions.check_inputs(self.env | {"LOCKFILE": "app\n/package-lock.json"}, self.tmp)
+
     def test_verify(self):
         model = self.tmp / "model.txt"
         model.write_bytes(b"synthetic model")
