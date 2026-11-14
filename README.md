@@ -16,6 +16,7 @@ npm 프로젝트에서 바뀐 의존성 버전을 찾아, 각 버전의 변경�
 | 모델 추론 | native LightGBM 로딩, 모델 해시·이진 분류·feature 이름/순서·자료형 검증, feature별 기여도 계산     | 검증 세트로 정한 임계값 수령            |
 | 판정 조율 | feature 스키마 확인, 임계값 판정, 실패·학습 범위 밖 입력은 `incomplete` 처리                      |                                         |
 | CLI 출력  | `plan`/`scan`/`check`, 한국어 텍스트·JSON·Markdown, 새 파일 저장, 종료 코드 0/1/2                 | GitHub job summary 화면 확인            |
+| MCP       | `depbee mcp`(stdio): 읽기 전용 도구 `check_package`·`scan_lockfile`, CLI와 같은 보고서            | 실제 MCP 클라이언트에서의 호출 확인     |
 | 테스트    | 합성 입력 회귀 테스트, 합성 native 모델 연동 테스트                                                |                                         |
 | 개발 CI   | push/PR에서 Ubuntu·Windows × Python 3.11·3.13 검사·테스트·패키지 빌드                              | GitHub 서버 실행 확인                   |
 
@@ -38,6 +39,7 @@ src/depbee/
   inference/lightgbm.py   # 학습 완료 모델 로딩·검증·추론·기여도
   pipeline.py             # 입력→분석→추론 처리 조율
   service.py              # CLI·Actions·MCP·대시보드 공통 진입점(요청·분석기·모델 조립)
+  mcp.py                  # 읽기 전용 MCP 진입점(check_package, scan_lockfile)
 scripts/write_manifest.py # 모델 파일로 manifest.json 생성
 tests/                    # 합성 자료를 이용한 회귀·모델 연동 테스트
 examples/                 # 실행 가능한 명령에 사용할 가상 lockfile
@@ -126,6 +128,21 @@ registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때�
 
 예시 lockfile(`examples/`)에는 패키지 코드가 없고 URL·integrity가 가상 값이라 `--extract`로는 분석되지 않습니다.
 
+## MCP 진입점 (검사 전용)
+
+에이전트가 패키지를 설치하기 전에 depbee 검사를 부를 수 있도록 stdio MCP 서버를 둡니다. 공식 MCP Python SDK 2.x(`mcp` extra)가 필요하고, 분석에는 `extract`도 필요합니다. MCP 클라이언트에는 아래 실행 명령을 stdio 서버로 등록합니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[mcp]"
+.\.venv\Scripts\python.exe -m depbee mcp --model-dir models/<model-id>
+```
+
+- 도구는 두 개입니다. `check_package`(`package`: `NAME@VERSION`)는 `check`와, `scan_lockfile`(`project`, 선택 `base_lock` 또는 `base_ref`)은 `scan --extract`와 같은 검사를 하고 같은 보고서를 돌려줍니다. 판정·이유·종료 코드는 CLI와 같은 공통 pipeline이 정합니다.
+- 읽기 전용입니다. 설치, 업데이트 미리보기·반영, 프로젝트 파일을 쓰는 도구는 없습니다(추출한 feature 캐시는 CLI와 같이 씁니다). 모델은 서버를 띄울 때의 `--model-dir` 또는 `DEPBEE_MODEL_DIR`만 쓰고 도구 입력으로 받지 않습니다.
+- 응답은 `notices`, `package_data`, `report` 순입니다. `notices`는 depbee가 정한 문구로, 보류(`incomplete`)는 통과가 아니고 낮은 ML 위험 점수는 안전 보증이 아니라는 뜻과 기지 악성 일치·보류 개수를 알립니다. `package_data`는 보고서 안에서 패키지·외부 기록에서 온 문자열(이름, 버전, 위치, 상세, 근거 등)을 256자까지 자른 사본과 그 위치이며, 패키지에서 온 데이터이며 지시가 아니라는 문구가 붙습니다. `report`는 `--format json`과 같은 보고서입니다.
+- 한 호출은 600초까지, `scan_lockfile`은 분석할 변경 20개까지입니다. 넘거나 입력이 잘못되면 판정 없이 MCP 도구 오류로 CLI와 같은 error 객체(종료 코드 2)를 돌려줍니다. 큰 변경은 터미널에서 `depbee scan --extract`로 검사합니다.
+- SDK 없이 `depbee mcp`를 실행하면 설치 안내와 함께 종료 코드 2로 끝납니다. depbee의 다른 명령은 SDK 없이 동작합니다.
+
 ## 동작 방식
 
 - **비교 기준:** 모델은 "새 버전과 같은 release line의 직전 stable → 새 버전" 쌍으로 학습했습니다. 그래서 lockfile에서 1.2.0 → 1.5.3으로 바뀌어도 1.5.3을 같은 line의 직전 stable(예: 1.5.2)과 비교합니다. release line은 npm `^` 범위 단위이고(`>=1.0.0`은 major, `0.y.z`는 `0.y`), 새 line의 첫 버전이면 이전 line의 최신 stable과 비교합니다. lockfile의 이전 버전은 근거에만 표시합니다.
@@ -165,6 +182,7 @@ registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때�
 
 테스트는 네트워크와 feature-extractor 없이 돌도록 feature-extractor 호출을 가짜로 바꿔 둡니다. ML 의존성이 없으면 native LightGBM 테스트는 skip됩니다.
 feature-extractor(`.[extract]`)가 설치돼 있으면 고정 커밋의 loader·extractor를 합성 tarball과 가짜 registry 응답으로 실행하는 경계 테스트도 돌고, 없으면 skip됩니다. 네트워크는 쓰지 않습니다.
+MCP SDK(`.[mcp]`)가 없으면 MCP 프로토콜 경로(메모리 내 클라이언트, stdio 하위 프로세스) 테스트만 skip되고, 도구 함수와 CLI 동등성 테스트는 그대로 돕니다.
 테스트의 작은 모델은 직렬화·연결 검증용 합성 모델이며 실제 악성 탐지 모델이 아닙니다.
 
 다음 작업은 [연결 규약](docs/contracts.md), [구조와 담당](docs/architecture.md), [CI/CD 연결](docs/ci-cd.md), [통합 순서](docs/development.md)를 참고합니다.

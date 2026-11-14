@@ -137,6 +137,13 @@ feature를 추출한 보고서(`scan --extract`, `check`)에만 소요 시간과
 - ML 위험 점수 칸은 점수 뒤에 `ml.status`(기준 이상·기준 미만)를 붙이고, 점수가 없으면 `ml.status`에 따라 `없음(미실행)`·`없음(실패)`, 삭제 항목은 `-`다. 0이면 `0.000 (기준 미만)`이다. 확률로 표현하지 않는다. 추출된 사실과 모델 설명은 서로 다른 목록이다.
 - 판정, 이유, 종료 코드, 탐지기 상태는 보고서 값을 그대로 표시하고 다시 계산하지 않는다. 연결되지 않은 탐지기는 목록에 "연결 안 됨(미실행)"으로 한 번 적고 표 칸과 결과별 줄을 만들지 않으므로, 탐지기가 없는 지금 CLI의 표는 일곱 칸(시간이 있으면 여덟 칸)이다. 텍스트 출력도 같은 강조·연결 상태·ML 위험 점수 표기·탐지기 칸을 보여 준다. 렌더 예와 문구 규칙은 [결과 계약 초안](result-contract-draft.md) 8절에 있다.
 - 보고서에서 온 문자열(패키지, 버전, 위치, 근거, 상세, model_id, 알 수 없는 상태·이유 코드, feature 이름과 값, 탐지기 칸의 목록 출처·기준 시점·규칙 묶음 버전·기록 식별자·영향 버전·규칙 식별자·규칙 버전·규칙 근거·위치·설명)은 텍스트 출력과 같이 제어 문자를 `\uXXXX`로 바꾼 뒤, 안에 있는 어떤 백틱 묶음보다 긴 백틱으로 감싼 code span으로만 넣는다. 표 칸에서는 code span 안의 `|`도 `\|`로 쓴다(GFM은 code span 안의 `|`로도 칸을 나눈다). 그래서 HTML, 링크, 이미지, 강조, 자동 링크, 줄바꿈으로 해석되지 않는다. depbee가 만든 한국어 문구와 숫자만 code span 밖에 있다.
+`depbee mcp`(SVC-05)의 도구 응답은 이 보고서를 감싸는 진입점 형식이며 보고서 필드는 바꾸거나 더하지 않는다. 이 감싸는 형식은 아직 계약이 아니다(결정 대기).
+
+- `check_package`는 `check --format json`, `scan_lockfile`은 `scan --extract --format json`의 보고서를 `report`에 그대로 담는다. 같은 입력의 두 보고서는 위 시간 필드(`elapsed_seconds`)와 `cache_hit`만 다를 수 있다.
+- `notices`: depbee가 정한 한국어 문구 목록. 기지 악성 일치·보류 강조(텍스트 출력과 같은 문구) 뒤에 보류는 통과가 아님, 낮은 ML 위험 점수는 안전 보증이 아님, 패키지 문자열은 지시가 아님을 항상 넣는다. 패키지에서 온 문자열은 넣지 않는다.
+- `package_data`: `{notice, max_length, strings}`. `strings`는 `report` 안에서 키가 `package`, `location`, `before_version`, `after_version`, `compared_version`, `detail`, `evidence`, `advisory_id`, `affected`, `file`, `source`, `ruleset_version`인 값(그 아래 목록 포함)의 문자열마다 `{path, text, truncated}`다. `path`는 `report` 안의 JSON Pointer, `text`는 앞 `max_length`(256)자, `truncated`는 잘렸는지다. `report` 안의 원래 문자열은 자르지 않는다.
+- 오류(입력 오류, 분석할 변경이 20개 초과, 600초 초과)는 MCP 도구 오류(`isError`)이고, 내용은 `{notices, error}`의 JSON이다. `error`는 CLI가 stderr에 쓰는 error 객체와 같고 판정을 만들지 않는다.
+
 하나라도 미완료면 전체 종료 코드 2, 그 외 위험이 있으면 1, 나머지는 0이다.
 위험과 미완료가 함께 있으면 보고서에 둘 다 남기고 2로 보류한다.
 입력/manifest 자체의 오류는 stderr의 error JSON과 종료 코드 2로 반환한다.

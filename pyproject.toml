@@ -17,6 +17,8 @@ extract = [
     "feature-extractor @ git+https://github.com/26-Capstone-Project-Team01/feature-extractor@c24761d26f44d93216e231462b5b1208d7a6a488",
 ]
 dev = ["ruff>=0.12,<1", "build>=1.2,<2"]
+# Read-only MCP entry point (depbee mcp); the depbee package itself never imports it.
+mcp = ["mcp>=2.3,<3"]
 
 [project.scripts]
 depbee = "depbee.cli:main"

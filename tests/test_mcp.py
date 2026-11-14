@@ -1,0 +1,430 @@
+"""MCP entry point (SVC-05): the CLI's report through two read-only tools.
+
+Equivalence with the CLI is checked without fixed verdicts: the same synthetic input goes to
+cli.main(--format json) and to the tool, and their reports must be equal apart from the times.
+Synthetic only: FakeBackend stands in for feature-extractor and the registry, the detectors and
+the predictor are fakes; no network, no package code. The protocol tests need the [mcp] extra.
+"""
+
+import contextlib
+import copy
+import functools
+import importlib.util
+import io
+import json
+import os
+import sys
+import threading
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from test_detectors import ADVISORY, KnownList, Rules, rule
+from test_extract import INTEGRITY, FakeBackend, PackagePredictor, packument
+from test_markdown import HOSTILE
+from test_workflow import Fixture
+
+from depbee import mcp
+from depbee.cli import main
+from depbee.contracts import GuardError
+from depbee.pipeline import scan
+
+SDK = importlib.util.find_spec("mcp") is not None
+NO_SDK = "MCP SDK (extra [mcp]) not installed; the MCP protocol path is not tested here"
+TIMES = {
+    "1.0.0": "2026-01-01T00:00:00Z",
+    "1.0.1": "2026-01-02T00:00:00Z",
+    "1.1.0": "2026-01-03T00:00:00Z",
+    "1.2.0-beta.1": "2026-01-04T00:00:00Z",
+}
+
+
+def entry(name, version):
+    tarball = f"https://registry.npmjs.org/{name}/-/{name}-{version}.tgz"
+    return {"version": version, "resolved": tarball, "integrity": INTEGRITY}
+
+
+def untimed(report):
+    """The report without elapsed_seconds, which differ between runs (contracts.md 4)."""
+    rows = [{k: v for k, v in row.items() if k != "elapsed_seconds"} for row in report["results"]]
+    return {**{k: v for k, v in report.items() if k != "elapsed_seconds"}, "results": rows}
+
+
+def pointer(report, path):
+    for part in path.split("/")[1:]:
+        part = part.replace("~1", "/").replace("~0", "~")
+        report = report[int(part)] if isinstance(report, list) else report[part]
+    return report
+
+
+class Backend(FakeBackend):
+    """One packument per name; features from scores, None for an extraction failure."""
+
+    def __init__(self, scores):
+        super().__init__(None)
+        self.scores = scores
+
+    def fetch_packument(self, name):
+        self.fetched.append(name)
+        return packument(dict(TIMES), name=name)
+
+    def extract(self, name, old, new, doc, local):
+        self.calls.append((name, old, new, local))
+        if self.scores[name] is None:
+            raise GuardError("synthetic extraction failure")
+        return {"signal": self.scores[name], "obfChangedFileCount": 2}, doc["versions"][new]
+
+
+class Listed(KnownList):
+    """Known malicious hit for low (low score) and broken (ML failed); fails for zeta."""
+
+    def match(self, name, version):
+        if name == "zeta":
+            raise RuntimeError("synthetic list failure")
+        return [dict(ADVISORY)] if name in ("low", "broken") else []
+
+
+class MixedRules(Rules):
+    """A crash for high, a hit with a failed rule for example, not_hit otherwise."""
+
+    def check(self, change, analysis):
+        name = change["after"]["name"]
+        if name == "high":
+            raise RuntimeError("synthetic rule engine crash")
+        return [rule("hit"), rule("failed", "R2", detail="timeout")] if name == "example" else [
+            rule()]  # fmt: skip
+
+
+class MCPFixture(Fixture):
+    def setUp(self):
+        super().setUp()
+        self.scores = {"example": 0.1}
+        self.backend = Backend(self.scores)
+        for patcher in (
+            mock.patch("depbee.analysis.extractor.FeatureExtractorBackend",
+                       side_effect=lambda: self.backend),
+            mock.patch("depbee.service.LightGBMPredictor", side_effect=lambda _: PackagePredictor()),
+        ):  # fmt: skip
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def mixed(self):
+        """Flagged, not_flagged, analysis failed, removed and unanalyzable changes."""
+        self.scores.update(high=0.95, low=0.1, zeta=0.3, broken=None)
+        for name in ("high", "low", "zeta", "broken", "gone"):
+            self.old["packages"][f"node_modules/{name}"] = entry(name, "1.0.0")
+            if name != "gone":
+                self.new["packages"][f"node_modules/{name}"] = entry(name, "1.1.0")
+        self.old["packages"]["node_modules/x"] = {**entry("x", "1.0.0"), "name": "x"}
+        self.new["packages"]["node_modules/x"] = {**entry("x", "1.0.0"), "name": "y",
+                                                  "resolved": "https://[::1"}  # fmt: skip
+        self.save_locks()
+
+    @staticmethod
+    def detectors(known=None, rules=None):
+        """service.scan with these detectors, for both the CLI and the tools."""
+        return mock.patch(
+            "depbee.service.scan", functools.partial(scan, known_malicious=known, rules=rules)
+        )
+
+    def cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def assert_same(self, code, out, err, response):
+        """CLI (main, JSON) and tool give one report or one error; nothing is recomputed."""
+        if code == 2 and not out:
+            self.assertEqual(response["error"], json.loads(err))
+            self.assertNotIn("report", response)
+            return None
+        report = json.loads(out)
+        mine = response["report"]
+        self.assertEqual(code, report["exit_code"])
+        self.assertEqual(mine["exit_code"], report["exit_code"])
+        self.assertEqual(
+            [(r["status"], r.get("reason")) for r in mine["results"]],
+            [(r["status"], r.get("reason")) for r in report["results"]],
+        )
+        self.assertEqual(untimed(mine), untimed(report))
+        self.assertEqual(err, "")
+        return mine
+
+
+class ScanEquivalenceTests(MCPFixture):
+    def run_both(self, model=True):
+        model_args = ["--model-dir", "m"] if model else []
+        code, out, err = self.cli("scan", str(self.project), "--base-lock", str(self.base),
+                                  "--extract", "--format", "json", *model_args)  # fmt: skip
+        response = mcp.scan_lockfile(str(self.project), str(self.base),
+                                     model_dir=Path("m") if model else None)  # fmt: skip
+        return self.assert_same(code, out, err, response)
+
+    def test_scan_lockfile_reports_what_cli_scan_extract_reports(self):
+        seen = {"status": set(), "exit_code": set(), "known": set(), "rules": set(), "ml": set()}
+        runs = [("passed", 0.1, False, None), ("flagged", 0.9, False, None),
+                ("mixed", 0.1, True, None), ("mixed, no model", 0.1, True, None),
+                ("mixed, detectors", 0.1, True, (Listed(), MixedRules())),
+                ("mixed, failing list", 0.1, True, (KnownList(error=RuntimeError("down")), None))]  # fmt: skip
+        for label, score, mixed, detectors in runs:
+            with self.subTest(label), self.detectors(*(detectors or ())):
+                self.scores["example"] = score
+                if mixed:
+                    self.mixed()
+                report = self.run_both(model="no model" not in label)
+                seen["exit_code"].add(report["exit_code"])
+                for row in report["results"]:
+                    seen["status"].add(row["status"])
+                    seen["known"].add(row["known_malicious"]["status"])
+                    seen["rules"].add(row["rules"]["status"])
+                    seen["ml"].add(row["ml"]["status"])
+        # The inputs reach every kind of result, so the comparison above is not vacuous.
+        self.assertEqual(seen["status"], {"flagged", "not_flagged", "incomplete", "removed"})
+        self.assertEqual(seen["exit_code"], {0, 1, 2})
+        self.assertLessEqual({"hit", "not_hit", "failed", "not_run"}, seen["known"])
+        self.assertLessEqual({"hit", "not_hit", "failed", "not_run"}, seen["rules"])
+        self.assertEqual(seen["ml"], {"hit", "not_hit", "failed", "not_run"})
+
+    def test_known_malicious_hit_stays_with_a_low_or_missing_score(self):
+        self.mixed()
+        with self.detectors(Listed(), MixedRules()):
+            response = mcp.scan_lockfile(str(self.project), str(self.base), model_dir=Path("m"))
+        rows = {row["package"]: row for row in response["report"]["results"]}
+        for name in ("low", "broken"):  # a low score; an ML path that failed
+            self.assertEqual(rows[name]["known_malicious"]["status"], "hit")
+            self.assertEqual(rows[name]["status"], "flagged")
+        self.assertIn("경고: 기지 악성 기록 일치 2개. 낮은 ML 위험 점수는 이 경고를 취소하지 않습니다. "
+                      "이 일치로 위험 판정했습니다.", response["notices"])  # fmt: skip
+
+    def test_errors_are_the_cli_error_objects(self):
+        missing = self.root / "no-such-project"
+        for project, base, base_ref in ((missing, self.base, None), (self.project, None, "-x"),
+                                        (self.project, self.base, "HEAD")):  # fmt: skip
+            with self.subTest(project=project.name, base_ref=base_ref):
+                argv = ["scan", str(project), "--extract", "--format", "json"]
+                argv += ["--base-lock", str(base)] if base else []
+                argv += [f"--base-ref={base_ref}"] if base_ref else []
+                tool = functools.partial(mcp.scan_lockfile, str(project),
+                                         str(base) if base else None, base_ref)  # fmt: skip
+                if base and base_ref:  # argparse refuses both; the service refuses them too
+                    self.assertEqual(tool()["error"]["status"], "error")
+                    continue
+                self.assert_same(*self.cli(*argv), tool())
+
+
+class CheckEquivalenceTests(MCPFixture):
+    def setUp(self):
+        super().setUp()
+        self.doc = packument(dict(TIMES))
+        self.single = FakeBackend(self.doc, features={"signal": 0.2, "obfChangedFileCount": 2})
+        self.backend = self.single
+
+    def run_both(self, spec, model=True):
+        code, out, err = self.cli("check", spec, "--format", "json",
+                                  *(["--model-dir", "m"] if model else []))  # fmt: skip
+        response = mcp.check_package(spec, model_dir=Path("m") if model else None)
+        return self.assert_same(code, out, err, response)
+
+    def test_check_package_reports_what_cli_check_reports(self):
+        failure = GuardError("synthetic extraction failure")
+        statuses = set()
+        for label, spec, model, change in (
+            ("passed", "example@1.1.0", True, {}),
+            ("flagged", "example@1.1.0", True, {"features": {"signal": 0.9,
+                                                             "obfChangedFileCount": 2}}),
+            ("model missing", "example@1.1.0", False, {}),
+            ("prerelease", "example@1.2.0-beta.1", True, {}),
+            ("extraction failed", "example@1.1.0", True, {"extract": mock.Mock(side_effect=failure)}),
+            ("no baseline", "example@1.1.0", True, {"doc": packument({"1.1.0": TIMES["1.1.0"]})}),
+            ("not NAME@VERSION", "example", True, {}),
+            ("range", "example@^1.1.0", True, {}),
+        ):  # fmt: skip
+            patched = (
+                mock.patch.multiple(self.single, **change) if change else contextlib.nullcontext()
+            )
+            with self.subTest(label), patched:
+                report = self.run_both(spec, model)
+                if report:
+                    statuses.add(report["results"][0]["status"])
+        self.assertEqual(statuses, {"flagged", "not_flagged", "incomplete"})
+
+    def test_detectors_through_check(self):
+        for known, rules in ((KnownList((ADVISORY,)), Rules()),
+                             (KnownList(), Rules(error=RuntimeError("crashed"))),
+                             (KnownList((ADVISORY,)), Rules(error=RuntimeError("crashed")))):  # fmt: skip
+            with self.subTest(known=known.result, rules=rules.error), self.detectors(known, rules):
+                self.run_both("example@1.1.0")
+
+
+class ResponseTests(MCPFixture):
+    def test_notices_are_fixed_sentences_present_in_every_response(self):
+        self.mixed()
+        response = mcp.scan_lockfile(str(self.project), str(self.base), model_dir=Path("m"))
+        for notice in mcp.NOTICES:
+            self.assertIn(notice, response["notices"])
+        self.assertIn("보류(incomplete, 종료 코드 2)는 통과가 아닙니다.", mcp.NOTICES[0])
+        self.assertIn("낮은 점수나 '통과'는 패키지가 안전하다는 보증이 아닙니다.", mcp.NOTICES[1])
+        self.assertIn("보류 2개. 검사를 끝내지 못한 항목이며 통과가 아닙니다.", response["notices"])
+        self.assertEqual(list(response), ["notices", "package_data", "report"])
+        error = mcp.check_package("example")
+        self.assertEqual(error["notices"], [mcp.ERROR_NOTICE])
+
+    def test_package_strings_are_cut_copies_and_the_report_is_unchanged(self):
+        self.mixed()
+        with self.detectors(Listed(), MixedRules()):
+            plain = mcp.scan_lockfile(str(self.project), str(self.base), model_dir=Path("m"))
+        data = plain["package_data"]
+        self.assertEqual((data["notice"], data["max_length"]),
+                         (mcp.PACKAGE_DATA_NOTICE, mcp.MAX_TEXT))  # fmt: skip
+        paths = {item["path"] for item in data["strings"]}
+        for item in data["strings"]:
+            self.assertEqual(item["text"], pointer(plain["report"], item["path"]))
+        for index in range(len(plain["report"]["results"])):
+            for key in ("package", "location"):
+                self.assertIn(f"/results/{index}/{key}", paths)
+        self.assertTrue(any("/known_malicious/matches/" in p and p.endswith("/advisory_id")
+                            for p in paths))  # fmt: skip
+        self.assertTrue(any("/rules/checks/" in p and "/evidence/" in p for p in paths))
+        self.assertIn("/detectors/known_malicious/source", paths)
+        self.assertNotIn("/results/0/status", paths)
+        for text in [*HOSTILE, "x" * (mcp.MAX_TEXT + 1), "~/" * mcp.MAX_TEXT]:
+            with self.subTest(text=text[:20]):
+                report = copy.deepcopy(plain["report"])
+                report["results"][0].update(package=text, detail=text, evidence=[text])
+                with mock.patch("depbee.service.scan_project", return_value=copy.deepcopy(report)):
+                    response = mcp.scan_lockfile(str(self.project))
+                self.assertEqual(response["report"], report)  # the contract report, as it is
+                self.assertEqual(response["notices"], plain["notices"])  # no package text there
+                cut = [i for i in response["package_data"]["strings"] if i["path"] in
+                       ("/results/0/package", "/results/0/detail", "/results/0/evidence/0")]  # fmt: skip
+                self.assertEqual(len(cut), 3)
+                for item in cut:
+                    self.assertEqual(item["text"], text[: mcp.MAX_TEXT])
+                    self.assertEqual(item["truncated"], len(text) > mcp.MAX_TEXT)
+
+    def test_package_limit_stops_before_any_registry_access(self):
+        self.mixed()
+        analyzable = 5  # example, high, low, zeta, broken
+        with mock.patch.object(mcp, "MAX_PACKAGES", analyzable - 1):
+            response = mcp.scan_lockfile(str(self.project), str(self.base), model_dir=Path("m"))
+        self.assertIn(f"{analyzable} changed packages", response["error"]["error"])
+        self.assertEqual((self.backend.fetched, self.backend.calls), ([], []))
+        with mock.patch.object(mcp, "MAX_PACKAGES", analyzable):
+            response = mcp.scan_lockfile(str(self.project), str(self.base), model_dir=Path("m"))
+        self.assertEqual(len(self.backend.calls), analyzable)
+        self.assertEqual(response["report"]["exit_code"], 2)
+        self.assertEqual(mcp.MAX_PACKAGES, 20)
+
+    def test_a_late_call_is_an_error_without_a_verdict(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def stuck(*args, **kwargs):
+            release.wait(10)
+            return {"exit_code": 0}
+
+        with mock.patch.object(mcp, "TOOL_SECONDS", 0.05), \
+                mock.patch("depbee.service.check_package", side_effect=stuck):  # fmt: skip
+            response = mcp.check_package("example@1.1.0")
+        self.assertEqual(response["error"]["exit_code"], 2)
+        self.assertIn("did not finish within 0.05 s; no verdict", response["error"]["error"])
+        self.assertNotIn("report", response)
+
+    def test_service_errors_become_error_objects_and_bugs_are_not_hidden(self):
+        for exc in (OSError("disk"), ValueError("bad"), RecursionError("deep"), GuardError("g")):
+            with (
+                self.subTest(type(exc).__name__),
+                mock.patch("depbee.service.check_package", side_effect=exc),
+            ):
+                self.assertEqual(mcp.check_package("example@1.1.0")["error"],
+                                 {"status": "error", "exit_code": 2, "error": str(exc)})  # fmt: skip
+        with mock.patch("depbee.service.check_package", side_effect=KeyError("bug")):
+            with self.assertRaises(KeyError):
+                mcp.check_package("example@1.1.0")
+
+    def test_tools_write_no_project_files(self):
+        self.mixed()
+
+        def files():
+            return {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+
+        before = files()
+        mcp.scan_lockfile(str(self.project), str(self.base), model_dir=Path("m"))
+        mcp.check_package("example@1.1.0", model_dir=Path("m"))
+        self.assertEqual(files(), before)
+
+
+class WithoutSDKTests(unittest.TestCase):
+    def test_depbee_mcp_without_the_sdk_says_how_to_install_it(self):
+        out, err = io.StringIO(), io.StringIO()
+        # Every SDK module, also those other tests imported: none of them can be imported now.
+        hidden = {name: None for name in sys.modules if name.split(".")[0] in ("mcp", "mcp_types")}
+        with mock.patch.dict(sys.modules, {**hidden, "mcp": None}), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):  # fmt: skip
+            code = main(["mcp"])
+        self.assertEqual((code, out.getvalue()), (2, ""))
+        error = json.loads(err.getvalue())
+        self.assertEqual(error["status"], "error")
+        self.assertIn('pip install -e ".[mcp]"', error["error"])
+        self.assertNotIn("Traceback", err.getvalue())
+
+
+@unittest.skipUnless(SDK, NO_SDK)
+class ProtocolTests(MCPFixture):
+    def call(self, server_or_params, *calls):
+        import anyio
+        from mcp import Client
+
+        async def run():
+            async with Client(server_or_params) as client:
+                listed = await client.list_tools()
+                return listed.tools, [await client.call_tool(n, a) for n, a in calls]
+
+        return anyio.run(run)
+
+    def test_tools_are_the_two_read_only_ones(self):
+        tools, _ = self.call(mcp.build_server())
+        self.assertEqual(sorted(t.name for t in tools), ["check_package", "scan_lockfile"])
+        schemas = {t.name: set(t.input_schema["properties"]) for t in tools}
+        self.assertEqual(schemas, {"check_package": {"package"},
+                                   "scan_lockfile": {"project", "base_lock", "base_ref"}})  # fmt: skip
+        for tool in tools:
+            self.assertEqual((tool.annotations.read_only_hint, tool.annotations.destructive_hint),
+                             (True, False))  # fmt: skip
+
+    def test_in_memory_client_gets_the_cli_report(self):
+        self.mixed()
+        with self.detectors(Listed(), MixedRules()):
+            code, out, err = self.cli("scan", str(self.project), "--base-lock", str(self.base),
+                                      "--extract", "--model-dir", "m", "--format", "json")  # fmt: skip
+            _, (scanned, failed) = self.call(
+                mcp.build_server(Path("m")),
+                ("scan_lockfile", {"project": str(self.project), "base_lock": str(self.base)}),
+                ("check_package", {"package": "example"}),
+            )
+        self.assertFalse(scanned.is_error)
+        self.assert_same(code, out, err, json.loads(scanned.content[0].text))
+        self.assertTrue(failed.is_error)
+        text = failed.content[0].text
+        _, cli_out, cli_err = self.cli("check", "example", "--format", "json")
+        self.assertEqual(json.loads(text[text.index("{") :])["error"], json.loads(cli_err))
+
+    def test_stdio_subprocess_serves_the_tools(self):
+        from mcp.client.stdio import StdioServerParameters
+
+        src = str(Path(__file__).resolve().parents[1] / "src")
+        params = StdioServerParameters(
+            command=sys.executable, args=["-m", "depbee", "mcp"], cwd=str(self.root),
+            env={"PYTHONPATH": src, "TMP": os.environ.get("TMP", ""),
+                 "TEMP": os.environ.get("TEMP", "")},
+        )  # fmt: skip
+        # An invalid spec is refused before any network access in the child.
+        tools, (result,) = self.call(params, ("check_package", {"package": "example@latest"}))
+        self.assertEqual(sorted(t.name for t in tools), ["check_package", "scan_lockfile"])
+        self.assertTrue(result.is_error)
+        self.assertIn("exact version", result.content[0].text)
+
+
+if __name__ == "__main__":
+    unittest.main()

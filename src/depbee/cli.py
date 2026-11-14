@@ -154,7 +154,21 @@ def _parser() -> argparse.ArgumentParser:
     check.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
     check.add_argument("--format", choices=FORMATS, default="text")
     _cache_arguments(check)
+    serve = commands.add_parser(
+        "mcp",
+        help="Serve the read-only check_package and scan_lockfile tools over MCP stdio "
+        "(needs .[mcp] and, to analyze, .[extract])",
+    )
+    serve.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
     return parser
+
+
+def _split_package(spec: str) -> tuple[str, str]:
+    """NAME@VERSION as check takes it (CLI and MCP); the service checks the two parts."""
+    name, at, version = spec.rpartition("@")
+    if not at or not name:
+        raise GuardError(f"check needs NAME@VERSION, e.g. lodash@4.17.21: {spec!r}")
+    return name, version
 
 
 def _clean(value: object) -> str:
@@ -509,6 +523,11 @@ def _emit(report: dict, args: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.command == "mcp":
+            from .mcp import serve
+
+            serve(args.model_dir)
+            return 0
         # Refuse a taken --output before any download or extraction; _emit's "x" mode still
         # guards against a file created meanwhile. Same error text as that open().
         if args.output is not None and args.output.exists():
@@ -523,9 +542,7 @@ def main(argv: list[str] | None = None) -> int:
                 sys.stderr.reconfigure(errors="backslashreplace")
             progress = _progress
         if args.command == "check":
-            name, at, version = args.package.rpartition("@")
-            if not at or not name:
-                raise GuardError(f"check needs NAME@VERSION, e.g. lodash@4.17.21: {args.package!r}")
+            name, version = _split_package(args.package)
             report = check_package(
                 name,
                 version,
