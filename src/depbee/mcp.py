@@ -42,6 +42,8 @@ MAX_PACKAGES = 20
 MAX_TEXT = 256
 # Links followed in one path input (as POSIX SYMLOOP_MAX), so a loop ends in an error.
 MAX_LINKS = 40
+# Windows reparse tag bit of tags that name another path (IsReparseTagNameSurrogate).
+NAME_SURROGATE = 0x20000000
 # The prefix os.readlink puts on a local Windows target (\\?\C:\... or \??\C:\...); without it the
 # drive path is checked like an input. \\?\UNC\... and other forms keep it and are refused.
 _READLINK_DRIVE = re.compile(r"\A(?:\\\\\?\\|\\\?\?\\)(?=[A-Za-z]:\\)")
@@ -147,23 +149,34 @@ def _require(path: Path, kind, name: str, what: str) -> None:
 
 def _unlinked(path: Path, name: str) -> Path | None:
     """path with each link in it (symlink; on Windows also junction) replaced by its target, or
-    None if a part does not exist. Each part is looked at with lstat, which never follows a link
-    (on Windows it opens a name-surrogate reparse point itself), and a link is read with
-    readlink, which does not open its target; a target that is a share or device is refused
-    like an input, so nothing behind it is touched. Local links stay allowed."""
+    None if a part of the input itself does not exist (the service then gives the CLI's error).
+    Each part is looked at with lstat, which never follows a link (on Windows it opens a
+    name-surrogate reparse point itself), and a link is read with readlink, which does not open
+    its target; a target that is a share or device is refused like an input, so nothing behind
+    it is touched. A link whose target cannot be looked at (missing, or not a path at all, such
+    as Linux's pipe:[123] for /proc/self/fd/0) is refused, not taken for a missing input. Local
+    links stay allowed."""
     whole = Path(os.path.abspath(path)) if os.name == "nt" else Path.cwd() / path
-    current, pending, links = Path(whole.anchor), list(whole.parts[1:]), 0
+    # Each part with whether it came from a link's target rather than from the input.
+    current, links = Path(whole.anchor), 0
+    pending = [(part, False) for part in whole.parts[1:]]
     while pending:
-        part = pending.pop(0)
+        part, from_link = pending.pop(0)
         if part == "..":  # POSIX keeps it: it applies to the link's target, not the link
             current = current.parent
             continue
         candidate = current / part
         try:
             mode = os.lstat(candidate)
-        except FileNotFoundError:
-            return None
-        if not (stat.S_ISLNK(mode.st_mode) or getattr(mode, "st_reparse_tag", 0)):
+        except OSError as exc:
+            if from_link:
+                raise GuardError(
+                    f"{name} goes through a link whose target cannot be found"
+                ) from exc
+            if isinstance(exc, FileNotFoundError):
+                return None
+            raise
+        if not _is_link(mode):
             current = candidate
             continue
         links += 1
@@ -174,11 +187,20 @@ def _unlinked(path: Path, name: str) -> Path | None:
         except (OSError, ValueError) as exc:
             raise GuardError(f"{name} goes through a link depbee cannot read") from exc
         target = _local_path(_READLINK_DRIVE.sub("", text), f"{name} (through a link)")
+        parts = target.parts[1:] if target.is_absolute() else target.parts
         if target.is_absolute():
-            current, pending = Path(target.anchor), [*target.parts[1:], *pending]
-        else:
-            pending = [*target.parts, *pending]
+            current = Path(target.anchor)
+        pending = [*((part, True) for part in parts), *pending]
     return current
+
+
+def _is_link(mode: os.stat_result) -> bool:
+    """A symlink, or on Windows a name-surrogate reparse point (symlink, junction): one that
+    names another path. Other reparse points (such as Cloud Files placeholders) are plain files
+    and folders here."""
+    return stat.S_ISLNK(mode.st_mode) or bool(
+        (getattr(mode, "st_reparse_tag", 0) or 0) & NAME_SURROGATE
+    )
 
 
 def _limit(index: int, total: int, change: dict) -> None:

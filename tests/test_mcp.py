@@ -16,6 +16,7 @@ import os
 import stat
 import sys
 import threading
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -569,6 +570,71 @@ class ResponseTests(MCPFixture):
         report = self.assert_same(code, out, err,
                                   mcp.scan_lockfile(str(link), str(self.base), model_dir=Path("m")))  # fmt: skip
         self.assertTrue(report["results"])
+        # A missing file past a real link is still a missing input: the CLI's error.
+        missing = str(link / "nope.json")
+        self.assert_same(*self.cli("scan", str(self.project), "--base-lock", missing, "--extract",
+                                   "--format", "json"),
+                         mcp.scan_lockfile(str(self.project), missing))  # fmt: skip
+
+    def test_links_whose_targets_cannot_be_looked_at_are_refused(self):
+        # PR-14-FIX R3 (Sol m1): not taken for a missing input, so the kind check is not skipped.
+        targets = ["pipe:[123]", "missing-target.json", str(self.root / "gone" / "x.json")]
+        places = {
+            "base_lock": (self.root / "base-link.json", (str(self.project), "{link}")),
+            "lockfile": (self.project / "package-lock.json", (str(self.project), str(self.base))),
+            "project folder": (self.root / "project-link", ("{link}", str(self.base))),
+        }
+        for target in targets:
+            for place, (link, args) in places.items():
+                lstat, readlink, follow = self.links({link: target})
+                args = [a.replace("{link}", str(link)) for a in args]
+                with self.subTest(place=place, target=target), \
+                        mock.patch("os.lstat", lstat), mock.patch("os.readlink", readlink), \
+                        mock.patch("pathlib.Path.stat", autospec=True, side_effect=follow), \
+                        mock.patch("depbee.service.scan_project") as service:  # fmt: skip
+                    response = mcp.scan_lockfile(*args)
+                    service.assert_not_called()
+                self.assertIn("link whose target cannot be found", response["error"]["error"])
+        if Path("/proc/self/fd").is_dir():  # Linux: the real case, a pipe's fd link
+            read, write = os.pipe()
+            self.addCleanup(os.close, read)
+            self.addCleanup(os.close, write)
+            self.assertTrue(os.readlink(f"/proc/self/fd/{read}").startswith("pipe:"))
+            response = mcp.scan_lockfile(str(self.project), f"/proc/self/fd/{read}")
+            self.assertIn("link whose target cannot be found", response["error"]["error"])
+
+    def test_only_name_surrogate_reparse_points_are_links(self):
+        # PR-14-FIX R3 (Sol m2): a Cloud Files style tag on a plain file or folder is not a link.
+        real_lstat = os.lstat
+        cloud = 0x9000001A  # IO_REPARSE_TAG_CLOUD_A style: no name-surrogate bit
+
+        def tagged(modes):
+            def lstat(path, *a, **k):
+                found = real_lstat(path, *a, **k)
+                tag = modes.get(Path(path))
+                if tag is None:
+                    return found
+                # The two fields _unlinked reads (POSIX stat_result has no st_reparse_tag).
+                return types.SimpleNamespace(st_mode=found.st_mode, st_reparse_tag=tag)
+
+            return lstat
+
+        never = mock.Mock(side_effect=AssertionError("readlink on a plain reparse point"))
+        code, out, err = self.cli("scan", str(self.project), "--base-lock", str(self.base),
+                                  "--extract", "--format", "json", "--model-dir", "m")  # fmt: skip
+        modes = {self.base: cloud, self.project: cloud, self.root: cloud}  # file, folders
+        with mock.patch("os.lstat", tagged(modes)), mock.patch("os.readlink", never):
+            response = mcp.scan_lockfile(str(self.project), str(self.base), model_dir=Path("m"))
+        self.assert_same(code, out, err, response)
+        never.assert_not_called()
+        # Name surrogates (symlink 0xA000000C, junction 0xA0000003) are links whatever the mode.
+        for tag in (0xA000000C, 0xA0000003):
+            with self.subTest(tag=hex(tag)), mock.patch("os.lstat", tagged({self.base: tag})), \
+                    mock.patch("os.readlink", return_value="\\\\server\\share\\x.json"), \
+                    mock.patch("depbee.service.scan_project") as service:  # fmt: skip
+                response = mcp.scan_lockfile(str(self.project), str(self.base))
+                service.assert_not_called()
+            self.assertIn("not a network share or device path", response["error"]["error"])
 
     def test_the_readlink_prefix_of_a_local_windows_target_is_dropped_and_no_other(self):
         for text, kept in (("\\\\?\\C:\\x\\lock.json", "C:\\x\\lock.json"),
