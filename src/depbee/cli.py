@@ -35,7 +35,30 @@ REASON_LABELS = {
     "unsupported_registry_source": "npm 공식 registry가 아닌 출처",
     "missing_integrity": "lockfile에 integrity 없음",
     "same_version_artifact_changed": "같은 버전인데 파일 출처·해시가 바뀜",
+    "detection_failed": "연결된 탐지기 실패",
 }
+# Detector slots (docs/result-contract-draft.md 3.2, 3.3); their reasons are a separate namespace.
+RULE_STATUS_LABELS = {"hit": "적중", "not_hit": "미적중", "not_run": "미실행", "failed": "실패"}
+KNOWN_STATUS_LABELS = {**RULE_STATUS_LABELS, "hit": "일치"}
+DETECTOR_REASON_LABELS = {
+    "detector_not_configured": "탐지기 연결 안 됨",
+    "not_installed_in_head": "현재 lockfile에서 삭제됨",
+    "not_analyzable": "분석 대상이 아닌 변경",
+    "analyzer_not_configured": "분석기 연결 안 됨",
+    "analysis_unsupported": "분석기가 지원하지 않는 변경",
+    "input_failed": "탐지기 입력을 얻지 못함",
+    "detector_failed": "탐지기 실패",
+}
+MATCH_KIND_LABELS = {"listed_version": "버전 목록에 있음", "affected_range": "영향 범위에 들어감"}
+AGREEMENT_LABELS = {
+    "both_hit": "둘 다 적중",
+    "rule_only": "규칙만 적중(불일치)",
+    "ml_only": "ML 위험 점수만 기준 이상(불일치)",
+    "neither_hit": "둘 다 미적중(정상 판정이 아님)",
+    "undetermined": "판단하지 않음(규칙이나 ML이 미실행 또는 실패)",
+}
+ML_LABELS = {"hit": "기준 이상", "not_hit": "기준 미만", "not_run": "미실행", "failed": "실패"}
+NOT_CONFIGURED = "연결 안 됨(미실행)"
 FEATURE_LABELS = {
     "installScriptPresent": "새 버전에 설치 스크립트 있음",
     "installScriptAdded": "설치 스크립트 추가",
@@ -177,6 +200,94 @@ def _summary(results: list[dict], package_input: bool) -> str:
     return text + (f", 삭제 {counts['removed']}" if counts["removed"] else "")
 
 
+# The helpers below only read the report: status, reason and exit_code come from pipeline.scan().
+# esc and label are _clean/_text_label for text and _md/_md_label for Markdown.
+
+
+def _text_label(labels: dict, value: object) -> str:
+    return labels[value] if value in labels else _clean(value)
+
+
+def _notices(report: dict) -> list[tuple[str, str]]:
+    """Emphasized notices ahead of the results: known malicious matches, then unfinished items."""
+    rows = report["results"]
+    known = sum((row.get("known_malicious") or {}).get("status") == "hit" for row in rows)
+    pending = sum(row["status"] == "incomplete" for row in rows)
+    notices = []
+    if known:
+        notices.append((
+            f"경고: 기지 악성 기록 일치 {known}개.",
+            "낮은 ML 위험 점수는 이 경고를 취소하지 않습니다. 이 일치로 위험 판정했습니다.",
+        ))  # fmt: skip
+    if pending:
+        notices.append((f"보류 {pending}개.", "검사를 끝내지 못한 항목이며 통과가 아닙니다."))
+    return notices
+
+
+def _detector_setup(report: dict, esc) -> list[str]:
+    """Which detectors besides the model ran; an unconnected one is said here, not per result."""
+    if "detectors" not in report:
+        return []
+    known, rules = report["detectors"]["known_malicious"], report["detectors"]["rules"]
+    return [
+        "기지 악성 목록: "
+        + (f"{esc(known['source'])}, 기준 시점 {esc(known['list_as_of'])}" if known
+           else NOT_CONFIGURED),
+        "규칙: " + (esc(rules["ruleset_version"]) if rules else NOT_CONFIGURED),
+    ]  # fmt: skip
+
+
+def _ml_score(row: dict) -> str | None:
+    """The ML risk score with the ML path's own status (contract 4.1); not a probability."""
+    status = (row.get("ml") or {}).get("status")
+    if row["score"] is not None:
+        return f"{row['score']:.3f}" + (f" ({ML_LABELS[status]})" if status in ML_LABELS else "")
+    if row["status"] != "removed" and status in ("not_run", "failed"):
+        return f"없음({ML_LABELS[status]})"
+    return None
+
+
+def _slot(slot: dict, labels: dict, esc, label) -> str:
+    text = label(labels, slot["status"])
+    if slot.get("reason"):
+        text += f" ({label(DETECTOR_REASON_LABELS, slot['reason'])})"
+    if slot.get("detail"):
+        text += f", 상세: {esc(slot['detail'])}"
+    return text
+
+
+def _detector_lines(row: dict, esc, label) -> list[tuple[str, list[str]]]:
+    """Each connected detector's slot of one result as a line and its sub-lines."""
+    lines = []
+    known, rules = row.get("known_malicious"), row.get("rules")
+    if known and known.get("reason") != "detector_not_configured":
+        matches = [
+            f"{esc(match['advisory_id'])} ({label(MATCH_KIND_LABELS, match['match_kind'])}"
+            + (f", 영향 버전 {esc(match['affected'])}" if match["affected"] is not None else "")
+            + ")"
+            for match in known["matches"]
+        ]
+        lines.append((f"기지 악성: {_slot(known, KNOWN_STATUS_LABELS, esc, label)}", matches))
+    if rules and rules.get("reason") != "detector_not_configured":
+        checks = []
+        for check in rules["checks"]:
+            text = (f"{label(RULE_STATUS_LABELS, check['status'])} {esc(check['rule_id'])}"
+                    f" {esc(check['rule_version'])}")  # fmt: skip
+            if check["evidence"]:
+                text += ", 근거: " + "; ".join(esc(evidence) for evidence in check["evidence"])
+            if check["locations"]:
+                places = (f"{x['file']}:{x['line']}" if x["line"] is not None else x["file"]
+                          for x in check["locations"])  # fmt: skip
+                text += ", 위치: " + ", ".join(esc(place) for place in places)
+            if check["detail"]:
+                text += f", 상세: {esc(check['detail'])}"
+            checks.append(text)
+        lines.append((f"규칙: {_slot(rules, RULE_STATUS_LABELS, esc, label)}", checks))
+        agreement = label(AGREEMENT_LABELS, row["rule_ml_agreement"])
+        lines.append((f"규칙/ML: {agreement}. 판정에 쓰지 않는 표시입니다.", []))
+    return lines
+
+
 def _print_text(report: dict) -> None:
     # A console code page (e.g. cp949) may not encode every character in package data.
     if hasattr(sys.stdout, "reconfigure"):
@@ -185,8 +296,12 @@ def _print_text(report: dict) -> None:
     status = OVERALL_LABELS.get(report["status"], report["status"])
     print(f"depbee 검사 결과: {status} (종료 코드 {report['exit_code']})")
     print(_summary(report["results"], package_input))
+    for emphasized, rest in _notices(report):
+        print(f"{emphasized} {rest}")
     if report["model_id"]:
         print(f"모델: {_clean(report['model_id'])}, 판정 기준 점수 {report['threshold']}")
+    for line in _detector_setup(report, _clean):
+        print(line)
     if package_input:
         print(
             "범위: lockfile 없이 registry 정보로 이 버전 하나만 검사했습니다. "
@@ -209,13 +324,18 @@ def _print_text(report: dict) -> None:
         version = row["after_version"] or row["before_version"]
         print()
         print(f"[{label}] {_clean(row['package'])}@{_clean(version)}  ({_clean(row['location'])})")
-        if row["score"] is not None:
-            print(f"  점수: {row['score']:.3f}")
+        score = _ml_score(row)
+        if score is not None:
+            print(f"  ML 위험 점수: {score}")
         if row.get("reason"):
             reason = REASON_LABELS.get(row["reason"], row["reason"])
             print(f"  이유: {_clean(reason)}")
         if row.get("detail"):
             print(f"  상세: {_clean(row['detail'])}")
+        for line, subs in _detector_lines(row, _clean, _text_label):
+            print(f"  {line}")
+            for sub in subs:
+                print(f"    - {sub}")
         if row.get("elapsed_seconds") is not None:
             cached = " (캐시한 feature 사용)" if row.get("cache_hit") else ""
             print(f"  분석 시간: {row['elapsed_seconds']:.3f}초{cached}")
@@ -275,8 +395,10 @@ def _print_markdown(report: dict) -> None:
         "",
         f"- {_summary(report['results'], package_input)}",
     ]
+    lines += [f"- **{emphasized}** {rest}" for emphasized, rest in _notices(report)]
     if report["model_id"]:
         lines.append(f"- 모델: {_md(report['model_id'])}, 판정 기준 점수 {report['threshold']}")
+    lines += [f"- {line}" for line in _detector_setup(report, _md)]
     checked = (
         "lockfile 없이 registry 정보로 이 버전 하나만" if package_input
         else "lockfile에서 바뀐 의존성만"
@@ -288,8 +410,16 @@ def _print_markdown(report: dict) -> None:
         report["results"],
         key=lambda r: (STATUS_ORDER.get(r["status"], len(STATUS_ORDER)), -(r["score"] or 0.0)),
     )
+    # Detector columns only when a detector is connected; otherwise the list above says so.
+    connected = [
+        (key, name, labels)
+        for key, name, labels in (("known_malicious", "기지 악성", KNOWN_STATUS_LABELS),
+                                  ("rules", "규칙", RULE_STATUS_LABELS))
+        if (report.get("detectors") or {}).get(key) is not None
+    ]  # fmt: skip
     if rows:
-        header = ["판정", "패키지", "설치될 버전", "비교 버전", "점수", "이유", "위치"]
+        header = ["판정", "패키지", "설치될 버전", "비교 버전", *(c[1] for c in connected),
+                  "ML 위험 점수", "이유", "위치"]  # fmt: skip
         lines += ["", "| " + " | ".join(header + ["분석 시간"] * timed) + " |",
                   "|" + " --- |" * (len(header) + timed)]  # fmt: skip
     for row in rows:
@@ -298,7 +428,14 @@ def _print_markdown(report: dict) -> None:
             _md(row["package"]),
             _md(row["after_version"]) if row["after_version"] is not None else "-",
             _md(row["compared_version"]) if row.get("compared_version") is not None else "-",
-            f"{row['score']:.3f}" if row["score"] is not None else "-",
+        ]
+        for key, _, labels in connected:
+            status = (row.get(key) or {}).get("status")
+            cell = "-" if status is None else _md_label(labels, status)
+            cells.append(f"**{cell}**" if key == "known_malicious" and status == "hit" else cell)
+        score = _ml_score(row)
+        cells += [
+            score if score is not None else "-",
             _md_label(REASON_LABELS, row["reason"]) if row.get("reason") else "-",
             _md(row["location"]),
         ]
@@ -314,19 +451,23 @@ def _print_markdown(report: dict) -> None:
 
 
 def _markdown_details(row: dict) -> list[str]:
-    """Extracted facts and the model's explanation of one result, kept in separate lists."""
+    """Detector slots, extracted facts and the model's explanation of one result, kept apart."""
     explanation, rest = row.get("explanation") or [], row.get("explanation_rest")
-    if not (row.get("detail") or row.get("evidence") or explanation or rest):
+    detectors = _detector_lines(row, _md, _md_label)
+    if not (row.get("detail") or detectors or row.get("evidence") or explanation or rest):
         return []
     target = _md(f"{row['package']}@{row['after_version'] or row['before_version']}")
     lines = ["", f"### {_md_label(STATUS_LABELS, row['status'])}: {target}", ""]
     if row.get("detail"):
         lines.append(f"- 상세: {_md(row['detail'])}")
+    for line, subs in detectors:
+        lines.append(f"- {line}")
+        lines += [f"  - {sub}" for sub in subs]
     if row.get("evidence"):
         lines.append("- 추출된 사실:")
         lines += [f"  - {_md(evidence)}" for evidence in row["evidence"]]
     if explanation or rest:
-        lines.append("- 모델 설명, 점수에 크게 작용한 특징(기여도 + 위험 쪽, - 정상 쪽):")
+        lines.append("- 모델 설명, ML 위험 점수에 크게 작용한 특징(기여도 + 위험 쪽, - 정상 쪽):")
         for item in explanation:
             name = item["feature"]
             label = _feature_label(name)
