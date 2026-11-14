@@ -60,6 +60,11 @@ jobs:
           fails gate 03-known-malicious-low-ml.json ''
           fails gate missing.json ''
           fails gate 01-rule-only.json unknown
+          # Lockfile paths Linux dirname would read differently from the input check (review F1).
+          lock() { LOCKFILE="$1" REPORT=docs/examples/result-contract/01-rule-only.json run inputs; }
+          lock examples/project/package-lock.json
+          fails lock 'examples\project\package-lock.json'
+          fails lock -examples/project/package-lock.json
           printf 'synthetic' > "$RUNNER_TEMP/model.txt"
           fails run verify "$RUNNER_TEMP/model.txt" "$(printf '0%.0s' $(seq 64))"
           run verify "$RUNNER_TEMP/model.txt" "$(sha256sum "$RUNNER_TEMP/model.txt" | cut -d' ' -f1)"

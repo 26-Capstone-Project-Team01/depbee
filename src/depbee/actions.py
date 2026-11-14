@@ -69,7 +69,13 @@ def parse_fail_on(text: str) -> set[str]:
 
 
 def _relative_file(value: str, what: str, workspace: Path) -> Path:
-    path = PurePosixPath(value.replace("\\", "/"))
+    # The shell steps pass this value unchanged to dirname, which on Linux keeps "\" in a name
+    # and reads a leading "-" as an option: check exactly the path the shell will see.
+    if "\\" in value:
+        raise ActionError(f"{what} must use / as the path separator: {value!r}")
+    path = PurePosixPath(value)
+    if any(part.startswith("-") for part in path.parts):
+        raise ActionError(f"{what} path components must not start with -: {value!r}")
     if not value or path.is_absolute() or ".." in path.parts or re.match(r"[A-Za-z]:", value):
         raise ActionError(f"{what} must be a path inside the workspace: {value!r}")
     full = workspace / path
@@ -81,9 +87,9 @@ def _relative_file(value: str, what: str, workspace: Path) -> Path:
 def check_inputs(env: dict, workspace: Path) -> None:
     """Validate the action inputs before anything is installed or downloaded."""
     lockfile = env.get("LOCKFILE", "")
-    if PurePosixPath(lockfile.replace("\\", "/")).name != LOCKFILE_NAME:
-        raise ActionError(f"lockfile must name a {LOCKFILE_NAME} file: {lockfile!r}")
     _relative_file(lockfile, "lockfile", workspace)
+    if PurePosixPath(lockfile).name != LOCKFILE_NAME:
+        raise ActionError(f"lockfile must name a {LOCKFILE_NAME} file: {lockfile!r}")
     parse_fail_on(env.get("FAIL_ON", ""))
     if env.get("REPORT"):
         # Self-test mode: no scan, so the model, base commit and change limit are unused.

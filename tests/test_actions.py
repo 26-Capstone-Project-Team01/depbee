@@ -267,6 +267,26 @@ class InputsTest(unittest.TestCase):
                     with self.assertRaises(actions.ActionError):
                         actions.check_inputs(self.env | {name: value}, self.tmp)
 
+    def test_paths_are_checked_as_the_shell_reads_them(self):
+        # Review F1: Linux dirname keeps "\" in a name and reads "-..." as an option, so such
+        # paths would make plan and scan check the repository root instead of this lockfile.
+        (self.tmp / "package-lock.json").write_text("{}", encoding="utf-8")
+        (self.tmp / "-app").mkdir()
+        (self.tmp / "-app" / "package-lock.json").write_text("{}", encoding="utf-8")
+        (self.tmp / "-app" / "report.json").write_text("{}", encoding="utf-8")
+        for value in ("package-lock.json", "app/package-lock.json"):
+            actions.check_inputs(self.env | {"LOCKFILE": value}, self.tmp)
+        cases = [
+            ("LOCKFILE", "app\\package-lock.json", "separator"),
+            ("LOCKFILE", ".\\package-lock.json", "separator"),
+            ("LOCKFILE", "-app/package-lock.json", "start with -"),
+            ("LOCKFILE", "app/-x/../package-lock.json", "start with -"),
+            ("REPORT", "-app/report.json", "start with -"),
+        ]
+        for name, value, message in cases:
+            with self.subTest(value=value), self.assertRaisesRegex(actions.ActionError, message):
+                actions.check_inputs(self.env | {name: value}, self.tmp)
+
     def test_verify(self):
         model = self.tmp / "model.txt"
         model.write_bytes(b"synthetic model")

@@ -92,8 +92,11 @@ runs:
         MAX_CHANGES: ${{ inputs.max-changes }}
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
         OUT: ${{ steps.setup.outputs.out }}
+      # A failed or empty dirname must stop here: an empty project argument means the current folder.
       run: |
-        depbee plan "$(dirname "$LOCKFILE")" --base-ref "$BASE_SHA" --output "$OUT/plan.json" > /dev/null
+        project=$(dirname -- "$LOCKFILE")
+        test -n "$project"
+        depbee plan "$project" --base-ref "$BASE_SHA" --output "$OUT/plan.json" > /dev/null
         python -I "$GITHUB_ACTION_PATH/src/depbee/actions.py" count "$OUT/plan.json" "$MAX_CHANGES"
 
     # Performance only: depbee checks each entry's model and extractor identity before using it.
@@ -115,12 +118,14 @@ runs:
       # The exit code is only logged: the next step decides from the report's per-result fields.
       run: |
         if [ -n "$REPORT" ]; then
-          cp "$REPORT" "$OUT/report.json"
+          cp -- "$REPORT" "$OUT/report.json"
           : > "$OUT/summary.md"
           exit 0
         fi
         mkdir -p "$CACHE"
-        if depbee scan "$(dirname "$LOCKFILE")" --base-ref "$BASE_SHA" --extract \
+        project=$(dirname -- "$LOCKFILE")
+        test -n "$project"
+        if depbee scan "$project" --base-ref "$BASE_SHA" --extract \
           --model-dir "$OUT/model" --cache-dir "$CACHE" \
           --format markdown --output "$OUT/report.json" > "$OUT/summary.md"; then
           code=0
