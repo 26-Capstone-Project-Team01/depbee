@@ -237,13 +237,17 @@ def _detector_setup(report: dict, esc) -> list[str]:
     ]  # fmt: skip
 
 
-def _ml_score(row: dict) -> str | None:
-    """The ML risk score with the ML path's own status (contract 4.1); not a probability."""
+def _ml_score(row: dict, label) -> str | None:
+    """The ML risk score with the ML path's own status (contract 4.1); not a probability.
+
+    An unknown ml.status is shown as other unknown states are (label); no ml field shows none.
+    """
     status = (row.get("ml") or {}).get("status")
+    shown = None if status is None else label(ML_LABELS, status)
     if row["score"] is not None:
-        return f"{row['score']:.3f}" + (f" ({ML_LABELS[status]})" if status in ML_LABELS else "")
-    if row["status"] != "removed" and status in ("not_run", "failed"):
-        return f"없음({ML_LABELS[status]})"
+        return f"{row['score']:.3f}" + (f" ({shown})" if shown is not None else "")
+    if row["status"] != "removed" and shown is not None:
+        return f"없음({shown})"
     return None
 
 
@@ -324,7 +328,7 @@ def _print_text(report: dict) -> None:
         version = row["after_version"] or row["before_version"]
         print()
         print(f"[{label}] {_clean(row['package'])}@{_clean(version)}  ({_clean(row['location'])})")
-        score = _ml_score(row)
+        score = _ml_score(row, _text_label)
         if score is not None:
             print(f"  ML 위험 점수: {score}")
         if row.get("reason"):
@@ -433,7 +437,7 @@ def _print_markdown(report: dict) -> None:
             status = (row.get(key) or {}).get("status")
             cell = "-" if status is None else _md_label(labels, status)
             cells.append(f"**{cell}**" if key == "known_malicious" and status == "hit" else cell)
-        score = _ml_score(row)
+        score = _ml_score(row, _md_label)
         cells += [
             score if score is not None else "-",
             _md_label(REASON_LABELS, row["reason"]) if row.get("reason") else "-",

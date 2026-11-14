@@ -94,6 +94,12 @@ class FormatFixture(DetectorFixture):
                                               rules=Rules(error=RuntimeError("crashed"))),
             "known hit over D-7": self.scan_with(0.1, known_malicious=KnownList((ADVISORY,)),
                                                  rules=Rules(error=RuntimeError("crashed"))),
+            "known hit, ML not_run": self.scan_with(analyzer=False,
+                                                    known_malicious=KnownList((ADVISORY,)),
+                                                    rules=Rules()),
+            "known hit, ML failed": self.scan_with(row={"status": "failed", "error": "mismatch"},
+                                                   known_malicious=KnownList((ADVISORY,)),
+                                                   rules=Rules()),
             "rule hit and failed": self.scan_with(0.1, rules=hit_and_failed),
             "rules not_run": self.scan_with(analyzer=False, known_malicious=KnownList(),
                                             rules=Rules()),
@@ -171,6 +177,12 @@ class EquivalenceTests(FormatFixture):
                 hit = key == "known_malicious" and item[key]["status"] == "hit"
                 self.assertEqual(cells[column], f"**{expected}**" if hit else expected)
                 column += 1
+        ml = item["ml"]["status"]
+        if item["score"] is not None:
+            score = f"{item['score']:.3f} ({'기준 이상' if ml == 'hit' else '기준 미만'})"
+        else:
+            score = "-" if item["status"] == "removed" else f"없음({'실패' if ml == 'failed' else '미실행'})"  # fmt: skip
+        self.assertEqual(cells[column], score)
         self.assertEqual(cells[column + 1], REASON_LABELS[item["reason"]] if item.get("reason")
                          else "-")  # fmt: skip
         if detectors["known_malicious"] or detectors["rules"]:
@@ -217,6 +229,23 @@ class EquivalenceTests(FormatFixture):
         text = capture(_print_text, cases["not configured"])
         self.assertIn("기지 악성 목록: 연결 안 됨(미실행)\n규칙: 연결 안 됨(미실행)\n", text)
 
+    def test_unknown_ml_status_is_shown_and_no_ml_field_shows_none(self):
+        # REV-SVC-04-R1 n1: an unknown ml.status is shown like other unknown states
+        # (contracts.md 4), with or without a score; a report without ml (older) shows nothing.
+        for score, text, markdown in (
+            (0.1, "  ML 위험 점수: 0.100 (future_state)\n", "| 0.100 (` future_state `) |"),
+            (None, "  ML 위험 점수: 없음(future_state)\n", "| 없음(` future_state `) |"),
+        ):
+            with self.subTest(score=score):
+                report = self.scan_with(0.9)
+                report["results"][0].update(score=score, ml={"status": "future_state"})
+                self.assertIn(text, capture(_print_text, report))
+                self.assertIn(markdown, capture(_print_markdown, report))
+        report = self.scan_with(row={"status": "failed", "error": "mismatch"})
+        del report["results"][0]["ml"]
+        self.assertNotIn("ML 위험 점수", capture(_print_text, report))
+        self.assertIn("| - | 분석 실패 |", capture(_print_markdown, report))
+
     def test_cli_exit_code_and_json_do_not_depend_on_the_format(self):
         for label, report in self.cases().items():
             for fmt in FORMATS:
@@ -257,11 +286,11 @@ class EscapeTests(FormatFixture):
         report["model_id"] = text
         item = report["results"][0]
         item.update(package=text, location=text, after_version=text, detail=text,
-                    rule_ml_agreement=text)  # fmt: skip
-        item["known_malicious"].update(reason=text, detail=text)
+                    rule_ml_agreement=text, ml={"status": text})  # fmt: skip
+        item["known_malicious"].update(status=text, reason=text, detail=text)
         item["known_malicious"]["matches"] = [{"advisory_id": text, "match_kind": text,
                                                "affected": text}]  # fmt: skip
-        item["rules"].update(reason=text, detail=text)
+        item["rules"].update(status=text, reason=text, detail=text)
         for check in item["rules"]["checks"]:
             check.update(rule_id=text, rule_version=text, evidence=[text, text], detail=text,
                          status=text, locations=[{"file": text, "line": 3}])  # fmt: skip
