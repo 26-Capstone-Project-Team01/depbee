@@ -47,6 +47,13 @@ NAME_SURROGATE = 0x20000000
 # The prefix os.readlink puts on a local Windows target (\\?\C:\... or \??\C:\...); without it the
 # drive path is checked like an input. \\?\UNC\... and other forms keep it and are refused.
 _READLINK_DRIVE = re.compile(r"\A(?:\\\\\?\\|\\\?\?\\)(?=[A-Za-z]:\\)")
+# DOS device names Windows can open in any folder (C:\x\CON may be the console) whether or not
+# the path exists, so lstat cannot tell. The names of ntpath (3.13 os.path.isreserved, which
+# also refuses other names) plus COM0 and LPT0.
+_DEVICES = frozenset(
+    {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+    | {f"{port}{digit}" for port in ("COM", "LPT") for digit in "0123456789\xb9\xb2\xb3"}
+)
 # Report keys whose strings come from packages, lockfiles, the registry, the model manifest or
 # detector records (docs/contracts.md 4, docs/result-contract-draft.md 5), at any depth.
 PACKAGE_FIELDS = frozenset({
@@ -127,14 +134,23 @@ def scan_lockfile(
 
 def _local_path(value: str, name: str) -> Path:
     """MCP input boundary only (the CLI trusts its user): no empty path (the server's folder),
-    network share or device namespace, refused before anything touches the path."""
+    network share, device namespace or (on Windows) reserved device name, refused before
+    anything touches the path."""
     slashed = value.replace("\\", "/")
     if not value:
         raise GuardError(f"{name} is empty; give the path of a local folder or file")
     # //: UNC and the \\.\ and \\?\ device forms; /??/: the NT form, which Win32 also takes.
     if slashed.startswith(("//", "/??/", "/dev/")) or slashed == "/dev":
         raise GuardError(f"{name} must be a local path, not a network share or device path")
+    if os.name == "nt" and any(map(_reserved_device, Path(value).parts)):
+        raise GuardError(f"{name} names a Windows reserved device (such as CON or NUL)")
     return Path(value)
+
+
+def _reserved_device(part: str) -> bool:
+    """A path part Windows takes for a DOS device: CON, con.json, NUL .txt, COM1:, LPT1. and
+    so on (the name before the first dot or colon, trailing spaces dropped, any case)."""
+    return re.split(r"[.:]", part, maxsplit=1)[0].rstrip(" ").upper() in _DEVICES
 
 
 def _require(path: Path, kind, name: str, what: str) -> None:
