@@ -304,7 +304,13 @@ class ResponseTests(MCPFixture):
                          (mcp.PACKAGE_DATA_NOTICE, mcp.MAX_TEXT))  # fmt: skip
         paths = {item["path"] for item in data["strings"]}
         for item in data["strings"]:
-            self.assertEqual(item["text"], pointer(plain["report"], item["path"]))
+            found = pointer(plain["report"], item["path"])
+            if isinstance(found, dict):  # a feature name: the path is its features object
+                self.assertIn(item["text"], found)
+            else:
+                self.assertEqual(item["text"], found)
+        self.assertTrue(any(isinstance(pointer(plain["report"], i["path"]), dict)
+                            for i in data["strings"]))  # fmt: skip
         for index in range(len(plain["report"]["results"])):
             for key in ("package", "location"):
                 self.assertIn(f"/results/{index}/{key}", paths)
@@ -364,6 +370,26 @@ class ResponseTests(MCPFixture):
                      "/results/0/features/signal", *known):  # fmt: skip
             self.assertNotIn(path, copies)
 
+    def test_feature_names_get_copies_whatever_their_values(self):
+        # PR-14-FIX R2 (Sol m3): names of numeric features too, and with an empty explanation.
+        self.mixed()
+        plain = mcp.scan_lockfile(str(self.project), str(self.base), model_dir=Path("m"))
+        report = copy.deepcopy(plain["report"])
+        long = "f" * (mcp.MAX_TEXT + 10)
+        row = report["results"][0]
+        row["features"] = {"signal": 0.5, HOSTILE[0]: 1, long: None, "flag": True}
+        row["explanation"] = []
+        with mock.patch("depbee.service.scan_project", return_value=copy.deepcopy(report)):
+            response = mcp.scan_lockfile(str(self.project))
+        self.assertEqual(response["report"], report)
+        names = [i for i in response["package_data"]["strings"]
+                 if i["path"] == "/results/0/features"]  # fmt: skip
+        self.assertEqual([(i["text"], i["truncated"]) for i in names],
+                         [("signal", False), (HOSTILE[0], False), (long[: mcp.MAX_TEXT], True),
+                          ("flag", False)])  # fmt: skip
+        self.assertFalse([i for i in response["package_data"]["strings"]
+                          if i["path"].startswith("/results/0/explanation")])  # fmt: skip
+
     def test_package_limit_stops_before_any_registry_access(self):
         self.mixed()
         analyzable = 5  # example, high, low, zeta, broken
@@ -421,7 +447,8 @@ class ResponseTests(MCPFixture):
     def test_paths_that_are_empty_shares_or_devices_are_refused_untouched(self):
         # REV-SVC05-R1 m2, MCP input boundary only: refused before any stat or open.
         bad = ["", "\\\\server\\share", "//server/share", "\\\\server\\share\\p\\package-lock.json",
-               "\\\\.\\pipe\\x", "\\\\?\\C:\\x", "//./pipe/x", "/dev/stdin", "/dev", "/dev/fd/0"]  # fmt: skip
+               "\\\\.\\pipe\\x", "\\\\?\\C:\\x", "//./pipe/x", "/dev/stdin", "/dev", "/dev/fd/0",
+               "\\??\\UNC\\server\\share", "/??/C:/x"]  # fmt: skip
         touched = mock.Mock(side_effect=AssertionError("a refused path was touched"))
         for value in bad:
             for args in ((value, str(self.base)), (str(self.project), value)):
@@ -466,6 +493,90 @@ class ResponseTests(MCPFixture):
         # A missing path is left to the service, so that error stays the CLI's
         # (test_errors_are_the_cli_error_objects).
         self.assertNotIn("report", response)
+
+    def links(self, targets):
+        """os.lstat and os.readlink with these paths as symlinks to these texts (creating a
+        real link to a share needs no share but may need rights Windows does not give here),
+        and a Path.stat that fails on anything that would follow one of them."""
+        real_lstat, real_stat = os.lstat, Path.stat
+
+        def behind(path, itself):
+            path = Path(path)
+            return any((itself and path == link) or link in path.parents for link in targets)
+
+        def lstat(path, *a, **k):
+            if Path(path) in targets:
+                return os.stat_result((stat.S_IFLNK | 0o777, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+            if behind(path, False):
+                raise AssertionError(f"lstat behind a link: {path}")
+            return real_lstat(path, *a, **k)
+
+        def readlink(path, *a, **k):
+            return targets[Path(path)]
+
+        def follow(path, *a, **k):
+            if behind(path, True):
+                raise AssertionError(f"stat through a link: {path}")
+            return real_stat(path, *a, **k)
+
+        return lstat, readlink, follow
+
+    def test_links_to_shares_or_devices_are_refused_before_their_targets(self):
+        # PR-14-FIX R2 (Sol m2): a local link (or junction) that leads to a share or device.
+        remote = ["\\\\server\\share\\package-lock.json", "//server/share/lock.json",
+                  "\\\\?\\UNC\\server\\share\\x", "\\\\.\\pipe\\x", "\\\\?\\Volume{0}\\x",
+                  "/dev/stdin", "\\??\\UNC\\server\\share\\x"]  # fmt: skip
+        places = {  # where the link is, and the scan_lockfile arguments
+            "base_lock": (self.root / "base-link.json", (str(self.project), "{link}")),
+            "lockfile": (self.project / "package-lock.json", (str(self.project), str(self.base))),
+            "project folder": (self.root / "project-link", ("{link}", str(self.base))),
+            "parent folder": (self.root / "up", ("{link}/project", str(self.base))),
+        }
+        for target in remote:
+            for place, (link, args) in places.items():
+                lstat, readlink, follow = self.links({link: target})
+                args = [a.replace("{link}", str(link)) for a in args]
+                with self.subTest(place=place, target=target), \
+                        mock.patch("os.lstat", lstat), mock.patch("os.readlink", readlink), \
+                        mock.patch("pathlib.Path.stat", autospec=True, side_effect=follow), \
+                        mock.patch("depbee.service.scan_project") as service:  # fmt: skip
+                    response = mcp.scan_lockfile(*args)  # an AssertionError above would escape
+                    service.assert_not_called()
+                self.assertIn("through a link", response["error"]["error"])
+                self.assertIn("not a network share or device path", response["error"]["error"])
+        # A loop of links ends in an error, not a hang.
+        link = self.root / "loop.json"
+        lstat, readlink, _ = self.links({link: str(link)})
+        with mock.patch("os.lstat", lstat), mock.patch("os.readlink", readlink):
+            response = mcp.scan_lockfile(str(self.project), str(link))
+        self.assertIn(f"more than {mcp.MAX_LINKS} links", response["error"]["error"])
+
+    def test_local_links_and_junctions_still_work_as_in_the_cli(self):
+        # Not over-refused: a real local link to the project (a junction on Windows, which
+        # needs no extra rights; a symlink elsewhere) gives the CLI's report.
+        link = self.root / "project-link"
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(self.project), str(link))
+            self.assertTrue(os.lstat(link).st_reparse_tag)  # really a reparse point
+        else:
+            os.symlink(self.project, link, target_is_directory=True)
+        self.assertEqual(mcp._unlinked(link / "package-lock.json", "project"),
+                         Path(os.path.realpath(self.project)) / "package-lock.json")  # fmt: skip
+        code, out, err = self.cli("scan", str(link), "--base-lock", str(self.base), "--extract",
+                                  "--format", "json", "--model-dir", "m")  # fmt: skip
+        report = self.assert_same(code, out, err,
+                                  mcp.scan_lockfile(str(link), str(self.base), model_dir=Path("m")))  # fmt: skip
+        self.assertTrue(report["results"])
+
+    def test_the_readlink_prefix_of_a_local_windows_target_is_dropped_and_no_other(self):
+        for text, kept in (("\\\\?\\C:\\x\\lock.json", "C:\\x\\lock.json"),
+                           ("\\??\\D:\\y", "D:\\y"),
+                           ("\\\\?\\UNC\\server\\share", "\\\\?\\UNC\\server\\share"),
+                           ("\\\\?\\Volume{0}\\x", "\\\\?\\Volume{0}\\x"),
+                           ("\\\\.\\C:\\x", "\\\\.\\C:\\x"), ("rel\\x", "rel\\x")):  # fmt: skip
+            self.assertEqual(mcp._READLINK_DRIVE.sub("", text), kept)
 
     def test_service_errors_become_error_objects_and_bugs_are_not_hidden(self):
         for exc in (OSError("disk"), ValueError("bad"), RecursionError("deep"), GuardError("g")):

@@ -9,6 +9,8 @@ The tool functions need no MCP SDK; build_server() and serve() import it (extra 
 """
 
 import json
+import os
+import re
 import stat
 import threading
 from concurrent import futures
@@ -29,15 +31,20 @@ from .cli import (
 )
 from .contracts import GuardError
 
-# A whole tool call. Each analyzed change already has its own analysis.bounded budget (300 s);
-# this bounds what an agent waits for. A late call gives an error, never a verdict, and no
-# further change starts; the one already running ends within its own budget.
+# What an agent waits for in one tool call, not a bound on the work: a late call gives an error,
+# never a verdict, and starts no further change, but the work already running goes on with no
+# fixed end (see _respond).
 TOOL_SECONDS = 600
 # Changes scan_lockfile analyzes (registry downloads and extraction) in one call; above it the
 # call stops before the first download. check_package always analyzes one.
 MAX_PACKAGES = 20
 # npm package names are at most 214 characters, so a valid name is never cut.
 MAX_TEXT = 256
+# Links followed in one path input (as POSIX SYMLOOP_MAX), so a loop ends in an error.
+MAX_LINKS = 40
+# The prefix os.readlink puts on a local Windows target (\\?\C:\... or \??\C:\...); without it the
+# drive path is checked like an input. \\?\UNC\... and other forms keep it and are refused.
+_READLINK_DRIVE = re.compile(r"\A(?:\\\\\?\\|\\\?\?\\)(?=[A-Za-z]:\\)")
 # Report keys whose strings come from packages, lockfiles, the registry, the model manifest or
 # detector records (docs/contracts.md 4, docs/result-contract-draft.md 5), at any depth.
 PACKAGE_FIELDS = frozenset({
@@ -122,7 +129,8 @@ def _local_path(value: str, name: str) -> Path:
     slashed = value.replace("\\", "/")
     if not value:
         raise GuardError(f"{name} is empty; give the path of a local folder or file")
-    if slashed.startswith("//") or slashed == "/dev" or slashed.startswith("/dev/"):
+    # //: UNC and the \\.\ and \\?\ device forms; /??/: the NT form, which Win32 also takes.
+    if slashed.startswith(("//", "/??/", "/dev/")) or slashed == "/dev":
         raise GuardError(f"{name} must be a local path, not a network share or device path")
     return Path(value)
 
@@ -130,12 +138,47 @@ def _local_path(value: str, name: str) -> Path:
 def _require(path: Path, kind, name: str, what: str) -> None:
     """A path that exists must be of this kind (no FIFO, socket or device, which a read could
     block on); a missing one is left to the service, so its error is the CLI's."""
-    try:
-        mode = path.stat().st_mode
-    except FileNotFoundError:
+    real = _unlinked(path, name)
+    if real is None:
         return
-    if not kind(mode):
+    if not kind(real.stat().st_mode):  # real has no links left, so this follows none
         raise GuardError(f"{name} must be {what} (not a FIFO, socket or device)")
+
+
+def _unlinked(path: Path, name: str) -> Path | None:
+    """path with each link in it (symlink; on Windows also junction) replaced by its target, or
+    None if a part does not exist. Each part is looked at with lstat, which never follows a link
+    (on Windows it opens a name-surrogate reparse point itself), and a link is read with
+    readlink, which does not open its target; a target that is a share or device is refused
+    like an input, so nothing behind it is touched. Local links stay allowed."""
+    whole = Path(os.path.abspath(path)) if os.name == "nt" else Path.cwd() / path
+    current, pending, links = Path(whole.anchor), list(whole.parts[1:]), 0
+    while pending:
+        part = pending.pop(0)
+        if part == "..":  # POSIX keeps it: it applies to the link's target, not the link
+            current = current.parent
+            continue
+        candidate = current / part
+        try:
+            mode = os.lstat(candidate)
+        except FileNotFoundError:
+            return None
+        if not (stat.S_ISLNK(mode.st_mode) or getattr(mode, "st_reparse_tag", 0)):
+            current = candidate
+            continue
+        links += 1
+        if links > MAX_LINKS:
+            raise GuardError(f"{name} goes through more than {MAX_LINKS} links")
+        try:
+            text = os.readlink(candidate)
+        except (OSError, ValueError) as exc:
+            raise GuardError(f"{name} goes through a link depbee cannot read") from exc
+        target = _local_path(_READLINK_DRIVE.sub("", text), f"{name} (through a link)")
+        if target.is_absolute():
+            current, pending = Path(target.anchor), [*target.parts[1:], *pending]
+        else:
+            pending = [*target.parts, *pending]
+    return current
 
 
 def _limit(index: int, total: int, change: dict) -> None:
@@ -152,9 +195,11 @@ def _respond(call) -> dict:
     """The report, or the CLI's error object (main()), with notices and package_data.
 
     call(progress) runs in a worker thread. After TOOL_SECONDS the response is an error and the
-    progress hook stops the call before its next change. A thread cannot be stopped, so the
-    change already running goes on until its analysis.bounded budget ends (which kills its child
-    processes), and interpreter exit waits for it.
+    progress hook stops the call before its next change. A thread cannot be stopped, so what is
+    already running goes on and interpreter exit waits for it, with no fixed bound: the path
+    checks and lockfile reads before the first hook have no budget, and a change's 300 s
+    analysis.bounded budget kills only its child processes, while the parent's own work (parsing,
+    the cache write) can run past it.
     """
     late = threading.Event()
 
@@ -195,17 +240,23 @@ def _package_data(strings) -> dict:
     return {"notice": PACKAGE_DATA_NOTICE, "max_length": MAX_TEXT, "strings": list(strings)}
 
 
-def _package_strings(value: object, path: str = "", inside: bool = False):
-    """Each string under a PACKAGE_FIELDS key (or each one, if inside), and each unknown code:
-    its JSON Pointer and its text cut to MAX_TEXT."""
+def _package_strings(value: object, path: str = "", inside: bool = False, names: bool = False):
+    """Each string under a PACKAGE_FIELDS key (or each one, if inside), each unknown code, and
+    (names) each key of this object: its JSON Pointer (for a key, the object's) and its text cut
+    to MAX_TEXT."""
     if isinstance(value, str):
         if inside:
             yield {"path": path, "text": value[:MAX_TEXT], "truncated": len(value) > MAX_TEXT}
     elif isinstance(value, dict):
+        if names:  # feature names, whatever their values are
+            for key in value:
+                yield {"path": path, "text": key[:MAX_TEXT], "truncated": len(key) > MAX_TEXT}
         for key, item in value.items():
             pointer = f"{path}/{key.replace('~', '~0').replace('/', '~1')}"
             unknown = key in KNOWN_CODES and isinstance(item, str) and item not in KNOWN_CODES[key]
-            yield from _package_strings(item, pointer, inside or unknown or key in PACKAGE_FIELDS)
+            yield from _package_strings(
+                item, pointer, inside or unknown or key in PACKAGE_FIELDS, key == "features"
+            )
     elif isinstance(value, list):
         for index, item in enumerate(value):
             yield from _package_strings(item, f"{path}/{index}", inside)
