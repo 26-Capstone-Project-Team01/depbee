@@ -156,7 +156,7 @@ registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때�
 **Claude Code:** `claude mcp add`로 stdio 서버를 등록합니다. `--` 뒤의 명령과 인자는 그대로 서버 실행에 쓰입니다.
 
 ```powershell
-claude mcp add --scope user depbee -- <depbee 폴더>\.venv\Scripts\depbee.exe mcp --model-dir <모델 폴더>
+claude mcp add --scope user depbee -- "<depbee 폴더>\.venv\Scripts\depbee.exe" mcp --model-dir "<모델 폴더>"
 ```
 
 `--scope`는 `local`(기본값, 현재 프로젝트에서 나만 사용), `project`(프로젝트 루트의 `.mcp.json`에 저장해 저장소로 공유, 처음 쓸 때 사용 승인을 물음), `user`(내 모든 프로젝트)입니다. 위 명령의 경로는 내 PC의 경로이므로 `local`이나 `user`를 권장합니다. `claude mcp list`로 등록 상태를 확인합니다.
@@ -164,7 +164,7 @@ claude mcp add --scope user depbee -- <depbee 폴더>\.venv\Scripts\depbee.exe m
 **Codex:** `codex mcp add`로 등록하거나 `~/.codex/config.toml`(신뢰한 프로젝트라면 프로젝트의 `.codex/config.toml`)에 `[mcp_servers.<이름>]` 표를 직접 씁니다. Codex의 도구 호출 기본 제한은 60초라 depbee 검사(최대 600초)가 끝나기 전에 끊길 수 있으므로 `tool_timeout_sec`를 600보다 크게 둡니다.
 
 ```powershell
-codex mcp add depbee -- <depbee 폴더>\.venv\Scripts\depbee.exe mcp --model-dir <모델 폴더>
+codex mcp add depbee -- "<depbee 폴더>\.venv\Scripts\depbee.exe" mcp --model-dir "<모델 폴더>"
 ```
 
 ```toml
@@ -185,7 +185,8 @@ MCP는 에이전트가 도구를 부를 때만 효과가 있습니다. 프로젝
 
 - npm 패키지를 설치하거나 업데이트하기 전에 depbee MCP 도구로 먼저 검사한다.
   - 새 패키지나 특정 버전: `check_package`에 설치할 정확한 `이름@버전`을 넘긴다.
-  - lockfile 변경: `npm install --package-lock-only`처럼 `package-lock.json`만 바꾼 뒤 `scan_lockfile`에 프로젝트 폴더를 넘긴다(기준은 생략 시 Git HEAD, 또는 `base_ref`·`base_lock`).
+  - lockfile 변경: `npm install --package-lock-only --ignore-scripts`처럼 `package-lock.json`만 바꾼 뒤 `scan_lockfile`에 프로젝트 폴더를 넘긴다(기준은 생략 시 Git HEAD, 또는 `base_ref`·`base_lock`).
+  - 검사 전 준비 단계에서는 lifecycle script를 실행하지 않는다(`--ignore-scripts` 없이 `npm install`을 실행하면 `--package-lock-only`여도 프로젝트의 `preinstall`·`postinstall`·`prepare` 등이 실행될 수 있다).
 - 응답의 `report.exit_code`가 0(통과)일 때만 검사한 버전 그대로 설치·업데이트를 이어간다. 다른 버전이나 범위로 바꿔 설치하지 않는다.
 - 1(위험), 2(보류·미완료), 또는 도구 오류이면 설치·업데이트를 멈추고 판정·이유·근거를 사용자에게 보여 준 뒤 사용자의 결정을 기다린다.
 - 보류는 통과가 아니다. 낮은 ML 위험 점수는 안전 보증이 아니다.
