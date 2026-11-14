@@ -1,0 +1,152 @@
+name: depbee npm update check
+description: >-
+  Scan the npm packages a pull request changes in package-lock.json with depbee, without installing
+  them. Writes a job summary, lockfile annotations and a report.json artifact.
+  Fails on known malicious matches; ML risk hits and unfinished items warn unless fail-on adds them.
+# Usage, inputs and decision rules: docs/ci-cd.md. The depbee version is the ref in `uses:`.
+inputs:
+  lockfile:
+    description: Path of the package-lock.json to check, relative to the repository root.
+    default: package-lock.json
+  fail-on:
+    description: >-
+      Extra failure conditions, comma or space separated: ml-hit (ML risk score at or above the
+      model threshold), incomplete (unfinished item). Known malicious matches always fail.
+    default: ''
+  max-changes:
+    description: Fail without scanning when more lockfile entries than this changed.
+    default: '20'
+  # The next three are required (the input check step fails without them). Not marked
+  # `required: true`: GitHub does not enforce it, and the self-test below the report input skips them.
+  model-version:
+    description: Required. Tag of the depbee Release that holds model.txt and manifest.json.
+  model-sha256:
+    description: Required. Expected SHA-256 of model.txt (64 lowercase hex digits).
+  manifest-sha256:
+    description: Required. Expected SHA-256 of manifest.json (64 lowercase hex digits).
+  report:
+    description: >-
+      Self-test only (depbee CI). Path of an existing report.json to judge instead of scanning;
+      skips installation, model download and the scan. Leave empty.
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: '3.13'
+
+    - id: setup
+      name: Check depbee inputs
+      shell: bash
+      env:
+        LOCKFILE: ${{ inputs.lockfile }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        MAX_CHANGES: ${{ inputs.max-changes }}
+        MODEL_VERSION: ${{ inputs.model-version }}
+        MODEL_SHA256: ${{ inputs.model-sha256 }}
+        MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
+        REPORT: ${{ inputs.report }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      # -I: files in the checked-out pull request must not shadow Python imports.
+      run: |
+        python -I "$GITHUB_ACTION_PATH/src/depbee/actions.py" inputs
+        out=$(mktemp -d "$RUNNER_TEMP/depbee.XXXXXX")
+        echo "out=$out" >> "$GITHUB_OUTPUT"
+        if [ -z "$REPORT" ]; then
+          commit=$(sed -n 's/.*feature-extractor@\([0-9a-f]\{40\}\).*/\1/p' "$GITHUB_ACTION_PATH/pyproject.toml")
+          test -n "$commit"
+          echo "extractor=$commit" >> "$GITHUB_OUTPUT"
+        fi
+
+    - if: inputs.report == ''
+      name: Install depbee
+      shell: bash
+      run: >-
+        python -I -m pip install --disable-pip-version-check --no-input
+        "$GITHUB_ACTION_PATH[extract,ml]"
+
+    - if: inputs.report == ''
+      name: Download and verify the model
+      shell: bash
+      env:
+        MODEL_VERSION: ${{ inputs.model-version }}
+        MODEL_SHA256: ${{ inputs.model-sha256 }}
+        MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
+        OUT: ${{ steps.setup.outputs.out }}
+      run: |
+        mkdir "$OUT/model"
+        base="https://github.com/26-Capstone-Project-Team01/depbee/releases/download/$MODEL_VERSION"
+        for name in model.txt manifest.json; do
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            --max-filesize 104857600 --max-time 300 --output "$OUT/model/$name" "$base/$name"
+        done
+        python -I "$GITHUB_ACTION_PATH/src/depbee/actions.py" verify \
+          "$OUT/model/model.txt" "$MODEL_SHA256" "$OUT/model/manifest.json" "$MANIFEST_SHA256"
+
+    - if: inputs.report == ''
+      name: Count changed lockfile entries
+      shell: bash
+      env:
+        LOCKFILE: ${{ inputs.lockfile }}
+        MAX_CHANGES: ${{ inputs.max-changes }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        OUT: ${{ steps.setup.outputs.out }}
+      run: |
+        depbee plan "$(dirname "$LOCKFILE")" --base-ref "$BASE_SHA" --output "$OUT/plan.json" > /dev/null
+        python -I "$GITHUB_ACTION_PATH/src/depbee/actions.py" count "$OUT/plan.json" "$MAX_CHANGES"
+
+    # Performance only: depbee checks each entry's model and extractor identity before using it.
+    - if: inputs.report == ''
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/depbee-cache
+        key: depbee-${{ runner.os }}-${{ inputs.model-sha256 }}-${{ steps.setup.outputs.extractor }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: depbee-${{ runner.os }}-${{ inputs.model-sha256 }}-${{ steps.setup.outputs.extractor }}-
+
+    - name: Scan with depbee
+      shell: bash
+      env:
+        LOCKFILE: ${{ inputs.lockfile }}
+        REPORT: ${{ inputs.report }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        OUT: ${{ steps.setup.outputs.out }}
+        CACHE: ${{ runner.temp }}/depbee-cache
+      # The exit code is only logged: the next step decides from the report's per-result fields.
+      run: |
+        if [ -n "$REPORT" ]; then
+          cp "$REPORT" "$OUT/report.json"
+          : > "$OUT/summary.md"
+          exit 0
+        fi
+        mkdir -p "$CACHE"
+        if depbee scan "$(dirname "$LOCKFILE")" --base-ref "$BASE_SHA" --extract \
+          --model-dir "$OUT/model" --cache-dir "$CACHE" \
+          --format markdown --output "$OUT/report.json" > "$OUT/summary.md"; then
+          code=0
+        else
+          code=$?
+        fi
+        echo "depbee scan exit code: $code"
+
+    - if: inputs.report == ''
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/depbee-cache
+        key: depbee-${{ runner.os }}-${{ inputs.model-sha256 }}-${{ steps.setup.outputs.extractor }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: depbee-report
+        path: ${{ steps.setup.outputs.out }}/report.json
+        if-no-files-found: warn
+
+    - name: Decide from the report
+      shell: bash
+      env:
+        LOCKFILE: ${{ inputs.lockfile }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        OUT: ${{ steps.setup.outputs.out }}
+      run: >-
+        python -I "$GITHUB_ACTION_PATH/src/depbee/actions.py" report "$OUT/report.json"
+        --lockfile "$LOCKFILE" --fail-on "$FAIL_ON" --markdown "$OUT/summary.md"
