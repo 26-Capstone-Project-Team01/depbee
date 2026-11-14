@@ -17,10 +17,11 @@ npm 프로젝트에서 바뀐 의존성 버전을 찾아, 각 버전의 변경�
 | 판정 조율 | feature 스키마 확인, 임계값 판정, 실패·학습 범위 밖 입력은 `incomplete` 처리                      |                                         |
 | CLI 출력  | `plan`/`scan`/`check`, 한국어 텍스트·JSON·Markdown, 새 파일 저장, 종료 코드 0/1/2                 | GitHub job summary 화면 확인            |
 | MCP       | `depbee mcp`(stdio): 검사 전용 도구 `check_package`·`scan_lockfile`, CLI와 같은 보고서            | 실제 MCP 클라이언트에서의 호출 확인     |
+| Actions   | composite action(`action.yml`): PR 기준 커밋 대비 검사, 항목별 판정·주석·summary·artifact([사용법](docs/ci-cd.md)) | 공개 뒤 실제 PR 실행 확인               |
 | 테스트    | 합성 입력 회귀 테스트, 합성 native 모델 연동 테스트                                                |                                         |
 | 개발 CI   | push/PR에서 Ubuntu·Windows × Python 3.11·3.13 검사·테스트·패키지 빌드                              | GitHub 서버 실행 확인                   |
 
-웹/API, HTML 보고서, npm 설치 전 위험 변경을 차단하는 탐지 CI는 아직 구현하지 않았습니다.
+웹/API, HTML 보고서는 아직 구현하지 않았습니다.
 현재 개발 CI에는 `ruff format --check`가 포함되지 않습니다.
 
 ## 구조
