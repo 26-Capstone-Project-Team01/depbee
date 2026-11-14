@@ -461,6 +461,50 @@ class ResponseTests(MCPFixture):
                 self.assertNotIn("report", response)
         touched.assert_not_called()
 
+    def test_reserved_device_names(self):
+        # PR #16 F1: decided by name alone, on every OS (only Windows refuses them).
+        reserved = ["CON", "con", "Nul", "PRN", "AUX", "CONIN$", "conout$", "COM0", "com9",
+                    "LPT0", "lpt9", "COM\xb9", "lpt\xb3", "CON.txt", "con.json", "NUL .txt",
+                    "CON ", "CON.", "CON. ", "AUX.tar.gz", "COM1:", "nul:stream"]  # fmt: skip
+        plain = ["conf", "console", "com10", "LPT", "COM", "COM\u2074", "xCON", " CON", "CON_x",
+                 "nul-x.json", "package-lock.json", ".", "..", "C:\\", "", "auxiliary"]  # fmt: skip
+        for part in reserved:
+            self.assertTrue(mcp._reserved_device(part), part)
+        for part in plain:
+            self.assertFalse(mcp._reserved_device(part), part)
+
+    @unittest.skipUnless(os.name == "nt", "Windows reserved device names")
+    def test_reserved_device_names_in_windows_paths_are_refused_untouched(self):
+        # PR #16 F1: an absolute <folder>\CON gave FileNotFoundError from lstat and so skipped
+        # the kind check; now refused by name, existing or not, and no device is opened.
+        root = str(self.root)
+        cases = [
+            (str(self.project), root + "\\CON"),
+            (str(self.project), root + "\\con.json"),
+            (str(self.project), root + "\\NUL .txt"),
+            (str(self.project), root + "\\COM1\\lock.json"),
+            (root + "\\CON", None),
+            (root + "\\lpt1\\app", str(self.base)),
+            ("CONIN$", None),
+        ]
+        touched = mock.Mock(side_effect=AssertionError("a reserved device path was touched"))
+        for args in cases:
+            with self.subTest(args=args), mock.patch("os.lstat", touched), \
+                    mock.patch("pathlib.Path.stat", touched), \
+                    mock.patch("pathlib.Path.open", touched), \
+                    mock.patch("depbee.service.scan_project") as service:  # fmt: skip
+                response = mcp.scan_lockfile(*args)
+                service.assert_not_called()
+            self.assertIn("Windows reserved device", response["error"]["error"])
+            self.assertEqual(response["error"]["exit_code"], 2)
+            self.assertNotIn("report", response)
+            self.assertEqual(response["notices"], [mcp.ERROR_NOTICE, mcp.ERROR_DATA_NOTICE])
+        touched.assert_not_called()
+
+    @unittest.skipIf(os.name == "nt", "POSIX: CON is a plain name")
+    def test_reserved_device_names_are_plain_names_on_posix(self):
+        self.assertEqual(mcp._local_path(str(self.root / "CON"), "base_lock"), self.root / "CON")
+
     def test_paths_of_the_wrong_kind_are_refused(self):
         folder = self.root / "lock-is-a-folder"
         (folder / "package-lock.json").mkdir(parents=True)
