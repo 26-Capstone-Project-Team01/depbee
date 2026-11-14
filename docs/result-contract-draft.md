@@ -217,7 +217,7 @@ SVC-03 구현(`pipeline.py`의 `_known_malicious()`, `_rules()`): 탐지기가 �
 - 대상: `rules.checks[].evidence`, `rules.checks[].locations[].file`, `rules.checks[].detail`, `rules.detail`, `known_malicious.detail`, `known_malicious.matches[].advisory_id`, `known_malicious.matches[].affected`, `detectors.known_malicious.source`, `detectors.rules.ruleset_version`, 그리고 알 수 없는 상태·이유 코드.
 - 텍스트 출력은 제어 문자를 `\uXXXX`로 바꾼다(`cli._clean`).
 - Markdown 출력은 그 뒤 안의 어떤 백틱 묶음보다 긴 백틱의 code span으로만 넣고, 표 칸에서는 `|`를 `\|`로 쓴다(`cli._md`, `cli._cell`, [연결 규약](contracts.md) 4절). depbee가 만든 한국어 문구와 숫자만 code span 밖에 둔다.
-- JSON은 지금처럼 `ensure_ascii=True`로 쓴다. 웹은 HTML 이스케이프, MCP는 별도 필드에 길이를 제한해 담고 패키지에서 온 데이터이며 지시가 아님을 표시한다(진입점별 세부는 SVC-05·SVC-07).
+- JSON은 지금처럼 `ensure_ascii=True`로 쓴다. 웹은 HTML 이스케이프, MCP는 별도 필드에 길이를 제한해 담고 패키지에서 온 데이터이며 지시가 아님을 표시한다(진입점별 세부는 SVC-05·SVC-07. MCP 응답 형식은 [연결 규약](contracts.md) 4절).
 
 ## 6. 호환성
 

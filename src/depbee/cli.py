@@ -154,7 +154,21 @@ def _parser() -> argparse.ArgumentParser:
     check.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
     check.add_argument("--format", choices=FORMATS, default="text")
     _cache_arguments(check)
+    serve = commands.add_parser(
+        "mcp",
+        help="Serve the read-only check_package and scan_lockfile tools over MCP stdio "
+        "(needs .[mcp] and, to analyze, .[extract])",
+    )
+    serve.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
     return parser
+
+
+def _split_package(spec: str) -> tuple[str, str]:
+    """NAME@VERSION as check takes it (CLI and MCP); the service checks the two parts."""
+    name, at, version = spec.rpartition("@")
+    if not at or not name:
+        raise GuardError(f"check needs NAME@VERSION, e.g. lodash@4.17.21: {spec!r}")
+    return name, version
 
 
 def _clean(value: object) -> str:
@@ -237,13 +251,17 @@ def _detector_setup(report: dict, esc) -> list[str]:
     ]  # fmt: skip
 
 
-def _ml_score(row: dict) -> str | None:
-    """The ML risk score with the ML path's own status (contract 4.1); not a probability."""
+def _ml_score(row: dict, label) -> str | None:
+    """The ML risk score with the ML path's own status (contract 4.1); not a probability.
+
+    An unknown ml.status is shown as other unknown states are (label); no ml field shows none.
+    """
     status = (row.get("ml") or {}).get("status")
+    shown = None if status is None else label(ML_LABELS, status)
     if row["score"] is not None:
-        return f"{row['score']:.3f}" + (f" ({ML_LABELS[status]})" if status in ML_LABELS else "")
-    if row["status"] != "removed" and status in ("not_run", "failed"):
-        return f"없음({ML_LABELS[status]})"
+        return f"{row['score']:.3f}" + (f" ({shown})" if shown is not None else "")
+    if row["status"] != "removed" and shown is not None:
+        return f"없음({shown})"
     return None
 
 
@@ -324,7 +342,7 @@ def _print_text(report: dict) -> None:
         version = row["after_version"] or row["before_version"]
         print()
         print(f"[{label}] {_clean(row['package'])}@{_clean(version)}  ({_clean(row['location'])})")
-        score = _ml_score(row)
+        score = _ml_score(row, _text_label)
         if score is not None:
             print(f"  ML 위험 점수: {score}")
         if row.get("reason"):
@@ -433,7 +451,7 @@ def _print_markdown(report: dict) -> None:
             status = (row.get(key) or {}).get("status")
             cell = "-" if status is None else _md_label(labels, status)
             cells.append(f"**{cell}**" if key == "known_malicious" and status == "hit" else cell)
-        score = _ml_score(row)
+        score = _ml_score(row, _md_label)
         cells += [
             score if score is not None else "-",
             _md_label(REASON_LABELS, row["reason"]) if row.get("reason") else "-",
@@ -505,6 +523,11 @@ def _emit(report: dict, args: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.command == "mcp":
+            from .mcp import serve
+
+            serve(args.model_dir)
+            return 0
         # Refuse a taken --output before any download or extraction; _emit's "x" mode still
         # guards against a file created meanwhile. Same error text as that open().
         if args.output is not None and args.output.exists():
@@ -519,9 +542,7 @@ def main(argv: list[str] | None = None) -> int:
                 sys.stderr.reconfigure(errors="backslashreplace")
             progress = _progress
         if args.command == "check":
-            name, at, version = args.package.rpartition("@")
-            if not at or not name:
-                raise GuardError(f"check needs NAME@VERSION, e.g. lodash@4.17.21: {args.package!r}")
+            name, version = _split_package(args.package)
             report = check_package(
                 name,
                 version,
