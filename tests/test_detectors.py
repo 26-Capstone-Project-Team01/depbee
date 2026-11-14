@@ -444,7 +444,9 @@ RULE_SETS = {
 }
 F, NF, FI = "flagged", "not_flagged", "flagged:inference_failed"
 DF, IF = "incomplete:detection_failed", "incomplete:inference_failed"
-# Option A, the behaviour before DEC-01, kept to count what B changes.
+# Option A, the behaviour before DEC-01, kept to count what B changes. Hand-written from the
+# DEC-01 document, not produced by running the code before B, so test_b_changes_exactly_two_cells
+# compares two literal tables. CURRENT is the table checked against the real scan().
 BEFORE_B = {
     ("hit", "flagged"): (F, F, F, F, F),
     ("hit", "not_flagged"): (F, F, F, F, F),
@@ -469,6 +471,14 @@ CURRENT = {
     ("failed", "incomplete"): (IF, IF, IF, IF, IF),
 }
 EXIT_CODE = {"flagged": 1, "not_flagged": 0, "incomplete": 2}
+# Neither D-2 nor D-7 changes these (contract 4.2, 4.3): rules slot, agreement and score.
+RULE_STATUS = {"[failed]": "failed", "[hit,failed]": "hit", "[hit]": "hit",
+               "[not_hit]": "not_hit", "not_run": "not_run"}  # fmt: skip
+AGREEMENT = {("[hit,failed]", "flagged"): "both_hit", ("[hit]", "flagged"): "both_hit",
+             ("[hit,failed]", "not_flagged"): "rule_only", ("[hit]", "not_flagged"): "rule_only",
+             ("[not_hit]", "flagged"): "ml_only",
+             ("[not_hit]", "not_flagged"): "neither_hit"}  # fmt: skip
+SCORE = {"flagged": 0.9, "not_flagged": 0.1, "incomplete": None}
 
 
 def numbered(table):
@@ -492,6 +502,21 @@ class DecisionTableTests(DetectorFixture):
                 self.assertEqual(item["known_malicious"]["status"], known)
                 self.assertEqual(item["ml"]["status"], {"flagged": "hit", "not_flagged":
                                  "not_hit"}.get(ml, "failed"))  # fmt: skip
+                kept = (RULE_STATUS[rules], AGREEMENT.get((rules, ml), "undetermined"), SCORE[ml])
+                self.assertEqual(
+                    (item["rules"]["status"], item["rule_ml_agreement"], item["score"]), kept
+                )
+
+    def test_a_rule_hit_with_a_failed_rule_and_a_high_score(self):
+        # Without a known malicious detector; the low score case is
+        # test_a_rule_hit_with_a_failed_rule_is_d7. Before DEC-01 B this was flagged and exit 1.
+        report = self.scan_with(0.9, rules=Rules(RULE_SETS["[hit,failed]"]))
+        item = report["results"][0]
+        self.assertEqual(self.verdict(report), ("incomplete", "incomplete", 2, "hit", "both_hit"))
+        self.assertEqual((item["known_malicious"]["status"], item["known_malicious"]["reason"]),
+                         ("not_run", "detector_not_configured"))  # fmt: skip
+        self.assertEqual((item["rules"]["status"], item["rules"]["reason"]), ("hit", None))
+        self.assertEqual((item["reason"], item["score"]), ("detection_failed", 0.9))
 
     def test_b_changes_exactly_two_cells(self):
         before, now = numbered(BEFORE_B), numbered(CURRENT)
