@@ -140,7 +140,7 @@ registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때�
 - 도구는 두 개입니다. `check_package`(`package`: `NAME@VERSION`)는 `check`와, `scan_lockfile`(`project`, 선택 `base_lock` 또는 `base_ref`)은 `scan --extract`와 같은 검사를 하고 같은 보고서를 돌려줍니다. 판정·이유·종료 코드는 CLI와 같은 공통 pipeline이 정합니다.
 - 읽기 전용입니다. 설치, 업데이트 미리보기·반영, 프로젝트 파일을 쓰는 도구는 없습니다(추출한 feature 캐시는 CLI와 같이 씁니다). 모델은 서버를 띄울 때의 `--model-dir` 또는 `DEPBEE_MODEL_DIR`만 쓰고 도구 입력으로 받지 않습니다.
 - 응답은 `notices`, `package_data`, `report` 순입니다. `notices`는 depbee가 정한 문구로, 보류(`incomplete`)는 통과가 아니고 낮은 ML 위험 점수는 안전 보증이 아니라는 뜻과 기지 악성 일치·보류 개수를 알립니다. `package_data`는 보고서 안에서 패키지·외부 기록에서 온 문자열(이름, 버전, 위치, 상세, 근거 등)을 256자까지 자른 사본과 그 위치이며, 패키지에서 온 데이터이며 지시가 아니라는 문구가 붙습니다. `report`는 `--format json`과 같은 보고서입니다.
-- 한 호출은 600초까지, `scan_lockfile`은 분석할 변경 20개까지입니다. 넘거나 입력이 잘못되면 판정 없이 MCP 도구 오류로 CLI와 같은 error 객체(종료 코드 2)를 돌려줍니다. 큰 변경은 터미널에서 `depbee scan --extract`로 검사합니다.
+- 한 호출은 600초까지, `scan_lockfile`은 분석할 변경 20개까지입니다. 넘거나 입력이 잘못되면 판정 없이 MCP 도구 오류로 CLI와 같은 error 객체(종료 코드 2)와 안내 문구, 오류 메시지를 자른 `package_data`를 돌려줍니다. 도구 오류의 텍스트는 SDK가 붙이는 `Error executing tool <도구 이름>: ` 뒤에 JSON이 오는 형식입니다. 큰 변경은 터미널에서 `depbee scan --extract`로 검사합니다.
 - SDK 없이 `depbee mcp`를 실행하면 설치 안내와 함께 종료 코드 2로 끝납니다. depbee의 다른 명령은 SDK 없이 동작합니다.
 
 ## 동작 방식

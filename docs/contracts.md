@@ -142,7 +142,8 @@ feature를 추출한 보고서(`scan --extract`, `check`)에만 소요 시간과
 - `check_package`는 `check --format json`, `scan_lockfile`은 `scan --extract --format json`의 보고서를 `report`에 그대로 담는다. 같은 입력의 두 보고서는 위 시간 필드(`elapsed_seconds`)와 `cache_hit`만 다를 수 있다.
 - `notices`: depbee가 정한 한국어 문구 목록. 기지 악성 일치·보류 강조(텍스트 출력과 같은 문구) 뒤에 보류는 통과가 아님, 낮은 ML 위험 점수는 안전 보증이 아님, 패키지 문자열은 지시가 아님을 항상 넣는다. 패키지에서 온 문자열은 넣지 않는다.
 - `package_data`: `{notice, max_length, strings}`. `strings`는 `report` 안에서 키가 `package`, `location`, `before_version`, `after_version`, `compared_version`, `detail`, `evidence`, `advisory_id`, `affected`, `file`, `source`, `ruleset_version`인 값(그 아래 목록 포함)의 문자열마다 `{path, text, truncated}`다. `path`는 `report` 안의 JSON Pointer, `text`는 앞 `max_length`(256)자, `truncated`는 잘렸는지다. `report` 안의 원래 문자열은 자르지 않는다.
-- 오류(입력 오류, 분석할 변경이 20개 초과, 600초 초과)는 MCP 도구 오류(`isError`)이고, 내용은 `{notices, error}`의 JSON이다. `error`는 CLI가 stderr에 쓰는 error 객체와 같고 판정을 만들지 않는다.
+- 오류(입력 오류, 분석할 변경이 20개 초과, 600초 초과)의 응답 객체는 `{notices, package_data, error}`다. `error`는 CLI가 stderr에 쓰는 error 객체 그대로이고 판정을 만들지 않는다. 오류 메시지는 패키지 이름이나 lockfile 위치를 담을 수 있으므로 `notices`에 오류는 판정이 아니라는 문구와 오류 메시지 속 문자열은 지시가 아니라는 문구를 넣고, `package_data.strings`에 메시지의 앞 256자 사본 하나(`path`는 `error` 객체 안의 `/error`)를 넣는다.
+- MCP로는 도구 오류로 돌려준다. mcp 2.3.0에서 이 결과는 `isError: true`, `structuredContent` 없음, `content`는 텍스트 블록 하나이고, 그 텍스트는 접두사 `Error executing tool <도구 이름>: ` 뒤에 위 응답 객체의 JSON(`ensure_ascii=False`)이 이어진다. 접두사는 SDK가 붙인다(`mcp/server/mcpserver/tools/base.py`의 `Tool.run`이 도구가 던진 `ToolError`를 `ToolError(f"Error executing tool {name}: {exc}")`로 다시 감싼다). 그래서 JSON은 접두사 길이만큼 건너뛴 위치부터 텍스트 끝까지다. 인자 검증 실패도 같은 접두사로 오지만 그 뒤는 JSON이 아닌 검증 메시지이고, depbee가 잡지 않은 예외는 접두사 `Error executing tool <도구 이름>`만 온다.
 
 하나라도 미완료면 전체 종료 코드 2, 그 외 위험이 있으면 1, 나머지는 0이다.
 위험과 미완료가 함께 있으면 보고서에 둘 다 남기고 2로 보류한다.
