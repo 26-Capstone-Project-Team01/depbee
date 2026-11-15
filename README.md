@@ -15,7 +15,7 @@ npm 프로젝트에서 바뀐 의존성 버전을 찾아, 각 버전의 변경�
 | 분석 연결 | `--analysis`: 다른 분석기가 만든 JSON의 요청 ID·변경 ID·중복·상태·feature 형식 검증               |                                         |
 | 모델 추론 | native LightGBM 로딩, 모델 해시·이진 분류·feature 이름/순서·자료형 검증, feature별 기여도 계산     | 검증 세트로 정한 임계값 수령            |
 | 판정 조율 | feature 스키마 확인, 임계값 판정, 실패·학습 범위 밖 입력은 `incomplete` 처리                      |                                         |
-| CLI 출력  | `plan`/`scan`/`check`, 한국어 텍스트·JSON·Markdown, 새 파일 저장, 종료 코드 0/1/2                 | GitHub job summary 화면 확인            |
+| CLI 출력  | `plan`/`scan`/`check`/`update`(미리보기), 한국어 텍스트·JSON·Markdown, 새 파일 저장, 종료 코드 0/1/2                 | GitHub job summary 화면 확인            |
 | MCP       | `depbee mcp`(stdio): 검사 전용 도구 `check_package`·`scan_lockfile`, CLI와 같은 보고서            | 실제 MCP 클라이언트에서의 호출 확인     |
 | Actions   | composite action(`action.yml`): PR 기준 커밋 대비 검사, 항목별 판정·주석·summary·artifact([사용법](docs/ci-cd.md)) | 공개 뒤 실제 PR 실행 확인               |
 | 테스트    | 합성 입력 회귀 테스트, 합성 native 모델 연동 테스트                                                |                                         |
@@ -33,6 +33,7 @@ src/depbee/
   contracts.py            # 공통 규약과 Analyzer/Predictor 인터페이스
   inputs/npm.py           # 대상 프로젝트와 기준 lockfile 비교, check의 단일 버전 요청
   inputs/git.py           # Git 커밋에서 기준 lockfile 읽기
+  inputs/npm_cli.py       # update 미리보기의 프로젝트 검사와 npm 실행(lockfile만)
   analysis/extractor.py   # feature-extractor 호출, 근거 정리
   analysis/baseline.py    # 비교 기준 버전(직전 stable) 선정
   analysis/cache.py       # 추출한 feature의 실행 간 캐시
@@ -130,6 +131,24 @@ registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때�
 
 예시 lockfile(`examples/`)에는 패키지 코드가 없고 URL·integrity가 가상 값이라 `--extract`로는 분석되지 않습니다.
 
+## 업데이트 미리보기 (`depbee update`)
+
+`depbee update`는 npm이 지금 프로젝트에 `npm update`를 하면 바뀔 lockfile을 임시 폴더에서 계산하고, 그 변경을 `scan --extract`와 같은 방식으로 검사합니다. 미리보기만 하며 프로젝트의 파일은 아무것도 바꾸지 않습니다. 검사한 결과를 프로젝트에 반영하는 기능은 아직 없습니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m depbee update --project C:/path/to/target --model-dir models/<model-id>
+.\.venv\Scripts\python.exe -m depbee update lodash semver --project C:/path/to/target --model-dir models/<model-id> --format markdown
+```
+
+- Node.js와 npm(Node.js에 함께 설치된 것), 분석용 `extract`가 필요합니다. `--project`를 생략하면 현재 폴더입니다. `--format`, `--output`, `--model-dir`, `--cache-dir`/`--no-cache`는 `scan`과 같습니다.
+- 대상은 `package.json`의 `dependencies`·`devDependencies`·`optionalDependencies`에 있는 패키지 이름만 받습니다(`lodash`, `@scope/name`). 버전이나 범위(`lodash@4.17.21`, `^4`)는 받지 않고, 이름을 주지 않으면 전체를 미리봅니다. npm `update`라서 `package.json`에 적힌 범위 안에서만 올립니다. `-`·`.`·`_`로 시작하는 이름, ASCII가 아닌 문자, 공백, `:`, `\`, `%&|^<>"`가 든 이름, 214자를 넘는 이름, `package.json`에 없는 이름은 npm을 실행하기 전에 오류(종료 코드 2)로 끝납니다.
+- 임시 폴더(Python 임시 폴더 아래 `depbee_preview_*`, `TMP`/`TEMP`를 따름)에 `package.json`과 `package-lock.json`만 복사하고, 그 안에서 `npm update --package-lock-only --ignore-scripts --no-audit --no-fund --no-update-notifier --no-progress --color=false --loglevel=warn -- <이름...>`을 실행합니다. 패키지를 설치하거나 lifecycle script를 실행하지 않고, npm은 tarball을 받지 않고 registry 메타데이터만 읽습니다(npm 11.6.1에서 확인, [검증 기록](docs/validation.md)). 끝나면 임시 폴더를 지웁니다.
+- 새 lockfile은 지금 `package-lock.json`과 비교해 `scan --extract`와 같은 판정·근거·종료 코드로 보여 줍니다. 텍스트·Markdown은 앞에 미리보기 요약(대상, npm 버전, `package.json` 변경 여부, 바뀐 항목 수, 안내)을 붙이고, JSON(`--format json`, `--output`)은 `{"preview": {...}, "report": <scan 보고서>}`입니다([연결 규약](docs/contracts.md) 5절).
+- 프로젝트의 `.npmrc`는 복사하지 않습니다. 있으면 "프로젝트 .npmrc는 적용하지 않았다(공개 registry 기준 미리보기)"고 안내합니다. 사용자 설정 파일(`~/.npmrc`)은 npm이 평소처럼 읽고, depbee는 그 내용을 읽거나 출력하지 않습니다. 부모 프로세스의 `npm_config_*` 환경 변수와 `NODE_OPTIONS`는 npm에 넘기지 않고 `npm_config_ignore_scripts=true`를 넣습니다.
+- npm은 Windows에서 `npm.cmd`·`npm.ps1`이 아니라 PATH에서 찾은 `node.exe`(절대 경로)와 그 옆 `node_modules\npm\bin\npm-cli.js`로 셸 없이 실행합니다(cmd.exe의 인자 재해석을 피함). macOS·Linux에서는 `node` 위치 기준 `../lib/node_modules/npm/bin/npm-cli.js`를 씁니다. 찾지 못하면 오류입니다.
+- npm 실행에는 120초 제한과 출력 상한(stdout 1 MiB, stderr 64 KiB)이 있고, 실패·시간 초과·`node_modules` 생성·읽을 수 없는 새 lockfile은 판정 없는 오류(종료 코드 2)입니다. npm 출력에는 주소나 토큰이 있을 수 있어 오류에 옮기지 않고 종료 코드만 적습니다.
+- 지원하지 않는 프로젝트(npm을 실행하기 전에 오류, 종료 코드 2): `npm-shrinkwrap.json`이 있음, `package.json`에 `workspaces`가 있음, `package.json` 의존성이 Git·파일·URL·alias처럼 `:`이나 `/`가 든 값, lockfile v2/v3가 아님, lockfile에 링크·workspace 항목이나 `https://registry.npmjs.org/` 밖의 `resolved`(Git, file, 사설 registry 등)가 있음.
+
 ## MCP 진입점 (검사 전용)
 
 에이전트가 패키지를 설치하기 전에 depbee 검사를 부를 수 있도록 stdio MCP 서버를 둡니다. 공식 MCP Python SDK 2.x(`mcp` extra)가 필요하고, 분석에는 `extract`도 필요합니다. MCP 클라이언트에는 아래 실행 명령을 stdio 서버로 등록합니다.
@@ -220,6 +239,7 @@ MCP는 에이전트가 도구를 부를 때만 효과가 있습니다. 프로젝
 - 학습 데이터와 달리 비교 기준 후보를 OSV 악성 목록과 대조하지 않고, 새 버전 직전 24시간 안의 후보도 별도로 검증하지 않습니다.
 - typosquat처럼 패키지 자체가 악성인 경우는 "업데이트 변경점"을 보는 이 모델의 범위가 아닙니다.
 - `package.json`만 있는 프로젝트, yarn/pnpm, Git URL 입력은 후속 범위입니다.
+- `update`는 미리보기만 합니다. 검사한 lockfile을 프로젝트에 반영하거나 설치(`npm ci`)하는 기능, 새 의존성 추가(`depbee add`), 대안 버전 고정은 없습니다.
 
 ## 검증
 
