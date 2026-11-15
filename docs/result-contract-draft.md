@@ -283,7 +283,7 @@ SVC-03 구현(`pipeline.py`의 `_known_malicious()`, `_rules()`): 탐지기가 �
 - 점수는 "ML 위험 점수"로 적고 확률로 표현하지 않는다. 점수 뒤에 `ml.status`(`hit`은 "기준 이상", `not_hit`은 "기준 미만")를 붙여, 기지 악성으로 위험이 된 항목의 점수가 기준 미만임을 보인다. 점수가 없는 항목은 `ml.status`에 따라 "없음(미실행)"과 "없음(실패)"를 나눈다(삭제 항목은 적지 않는다).
 - 탐지기 칸: 연결된 탐지기만 항목마다 적는다. 상태는 기지 악성 `hit`을 "일치", 규칙 `hit`을 "적중", `not_hit`을 "미적중", `not_run`을 "미실행", `failed`를 "실패"로 쓰고, 이유 코드(3.3절)와 `detail`을 함께 적는다. 기지 악성 일치 기록과 실행한 규칙(`checks[]`, 실패한 규칙 포함)은 하위 목록이다. Markdown 결과 표에는 연결된 탐지기마다 칸(기지 악성, 규칙)을 더하고 기지 악성 일치를 굵게 쓴다. 탐지기가 하나도 연결되지 않은 보고서의 표는 기존 일곱 칸(시간이 있으면 여덟 칸) 그대로이고 "점수" 머리글만 "ML 위험 점수"다.
 - `rule_ml_agreement`는 규칙 탐지기가 연결된 항목에만 "규칙/ML: ..."로 적고 "판정에 쓰지 않는 표시입니다."를 붙인다. `neither_hit`은 정상 판정이 아니라고 적는다.
-- 위험 항목에는 "대안(안전 보증 아님)" 줄을 더한다(ALT-01). 업데이트면 `before_version`(lockfile의 이전 버전), 새 의존성·`check`면 `compared_version`(비교 기준 버전)이고, `package_identity_changed`이거나 값이 없거나 설치될 버전과 같으면 없다. depbee가 검사한 버전이 아니며 JSON은 바뀌지 않는다([연결 규약](contracts.md) 4절).
+- 위험 항목에는 "대안(안전 보증 아님)" 줄을 더한다(ALT-01). 업데이트면 `before_version`(lockfile의 이전 버전), 새 의존성·`check`면 `compared_version`(비교 기준 버전)이고, `package_identity_changed`이거나 값이 없거나 설치될 버전과 같으면 없다. Markdown 줄은 출처 뒤에 위치를 붙인다(텍스트는 블록 머리에 위치가 있음). depbee가 검사한 버전이 아니며 JSON은 바뀌지 않는다([연결 규약](contracts.md) 4절).
 - 패키지와 외부 기록에서 온 문자열(5절의 대상 전부)은 기존 규칙대로 텍스트는 `cli._clean`, Markdown은 `cli._md`(code span)와 `cli._cell`로 넣는다. 안전 보증이 아니라는 끝 문구는 그대로다.
 
 ````markdown
@@ -303,7 +303,7 @@ SVC-03 구현(`pipeline.py`의 `_known_malicious()`, `_rules()`): 탐지기가 �
 
 ### 위험: ` demo-config-loader@2.0.1 `
 
-- 대안(안전 보증 아님): ` 2.0.0 ` (비교 기준 버전)
+- 대안(안전 보증 아님): ` 2.0.0 ` (비교 기준 버전, 위치 ` registry.npmjs.org `)
 - 기지 악성: 일치
   - ` EXAMPLE-ADVISORY-0001 ` (버전 목록에 있음, 영향 버전 ` 2.0.1 `)
 - 규칙: 미적중

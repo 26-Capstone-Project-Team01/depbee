@@ -34,6 +34,63 @@ from depbee.pipeline import scan
 FORMATS = ("text", "markdown", "json")
 ALT = "대안(안전 보증 아님)"
 EXAMPLES = Path(__file__).resolve().parents[1] / "docs" / "examples" / "result-contract"
+# Example 05 rendered by d9bd4a7 (before ALT-01): a report without a risky item must not change.
+EXAMPLE_05_TEXT = (
+    "depbee 검사 결과: 통과 (종료 코드 0)\n"
+    "바뀐 의존성 2개: 위험 0, 통과 1, 보류 0, 삭제 1\n"
+    "모델: example-model-001, 판정 기준 점수 0.5\n"
+    "기지 악성 목록: 연결 안 됨(미실행)\n"
+    "규칙: 연결 안 됨(미실행)\n"
+    "범위: lockfile에서 바뀐 의존성만 검사했습니다. 프로젝트 전체의 안전성 평가가 아닙니다.\n"
+    "소요 시간: 1.502초\n"
+    "\n"
+    "[통과] demo-date-format@5.0.3  (node_modules/demo-date-format)\n"
+    "  ML 위험 점수: 0.080 (기준 미만)\n"
+    "  분석 시간: 1.433초\n"
+    "  추출된 사실:\n"
+    "    - 비교: 5.0.2 → 5.0.3 (같은 release line의 직전 stable)\n"
+    "    - 추가·수정된 JS 파일 1개\n"
+    "  판단에 크게 작용한 특징 (+ 위험 쪽, - 정상 쪽):\n"
+    "    - 설치 스크립트 추가 = 아니오 (-1.20)\n"
+    "    - 이전 버전과의 배포 간격 = 2.0일 (-0.50)\n"
+    "    + 추가·수정된 JS 파일 수 = 1 (+0.15)\n"
+    "    나머지 특징 26개 합 +0.11, 모델 기준값 -1.00 (합계 -2.44 → 점수 0.080)\n"
+    "\n"
+    "[삭제] example-old-dep@1.0.0  (node_modules/example-old-dep)\n"
+    "  이유: 현재 lockfile에서 삭제됨\n"
+    "\n"
+    "'통과'는 모델의 판정일 뿐 패키지가 안전하다는 보증이 아닙니다.\n"
+)
+EXAMPLE_05_MARKDOWN = (
+    "## depbee 검사 결과: 통과 (종료 코드 0)\n"
+    "\n"
+    "- 바뀐 의존성 2개: 위험 0, 통과 1, 보류 0, 삭제 1\n"
+    "- 모델: ` example-model-001 `, 판정 기준 점수 0.5\n"
+    "- 기지 악성 목록: 연결 안 됨(미실행)\n"
+    "- 규칙: 연결 안 됨(미실행)\n"
+    "- 범위: lockfile에서 바뀐 의존성만 검사했습니다. 프로젝트 전체의 안전성 평가가 아닙니다.\n"
+    "- 소요 시간: 1.502초\n"
+    "\n"
+    "| 판정 | 패키지 | 설치될 버전 | 비교 버전 | ML 위험 점수 | 이유 | 위치 | 분석 시간 |\n"
+    "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+    "| 통과 | ` demo-date-format ` | ` 5.0.3 ` | ` 5.0.2 ` | 0.080 (기준 미만) | - | "
+    "` node_modules/demo-date-format ` | 1.433초 |\n"
+    "| 삭제 | ` example-old-dep ` | - | - | - | 현재 lockfile에서 삭제됨 | "
+    "` node_modules/example-old-dep ` | - |\n"
+    "\n"
+    "### 통과: ` demo-date-format@5.0.3 `\n"
+    "\n"
+    "- 추출된 사실:\n"
+    "  - ` 비교: 5.0.2 → 5.0.3 (같은 release line의 직전 stable) `\n"
+    "  - ` 추가·수정된 JS 파일 1개 `\n"
+    "- 모델 설명, ML 위험 점수에 크게 작용한 특징(기여도 + 위험 쪽, - 정상 쪽):\n"
+    "  - 설치 스크립트 추가 = ` 아니오 ` (-1.20)\n"
+    "  - 이전 버전과의 배포 간격 = ` 2.0일 ` (-0.50)\n"
+    "  - 추가·수정된 JS 파일 수 = ` 1 ` (+0.15)\n"
+    "  - 나머지 특징 26개 합 +0.11, 모델 기준값 -1.00 (합계 -2.44 → 점수 0.080)\n"
+    "\n"
+    "> '통과'는 모델의 판정일 뿐 패키지가 안전하다는 보증이 아닙니다.\n"
+)
 
 
 def capture(function, *args):
@@ -306,8 +363,8 @@ class AlternativeVersionTests(FormatFixture):
         text, markdown = capture(_print_text, report), capture(_print_markdown, report)
         self.assertIn(f"  이유: {REASON_LABELS['analysis_failed']}\n"
                       f"  {ALT}: 1.0.0 (lockfile의 이전 버전)\n  상세: mismatch\n", text)  # fmt: skip
-        self.assertIn(f"### 위험: ` example@1.1.0 `\n\n- {ALT}: ` 1.0.0 ` (lockfile의 이전 버전)\n"
-                      "- 상세: ` mismatch `\n", markdown)  # fmt: skip
+        self.assertIn(f"### 위험: ` example@1.1.0 `\n\n- {ALT}: ` 1.0.0 ` (lockfile의 이전 버전, "
+                      "위치 ` node_modules/example `)\n- 상세: ` mismatch `\n", markdown)  # fmt: skip
         self.assertEqual(as_json(report), kept)
         self.assertNotIn("\\ub300\\uc548", kept)  # no alternative in the JSON report
 
@@ -315,15 +372,19 @@ class AlternativeVersionTests(FormatFixture):
         report = self.new_dependency(baseline_version="1.9.0")
         self.assertEqual(
             self.lines(report),
-            ([f"  {ALT}: 1.9.0 (비교 기준 버전)"], [f"- {ALT}: ` 1.9.0 ` (비교 기준 버전)"]),
+            (
+                [f"  {ALT}: 1.9.0 (비교 기준 버전)"],
+                [f"- {ALT}: ` 1.9.0 ` (비교 기준 버전, 위치 ` node_modules/fresh `)"],
+            ),
         )
         # check (no lockfile): the synthetic example 3, rendered as in result-contract-draft 8.
         path = EXAMPLES / "03-known-malicious-low-ml.json"
         report = json.loads(path.read_text(encoding="utf-8"))
         self.assertIn(f"  ML 위험 점수: 0.040 (기준 미만)\n  {ALT}: 2.0.0 (비교 기준 버전)\n"
                       "  기지 악성: 일치\n", capture(_print_text, report))  # fmt: skip
-        self.assertIn(f"### 위험: ` demo-config-loader@2.0.1 `\n\n- {ALT}: ` 2.0.0 ` (비교 기준 버전)\n"
-                      "- 기지 악성: 일치\n", capture(_print_markdown, report))  # fmt: skip
+        self.assertIn(f"### 위험: ` demo-config-loader@2.0.1 `\n\n- {ALT}: ` 2.0.0 ` (비교 기준 버전, "
+                      "위치 ` registry.npmjs.org `)\n- 기지 악성: 일치\n",
+                      capture(_print_markdown, report))  # fmt: skip
 
     def test_no_compared_version_shows_no_alternative(self):
         report = self.new_dependency()
@@ -352,10 +413,73 @@ class AlternativeVersionTests(FormatFixture):
         self.assertEqual(sorted(r["package"] for r in flagged), ["example", "high", "zeta"])
         text, markdown = self.lines(report)
         self.assertEqual(text, [f"  {ALT}: 1.0.0 (lockfile의 이전 버전)"] * 3)
-        self.assertEqual(markdown, [f"- {ALT}: ` 1.0.0 ` (lockfile의 이전 버전)"] * 3)
+        self.assertEqual(markdown, [f"- {ALT}: ` 1.0.0 ` (lockfile의 이전 버전, 위치 "
+                                    f"` node_modules/{name} `)" for name in ("high", "zeta", "example")])  # fmt: skip
         # ML over the threshold but held by a failed detector (D-7): unfinished, no alternative.
         self.assertEqual(self.lines(self.cases()["D-7 rule failed"]), ([], []))
         self.assertEqual(self.lines(self.scan_with(0.1)), ([], []))  # passed
+
+    def test_alternative_alone_makes_a_section(self):
+        report = self.scan_with(0.9)  # flagged; no detail, detectors, explanation
+        report["results"][0]["evidence"] = []
+        self.assertTrue(capture(_print_markdown, report).endswith(
+            f"\n### 위험: ` example@1.1.0 `\n\n- {ALT}: ` 1.0.0 ` (lockfile의 이전 버전, 위치 "
+            "` node_modules/example `)\n\n> '통과'는 모델의 판정일 뿐 패키지가 안전하다는 보증이 아닙니다.\n"))  # fmt: skip
+        report["results"][0]["before_version"] = "1.1.0"  # no alternative: no section
+        self.assertNotIn("### ", capture(_print_markdown, report))
+
+    def test_each_location_of_one_package_version_shows_its_own(self):
+        # Three locations of example@1.1.0, all flagged; the new one has no alternative and,
+        # without evidence, no section, so the table order alone cannot tell the sections apart.
+        nested = "node_modules/a/node_modules/example"
+        self.old["packages"][nested] = package("0.9.0")
+        self.new["packages"][nested] = package("1.1.0")
+        self.new["packages"]["node_modules/b/node_modules/example"] = package("1.1.0")
+        self.save_locks()
+        report = self.scan_with(0.9)
+        self.assertEqual([(r["package"], r["after_version"], r["status"]) for r in report["results"]],
+                         [("example", "1.1.0", "flagged")] * 3)  # fmt: skip
+        for item in report["results"]:
+            item["evidence"] = []
+        markdown = capture(_print_markdown, report)
+        self.assertEqual(markdown.count("\n### 위험: ` example@1.1.0 `\n"), 2)
+        self.assertEqual(sorted(self.lines(report)[1]), [
+            f"- {ALT}: ` 0.9.0 ` (lockfile의 이전 버전, 위치 ` {nested} `)",
+            f"- {ALT}: ` 1.0.0 ` (lockfile의 이전 버전, 위치 ` node_modules/example `)",
+        ])  # fmt: skip
+
+    def test_hostile_compared_version_stays_inert(self):
+        def outputs(text):
+            report = self.new_dependency(baseline_version="1.9.0")
+            (fresh,) = [r for r in report["results"] if r["package"] == "fresh"]
+            fresh["compared_version"] = text
+            return capture(_print_text, report), capture(_print_markdown, report)
+
+        plain_text, plain_md = outputs("plain")
+        self.assertIn(f"  {ALT}: plain (비교 기준 버전)\n", plain_text)
+        self.assertIn(
+            f"- {ALT}: ` plain ` (비교 기준 버전, 위치 ` node_modules/fresh `)\n", plain_md
+        )
+        for text in HOSTILE:
+            with self.subTest(text=text):
+                output, markdown = outputs(text)
+                self.assertEqual(output.count("\n"), plain_text.count("\n"))
+                self.assertEqual(outside_code_spans(markdown), outside_code_spans(plain_md))
+                table = [line for line in markdown.split("\n") if line.startswith("|")]
+                self.assertEqual(len(table), 4)  # header, separator, example, fresh
+                self.assertEqual({unescaped_pipes(line) for line in table}, {8})  # 7 columns
+                for rendered in (output, markdown):
+                    self.assertTrue(all(c.isprintable() or c == "\n" for c in rendered))
+
+    def test_reports_without_a_risky_item_render_as_before(self):
+        # Example 05 (passed and removed) rendered by d9bd4a7, before ALT-01; 01, 04, 06 have no
+        # alternative either.
+        report = json.loads((EXAMPLES / "05-detectors-not-configured.json").read_text("utf-8"))
+        self.assertEqual(capture(_print_text, report), EXAMPLE_05_TEXT)
+        self.assertEqual(capture(_print_markdown, report), EXAMPLE_05_MARKDOWN)
+        for name in ("01-rule-only", "04-analysis-failed", "06-analyzer-not-configured"):
+            report = json.loads((EXAMPLES / f"{name}.json").read_text("utf-8"))
+            self.assertEqual(self.lines(report), ([], []))
 
 
 class EscapeTests(FormatFixture):
@@ -383,7 +507,7 @@ class EscapeTests(FormatFixture):
         plain_md = capture(_print_markdown, self.report("plain"))
         plain_text = capture(_print_text, self.report("plain"))
         self.assertNotIn("plain", outside_code_spans(plain_md))
-        self.assertIn(f"- {ALT}: ` plain-old ` (lockfile의 이전 버전)", plain_md)
+        self.assertIn(f"- {ALT}: ` plain-old ` (lockfile의 이전 버전, 위치 ` plain `)", plain_md)
         self.assertIn(f"  {ALT}: plain-old (lockfile의 이전 버전)", plain_text)
         for text in HOSTILE:
             with self.subTest(text=text):

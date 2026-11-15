@@ -84,7 +84,7 @@ class MarkdownEscapeTests(Fixture):
     def test_every_external_string_is_one_inert_code_span(self):
         plain = outside_code_spans(render(self.report("plain")))
         self.assertNotIn("plain", plain)
-        self.assertIn("- 대안(안전 보증 아님):  (lockfile의 이전 버전)\n", plain)
+        self.assertIn("- 대안(안전 보증 아님):  (lockfile의 이전 버전, 위치 )\n", plain)
         for text in HOSTILE:
             with self.subTest(text=text):
                 output = render(self.report(text))

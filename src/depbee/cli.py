@@ -500,7 +500,11 @@ def _markdown_details(row: dict) -> list[str]:
     target = _md(f"{row['package']}@{row['after_version'] or row['before_version']}")
     lines = ["", f"### {_md_label(STATUS_LABELS, row['status'])}: {target}", ""]
     if alternative:
-        lines.append(f"- 대안(안전 보증 아님): {_md(alternative[0])} ({alternative[1]})")
+        # The heading has no location and rows without details have no section, so say which.
+        lines.append(
+            f"- 대안(안전 보증 아님): {_md(alternative[0])}"
+            f" ({alternative[1]}, 위치 {_md(row['location'])})"
+        )
     if row.get("detail"):
         lines.append(f"- 상세: {_md(row['detail'])}")
     for line, subs in detectors:
