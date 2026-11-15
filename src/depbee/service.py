@@ -3,17 +3,23 @@
 Detection and verdicts stay in pipeline.scan(); output formats and exit handling stay with callers.
 """
 
+import hashlib
 import os
+import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
 
 from .analysis import bounded, cache
 from .analysis.artifact import ArtifactAnalyzer
-from .contracts import GuardError, elapsed_since
+from .contracts import GuardError, elapsed_since, read_json
 from .inference.lightgbm import LightGBMPredictor
+from .inputs import npm_cli
 from .inputs.npm import build_package_request, build_request, check_package_spec
 from .pipeline import scan
+
+NPMRC_NOTICE = "프로젝트 .npmrc는 복사하지 않았습니다. 사용자·전역 npm 설정은 적용될 수 있습니다."
+PREVIEW_NOTICE = "미리보기만 했고 프로젝트 파일은 아무것도 바꾸지 않았습니다."
 
 
 def plan_project(
@@ -175,3 +181,81 @@ def check_package(
         # The one change's metadata was read before analyze(); count it in that result's time.
         report = scan(request, analyzer, predictor)
     return _timed(report, analyzer, started, {request["changes"][0]["change_id"]: fetched})
+
+
+def preview_update(
+    project: Path,
+    packages: list[str] | None = None,
+    *,
+    model_dir: Path | None = None,
+    progress: Callable[[int, int, dict], None] | None = None,
+    cache_dir: Path | None = None,
+    no_cache: bool = False,
+) -> dict:
+    """Preview npm update in a temporary copy and check the lockfile it would write.
+
+    packages: bare package.json dependency names; None or empty updates everything, always
+    within the package.json ranges. Only package.json and package-lock.json are copied (never
+    the project's .npmrc) and npm runs there with --package-lock-only --ignore-scripts; the
+    project itself is only read. The new lockfile is checked against the project's current one
+    with scan_project(extract=True), whose report is returned unchanged next to a preview:
+    {preview: {targets, npm_version, package_json_sha256, package_lock_sha256,
+    new_package_lock_sha256, package_json_changed, changed_count, project_npmrc_ignored,
+    notices}, report}. targets is null for everything.
+    model_dir, progress, cache_dir, no_cache: as in scan_project().
+
+    Raises GuardError, OSError or ValueError for unsupported projects, invalid names, npm
+    failures and the errors of scan_project(); the caller maps them to its error output. Errors
+    about the temporary folder or the files in it never name its path, and a folder that cannot
+    be created or removed is a GuardError.
+    """
+    names = list(packages or [])
+    package_bytes, lock_bytes, package = npm_cli.read_project(project)
+    npm_cli.check_names(names, package)
+    npmrc = os.path.lexists(project / ".npmrc")
+    try:
+        folder = tempfile.TemporaryDirectory(prefix="depbee_preview_")
+    except OSError as exc:  # its message would name the folder
+        raise GuardError(
+            f"The temporary preview folder could not be created ({type(exc).__name__})"
+        ) from None
+    try:
+        with folder as tmp:
+            work, base = Path(tmp) / "project", Path(tmp) / "base-package-lock.json"
+            try:
+                work.mkdir()
+                # The bytes hashed below are the bytes npm and the scan see, even if the project
+                # changes meanwhile.
+                (work / "package.json").write_bytes(package_bytes)
+                (work / "package-lock.json").write_bytes(lock_bytes)
+                base.write_bytes(lock_bytes)
+                npm_version = npm_cli.update_lock(work, names)
+                new_package = (work / "package.json").read_bytes()
+                _, new_lock_sha256 = read_json(work / "package-lock.json")
+                report = scan_project(
+                    work, base, extract=True, model_dir=model_dir, progress=progress,
+                    cache_dir=cache_dir, no_cache=no_cache,
+                )  # fmt: skip
+            except (GuardError, OSError, ValueError) as exc:
+                if Path(tmp).name not in str(exc):
+                    raise  # npm errors, or about the model or cache folders the caller gave
+                raise GuardError(
+                    "A file in the temporary preview folder could not be written, read or "
+                    f"checked ({type(exc).__name__})"
+                ) from None
+    except OSError:
+        if not os.path.lexists(folder.name):
+            raise
+        raise GuardError("The temporary preview folder could not be removed") from None
+    preview = {
+        "targets": names or None,
+        "npm_version": npm_version,
+        "package_json_sha256": hashlib.sha256(package_bytes).hexdigest(),
+        "package_lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
+        "new_package_lock_sha256": new_lock_sha256,
+        "package_json_changed": new_package != package_bytes,
+        "changed_count": len(report["results"]),
+        "project_npmrc_ignored": npmrc,
+        "notices": [NPMRC_NOTICE] * npmrc + [PREVIEW_NOTICE],
+    }
+    return {"preview": preview, "report": report}

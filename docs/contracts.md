@@ -158,3 +158,57 @@ feature를 추출한 보고서(`scan --extract`, `check`)에만 소요 시간과
 - 기지 악성 `hit`이면 점수가 기준 미만이거나 ML 경로가 미완료여도 항목은 `flagged`(종료 코드 기여 1)다. 낮은 점수는 이 경고를 취소하지 않는다. ML 경로의 `score`, `reason`·`detail`, `ml.status`는 그대로 남는다.
 - 그 밖에 연결된 탐지기가 `failed`(탐지기 예외, 잘못된 형태의 결과, 규칙에 필요한 분석 입력 실패, 기지 악성과 대조할 변경의 tarball URL 파싱 실패, 기준 시점 형식이 어긋난 목록의 미적중)이거나 실행한 규칙 중 일부가 실패했으면(다른 규칙이 `hit`이어도) 항목은 `incomplete`(종료 코드 기여 2)다. ML 경로가 이미 미완료면 그 `reason`·`detail`을 유지하고, 완료됐으면 `reason`은 `detection_failed`이고 점수는 지우지 않는다.
 - 규칙 `hit`과 규칙/ML 불일치는 상태를 바꾸지 않는다. 일부 규칙이 실패하고 다른 규칙이 `hit`이면 `rules.status`는 `hit`이지만 위 `failed` 규칙대로 항목은 `incomplete`이고(DEC-01 B, 하람 결정 2026-11-14), 실패한 규칙은 `rules.checks`에 `failed`로 남는다. 전체 종료 코드는 위와 같이 최종 항목 상태로 정한다(미완료 2 > 위험 1 > 0).
+
+## 5. 업데이트 미리보기 (`depbee update`)
+
+`depbee update [이름...] [--project 폴더]`(서비스 함수 `preview_update`)의 JSON 출력(`--format json`, `--output`)은 4절 보고서를 감싸는 진입점 형식이다. MCP 응답(4절 끝)처럼 결과 계약 밖에 두며, 보고서 필드는 바꾸거나 더하지 않는다(하람 결정 2026-11-15).
+
+```json
+{
+  "preview": {
+    "targets": ["lodash"],
+    "npm_version": "11.6.1",
+    "package_json_sha256": "원본 package.json 바이트의 SHA-256",
+    "package_lock_sha256": "원본 package-lock.json 바이트의 SHA-256",
+    "new_package_lock_sha256": "npm이 계산한 새 package-lock.json의 SHA-256",
+    "package_json_changed": false,
+    "changed_count": 1,
+    "project_npmrc_ignored": false,
+    "notices": ["미리보기만 했고 프로젝트 파일은 아무것도 바꾸지 않았습니다."]
+  },
+  "report": "scan --extract --format json과 같은 4절 보고서"
+}
+```
+
+- `targets`: 요청한 패키지 이름 목록, 이름 없이 전체를 미리보면 null. 이름만 받고(버전·범위 거부) `package.json`의 `dependencies`·`devDependencies`·`optionalDependencies`에 있어야 한다.
+- `package_json_sha256`·`package_lock_sha256`: depbee가 한 번 읽어 임시 폴더에 복사한 바로 그 바이트의 해시다. 보고서의 비교 기준도 이 바이트다. 반영 게이트(5.1)가 미리보기 뒤 파일이 바뀌었는지 확인하는 데 쓴다.
+- `new_package_lock_sha256`: npm 실행 뒤 임시 폴더의 lockfile 해시. 바뀐 것이 없으면 `package_lock_sha256`과 같다.
+- `package_json_changed`: npm 실행 뒤 임시 폴더의 `package.json`이 원본과 다른지. `npm update`는 기본으로 `package.json`을 쓰지 않는다(npm 11.6.1 `lib/commands/update.js` 44-48행).
+- `changed_count`: 보고서 `results`의 개수(lockfile에서 바뀐 위치 수, 삭제 포함).
+- `project_npmrc_ignored`: 프로젝트에 `.npmrc`가 있어 복사하지 않았는지. true이면 `notices` 앞에 "프로젝트 .npmrc는 복사하지 않았습니다. 사용자·전역 npm 설정은 적용될 수 있습니다."가 있다. 사용자 `~/.npmrc`는 npm이 읽으므로 미리보기가 공개 registry만을 기준으로 한다고 보장하지 않는다.
+- `notices`: depbee가 정한 한국어 문구. 패키지에서 온 문자열은 넣지 않는다.
+- 임시 폴더 경로, npm 출력, `.npmrc` 내용은 넣지 않는다. 오류 JSON에도 임시 폴더 경로를 넣지 않는다(임시 폴더 생성·삭제 실패와 그 안 파일의 쓰기·읽기·파싱·검사 오류는 경로 없는 고정 문구다).
+- npm은 `--version`과 `update --package-lock-only --ignore-scripts`로만 실행하고 두 호출 모두 `--prefix=<임시 폴더>`·`--workspaces=false`·`--git=<없는 파일>`을 고정한다. 알려진 예외(막지 않음): Git 호스트(GitHub 등)의 커밋을 40자 sha로 정확히 가리키는 의존성은 update 중 registry에서 새로 받은 패키지가 그런 의존성을 가지면 npm 11.6.1은 Git 없이 그 호스트에서 커밋의 tarball을 받아 npm 캐시의 임시 폴더(`_cacache/tmp/git-clone*`)에 풀고, 그 패키지에 준비용 script(`prepare`, `build`, `install` 등)나 `workspaces`가 있으면 그 폴더에서 준비용 설치(`npm install --force ... --no-package-lock-only --no-dry-run`)를 실행할 수 있다(pacote 21.0.3 `lib/git.js` 43-50·152-188·193-248·297-310행, `lib/fetcher.js` 98-120행, `lib/util/npm.js` 4-13행). 이 설치는 원본 프로젝트나 depbee 임시 폴더와 무관하고, 상속된 `npm_config_ignore_scripts=true`와 `npm_config_git` 때문에 lifecycle script와 Git은 실행되지 않는다고 소스로 판단하지만 실행으로 확인하지 않았다. npm 11에는 이를 끄는 설정이 없고, npm 12는 Git 의존성을 `--allow-git` 없이는 막는다(GitHub Changelog 2026-06-09, 실행하지 않음).
+- `report`: `scan_project(<임시 폴더>, base_lock=<원본 lockfile 바이트의 사본>, extract=True)`의 보고서 그대로다. 그래서 같은 두 lockfile로 `depbee scan --base-lock ... --extract --format json`을 실행한 보고서와 시간 필드(`elapsed_seconds`)와 `cache_hit`만 다를 수 있다. 종료 코드는 이 보고서의 `exit_code`(0/1/2)이고, 입력·지원 범위·npm 오류는 판정 없이 stderr의 error JSON과 종료 코드 2다.
+- 텍스트·Markdown은 미리보기 요약(대상, npm 버전, `package.json` 변경 여부, 바뀐 항목 수, `notices`)을 먼저 보이고 이어서 4절 렌더링을 그대로 보인다.
+
+### 5.1 반영 게이트 (설계, 미구현)
+
+`apply_update`(미리보기 결과를 프로젝트에 반영)는 아직 없다. 아래는 client-dev 2.3절 9번 권장안을 옮긴 설계이며, 하람 확인 전이다. CLI 옵션 이름과 대시보드 화면은 구현 때 정한다.
+
+- 입력: 위 `{preview, report}` 하나. 반영 대상은 그 미리보기가 검사한 새 lockfile이다.
+- 판정 단위: 최상위 `exit_code`가 아니라 `report.results[]`의 항목별 필드로 판단한다(2가 1을 덮으므로). `actions.py`의 `decide()`와 같은 방식이다.
+  - `known_malicious.status`가 `hit`인 항목이 하나라도 있으면 반영·설치하지 않는다. 예외와 확인 옵션이 없다. 낮은 ML 위험 점수는 이 거부를 바꾸지 않는다.
+  - `ml.status`가 `hit`(ML 기준 이상)이거나 `status`가 `incomplete`(보류)인 항목이 있으면 항목별 판정·이유·근거를 보여 주고, 사용자가 명시적으로 확인해야 진행한다. CLI는 확인 옵션, 대시보드는 확인 단계다. 확인 없이 실행하면 아무것도 바꾸지 않는다. 보류는 통과가 아니며 확인했다는 사실을 실행 기록에 남긴다.
+  - 나머지(`not_flagged`, `removed`)만 있으면 진행한다.
+- 오류: 미리보기·검사·반영 중 어느 단계든 오류면 프로젝트 파일을 바꾸지 않는다.
+- 미리보기 뒤 변경 확인: 반영 직전에 프로젝트의 `package.json`·`package-lock.json` 해시를 다시 계산해 `preview.package_json_sha256`·`preview.package_lock_sha256`과 다르면 반영하지 않는다. 반영하는 lockfile은 해시가 `preview.new_package_lock_sha256`과 같아야 한다.
+- 반영 방법: (a) lockfile 반영은 검사한 새 `package-lock.json`(그리고 바뀌었다면 `package.json`)을 프로젝트에 쓴다(같은 폴더의 임시 파일에 쓴 뒤 교체). (b) 설치까지는 (a) 뒤 프로젝트에서 `npm ci --ignore-scripts`를 실행한다(검사한 lockfile 그대로 설치). npm 실행 규칙은 미리보기와 같다(node와 npm-cli.js 직접 실행, 셸 없음, 환경 정리, 시간·출력 상한).
+- 실행 기록: 미리보기 해시, 반영한 파일 해시, 사용자 확인 여부와 그 대상 항목, npm 버전과 종료 코드, 시각. 저장 위치는 로컬 이력 저장소(HIST-01) 이후 정한다.
+- 결정 필요(하람):
+  1. 확인 옵션의 이름과 단위(예: ML 기준 이상·보류를 한 번에 허용하는 옵션 하나인지, 항목별 확인인지).
+  2. 기지 악성 탐지기가 연결되지 않았거나(`not_run`, `detector_not_configured`) 실패(`failed`)한 보고서로 반영을 허용할지. 지금 CLI에는 기지 악성 탐지기가 없어 모든 항목이 `not_run`이다.
+  3. 미리보기 lockfile을 보관해 그대로 반영할지(보관 위치·수명), 반영 때 다시 계산해 해시가 같을 때만 반영할지. 다시 계산하면 그 사이 registry 변화로 해시가 달라질 수 있다.
+  4. 반영 실패 시 되돌리는 방법(원본 백업 위치 또는 되돌리는 명령 안내).
+  5. `npm ci`에 `--ignore-scripts`를 항상 붙일지, 사용자 옵션으로 둘지(client-dev 4.2절 초안은 옵션).
+  6. 실행 기록의 저장(HIST-01 이후).

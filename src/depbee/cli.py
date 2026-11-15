@@ -9,7 +9,7 @@ from pathlib import Path
 
 from . import __version__
 from .contracts import GuardError
-from .service import check_package, plan_project, scan_project
+from .service import check_package, plan_project, preview_update, scan_project
 
 STATUS_LABELS = {
     "flagged": "위험",
@@ -154,6 +154,26 @@ def _parser() -> argparse.ArgumentParser:
     check.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
     check.add_argument("--format", choices=FORMATS, default="text")
     _cache_arguments(check)
+    update = commands.add_parser(
+        "update",
+        help="Preview npm update in a temporary copy and check the new lockfile; nothing in the "
+        "project is changed (needs Node.js with npm and .[extract])",
+    )
+    update.add_argument(
+        "packages",
+        nargs="*",
+        metavar="NAME",
+        help="package.json dependency names to update within their ranges (default: all)",
+    )
+    update.add_argument(
+        "--project", type=Path, default=Path("."), help="Project directory (default: current)"
+    )
+    update.add_argument(
+        "--output", type=Path, help="Write a NEW JSON file (never overwrite inputs)"
+    )
+    update.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
+    update.add_argument("--format", choices=FORMATS, default="text")
+    _cache_arguments(update)
     serve = commands.add_parser(
         "mcp",
         help="Serve the read-only check_package and scan_lockfile tools over MCP stdio "
@@ -534,8 +554,22 @@ def _markdown_details(row: dict) -> list[str]:
     return lines
 
 
-def _emit(report: dict, args: argparse.Namespace) -> None:
-    payload = json.dumps(report, ensure_ascii=True, indent=2, allow_nan=False) + "\n"
+def _preview_lines(preview: dict, esc) -> list[str]:
+    """The update preview header; the report follows with its own renderer."""
+    targets = preview["targets"]
+    return [
+        "대상: " + (", ".join(esc(name) for name in targets) if targets
+                    else "package.json 범위 안의 전체 의존성"),
+        f"npm {esc(preview['npm_version'])}, package.json "
+        + ("바뀜" if preview["package_json_changed"] else "변경 없음")
+        + f", lockfile에서 바뀐 항목 {preview['changed_count']}개",
+        *preview["notices"],
+    ]  # fmt: skip
+
+
+def _emit(report: dict, args: argparse.Namespace, preview: dict | None = None) -> None:
+    data = report if preview is None else {"preview": preview, "report": report}
+    payload = json.dumps(data, ensure_ascii=True, indent=2, allow_nan=False) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with args.output.open("x", encoding="utf-8", newline="\n") as stream:
@@ -543,9 +577,20 @@ def _emit(report: dict, args: argparse.Namespace) -> None:
     if args.command == "plan" or args.format == "json":
         print(payload, end="")
         return
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="backslashreplace")
     if args.format == "markdown":
+        if preview is not None:
+            lines = ["## depbee 업데이트 미리보기", ""]
+            lines += [f"- {line}" for line in _preview_lines(preview, _md)]
+            print("\n".join(lines) + "\n")
         _print_markdown(report)
         return
+    if preview is not None:
+        print("depbee 업데이트 미리보기")
+        for line in _preview_lines(preview, _clean):
+            print(line)
+        print()
     _print_text(report)
 
 
@@ -566,10 +611,21 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         progress = None
         # Extraction takes seconds per package; show progress unless stdout is JSON.
-        if args.format == "text" and (args.command == "check" or args.extract):
+        if args.format == "text" and (args.command in ("check", "update") or args.extract):
             if hasattr(sys.stderr, "reconfigure"):
                 sys.stderr.reconfigure(errors="backslashreplace")
             progress = _progress
+        if args.command == "update":
+            result = preview_update(
+                args.project,
+                args.packages,
+                model_dir=args.model_dir,
+                progress=progress,
+                cache_dir=args.cache_dir,
+                no_cache=args.no_cache,
+            )
+            _emit(result["report"], args, result["preview"])
+            return result["report"]["exit_code"]
         if args.command == "check":
             name, version = _split_package(args.package)
             report = check_package(
