@@ -187,7 +187,8 @@ feature를 추출한 보고서(`scan --extract`, `check`)에만 소요 시간과
 - `changed_count`: 보고서 `results`의 개수(lockfile에서 바뀐 위치 수, 삭제 포함).
 - `project_npmrc_ignored`: 프로젝트에 `.npmrc`가 있어 복사하지 않았는지. true이면 `notices` 앞에 "프로젝트 .npmrc는 복사하지 않았습니다. 사용자·전역 npm 설정은 적용될 수 있습니다."가 있다. 사용자 `~/.npmrc`는 npm이 읽으므로 미리보기가 공개 registry만을 기준으로 한다고 보장하지 않는다.
 - `notices`: depbee가 정한 한국어 문구. 패키지에서 온 문자열은 넣지 않는다.
-- 임시 폴더 경로, npm 출력, `.npmrc` 내용은 넣지 않는다. 오류 JSON에도 임시 폴더 경로를 넣지 않는다(임시 폴더 안 파일의 쓰기·읽기·파싱·검사 오류는 경로 없는 고정 문구다).
+- 임시 폴더 경로, npm 출력, `.npmrc` 내용은 넣지 않는다. 오류 JSON에도 임시 폴더 경로를 넣지 않는다(임시 폴더 생성·삭제 실패와 그 안 파일의 쓰기·읽기·파싱·검사 오류는 경로 없는 고정 문구다).
+- npm은 `--version`과 `update --package-lock-only --ignore-scripts`로만 실행하고 두 호출 모두 `--prefix=<임시 폴더>`·`--workspaces=false`·`--git=<없는 파일>`을 고정한다. 알려진 예외(막지 않음): Git 호스트(GitHub 등)의 커밋을 40자 sha로 정확히 가리키는 의존성은 update 중 registry에서 새로 받은 패키지가 그런 의존성을 가지면 npm 11.6.1은 Git 없이 그 호스트에서 커밋의 tarball을 받아 npm 캐시의 임시 폴더(`_cacache/tmp/git-clone*`)에 풀고, 그 패키지에 준비용 script(`prepare`, `build`, `install` 등)나 `workspaces`가 있으면 그 폴더에서 준비용 설치(`npm install --force ... --no-package-lock-only --no-dry-run`)를 실행할 수 있다(pacote 21.0.3 `lib/git.js` 43-50·152-188·193-248·297-310행, `lib/fetcher.js` 98-120행, `lib/util/npm.js` 4-13행). 이 설치는 원본 프로젝트나 depbee 임시 폴더와 무관하고, 상속된 `npm_config_ignore_scripts=true`와 `npm_config_git` 때문에 lifecycle script와 Git은 실행되지 않는다고 소스로 판단하지만 실행으로 확인하지 않았다. npm 11에는 이를 끄는 설정이 없고, npm 12는 Git 의존성을 `--allow-git` 없이는 막는다(GitHub Changelog 2026-06-09, 실행하지 않음).
 - `report`: `scan_project(<임시 폴더>, base_lock=<원본 lockfile 바이트의 사본>, extract=True)`의 보고서 그대로다. 그래서 같은 두 lockfile로 `depbee scan --base-lock ... --extract --format json`을 실행한 보고서와 시간 필드(`elapsed_seconds`)와 `cache_hit`만 다를 수 있다. 종료 코드는 이 보고서의 `exit_code`(0/1/2)이고, 입력·지원 범위·npm 오류는 판정 없이 stderr의 error JSON과 종료 코드 2다.
 - 텍스트·Markdown은 미리보기 요약(대상, npm 버전, `package.json` 변경 여부, 바뀐 항목 수, `notices`)을 먼저 보이고 이어서 4절 렌더링을 그대로 보인다.
 
