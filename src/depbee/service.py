@@ -18,7 +18,7 @@ from .inputs import npm_cli
 from .inputs.npm import build_package_request, build_request, check_package_spec
 from .pipeline import scan
 
-NPMRC_NOTICE = "프로젝트 .npmrc는 적용하지 않았습니다(공개 registry 기준 미리보기)."
+NPMRC_NOTICE = "프로젝트 .npmrc는 복사하지 않았습니다. 사용자·전역 npm 설정은 적용될 수 있습니다."
 PREVIEW_NOTICE = "미리보기만 했고 프로젝트 파일은 아무것도 바꾸지 않았습니다."
 
 
@@ -205,26 +205,43 @@ def preview_update(
     model_dir, progress, cache_dir, no_cache: as in scan_project().
 
     Raises GuardError, OSError or ValueError for unsupported projects, invalid names, npm
-    failures and the errors of scan_project(); the caller maps them to its error output.
+    failures and the errors of scan_project(); the caller maps them to its error output. Errors
+    about files in the temporary folder never name its path, and a folder that cannot be removed
+    is a GuardError.
     """
     names = list(packages or [])
     package_bytes, lock_bytes, package = npm_cli.read_project(project)
     npm_cli.check_names(names, package)
     npmrc = os.path.lexists(project / ".npmrc")
-    with tempfile.TemporaryDirectory(prefix="depbee_preview_", ignore_cleanup_errors=True) as tmp:
-        work, base = Path(tmp) / "project", Path(tmp) / "base-package-lock.json"
-        work.mkdir()
-        # The bytes hashed below are the bytes npm and the scan see, even if the project changes.
-        (work / "package.json").write_bytes(package_bytes)
-        (work / "package-lock.json").write_bytes(lock_bytes)
-        base.write_bytes(lock_bytes)
-        npm_version = npm_cli.update_lock(work, names)
-        new_package = (work / "package.json").read_bytes()
-        _, new_lock_sha256 = read_json(work / "package-lock.json")
-        report = scan_project(
-            work, base, extract=True, model_dir=model_dir, progress=progress,
-            cache_dir=cache_dir, no_cache=no_cache,
-        )  # fmt: skip
+    folder = tempfile.TemporaryDirectory(prefix="depbee_preview_")
+    try:
+        with folder as tmp:
+            work, base = Path(tmp) / "project", Path(tmp) / "base-package-lock.json"
+            try:
+                work.mkdir()
+                # The bytes hashed below are the bytes npm and the scan see, even if the project
+                # changes meanwhile.
+                (work / "package.json").write_bytes(package_bytes)
+                (work / "package-lock.json").write_bytes(lock_bytes)
+                base.write_bytes(lock_bytes)
+                npm_version = npm_cli.update_lock(work, names)
+                new_package = (work / "package.json").read_bytes()
+                _, new_lock_sha256 = read_json(work / "package-lock.json")
+                report = scan_project(
+                    work, base, extract=True, model_dir=model_dir, progress=progress,
+                    cache_dir=cache_dir, no_cache=no_cache,
+                )  # fmt: skip
+            except (GuardError, OSError, ValueError) as exc:
+                if Path(tmp).name not in str(exc):
+                    raise  # npm errors, or about the model or cache folders the caller gave
+                raise GuardError(
+                    "A file in the temporary preview folder could not be written, read or "
+                    f"checked ({type(exc).__name__})"
+                ) from None
+    except OSError:
+        if not os.path.lexists(folder.name):
+            raise
+        raise GuardError("The temporary preview folder could not be removed") from None
     preview = {
         "targets": names or None,
         "npm_version": npm_version,

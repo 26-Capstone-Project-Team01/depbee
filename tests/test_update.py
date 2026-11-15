@@ -5,7 +5,9 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -69,6 +71,7 @@ class UpdateFixture(Fixture):
         self.calls.append({"argv": argv, "cwd": Path(cwd), "env": env, "kwargs": kwargs})
         # The work folder holds only the copies when npm starts.
         self.work_files = sorted(p.name for p in Path(cwd).iterdir())
+        self.work_files_have_git = os.path.lexists(Path(cwd) / ".depbee-no-git")
         if argv[2:] == ["--version"]:
             return 0, b"11.6.1\n", b""
         return self.npm_update(Path(cwd))
@@ -100,14 +103,21 @@ class PreviewTests(UpdateFixture):
         self.preview(["example"])
         version, update = (call["argv"] for call in self.calls)
         self.assertEqual(version, [str(self.node), str(self.npm_js), "--version"])
+        work = self.calls[1]["cwd"]
+        self.assertTrue(work.is_absolute())
         self.assertEqual(update, [
             str(self.node), str(self.npm_js), "update", "--package-lock-only", "--ignore-scripts",
             "--no-audit", "--no-fund", "--no-update-notifier", "--no-progress", "--color=false",
-            "--loglevel=warn", "--", "example",
+            "--loglevel=warn", f"--prefix={work}", "--workspaces=false",
+            f"--git={work / '.depbee-no-git' / 'git'}", "--", "example",
         ])  # fmt: skip
         self.assertEqual(update.index("--"), len(update) - 2)  # names only after "--"
+        self.assertFalse(self.work_files_have_git)  # the git setting names a missing file
         for call in self.calls:
-            self.assertEqual(call["kwargs"], {"timeout": 120, "stderr_limit": 65536, "name": "npm"})
+            self.assertEqual(
+                call["kwargs"],
+                {"timeout": 120, "stderr_limit": 65536, "name": "npm", "tree": True},
+            )
             self.assertNotEqual(call["cwd"], self.upd)
         self.assertEqual(self.run.call_args.args[2], 1024 * 1024)
         self.assertEqual(self.which.call_args.args[0], "node.exe" if os.name == "nt" else "node")
@@ -201,6 +211,7 @@ class PreviewTests(UpdateFixture):
 
 class RefusalTests(UpdateFixture):
     def assert_refused(self, *packages, message=None):
+        self.run.reset_mock()
         before = self.project_state()
         with self.assertRaisesRegex(GuardError, message or ""):
             self.preview(list(packages))
@@ -261,6 +272,75 @@ class RefusalTests(UpdateFixture):
         (self.upd / "package.json").unlink()
         self.assert_refused(message="regular file")
 
+    def test_file_specs_without_a_slash_are_refused(self):
+        for spec in ("..", ".", "./x", "example.tgz", "x.TAR.GZ", "x.tar", "~/x", "C:x"):
+            with self.subTest(spec=spec):
+                self.write(self.upd / "package.json", {"dependencies": {"example": spec}})
+                self.assert_refused(message="registry ranges")
+
+    def test_overrides_must_be_registry_specs_or_root_references(self):
+        bad = {
+            "git": {"inner": "git+https://example.invalid/inner.git"},
+            "hosted": {"inner": "github:x/inner"},
+            "owner/repo": {"inner": "x/inner"},
+            "url": {"inner": "https://example.invalid/inner.tgz"},
+            "file": {"inner": "file:../inner"},
+            "directory": {"inner": ".."},
+            "tarball": {"inner": "inner.tgz"},
+            "link": {"inner": "link:../inner"},
+            "alias": {"inner": "npm:other@1.0.0"},
+            "nested": {"example": {"inner": "git+ssh://git@example.invalid/x.git"}},
+            "nested dot": {"example": {".": "file:../example"}},
+            "deep": {"example": {"a": {"b": {"inner": "github:x/y"}}}},
+            "key range": {"inner@github:x/y": "1.0.0"},
+            "scoped key range": {"@s/inner@file:../x": "1.0.0"},
+            "key name": {"../inner": "1.0.0"},
+            "unknown reference": {"inner": "$left-pad"},
+            "number": {"inner": 1},
+            "null": {"inner": None},
+            "list": {"inner": ["1.0.0"]},
+            "dot object": {"example": {".": {"x": "1"}}},
+        }
+        for case, overrides in bad.items():
+            with self.subTest(case=case):
+                self.write(self.upd / "package.json", {**self.package, "overrides": overrides})
+                self.assert_refused(message="registry overrides|must be an object")
+        self.write(self.upd / "package.json", {**self.package, "overrides": ["x"]})
+        self.assert_refused(message="overrides must be an object")
+        good = {
+            "inner": "1.2.3",
+            "other": "^2.0.0 || ~3.1",
+            "tagged": "latest",
+            "ref": "$example",
+            "@s/inner@^1.0.0": "1.0.1",
+            "example@1": {".": "1.0.1", "inner": "$example", "deeper": {"x": ">=1 <2"}},
+        }
+        self.write(self.upd / "package.json", {**self.package, "overrides": good})
+        self.preview()
+        self.assertEqual(len(self.calls), 2)
+
+    def test_lock_entry_dependency_specs_must_be_registry_ranges(self):
+        lock = json.loads(self.base.read_text(encoding="utf-8"))
+        cases = {
+            "dependencies": {"inner": "git+https://example.invalid/inner.git"},
+            "optionalDependencies": {"inner": "file:../inner"},
+            "peerDependencies": {"inner": "x/inner"},
+        }
+        for field, specs in cases.items():
+            for location in ("node_modules/example", ""):
+                with self.subTest(field=field, location=location):
+                    changed = json.loads(json.dumps(lock))
+                    changed["packages"].setdefault(location, {})[field] = specs
+                    self.write(self.upd / "package-lock.json", changed)
+                    self.assert_refused(message="registry ranges in the lockfile")
+        changed = json.loads(json.dumps(lock))
+        changed["packages"]["node_modules/example"]["dependencies"] = ["inner"]
+        self.write(self.upd / "package-lock.json", changed)
+        self.assert_refused(message="registry ranges in the lockfile")
+        changed["packages"]["node_modules/example"]["dependencies"] = {"inner": "^1.0.0"}
+        self.write(self.upd / "package-lock.json", changed)
+        npm_cli.read_project(self.upd)
+
     def test_bundled_entries_without_resolved_are_allowed(self):
         lock = json.loads(self.base.read_text(encoding="utf-8"))
         lock["packages"]["node_modules/example/node_modules/inner"] = {
@@ -287,6 +367,7 @@ class NpmFailureTests(UpdateFixture):
         error = json.loads(err)["error"]
         self.assertRegex(error, message)
         self.assertNotIn("synthetic-token", error)
+        self.assertNotIn("depbee_preview_", error)  # no temporary path in any error
         self.assertEqual(self.project_state(), before)
         self.assertFalse([p for p in self.root.iterdir() if p.name.startswith("depbee_preview_")])
 
@@ -321,7 +402,45 @@ class NpmFailureTests(UpdateFixture):
             return 0, b"", b""
 
         self.npm_update = update
-        self.assert_error("Invalid JSON")
+        self.assert_error("preview folder could not be written, read or checked \\(GuardError\\)")
+        for fmt in ("json", "text", "markdown"):
+            with self.subTest(format=fmt):
+                code, out, err = self.cli("--format", fmt)
+                self.assertEqual((code, out), (2, ""))
+                self.assertNotIn("depbee_preview_", err)
+                self.assertNotIn(str(self.root), err.replace("\\\\", "\\"))
+
+    def test_unreadable_new_lockfile_hides_the_temporary_path(self):
+        def update(work):
+            (work / "package-lock.json").unlink()
+            return 0, b"", b""
+
+        self.npm_update = update
+        self.assert_error("could not be written, read or checked \\(FileNotFoundError\\)")
+
+    def test_copy_errors_hide_the_temporary_path(self):
+        def refuse(path, data):
+            raise PermissionError(13, "Permission denied", str(path))
+
+        with mock.patch.object(Path, "write_bytes", autospec=True, side_effect=refuse):
+            self.assert_error("could not be written, read or checked \\(PermissionError\\)")
+        self.run.assert_not_called()
+
+    def test_errors_about_other_paths_are_kept(self):
+        model = self.root / "no-model"
+        self.patch("depbee.service.scan_project", side_effect=GuardError(f"No model in {model}"))
+        self.assert_error("No model in .*no-model")
+
+    def test_a_temporary_folder_that_cannot_be_removed_is_an_error(self):
+        with (
+            mock.patch("tempfile.TemporaryDirectory.cleanup", side_effect=PermissionError),
+            self.assertRaisesRegex(
+                GuardError, "^The temporary preview folder could not be removed$"
+            ),
+        ):
+            self.preview()
+        for left in self.root.glob("depbee_preview_*"):  # if the finalizer has not removed it
+            shutil.rmtree(left)
 
     def test_bad_npm_version_output_is_an_error(self):
         self.run.side_effect = lambda argv, *a, **k: (0, ERROR_SECRET, b"")
@@ -338,6 +457,86 @@ class NpmFailureTests(UpdateFixture):
         self.npm_js.unlink()
         self.assert_error("npm-cli.js not found")
         self.run.assert_not_called()
+
+
+# A synthetic grandchild: it appends to the file in argv[1] until it is killed (or for 30 s, so
+# a failing test leaves nothing running for long).
+HEARTBEAT = (
+    "import sys, time\nend = time.monotonic() + 30\nwhile time.monotonic() < end:\n"
+    "    open(sys.argv[1], 'a').write('.')\n    time.sleep(0.05)\n"
+)
+# A synthetic parent: starts the grandchild, waits for its first beat, then sleeps or exits.
+PARENT = (
+    "import os, subprocess, sys, time\n"
+    "out = subprocess.DEVNULL if sys.argv[3] == 'exit' else None\n"
+    "subprocess.Popen([sys.executable, '-I', '-c', sys.argv[1], sys.argv[2]], stdout=out, stderr=out)\n"
+    "while not os.path.exists(sys.argv[2]):\n    time.sleep(0.05)\n"
+    "if sys.argv[3] == 'exit':\n    print('ok')\nelse:\n    time.sleep(60)\n"
+)
+
+
+class ProcessTreeTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()  # no ignore_cleanup_errors: leftovers fail
+        self.addCleanup(folder.cleanup)
+        self.tmp = Path(folder.name)
+        self.beat = self.tmp / "beat"
+
+    # A venv python.exe on Windows is a native wrapper that starts the real interpreter at once.
+    PYTHONS = dict.fromkeys([sys.executable, getattr(sys, "_base_executable", sys.executable)])
+
+    def parent(self, python, mode):
+        self.beat.unlink(missing_ok=True)
+        return [python, "-I", "-c", PARENT, HEARTBEAT, str(self.beat), mode]
+
+    def assert_stopped(self):
+        self.assertTrue(self.beat.exists())  # the grandchild did run
+        size = self.beat.stat().st_size
+        time.sleep(0.5)
+        self.assertEqual(self.beat.stat().st_size, size)
+
+    def test_timeout_kills_the_child_and_its_grandchild(self):
+        for python in self.PYTHONS:
+            with self.subTest(python=python):
+                began = time.monotonic()
+                with self.assertRaisesRegex(GuardError, "npm did not finish within 3 seconds"):
+                    git_input._run(self.parent(python, "sleep"), self.tmp, 100, timeout=3,
+                                   name="npm", tree=True)  # fmt: skip
+                self.assertLess(time.monotonic() - began, 15)
+                self.assert_stopped()
+
+    def test_a_grandchild_left_after_a_normal_exit_is_killed(self):
+        for python in self.PYTHONS:
+            with self.subTest(python=python):
+                code, out, _ = git_input._run(self.parent(python, "exit"), self.tmp, 100,
+                                              timeout=30, tree=True)  # fmt: skip
+                self.assertEqual((code, out.strip()), (0, b"ok"))
+                self.assert_stopped()
+
+    def test_a_child_cannot_start_processes_before_it_is_in_the_tree(self):
+        real = git_input._ProcessTree.__init__
+
+        def slow(tree, proc):
+            time.sleep(1)  # the parent starts its grandchild well within this second if it runs
+            real(tree, proc)
+
+        with mock.patch.object(git_input._ProcessTree, "__init__", slow):
+            self.test_a_grandchild_left_after_a_normal_exit_is_killed()
+
+    def test_processes_that_do_not_stop_are_an_error(self):
+        with (
+            mock.patch.object(git_input, "STOP_SECONDS", 0.2),
+            mock.patch.object(git_input._ProcessTree, "alive", return_value=True),
+            self.assertRaisesRegex(GuardError, "npm processes did not stop"),
+        ):
+            git_input._run(
+                [sys.executable, "-I", "-c", "pass"], self.tmp, 100, name="npm", tree=True
+            )
+
+    def test_npm_runs_with_the_tree(self):
+        with mock.patch.object(npm_cli, "_run", return_value=(0, b"", b"")) as run:
+            npm_cli._call(["node"], self.tmp, {})
+        self.assertIs(run.call_args.kwargs["tree"], True)
 
 
 class GenericRunTests(unittest.TestCase):

@@ -1,7 +1,10 @@
 """Update preview inputs: check the project, then run npm on copies in a folder depbee made.
 
-npm only ever runs as `update --package-lock-only --ignore-scripts` (no node_modules, no
-lifecycle scripts, no tarball download; docs/validation.md) in that folder, never in the project.
+npm only ever runs as `update --package-lock-only --ignore-scripts` in that folder, never in the
+project: no node_modules and no lifecycle scripts. With registry-only inputs npm 11.6.1 fetched
+package metadata and no tarball (docs/validation.md). Git never runs because npm's git setting
+points to a file that does not exist; a registry package that names a hosted Git commit could
+still be fetched as a tarball from the Git host.
 """
 
 import os
@@ -33,7 +36,10 @@ _PART = r"[A-Za-z0-9~!*'()][A-Za-z0-9._~!*'()-]*"
 UPDATE_NAME = re.compile(rf"(?:@{_PART}/)?{_PART}")
 MAX_NAME_LENGTH = 214
 DEPENDENCY_FIELDS = ("dependencies", "devDependencies", "optionalDependencies")
+LOCK_SPEC_FIELDS = (*DEPENDENCY_FIELDS, "peerDependencies")
 REGISTRY_TARBALL = "https://registry.npmjs.org/"
+# npm-package-arg reads these as files even without ":" or "/" (".." or "x.tgz").
+_FILE_SPEC = re.compile(r"\.|.*\.(?:tgz|tar\.gz|tar)$", re.IGNORECASE)
 _NPM_VERSION = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?")
 
 
@@ -44,12 +50,41 @@ def _regular_file(path: Path) -> bytes:
         return stream.read(MAX_JSON_BYTES + 1)  # parse_json rejects the extra byte
 
 
+def _registry_spec(spec: object) -> bool:
+    """A registry version, range or tag; never Git, URL, file, link, alias or owner/repo."""
+    # All of those have ":", "/" or "\", or read as a file (npm-package-arg isFileSpec).
+    return (
+        isinstance(spec, str) and not any(c in spec for c in ":/\\") and not _FILE_SPEC.match(spec)
+    )
+
+
+def _check_overrides(overrides: object, declared: set[str], where: str = "overrides") -> None:
+    if not isinstance(overrides, dict):
+        raise GuardError(f"package.json {where} must be an object")
+    for key, value in overrides.items():
+        if key != ".":
+            # "name" or "name@range"; a scoped name starts with "@".
+            scope = "@" if key.startswith("@") else ""
+            name, at, selector = key[len(scope) :].partition("@")
+            if not UPDATE_NAME.fullmatch(scope + name) or (at and not _registry_spec(selector)):
+                raise GuardError(f"update supports only registry overrides: {where} {key}")
+        if isinstance(value, dict) and key != ".":
+            _check_overrides(value, declared, f"{where} {key}")
+        elif not (
+            value[1:] in declared  # "$name": the spec of that package.json dependency
+            if isinstance(value, str) and value.startswith("$")
+            else _registry_spec(value)
+        ):
+            raise GuardError(f"update supports only registry overrides: {where} {key}")
+
+
 def read_project(project: Path) -> tuple[bytes, bytes, dict]:
     """(package.json bytes, package-lock.json bytes, package.json) of a project npm update supports.
 
-    Refused before npm runs (GuardError): npm-shrinkwrap.json, workspaces, dependency specs that
-    are not registry ranges or tags, and lock entries that are links, workspaces, or have a
-    resolved value outside https://registry.npmjs.org/.
+    Refused before npm runs (GuardError): npm-shrinkwrap.json, workspaces, dependency specs and
+    overrides that are not registry ranges or tags (an override may also be "$name" of a
+    package.json dependency), and lock entries that are links, workspaces, have a resolved value
+    outside https://registry.npmjs.org/ or a dependency spec that is not a registry range.
     """
     if not project.is_dir():
         raise GuardError(f"Project directory not found: {project}")
@@ -61,23 +96,35 @@ def read_project(project: Path) -> tuple[bytes, bytes, dict]:
     lock, _ = parse_json(lock_bytes, project / "package-lock.json")
     if "workspaces" in package:
         raise GuardError("update does not support npm workspaces")
-    for field in (*DEPENDENCY_FIELDS, "peerDependencies"):
+    for field in LOCK_SPEC_FIELDS:
         specs = package.get(field, {})
         if not isinstance(specs, dict):
             raise GuardError(f"package.json {field} must be an object")
         for name, spec in specs.items():
-            # Git, file, link, URL, alias and owner/repo specs all have ":" or "/".
-            if not isinstance(spec, str) or any(c in spec for c in ":/\\"):
+            if not _registry_spec(spec):
                 raise GuardError(f"update supports only registry ranges in package.json: {name}")
+    if "overrides" in package:
+        # npm resolves override values while it builds the new tree, Git ones with Git.
+        declared = {name for field in LOCK_SPEC_FIELDS for name in package.get(field, {})}
+        _check_overrides(package["overrides"], declared)
     if type(lock.get("lockfileVersion")) is not int or lock["lockfileVersion"] not in (2, 3):
         raise GuardError("Only package-lock.json lockfileVersion 2 and 3 are supported")
     packages = lock.get("packages")
     if not isinstance(packages, dict):
         raise GuardError("package-lock.json must contain a packages object")
     for location, entry in packages.items():
+        if not isinstance(entry, dict):
+            raise GuardError(f"update does not support link or workspace entries: {location}")
+        for field in LOCK_SPEC_FIELDS:
+            specs = entry.get(field, {})
+            # npm reads these specs again while it builds the new tree.
+            if not isinstance(specs, dict) or not all(map(_registry_spec, specs.values())):
+                raise GuardError(
+                    f"update supports only registry ranges in the lockfile: {location}"
+                )
         if location == "":
             continue
-        if not isinstance(entry, dict) or "node_modules/" not in location or entry.get("link"):
+        if "node_modules/" not in location or entry.get("link"):
             raise GuardError(f"update does not support link or workspace entries: {location}")
         resolved = entry.get("resolved")
         if resolved is None and entry.get("inBundle"):
@@ -143,7 +190,7 @@ def _call(argv: list[str], cwd: Path, env: dict[str, str]) -> tuple[int, bytes]:
     try:
         code, out, _ = _run(
             argv, cwd, STDOUT_LIMIT, env,
-            timeout=TIMEOUT_SECONDS, stderr_limit=STDERR_LIMIT, name="npm",
+            timeout=TIMEOUT_SECONDS, stderr_limit=STDERR_LIMIT, name="npm", tree=True,
         )  # fmt: skip
     except OSError as exc:
         raise GuardError(f"Unable to run npm: {exc.strerror or type(exc).__name__}") from exc
@@ -151,13 +198,24 @@ def _call(argv: list[str], cwd: Path, env: dict[str, str]) -> tuple[int, bytes]:
 
 
 def update_lock(work: Path, names: list[str]) -> str:
-    """Run npm update on the package.json and package-lock.json in work; return the npm version."""
+    """Run npm update on the package.json and package-lock.json in work; return the npm version.
+
+    work is an absolute path to a folder depbee made.
+    """
     npm, env = _npm(), _environment()
+    no_git = work / ".depbee-no-git" / "git"
+    if not work.is_absolute() or os.path.lexists(no_git.parent):
+        raise GuardError("npm needs a new, absolute work folder")
     code, out = _call([*npm, "--version"], work, env)
     version = out.decode("ascii", "replace").strip()
     if code or not _NPM_VERSION.fullmatch(version):
         raise GuardError(f"Cannot read the npm version (exit code {code})")
-    code, _ = _call([*npm, "update", *FIXED_OPTIONS, "--", *names], work, env)
+    # @npmcli/config: a CLI prefix is used as the project folder as is, and workspaces=false
+    # stops the search for a workspace root above it (lib/index.js loadLocalPrefix). @npmcli/git
+    # runs the git setting as the Git program (lib/which.js), so a missing file makes every Git
+    # step fail; npm exports the setting to the npm it starts for a Git package (set-envs.js).
+    pinned = (f"--prefix={work}", "--workspaces=false", f"--git={no_git}")
+    code, _ = _call([*npm, "update", *FIXED_OPTIONS, *pinned, "--", *names], work, env)
     if code:
         raise GuardError(f"npm update failed with exit code {code}")
     if os.path.lexists(work / "node_modules"):
