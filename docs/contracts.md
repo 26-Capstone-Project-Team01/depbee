@@ -185,9 +185,9 @@ feature를 추출한 보고서(`scan --extract`, `check`)에만 소요 시간과
 - `new_package_lock_sha256`: npm 실행 뒤 임시 폴더의 lockfile 해시. 바뀐 것이 없으면 `package_lock_sha256`과 같다.
 - `package_json_changed`: npm 실행 뒤 임시 폴더의 `package.json`이 원본과 다른지. `npm update`는 기본으로 `package.json`을 쓰지 않는다(npm 11.6.1 `lib/commands/update.js` 44-48행).
 - `changed_count`: 보고서 `results`의 개수(lockfile에서 바뀐 위치 수, 삭제 포함).
-- `project_npmrc_ignored`: 프로젝트에 `.npmrc`가 있어(복사하지 않았으므로) 적용하지 않았는지. true이면 `notices` 앞에 "프로젝트 .npmrc는 적용하지 않았습니다(공개 registry 기준 미리보기)."가 있다.
+- `project_npmrc_ignored`: 프로젝트에 `.npmrc`가 있어 복사하지 않았는지. true이면 `notices` 앞에 "프로젝트 .npmrc는 복사하지 않았습니다. 사용자·전역 npm 설정은 적용될 수 있습니다."가 있다. 사용자 `~/.npmrc`는 npm이 읽으므로 미리보기가 공개 registry만을 기준으로 한다고 보장하지 않는다.
 - `notices`: depbee가 정한 한국어 문구. 패키지에서 온 문자열은 넣지 않는다.
-- 임시 폴더 경로, npm 출력, `.npmrc` 내용은 넣지 않는다.
+- 임시 폴더 경로, npm 출력, `.npmrc` 내용은 넣지 않는다. 오류 JSON에도 임시 폴더 경로를 넣지 않는다(임시 폴더 안 파일의 쓰기·읽기·파싱·검사 오류는 경로 없는 고정 문구다).
 - `report`: `scan_project(<임시 폴더>, base_lock=<원본 lockfile 바이트의 사본>, extract=True)`의 보고서 그대로다. 그래서 같은 두 lockfile로 `depbee scan --base-lock ... --extract --format json`을 실행한 보고서와 시간 필드(`elapsed_seconds`)와 `cache_hit`만 다를 수 있다. 종료 코드는 이 보고서의 `exit_code`(0/1/2)이고, 입력·지원 범위·npm 오류는 판정 없이 stderr의 error JSON과 종료 코드 2다.
 - 텍스트·Markdown은 미리보기 요약(대상, npm 버전, `package.json` 변경 여부, 바뀐 항목 수, `notices`)을 먼저 보이고 이어서 4절 렌더링을 그대로 보인다.
 

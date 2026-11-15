@@ -142,12 +142,12 @@ registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때�
 
 - Node.js와 npm(Node.js에 함께 설치된 것), 분석용 `extract`가 필요합니다. `--project`를 생략하면 현재 폴더입니다. `--format`, `--output`, `--model-dir`, `--cache-dir`/`--no-cache`는 `scan`과 같습니다.
 - 대상은 `package.json`의 `dependencies`·`devDependencies`·`optionalDependencies`에 있는 패키지 이름만 받습니다(`lodash`, `@scope/name`). 버전이나 범위(`lodash@4.17.21`, `^4`)는 받지 않고, 이름을 주지 않으면 전체를 미리봅니다. npm `update`라서 `package.json`에 적힌 범위 안에서만 올립니다. `-`·`.`·`_`로 시작하는 이름, ASCII가 아닌 문자, 공백, `:`, `\`, `%&|^<>"`가 든 이름, 214자를 넘는 이름, `package.json`에 없는 이름은 npm을 실행하기 전에 오류(종료 코드 2)로 끝납니다.
-- 임시 폴더(Python 임시 폴더 아래 `depbee_preview_*`, `TMP`/`TEMP`를 따름)에 `package.json`과 `package-lock.json`만 복사하고, 그 안에서 `npm update --package-lock-only --ignore-scripts --no-audit --no-fund --no-update-notifier --no-progress --color=false --loglevel=warn -- <이름...>`을 실행합니다. 패키지를 설치하거나 lifecycle script를 실행하지 않고, npm은 tarball을 받지 않고 registry 메타데이터만 읽습니다(npm 11.6.1에서 확인, [검증 기록](docs/validation.md)). 끝나면 임시 폴더를 지웁니다.
+- 임시 폴더(Python 임시 폴더 아래 `depbee_preview_*`, `TMP`/`TEMP`를 따름)에 `package.json`과 `package-lock.json`만 복사하고, 그 안에서 `npm update --package-lock-only --ignore-scripts --no-audit --no-fund --no-update-notifier --no-progress --color=false --loglevel=warn --prefix=<임시 폴더> --workspaces=false --git=<없는 파일> -- <이름...>`을 실행합니다. 패키지를 설치하거나 lifecycle script를 실행하지 않습니다. registry 의존성만 있는 정상 데모에서는 npm이 tarball을 받지 않고 registry 메타데이터만 읽었습니다(npm 11.6.1에서 확인, [검증 기록](docs/validation.md)). `--prefix`와 `--workspaces=false`는 npm이 임시 폴더 위의 workspace 루트를 찾아 그 폴더의 lockfile을 쓰지 않게 합니다. `--git`은 npm이 실행할 Git 프로그램을 없는 파일로 정해, 새로 받은 패키지 정보가 Git 의존성을 가져와도 Git이 실행되지 않고 npm이 실패(종료 코드 2)하게 합니다. 다만 Git 호스트의 커밋을 정확히 가리키는 의존성은 Git 없이 그 호스트에서 tarball로 받을 수 있어, tarball을 전혀 받지 않는다고 보장하지는 않습니다. 끝나면 npm과 npm이 띄운 프로세스가 모두 끝난 것을 확인한 뒤 임시 폴더를 지우고, 지우지 못하면 오류(종료 코드 2)입니다.
 - 새 lockfile은 지금 `package-lock.json`과 비교해 `scan --extract`와 같은 판정·근거·종료 코드로 보여 줍니다. 텍스트·Markdown은 앞에 미리보기 요약(대상, npm 버전, `package.json` 변경 여부, 바뀐 항목 수, 안내)을 붙이고, JSON(`--format json`, `--output`)은 `{"preview": {...}, "report": <scan 보고서>}`입니다([연결 규약](docs/contracts.md) 5절).
-- 프로젝트의 `.npmrc`는 복사하지 않습니다. 있으면 "프로젝트 .npmrc는 적용하지 않았다(공개 registry 기준 미리보기)"고 안내합니다. 사용자 설정 파일(`~/.npmrc`)은 npm이 평소처럼 읽고, depbee는 그 내용을 읽거나 출력하지 않습니다. 부모 프로세스의 `npm_config_*` 환경 변수와 `NODE_OPTIONS`는 npm에 넘기지 않고 `npm_config_ignore_scripts=true`를 넣습니다.
+- 프로젝트의 `.npmrc`는 복사하지 않습니다. 있으면 "프로젝트 .npmrc는 복사하지 않았습니다. 사용자·전역 npm 설정은 적용될 수 있습니다."라고 안내합니다. 사용자 설정 파일(`~/.npmrc`)은 npm이 평소처럼 읽으므로 그 안의 registry·scope별 registry 설정이 미리보기에 쓰일 수 있고, depbee는 그 내용을 읽거나 출력하지 않습니다. 부모 프로세스의 `npm_config_*` 환경 변수와 `NODE_OPTIONS`는 npm에 넘기지 않고 `npm_config_ignore_scripts=true`를 넣습니다.
 - npm은 Windows에서 `npm.cmd`·`npm.ps1`이 아니라 PATH에서 찾은 `node.exe`(절대 경로)와 그 옆 `node_modules\npm\bin\npm-cli.js`로 셸 없이 실행합니다(cmd.exe의 인자 재해석을 피함). macOS·Linux에서는 `node` 위치 기준 `../lib/node_modules/npm/bin/npm-cli.js`를 씁니다. 찾지 못하면 오류입니다.
-- npm 실행에는 120초 제한과 출력 상한(stdout 1 MiB, stderr 64 KiB)이 있고, 실패·시간 초과·`node_modules` 생성·읽을 수 없는 새 lockfile은 판정 없는 오류(종료 코드 2)입니다. npm 출력에는 주소나 토큰이 있을 수 있어 오류에 옮기지 않고 종료 코드만 적습니다.
-- 지원하지 않는 프로젝트(npm을 실행하기 전에 오류, 종료 코드 2): `npm-shrinkwrap.json`이 있음, `package.json`에 `workspaces`가 있음, `package.json` 의존성이 Git·파일·URL·alias처럼 `:`이나 `/`가 든 값, lockfile v2/v3가 아님, lockfile에 링크·workspace 항목이나 `https://registry.npmjs.org/` 밖의 `resolved`(Git, file, 사설 registry 등)가 있음.
+- npm 실행에는 호출마다 120초 제한과 출력 상한(stdout 1 MiB, stderr 64 KiB)이 있고, 실패·시간 초과·`node_modules` 생성·읽을 수 없는 새 lockfile은 판정 없는 오류(종료 코드 2)입니다. 시간 초과나 출력 상한에 걸리면 npm이 띄운 하위 프로세스까지 함께 종료합니다(Windows는 Job Object, macOS·Linux는 프로세스 그룹). npm 출력에는 주소나 토큰이 있을 수 있어 오류에 옮기지 않고 종료 코드만 적습니다. 임시 폴더 안 파일에 관한 오류도 그 경로를 적지 않습니다.
+- 지원하지 않는 프로젝트(npm을 실행하기 전에 오류, 종료 코드 2): `npm-shrinkwrap.json`이 있음, `package.json`에 `workspaces`가 있음, `package.json` 의존성이 registry 버전·범위·태그가 아님(Git·파일·URL·`npm:` alias처럼 `:`·`/`·`\`가 든 값, `..`처럼 `.`으로 시작하는 값, `.tgz`·`.tar`로 끝나는 값), `overrides`(중첩 포함)의 값이나 키의 범위가 같은 기준을 벗어남(값은 루트 의존성을 가리키는 `$이름`도 허용), lockfile v2/v3가 아님, lockfile에 링크·workspace 항목, `https://registry.npmjs.org/` 밖의 `resolved`(Git, file, 사설 registry 등), registry 범위가 아닌 항목별 의존성 값이 있음.
 
 ## MCP 진입점 (검사 전용)
 
@@ -240,6 +240,7 @@ MCP는 에이전트가 도구를 부를 때만 효과가 있습니다. 프로젝
 - typosquat처럼 패키지 자체가 악성인 경우는 "업데이트 변경점"을 보는 이 모델의 범위가 아닙니다.
 - `package.json`만 있는 프로젝트, yarn/pnpm, Git URL 입력은 후속 범위입니다.
 - `update`는 미리보기만 합니다. 검사한 lockfile을 프로젝트에 반영하거나 설치(`npm ci`)하는 기능, 새 의존성 추가(`depbee add`), 대안 버전 고정은 없습니다.
+- `update`는 `npm:` alias 의존성(`"lodash4": "npm:lodash@^4"`)이 있는 프로젝트를 지원하지 않습니다. Git·파일·URL 의존성과 같은 기준(`:`가 든 값)으로 거부합니다.
 
 ## 검증
 
