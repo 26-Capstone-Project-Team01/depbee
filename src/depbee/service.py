@@ -206,14 +206,19 @@ def preview_update(
 
     Raises GuardError, OSError or ValueError for unsupported projects, invalid names, npm
     failures and the errors of scan_project(); the caller maps them to its error output. Errors
-    about files in the temporary folder never name its path, and a folder that cannot be removed
-    is a GuardError.
+    about the temporary folder or the files in it never name its path, and a folder that cannot
+    be created or removed is a GuardError.
     """
     names = list(packages or [])
     package_bytes, lock_bytes, package = npm_cli.read_project(project)
     npm_cli.check_names(names, package)
     npmrc = os.path.lexists(project / ".npmrc")
-    folder = tempfile.TemporaryDirectory(prefix="depbee_preview_")
+    try:
+        folder = tempfile.TemporaryDirectory(prefix="depbee_preview_")
+    except OSError as exc:  # its message would name the folder
+        raise GuardError(
+            f"The temporary preview folder could not be created ({type(exc).__name__})"
+        ) from None
     try:
         with folder as tmp:
             work, base = Path(tmp) / "project", Path(tmp) / "base-package-lock.json"

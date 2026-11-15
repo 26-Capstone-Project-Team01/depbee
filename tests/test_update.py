@@ -6,6 +6,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -72,9 +73,13 @@ class UpdateFixture(Fixture):
         # The work folder holds only the copies when npm starts.
         self.work_files = sorted(p.name for p in Path(cwd).iterdir())
         self.work_files_have_git = os.path.lexists(Path(cwd) / ".depbee-no-git")
-        if argv[2:] == ["--version"]:
+        if argv[2] == "--version":
             return 0, b"11.6.1\n", b""
         return self.npm_update(Path(cwd))
+
+    def assert_npm_not_run(self):
+        # Only the count: a mock's own message would print the calls, environment included.
+        self.assertEqual(self.run.call_count, 0, "npm ran")
 
     def write_new_lock(self, work):
         (work / "package-lock.json").write_bytes(self.head.read_bytes())
@@ -102,14 +107,19 @@ class PreviewTests(UpdateFixture):
     def test_argv_runs_node_with_npm_cli_and_fixed_options_before_double_dash(self):
         self.preview(["example"])
         version, update = (call["argv"] for call in self.calls)
-        self.assertEqual(version, [str(self.node), str(self.npm_js), "--version"])
         work = self.calls[1]["cwd"]
         self.assertTrue(work.is_absolute())
+        # npm searches for a workspace root even for --version, so both calls pin the folder.
+        pinned = [
+            f"--prefix={work}",
+            "--workspaces=false",
+            f"--git={work / '.depbee-no-git' / 'git'}",
+        ]
+        self.assertEqual(version, [str(self.node), str(self.npm_js), "--version", *pinned])
         self.assertEqual(update, [
             str(self.node), str(self.npm_js), "update", "--package-lock-only", "--ignore-scripts",
             "--no-audit", "--no-fund", "--no-update-notifier", "--no-progress", "--color=false",
-            "--loglevel=warn", f"--prefix={work}", "--workspaces=false",
-            f"--git={work / '.depbee-no-git' / 'git'}", "--", "example",
+            "--loglevel=warn", *pinned, "--", "example",
         ])  # fmt: skip
         self.assertEqual(update.index("--"), len(update) - 2)  # names only after "--"
         self.assertFalse(self.work_files_have_git)  # the git setting names a missing file
@@ -215,7 +225,7 @@ class RefusalTests(UpdateFixture):
         before = self.project_state()
         with self.assertRaisesRegex(GuardError, message or ""):
             self.preview(list(packages))
-        self.run.assert_not_called()
+        self.assert_npm_not_run()
         self.assertEqual(self.project_state(), before)
 
     def test_names_other_than_bare_declared_names_are_refused(self):
@@ -273,10 +283,25 @@ class RefusalTests(UpdateFixture):
         self.assert_refused(message="regular file")
 
     def test_file_specs_without_a_slash_are_refused(self):
-        for spec in ("..", ".", "./x", "example.tgz", "x.TAR.GZ", "x.tar", "~/x", "C:x"):
+        # npm-package-arg isFileType is /[.](?:tgz|tar.gz|tar)$/i: its middle "." is any character.
+        files = ("..", ".", "./x", "example.tgz", "x.TAR.GZ", "x.tar", "~/x", "C:x", "x.tarXgz",
+                 "x.TGZ", "x.tar-gz", "1.0.0.Tar")  # fmt: skip
+        controls = ("x\n.tgz", "x.tgz\n", "1.0.0\x00", "latest\x7f", "^1.0.0\t", "1\r")
+        for spec in files + controls:
             with self.subTest(spec=spec):
                 self.write(self.upd / "package.json", {"dependencies": {"example": spec}})
                 self.assert_refused(message="registry ranges")
+        for spec in ("tgz", "1.0.0-tar", "x.tgzx", "x.targz", ">=1 <2", "latest", "*"):
+            with self.subTest(spec=spec):
+                self.assertTrue(npm_cli._registry_spec(spec))
+        # One check covers the dependency fields, overrides and lock entries.
+        self.write(self.upd / "package.json", {**self.package, "overrides": {"x": "x.tarXgz"}})
+        self.assert_refused(message="registry overrides")
+        self.write(self.upd / "package.json", self.package)
+        lock = json.loads(self.base.read_text(encoding="utf-8"))
+        lock["packages"]["node_modules/example"]["dependencies"] = {"inner": "a\x01"}
+        self.write(self.upd / "package-lock.json", lock)
+        self.assert_refused(message="registry ranges in the lockfile")
 
     def test_overrides_must_be_registry_specs_or_root_references(self):
         bad = {
@@ -356,7 +381,7 @@ class RefusalTests(UpdateFixture):
                 code, out, err = self.cli(*args)
                 self.assertEqual((code, out), (2, ""))
                 self.assertEqual(json.loads(err)["exit_code"], 2)
-        self.run.assert_not_called()
+        self.assert_npm_not_run()
 
 
 class NpmFailureTests(UpdateFixture):
@@ -424,12 +449,26 @@ class NpmFailureTests(UpdateFixture):
 
         with mock.patch.object(Path, "write_bytes", autospec=True, side_effect=refuse):
             self.assert_error("could not be written, read or checked \\(PermissionError\\)")
-        self.run.assert_not_called()
+        self.assert_npm_not_run()
 
     def test_errors_about_other_paths_are_kept(self):
         model = self.root / "no-model"
         self.patch("depbee.service.scan_project", side_effect=GuardError(f"No model in {model}"))
         self.assert_error("No model in .*no-model")
+
+    def test_a_temporary_folder_that_cannot_be_created_hides_its_path(self):
+        planned = self.root / "depbee_preview_planned"
+        error = OSError(28, "No space left on device", str(planned))
+        with mock.patch("depbee.service.tempfile.TemporaryDirectory", side_effect=error):
+            self.assert_error("^The temporary preview folder could not be created \\(OSError\\)$")
+            for fmt in ("json", "text", "markdown"):
+                with self.subTest(format=fmt):
+                    code, out, err = self.cli("--format", fmt)
+                    self.assertEqual((code, out), (2, ""))
+                    self.assertIn("could not be created", err)
+                    self.assertNotIn("depbee_preview_", err)
+                    self.assertNotIn(str(self.root), err.replace("\\\\", "\\"))
+        self.assert_npm_not_run()
 
     def test_a_temporary_folder_that_cannot_be_removed_is_an_error(self):
         with (
@@ -456,7 +495,7 @@ class NpmFailureTests(UpdateFixture):
         self.which.return_value = str(self.node)
         self.npm_js.unlink()
         self.assert_error("npm-cli.js not found")
-        self.run.assert_not_called()
+        self.assert_npm_not_run()
 
 
 # A synthetic grandchild: it appends to the file in argv[1] until it is killed (or for 30 s, so
@@ -532,6 +571,67 @@ class ProcessTreeTests(unittest.TestCase):
             git_input._run(
                 [sys.executable, "-I", "-c", "pass"], self.tmp, 100, name="npm", tree=True
             )
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object")
+    def test_the_job_kills_everything_when_its_handle_closes(self):
+        import ctypes
+
+        self.assertEqual(
+            ctypes.sizeof(git_input._ExtendedLimits), 144 if sys.maxsize > 2**32 else 112
+        )
+        self.assertEqual(git_input._BasicLimits.LimitFlags.offset, 16)
+        for python in self.PYTHONS:
+            with self.subTest(python=python):
+                self.beat.unlink(missing_ok=True)
+                argv = [python, "-I", "-c", HEARTBEAT, str(self.beat)]
+                flags = git_input._CREATE_SUSPENDED
+                proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, creationflags=flags)
+                self.addCleanup(proc.wait)
+                self.addCleanup(proc.kill)  # runs first; a no-op once the process has ended
+                tree = git_input._ProcessTree(proc)
+                limits = git_input._ExtendedLimits()
+                size = ctypes.sizeof(limits)
+                self.assertTrue(tree.kernel32.QueryInformationJobObject(
+                    tree.job, 9, ctypes.byref(limits), size, None
+                ))  # fmt: skip
+                self.assertEqual(limits.BasicLimitInformation.LimitFlags, 0x2000)
+                deadline = time.monotonic() + 20
+                while not self.beat.exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                # As if depbee were killed: no TerminateJobObject, only the handle closes.
+                tree.kernel32.CloseHandle(tree.job)
+                tree.job = None
+                proc.wait(10)
+                self.assert_stopped()
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object")
+    def test_a_job_that_cannot_be_set_up_is_an_error_and_the_child_never_runs(self):
+        import ctypes
+
+        real = ctypes.WinDLL
+        refuse = mock.Mock(return_value=0)
+
+        class Kernel32:
+            def __init__(self, lib):
+                self.lib, self.SetInformationJobObject = lib, refuse
+
+            def __getattr__(self, name):
+                return getattr(self.lib, name)
+
+        def load(name, *args, **kwargs):
+            lib = real(name, *args, **kwargs)
+            return Kernel32(lib) if name == "kernel32" else lib
+
+        marker = self.tmp / "ran"
+        code = f"open({str(marker)!r}, 'w').close()"
+        with (
+            mock.patch.object(ctypes, "WinDLL", load),
+            self.assertRaisesRegex(GuardError, "Unable to set up a Windows job"),
+        ):
+            git_input._run([sys.executable, "-I", "-c", code], self.tmp, 100, tree=True)
+        self.assertEqual(refuse.call_count, 1)
+        time.sleep(0.5)
+        self.assertFalse(marker.exists())
 
     def test_npm_runs_with_the_tree(self):
         with mock.patch.object(npm_cli, "_run", return_value=(0, b"", b"")) as run:

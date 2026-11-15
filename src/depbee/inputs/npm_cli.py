@@ -1,10 +1,19 @@
 """Update preview inputs: check the project, then run npm on copies in a folder depbee made.
 
-npm only ever runs as `update --package-lock-only --ignore-scripts` in that folder, never in the
-project: no node_modules and no lifecycle scripts. With registry-only inputs npm 11.6.1 fetched
-package metadata and no tarball (docs/validation.md). Git never runs because npm's git setting
-points to a file that does not exist; a registry package that names a hosted Git commit could
-still be fetched as a tarball from the Git host.
+npm only ever runs as `--version` and `update --package-lock-only --ignore-scripts` in that
+folder, never in the project: no node_modules and no lifecycle scripts. With registry-only inputs
+npm 11.6.1 fetched package metadata and no tarball (docs/validation.md). Git never runs because
+npm's git setting points to a file that does not exist.
+
+Known exception (not blocked, not run): a registry package fetched during the update may depend on
+a hosted Git commit (40-character sha). npm 11.6.1 then downloads that commit's tarball from the
+Git host without Git into a folder under the npm cache (pacote 21.0.3 lib/git.js 43-50, 193-248,
+297-310) and, if the package has build scripts or workspaces, runs `npm install --force ...
+--no-package-lock-only --no-dry-run` there to prepare it (git.js 152-188, fetcher.js 98-120,
+util/npm.js 4-13). The inherited npm_config_ignore_scripts=true and npm_config_git should keep
+scripts and Git from running there (read in the source, not run); neither the project nor the
+folder depbee made is used. npm 11 has no setting to turn this off; npm 12 blocks Git
+dependencies unless --allow-git is given.
 """
 
 import os
@@ -38,8 +47,11 @@ MAX_NAME_LENGTH = 214
 DEPENDENCY_FIELDS = ("dependencies", "devDependencies", "optionalDependencies")
 LOCK_SPEC_FIELDS = (*DEPENDENCY_FIELDS, "peerDependencies")
 REGISTRY_TARBALL = "https://registry.npmjs.org/"
-# npm-package-arg reads these as files even without ":" or "/" (".." or "x.tgz").
-_FILE_SPEC = re.compile(r"\.|.*\.(?:tgz|tar\.gz|tar)$", re.IGNORECASE)
+# npm-package-arg 13 (lib/npa.js, npm 11.6.1) reads these as files even without ":" or "/": a leading "."
+# (isWindowsFile, isPosixFile) or the isFileType suffix /[.](?:tgz|tar.gz|tar)$/i, whose middle
+# "." is any character ("x.tarXgz"). JavaScript "$" is the end of the string here, as is "\Z".
+_FILE_SUFFIX = re.compile(r"[.](?:tgz|tar.gz|tar)\Z", re.IGNORECASE)
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _NPM_VERSION = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?")
 
 
@@ -52,9 +64,13 @@ def _regular_file(path: Path) -> bytes:
 
 def _registry_spec(spec: object) -> bool:
     """A registry version, range or tag; never Git, URL, file, link, alias or owner/repo."""
-    # All of those have ":", "/" or "\", or read as a file (npm-package-arg isFileSpec).
+    # All of those have ":", "/" or "\", or read as a file (npm-package-arg); no control characters.
     return (
-        isinstance(spec, str) and not any(c in spec for c in ":/\\") and not _FILE_SPEC.match(spec)
+        isinstance(spec, str)
+        and not any(c in spec for c in ":/\\")
+        and not spec.startswith(".")
+        and not _FILE_SUFFIX.search(spec)
+        and not _CONTROL.search(spec)
     )
 
 
@@ -206,15 +222,16 @@ def update_lock(work: Path, names: list[str]) -> str:
     no_git = work / ".depbee-no-git" / "git"
     if not work.is_absolute() or os.path.lexists(no_git.parent):
         raise GuardError("npm needs a new, absolute work folder")
-    code, out = _call([*npm, "--version"], work, env)
-    version = out.decode("ascii", "replace").strip()
-    if code or not _NPM_VERSION.fullmatch(version):
-        raise GuardError(f"Cannot read the npm version (exit code {code})")
     # @npmcli/config: a CLI prefix is used as the project folder as is, and workspaces=false
     # stops the search for a workspace root above it (lib/index.js loadLocalPrefix). @npmcli/git
     # runs the git setting as the Git program (lib/which.js), so a missing file makes every Git
     # step fail; npm exports the setting to the npm it starts for a Git package (set-envs.js).
+    # npm loads its config, and so searches for a workspace root, even for --version (lib/npm.js).
     pinned = (f"--prefix={work}", "--workspaces=false", f"--git={no_git}")
+    code, out = _call([*npm, "--version", *pinned], work, env)
+    version = out.decode("ascii", "replace").strip()
+    if code or not _NPM_VERSION.fullmatch(version):
+        raise GuardError(f"Cannot read the npm version (exit code {code})")
     code, _ = _call([*npm, "update", *FIXED_OPTIONS, *pinned, "--", *names], work, env)
     if code:
         raise GuardError(f"npm update failed with exit code {code}")
