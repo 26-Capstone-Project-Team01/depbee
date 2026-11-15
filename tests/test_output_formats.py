@@ -10,6 +10,7 @@ import copy
 import io
 import json
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from test_detectors import ADVISORY, DetectorFixture, KnownList, Rules, rule
@@ -31,6 +32,8 @@ from depbee.cli import (
 from depbee.pipeline import scan
 
 FORMATS = ("text", "markdown", "json")
+ALT = "대안(안전 보증 아님)"
+EXAMPLES = Path(__file__).resolve().parents[1] / "docs" / "examples" / "result-contract"
 
 
 def capture(function, *args):
@@ -276,6 +279,85 @@ class OrderTests(FormatFixture):
                           ["results"]], [r["location"].rsplit("/", 1)[-1] for r in report["results"]])  # fmt: skip
 
 
+class AlternativeVersionTests(FormatFixture):
+    """ALT-01: a risky item shows a version already in the report; the JSON report is unchanged."""
+
+    def lines(self, report):
+        text, markdown = capture(_print_text, report), capture(_print_markdown, report)
+        return tuple([x for x in out.split("\n") if ALT in x] for out in (text, markdown))
+
+    def new_dependency(self, **row):
+        """example passes; a new dependency fresh@2.0.0 is flagged with row in its analysis."""
+        self.new["packages"]["node_modules/fresh"] = package("2.0.0")
+        self.save_locks()
+        request = self.request()
+        artifact = self.artifact({"signal": 0.9})
+        locations = {c["change_id"]: c["location"] for c in request["changes"]}
+        for item in artifact["results"]:
+            if locations[item["change_id"]] == "node_modules/fresh":
+                item.update(row)
+            else:
+                item["features"] = {"signal": 0.1}
+        return scan(request, self.adapter(artifact), FakePredictor())
+
+    def test_flagged_update_shows_the_previous_lockfile_version(self):
+        report = self.cases()["known hit, ML failed"]  # flagged with a reason and a detail
+        kept = as_json(report)
+        text, markdown = capture(_print_text, report), capture(_print_markdown, report)
+        self.assertIn(f"  이유: {REASON_LABELS['analysis_failed']}\n"
+                      f"  {ALT}: 1.0.0 (lockfile의 이전 버전)\n  상세: mismatch\n", text)  # fmt: skip
+        self.assertIn(f"### 위험: ` example@1.1.0 `\n\n- {ALT}: ` 1.0.0 ` (lockfile의 이전 버전)\n"
+                      "- 상세: ` mismatch `\n", markdown)  # fmt: skip
+        self.assertEqual(as_json(report), kept)
+        self.assertNotIn("\\ub300\\uc548", kept)  # no alternative in the JSON report
+
+    def test_flagged_new_dependency_shows_the_compared_version(self):
+        report = self.new_dependency(baseline_version="1.9.0")
+        self.assertEqual(
+            self.lines(report),
+            ([f"  {ALT}: 1.9.0 (비교 기준 버전)"], [f"- {ALT}: ` 1.9.0 ` (비교 기준 버전)"]),
+        )
+        # check (no lockfile): the synthetic example 3, rendered as in result-contract-draft 8.
+        path = EXAMPLES / "03-known-malicious-low-ml.json"
+        report = json.loads(path.read_text(encoding="utf-8"))
+        self.assertIn(f"  ML 위험 점수: 0.040 (기준 미만)\n  {ALT}: 2.0.0 (비교 기준 버전)\n"
+                      "  기지 악성: 일치\n", capture(_print_text, report))  # fmt: skip
+        self.assertIn(f"### 위험: ` demo-config-loader@2.0.1 `\n\n- {ALT}: ` 2.0.0 ` (비교 기준 버전)\n"
+                      "- 기지 악성: 일치\n", capture(_print_markdown, report))  # fmt: skip
+
+    def test_no_compared_version_shows_no_alternative(self):
+        report = self.new_dependency()
+        fresh = [r for r in report["results"] if r["package"] == "fresh"][0]
+        self.assertEqual((fresh["status"], fresh["compared_version"]), ("flagged", None))
+        self.assertEqual(self.lines(report), ([], []))
+        del fresh["compared_version"]
+        self.assertEqual(self.lines(report), ([], []))
+
+    def test_same_version_or_another_package_shows_no_alternative(self):
+        for reason, entry in (
+            ("same_version_artifact_changed", {**package(), "integrity": "sha512-other-test-only"}),
+            ("package_identity_changed", {**package("2.0.0"), "name": "other"}),
+        ):
+            with self.subTest(reason):
+                self.new["packages"]["node_modules/example"] = entry
+                self.save_locks()
+                report = self.scan_with(known_malicious=KnownList((ADVISORY,)))
+                item = report["results"][0]
+                self.assertEqual((item["status"], item["reason"]), ("flagged", reason))
+                self.assertEqual(self.lines(report), ([], []))
+
+    def test_only_flagged_items_show_one(self):
+        report = self.cases()["mixed"]
+        flagged = [r for r in report["results"] if r["status"] == "flagged"]
+        self.assertEqual(sorted(r["package"] for r in flagged), ["example", "high", "zeta"])
+        text, markdown = self.lines(report)
+        self.assertEqual(text, [f"  {ALT}: 1.0.0 (lockfile의 이전 버전)"] * 3)
+        self.assertEqual(markdown, [f"- {ALT}: ` 1.0.0 ` (lockfile의 이전 버전)"] * 3)
+        # ML over the threshold but held by a failed detector (D-7): unfinished, no alternative.
+        self.assertEqual(self.lines(self.cases()["D-7 rule failed"]), ([], []))
+        self.assertEqual(self.lines(self.scan_with(0.1)), ([], []))  # passed
+
+
 class EscapeTests(FormatFixture):
     def report(self, text):
         """A report with connected detectors whose every external string is text."""
@@ -285,8 +367,9 @@ class EscapeTests(FormatFixture):
         report["detectors"]["rules"]["ruleset_version"] = text
         report["model_id"] = text
         item = report["results"][0]
-        item.update(package=text, location=text, after_version=text, detail=text,
-                    rule_ml_agreement=text, ml={"status": text})  # fmt: skip
+        # before_version differs from after_version so that the alternative line (ALT-01) shows.
+        item.update(package=text, location=text, before_version=f"{text}-old", after_version=text,
+                    detail=text, rule_ml_agreement=text, ml={"status": text})  # fmt: skip
         item["known_malicious"].update(status=text, reason=text, detail=text)
         item["known_malicious"]["matches"] = [{"advisory_id": text, "match_kind": text,
                                                "affected": text}]  # fmt: skip
@@ -300,6 +383,8 @@ class EscapeTests(FormatFixture):
         plain_md = capture(_print_markdown, self.report("plain"))
         plain_text = capture(_print_text, self.report("plain"))
         self.assertNotIn("plain", outside_code_spans(plain_md))
+        self.assertIn(f"- {ALT}: ` plain-old ` (lockfile의 이전 버전)", plain_md)
+        self.assertIn(f"  {ALT}: plain-old (lockfile의 이전 버전)", plain_text)
         for text in HOSTILE:
             with self.subTest(text=text):
                 markdown = capture(_print_markdown, self.report(text))
