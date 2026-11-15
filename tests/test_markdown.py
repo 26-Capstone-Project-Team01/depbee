@@ -74,8 +74,9 @@ class MarkdownEscapeTests(Fixture):
         artifact["results"][0]["evidence"] = [text]
         report = scan(self.request(), self.adapter(artifact), ExplainingPredictor())
         row = report["results"][0]
-        row.update(package=text, location=text, after_version=text, compared_version=text,
-                   detail=text, reason=text)  # fmt: skip
+        # before_version differs from after_version so that the alternative line (ALT-01) shows.
+        row.update(package=text, location=text, before_version=f"{text}-old", after_version=text,
+                   compared_version=text, detail=text, reason=text)  # fmt: skip
         row["explanation"] = [{"feature": text, "value": text, "contribution": 0.5}]
         report["model_id"] = text
         return report
@@ -83,6 +84,7 @@ class MarkdownEscapeTests(Fixture):
     def test_every_external_string_is_one_inert_code_span(self):
         plain = outside_code_spans(render(self.report("plain")))
         self.assertNotIn("plain", plain)
+        self.assertIn("- 대안(안전 보증 아님):  (lockfile의 이전 버전, 위치 )\n", plain)
         for text in HOSTILE:
             with self.subTest(text=text):
                 output = render(self.report(text))

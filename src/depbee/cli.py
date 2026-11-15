@@ -265,6 +265,23 @@ def _ml_score(row: dict, label) -> str | None:
     return None
 
 
+def _alternative(row: dict) -> tuple[str, str] | None:
+    """A version already in the report to consider instead of a risky one, and where it came from.
+
+    depbee has not checked it and it is no safety guarantee. None when there is nothing sound to
+    show: not flagged, another package at the location, or the same version as the risky one.
+    """
+    if row["status"] != "flagged" or row.get("reason") == "package_identity_changed":
+        return None
+    if row["before_version"] is not None:
+        version, source = row["before_version"], "lockfile의 이전 버전"
+    else:
+        version, source = row.get("compared_version"), "비교 기준 버전"
+    if version is None or version == row["after_version"]:
+        return None
+    return version, source
+
+
 def _slot(slot: dict, labels: dict, esc, label) -> str:
     text = label(labels, slot["status"])
     if slot.get("reason"):
@@ -348,6 +365,9 @@ def _print_text(report: dict) -> None:
         if row.get("reason"):
             reason = REASON_LABELS.get(row["reason"], row["reason"])
             print(f"  이유: {_clean(reason)}")
+        alternative = _alternative(row)
+        if alternative:
+            print(f"  대안(안전 보증 아님): {_clean(alternative[0])} ({alternative[1]})")
         if row.get("detail"):
             print(f"  상세: {_clean(row['detail'])}")
         for line, subs in _detector_lines(row, _clean, _text_label):
@@ -472,10 +492,19 @@ def _markdown_details(row: dict) -> list[str]:
     """Detector slots, extracted facts and the model's explanation of one result, kept apart."""
     explanation, rest = row.get("explanation") or [], row.get("explanation_rest")
     detectors = _detector_lines(row, _md, _md_label)
-    if not (row.get("detail") or detectors or row.get("evidence") or explanation or rest):
+    alternative = _alternative(row)
+    if not (
+        alternative or row.get("detail") or detectors or row.get("evidence") or explanation or rest
+    ):
         return []
     target = _md(f"{row['package']}@{row['after_version'] or row['before_version']}")
     lines = ["", f"### {_md_label(STATUS_LABELS, row['status'])}: {target}", ""]
+    if alternative:
+        # The heading has no location and rows without details have no section, so say which.
+        lines.append(
+            f"- 대안(안전 보증 아님): {_md(alternative[0])}"
+            f" ({alternative[1]}, 위치 {_md(row['location'])})"
+        )
     if row.get("detail"):
         lines.append(f"- 상세: {_md(row['detail'])}")
     for line, subs in detectors:
