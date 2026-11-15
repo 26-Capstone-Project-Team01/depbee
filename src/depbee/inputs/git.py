@@ -29,17 +29,26 @@ _REPOSITORY_VARIABLES = (
 
 
 def _run(
-    argv: list[str], cwd: Path, limit: int, env: dict[str, str] | None = None
+    argv: list[str],
+    cwd: Path,
+    limit: int,
+    env: dict[str, str] | None = None,
+    *,
+    timeout: float | None = None,
+    stderr_limit: int = _STDERR_LIMIT,
+    name: str = "Git",
 ) -> tuple[int, bytes, bytes]:
     """Run argv without a shell and return (returncode, stdout, stderr).
 
-    The child is killed at TIMEOUT_SECONDS, or as soon as stdout passes limit bytes or stderr
-    passes _STDERR_LIMIT bytes, so memory does not depend on what it prints. Only the direct
-    child is killed: processes it started keep running, and closing the pipes waits for them.
-    On Windows the default Git\\cmd\\git.exe is such a wrapper, so a timeout can take until the
-    real Git ends.
+    The child is killed at timeout seconds (default TIMEOUT_SECONDS), or as soon as stdout passes
+    limit bytes or stderr passes stderr_limit bytes, so memory does not depend on what it prints.
+    name labels the program in errors. Only the direct child is killed: processes it started keep
+    running, and closing the pipes waits for them. On Windows the default Git\\cmd\\git.exe is
+    such a wrapper, so a timeout can take until the real Git ends.
     """
-    caps = {"stdout": limit, "stderr": _STDERR_LIMIT}
+    if timeout is None:
+        timeout = TIMEOUT_SECONDS
+    caps = {"stdout": limit, "stderr": stderr_limit}
     captured: dict[str, bytes] = {}
     with subprocess.Popen(
         argv,
@@ -59,21 +68,21 @@ def _run(
         readers = [threading.Thread(target=drain, args=(name,), daemon=True) for name in caps]
         for reader in readers:
             reader.start()
-        deadline = time.monotonic() + TIMEOUT_SECONDS
+        deadline = time.monotonic() + timeout
         try:
             for reader in readers:
                 reader.join(max(0.0, deadline - time.monotonic()))
             if any(reader.is_alive() for reader in readers):
-                raise subprocess.TimeoutExpired(argv, TIMEOUT_SECONDS)
+                raise subprocess.TimeoutExpired(argv, timeout)
             proc.wait(max(0.0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired as exc:
-            raise GuardError(f"Git did not finish within {TIMEOUT_SECONDS} seconds") from exc
+            raise GuardError(f"{name} did not finish within {timeout} seconds") from exc
         finally:
             # Popen's exit then closes the pipes and reaps the child.
             if proc.poll() is None:
                 proc.kill()
     if any(len(captured[name]) > cap for name, cap in caps.items()):
-        raise GuardError(f"Git output exceeds {limit} bytes (stderr {_STDERR_LIMIT})")
+        raise GuardError(f"{name} output exceeds {limit} bytes (stderr {stderr_limit})")
     return proc.returncode, captured["stdout"], captured["stderr"]
 
 
