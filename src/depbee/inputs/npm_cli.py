@@ -17,6 +17,7 @@ folder depbee made is used. npm 11 has no setting to turn this off; npm 12 block
 dependencies unless --allow-git is given.
 """
 
+import base64
 import os
 import re
 import shutil
@@ -33,6 +34,7 @@ STDOUT_LIMIT = 1024 * 1024
 STDERR_LIMIT = 64 * 1024
 # A large tree can print a deprecation warning per package; past the cap npm is killed mid-install.
 CI_STDERR_LIMIT = 1024 * 1024
+SRI_DIGEST_BYTES = {"sha512": 64, "sha384": 48, "sha256": 32, "sha1": 20}
 # Checked with npm 11.6.1: --no-audit drops the audit request, --no-update-notifier the version
 # check and its state file; the rest keep the output plain whatever the user's settings.
 FIXED_OPTIONS = (
@@ -173,7 +175,8 @@ def check_files(package_bytes: bytes, lock_bytes: bytes, package_source, lock_so
             raise GuardError(f"update does not support link or workspace entries: {location}")
         resolved = entry.get("resolved")
         if resolved is None and entry.get("inBundle"):
-            continue  # shipped inside its parent's tarball
+            continue  # often unpacked from its parent's tarball; install still refuses it
+            # without an integrity (missing_integrity)
         if not isinstance(resolved, str) or not resolved.startswith(REGISTRY_TARBALL):
             raise GuardError(
                 f"update supports only {REGISTRY_TARBALL} dependencies in the lockfile: {location}"
@@ -181,19 +184,43 @@ def check_files(package_bytes: bytes, lock_bytes: bytes, package_source, lock_so
     return package
 
 
-def missing_integrity(lock_bytes: bytes) -> list[str]:
-    """Lock entries npm would download without an integrity to check (install needs one each).
+def valid_sri(integrity: object) -> bool:
+    """Whether npm checks a download against this lockfile integrity, read stricter than npm.
 
-    The lockfile has passed check_files(). A bundled entry without resolved ships inside its
-    parent's tarball, which is checked against the parent's integrity, so it is not listed.
+    pacote parses it with ssri (fetcher.js 59-60), which splits on whitespace, drops tokens it
+    cannot read and returns null when none is left (ssri index.js 373-390): npm then has no
+    expected hash. Every token here must be a known algorithm (the ones registry.verify takes;
+    sha1 is still in old lockfiles and ssri checks it) with a padded base64 digest of that
+    algorithm's length and no ?options, which npm never writes.
+    """
+    if not isinstance(integrity, str) or not integrity.split():
+        return False
+    for token in integrity.split():
+        algorithm, _, digest = token.partition("-")
+        if algorithm not in SRI_DIGEST_BYTES:
+            return False
+        try:  # validate: only the base64 alphabet with correct padding, non-ASCII is ValueError
+            if len(base64.b64decode(digest, validate=True)) != SRI_DIGEST_BYTES[algorithm]:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def missing_integrity(lock_bytes: bytes) -> list[tuple[str, bool]]:
+    """(location, bundled) of every lock entry without a valid_sri() integrity; install needs one
+    on each. The lockfile has passed check_files().
+
+    Bundled entries are listed too (decision 2026-11-16 19:3x): npm installs a root
+    bundleDependencies entry, or one missing from its parent's tarball, on its own
+    (arborist node.js 565-570, reify.js 930-962, 1110-1121), so the parent's integrity does not
+    always cover it.
     """
     lock, _ = parse_json(lock_bytes, "the new package-lock.json")
     return [
-        location
+        (location, bool(entry.get("inBundle")))
         for location, entry in lock["packages"].items()
-        if location
-        and entry.get("resolved") is not None
-        and not (isinstance(entry.get("integrity"), str) and entry["integrity"])
+        if location and not valid_sri(entry.get("integrity"))
     ]
 
 

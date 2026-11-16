@@ -7,11 +7,12 @@ DEPBEE_HISTORY_DB there.
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 from unittest import mock
 
 from test_history import sql
-from test_update import ERROR_SECRET, UpdateFixture
+from test_update import ERROR_SECRET, UpdateFixture, sri
 
 from depbee import history, service
 from depbee.cli import CONFIRM_OPTION
@@ -418,12 +419,20 @@ class InstallTests(ApplyFixture):
         self.assertEqual(self.ci_calls, [])
         self.assert_applied(self.apply("lockfile")["apply"])
 
-    def test_install_needs_integrity_on_every_downloaded_entry(self):
-        lock = json.loads(self.head.read_text(encoding="utf-8"))
-        del lock["packages"]["node_modules/example"]["integrity"]
-        lock["packages"]["node_modules/example/node_modules/inner"] = {
-            "version": "1.0.0", "inBundle": True,  # inside its parent's tarball: not listed
-        }  # fmt: skip
+    def test_valid_sri_takes_only_known_algorithms_with_digests_of_their_length(self):
+        valid = service.npm_cli.valid_sri
+        good = [sri("a"), sri("a", "sha384"), sri("a", "sha256"), sri("a", "sha1"),
+                f"{sri('a')} {sri('b')}", f" {sri('a')}\t{sri('a', 'sha1')}\n"]  # fmt: skip
+        bad = [None, "", " ", "\t\n", "abc", "sha512", "sha512-", "md5-" + sri("a")[7:],
+               "foo-" + sri("a")[7:], "SHA512-" + sri("a")[7:], "sha512-" + sri("a", "sha256")[7:],
+               sri("a")[:-2], sri("a").replace("=", ""), sri("a")[:20] + "!" + sri("a")[21:],
+               sri("a") + "?opt", f"{sri('a')} abc", f"{sri('a')} md5-abc", "sha512-é" + "A" * 87,
+               ["sha512-x"], 5]  # fmt: skip
+        self.assertEqual([v for v in good if not valid(v)], [])
+        self.assertEqual([v for v in bad if valid(v)], [])
+
+    def npm_writes(self, lock):
+        """The fake npm update writes lock as the new lockfile; returns its bytes."""
         new_lock = json.dumps(lock).encode("utf-8")
 
         def update(work):
@@ -431,18 +440,69 @@ class InstallTests(ApplyFixture):
             return 0, b"", b""
 
         self.npm_update = update
-        # The bundled entry is a second, unchecked result: confirmed so that the gate passes.
+        return new_lock
+
+    def assert_install_refused_lockfile_applied(self, lock, error):
+        """install refuses lock before any change and without npm ci; lockfile writes it."""
+        new_lock = self.npm_writes(lock)
+        # A bundled entry is a second, unchecked result: confirmed so that the gate passes.
         apply = self.apply("install", confirm=True)["apply"]
         self.assertEqual((apply["outcome"], apply["reason"]), ("refused", "integrity_missing"))
-        self.assertEqual(
-            apply["error"], "1 lockfile entries have no integrity to check: node_modules/example"
-        )
+        self.assertEqual(apply["error"], error)
         self.assert_unchanged()
         self.assertEqual(self.ci_calls, [])
         apply = self.apply("lockfile", confirm=True)["apply"]  # the same lockfile, no install
         self.assertEqual(apply["outcome"], "applied")
         self.assertEqual((self.upd / "package-lock.json").read_bytes(), new_lock)
+        for name, data in self.original.items():  # back to the start for the next case
+            (self.upd / name).write_bytes(data)
+        shutil.rmtree(self.backups)
+
+    def test_install_needs_a_valid_integrity_on_every_entry(self):
         self.assertEqual(service.npm_cli.missing_integrity(self.head.read_bytes()), [])
+        lock = json.loads(self.head.read_text(encoding="utf-8"))
+        lock["packages"]["node_modules/example"]["integrity"] = ""
+        self.npm_writes(lock)
+        with self.assertRaisesRegex(GuardError, "Invalid integrity"):  # the scan's input check
+            self.apply("install", confirm=True)
+        self.assert_unchanged()
+        self.assertEqual(self.ci_calls, [])
+        for value in (None, " ", "abc", "foo-" + sri("a")[7:], sri("a")[:-4], "absent"):
+            with self.subTest(integrity=value):
+                lock = json.loads(self.head.read_text(encoding="utf-8"))
+                entry = lock["packages"]["node_modules/example"]
+                if value == "absent":
+                    del entry["integrity"]
+                else:
+                    entry["integrity"] = value
+                self.assert_install_refused_lockfile_applied(
+                    lock,
+                    "1 lockfile entries have no valid integrity to check: node_modules/example",
+                )
+
+    def test_install_refuses_bundled_entries_root_and_nested(self):
+        bundled = ("; 1 of them bundled (bundleDependencies), which depbee does not install: "
+                   "apply the lockfile only and install yourself")  # fmt: skip
+        # Root bundleDependencies: npm installs it on its own (arborist node.js 565-570).
+        package = {**self.package, "bundleDependencies": ["example"]}
+        self.write(self.upd / "package.json", package)
+        self.original["package.json"] = (self.upd / "package.json").read_bytes()
+        lock = json.loads(self.head.read_text(encoding="utf-8"))
+        lock["packages"]["node_modules/example"] = {"version": "1.1.0", "inBundle": True}
+        self.assert_install_refused_lockfile_applied(
+            lock,
+            "1 lockfile entries have no valid integrity to check: node_modules/example" + bundled,
+        )
+        # Inside a dependency, even with the parent's valid integrity.
+        lock = json.loads(self.head.read_text(encoding="utf-8"))
+        lock["packages"]["node_modules/example/node_modules/inner"] = {
+            "version": "1.0.0", "inBundle": True,
+        }  # fmt: skip
+        self.assert_install_refused_lockfile_applied(
+            lock,
+            "1 lockfile entries have no valid integrity to check: "
+            "node_modules/example/node_modules/inner" + bundled,
+        )
 
     def test_a_scratch_folder_inside_the_project_is_refused_before_any_change(self):
         inside = self.upd / "tmp"

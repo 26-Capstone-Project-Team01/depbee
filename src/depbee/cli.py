@@ -111,7 +111,7 @@ APPLY_REASON_LABELS = {
     "project_changed": "미리보기 뒤 package.json 또는 package-lock.json이 바뀜",
     "new_lock_mismatch": "반영할 lockfile이 검사한 것과 다름",
     "new_files_unsupported": "npm이 계산한 새 파일이 지원 범위를 벗어남(registry 밖 출처 등)",
-    "integrity_missing": "새 lockfile에 integrity 없는 항목이 있어 설치 거부",
+    "integrity_missing": "새 lockfile에 유효한 integrity 없는 항목이 있어 설치 거부",
     "scratch_in_project": "설치용 임시 폴더가 프로젝트 안에 생김(TMP·TEMP 확인)",
     "backup_failed": "원본을 백업하지 못함",
     "write_failed": "프로젝트 파일을 바꾸지 못함",

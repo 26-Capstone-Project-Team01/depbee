@@ -463,10 +463,13 @@ def apply_preview(
     if mode == "install":
         missing = npm_cli.missing_integrity(new_lock)
         if missing:
-            shown = ", ".join(missing[:5]) + (", ..." if len(missing) > 5 else "")
+            shown = ", ".join(loc for loc, _ in missing[:5]) + (", ..." if len(missing) > 5 else "")
+            bundled = sum(in_bundle for _, in_bundle in missing)
             return done(
                 "refused", "integrity_missing",
-                f"{len(missing)} lockfile entries have no integrity to check: {shown}",
+                f"{len(missing)} lockfile entries have no valid integrity to check: {shown}"
+                + (f"; {bundled} of them bundled (bundleDependencies), which depbee does not "
+                   "install: apply the lockfile only and install yourself" if bundled else ""),
             )  # fmt: skip
     writes = [
         (name, old, new)
