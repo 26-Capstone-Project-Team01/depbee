@@ -26,6 +26,8 @@ EXACT_VERSION = re.compile(
     rf"{_NUMBER}\.{_NUMBER}\.{_NUMBER}(?:-{_PRERELEASE_ID}(?:\.{_PRERELEASE_ID})*)?"
 )
 REGISTRY_LOCATION = "registry.npmjs.org"
+# Fields of the lockfile's root entry (packages[""]) that name the project's direct dependencies.
+DEPENDENCY_FIELDS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
 
 
 def _snapshot(loaded: tuple[dict, str]) -> tuple[dict, str]:
@@ -63,6 +65,31 @@ def _snapshot(loaded: tuple[dict, str]) -> tuple[dict, str]:
             "link": bool(record.get("link", False)),
         }
     return entries, sha256
+
+
+def read_dependencies(project: Path) -> list[dict]:
+    """The packages installed by project/package-lock.json, in location order.
+
+    Each is {location, name, version, direct}: direct when the location is node_modules/<name> of
+    a name in the root entry's DEPENDENCY_FIELDS, nested otherwise. The lockfile gets the same
+    checks as a scan (size, lockfileVersion 2 or 3, entry types); npm is not run.
+    """
+    loaded = read_json(project / "package-lock.json")
+    entries, _ = _snapshot(loaded)
+    root = loaded[0]["packages"].get("", {})
+    if not isinstance(root, dict):
+        raise GuardError("Invalid lock entry: the root entry")
+    direct = set()
+    for field in DEPENDENCY_FIELDS:
+        names = root.get(field, {})
+        if not isinstance(names, dict):
+            raise GuardError(f"Invalid {field} in the root lock entry")
+        direct |= {f"node_modules/{name}" for name in names}
+    return [
+        {"location": location, "name": entry["name"], "version": entry["version"],
+         "direct": location in direct}
+        for location, entry in sorted(entries.items())
+    ]  # fmt: skip
 
 
 def registry_version_problem(after: dict) -> str | None:
