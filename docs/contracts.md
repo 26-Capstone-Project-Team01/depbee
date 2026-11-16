@@ -204,11 +204,28 @@ feature를 추출한 보고서(`scan --extract`, `check`)에만 소요 시간과
 - 오류: 미리보기·검사·반영 중 어느 단계든 오류면 프로젝트 파일을 바꾸지 않는다.
 - 미리보기 뒤 변경 확인: 반영 직전에 프로젝트의 `package.json`·`package-lock.json` 해시를 다시 계산해 `preview.package_json_sha256`·`preview.package_lock_sha256`과 다르면 반영하지 않는다. 반영하는 lockfile은 해시가 `preview.new_package_lock_sha256`과 같아야 한다.
 - 반영 방법: (a) lockfile 반영은 검사한 새 `package-lock.json`(그리고 바뀌었다면 `package.json`)을 프로젝트에 쓴다(같은 폴더의 임시 파일에 쓴 뒤 교체). (b) 설치까지는 (a) 뒤 프로젝트에서 `npm ci --ignore-scripts`를 실행한다(검사한 lockfile 그대로 설치). npm 실행 규칙은 미리보기와 같다(node와 npm-cli.js 직접 실행, 셸 없음, 환경 정리, 시간·출력 상한).
-- 실행 기록: 미리보기 해시, 반영한 파일 해시, 사용자 확인 여부와 그 대상 항목, npm 버전과 종료 코드, 시각. 저장 위치는 로컬 이력 저장소(HIST-01) 이후 정한다.
+- 실행 기록: 미리보기 해시, 반영한 파일 해시, 사용자 확인 여부와 그 대상 항목, npm 버전과 종료 코드, 시각. 6절의 로컬 이력 저장소에 두며, 표는 `apply_update`를 구현할 때 `user_version`을 올려 더한다.
 - 결정 필요(하람):
   1. 확인 옵션의 이름과 단위(예: ML 기준 이상·보류를 한 번에 허용하는 옵션 하나인지, 항목별 확인인지).
   2. 기지 악성 탐지기가 연결되지 않았거나(`not_run`, `detector_not_configured`) 실패(`failed`)한 보고서로 반영을 허용할지. 지금 CLI에는 기지 악성 탐지기가 없어 모든 항목이 `not_run`이다.
   3. 미리보기 lockfile을 보관해 그대로 반영할지(보관 위치·수명), 반영 때 다시 계산해 해시가 같을 때만 반영할지. 다시 계산하면 그 사이 registry 변화로 해시가 달라질 수 있다.
   4. 반영 실패 시 되돌리는 방법(원본 백업 위치 또는 되돌리는 명령 안내).
   5. `npm ci`에 `--ignore-scripts`를 항상 붙일지, 사용자 옵션으로 둘지(client-dev 4.2절 초안은 옵션).
-  6. 실행 기록의 저장(HIST-01 이후).
+  6. 실행 기록 표의 구성(6절 저장소, `apply_update` 구현 때).
+
+## 6. 로컬 이력 저장소 (`depbee.history`)
+
+대시보드(예정)에 등록한 프로젝트의 `scan`·`update` 미리보기 보고서를 표준 라이브러리 `sqlite3`로 한 파일에 기록한다. CLI와 대시보드가 같은 API(`register_project`, `record`, `list_projects`, `list_runs`, `get_run`)를 쓴다. 파일 형식은 depbee 내부 형식이며 4·5절의 보고서·진입점 형식에 속하지 않는다.
+
+- 위치: `DEPBEE_HISTORY_DB`(파일 경로, 호출마다 읽음, 빈 값은 없는 것)가 있으면 그 경로, 없으면 `Path.home() / ".local" / "share" / "depbee" / "history.sqlite3"`(캐시 `~/.cache/depbee`와 같이 OS 구분 없이 홈 기준). `%LOCALAPPDATA%`·XDG 변수는 읽지 않고, 대상 프로젝트의 파일로는 바꿀 수 없다. `DEPBEE_HISTORY_DB` 없이 `Path.home()`이 `RuntimeError`를 내면 `record()`(CLI 기록)만 None으로 건너뛰고, `register_project()`와 조회 API는 그 `RuntimeError`를 그대로 낸다.
+- 만들기: 파일과 상위 폴더는 `register_project()`만 만든다. `record()`와 조회 API는 파일이 없으면 아무것도 만들지 않고(기록은 None, 조회는 빈 결과), 있는 파일만 SQLite URI `mode=rw`로 연다. 파일이 있으면 `record()`는 등록 여부를 확인하려고 읽고, 등록되지 않은 프로젝트는 쓰지 않는다.
+- 파일 식별과 버전: depbee 이력은 `PRAGMA application_id`가 `0x44504245`(`history.APPLICATION_ID`, ASCII "DPBE")인 파일이다. DB 버전은 `PRAGMA user_version`(지금 1)이고 `contracts.SCHEMA_VERSION`과 별개다. 새 DB는 스키마와 두 값을 한 트랜잭션에서 만들므로 실패하면 함께 되돌아간다. application_id가 다른 파일(다른 프로그램의 SQLite 파일, `user_version`이 1이고 같은 이름의 표가 있어도), application_id는 같지만 `user_version`이 이 코드보다 큰 파일, SQLite 파일이 아닌 파일에는 쓰지 않는다(`HistoryError` 또는 `sqlite3.DatabaseError`). application_id와 `user_version`이 0이고 표가 없는 파일(0바이트 포함)만 `register_project()`가 초기화한다. 지금은 버전 1뿐이라 이전(migration) 코드는 없다.
+- 표: `projects`(id, 식별 키, 표시용 경로, 등록 시각), `runs`(프로젝트, 종류 `scan`·`update_preview`, UTC 시각, depbee 버전, `base_ref`(`--base-ref` 값), `base_lock`(`--base-lock` 사용 여부, update는 null), 보고서의 `status`·`exit_code`·`model_id`·`provenance.model.model_sha256`, 항목 판정별 개수 `flagged`·`not_flagged`·`incomplete`·`removed`, 보고서 원문, update면 `preview` 원문), `results`(실행, 보고서 안 순서, `change_id`, `location`, `package`, `before_version`, `after_version`, `status`, `score`, `known_malicious`·`rules`·`ml`의 `status`). 값은 보고서 그대로이고 다시 계산하지 않는다. `score`가 null이면 null이다. 미리보기가 만든 새 lockfile 내용은 저장하지 않는다.
+- 문자열: 원문은 `_emit`과 같은 `json.dumps(..., ensure_ascii=True, allow_nan=False)`로 저장해 그대로 되읽힌다. 질의용 열과 표시용 프로젝트 경로는 UTF-8로 인코딩할 수 없는 문자(lockfile에서 온 lone surrogate 등)를 `\udc80` 같은 텍스트로 바꿔 저장한다(원래 값은 원문에 있다).
+- 프로젝트 식별: `Path(project).resolve()`의 절대 경로에 `os.path.normcase`를 적용한 문자열(Windows에서 대소문자 무시)을 `json.dumps(..., ensure_ascii=True)`로 저장한 값이 키다. 이 표현은 되돌릴 수 있고 역슬래시도 구별하므로, lone surrogate가 든 경로(POSIX의 바이트 `0x80` 이름)와 글자 그대로 `\udc80`이 든 경로는 다른 프로젝트다. 표시용 경로는 resolve 결과에 위 문자열 변환만 적용한 값이다. 다시 등록하면 처음 등록을 유지한다. `register_project()`는 존재하는 폴더인지만 확인하며, 웹 입력의 경로 검사(UNC, 장치 경로, 예약 이름, 링크)는 대시보드 경계에서 한다. 폴더가 사라져도 기록을 지우지 않는다.
+- 조회: `list_projects()`(등록 순), `list_runs(project_id, limit=None)`(최근순, 원문 없이 실행 열과 판정별 개수 `counts`), `get_run(run_id)`(실행 열, 되읽은 `report`·`preview`, 순서대로의 `results`). 추이는 실행의 판정별 개수로 계산한다.
+- 기록 대상과 시점: `cli.main`의 `scan`·`update` 분기가 `_emit`으로 보고서를 출력한 뒤 `record()`를 부른다. 서비스 함수와 `pipeline.scan()`은 기록하지 않으므로 `check`, `plan`, 오류로 끝난 실행(예외로 `_emit`에 닿지 못함), MCP 도구는 기록되지 않는다. update의 프로젝트는 `--project`(기본 현재 폴더)다. 파일이 없거나 프로젝트가 등록되지 않았으면 아무것도 쓰지 않는다. GitHub Action은 같은 CLI `scan`을 쓰므로, 이력 파일이 없는 러너(GitHub 호스팅 러너 등)에서는 기록되지 않고, 이력 파일이 있는 PC에서 그 체크아웃 폴더를 등록한 자기 호스팅 러너라면 등록한 프로젝트의 실행으로 기록된다.
+- 연결과 잠금: 작업마다 연결을 열고 반드시 닫는다(`contextlib.closing`). `isolation_level=None`과 명시적 `BEGIN IMMEDIATE`로 쓰고(Python 3.11~3.13 공통), 잠금은 1.5초까지 기다린다. journal은 SQLite 기본 rollback journal(DELETE)이다. WAL은 `-wal`·`-shm` 파일이 파일 옆에 계속 남고 네트워크 폴더에서 동작하지 않으며, 기록은 실행마다 한 번이라 동시 쓰기 이점이 작다.
+- 실패 처리: CLI의 기록 함수는 `Exception`을 모두 자기 안에서 잡고(`history`와 `sqlite3` import도 그 안에서 해 `sqlite3`가 없는 Python에서도 다른 동작은 같다), 실패하면 stderr에 경로·패키지 문자열이 없는 고정 한국어 문구 한 줄만 쓴다(모든 형식 공통). stdout과 종료 코드(보고서의 `exit_code`)는 바뀌지 않고, 성공과 건너뜀은 아무것도 출력하지 않는다. 새 CLI 옵션은 없다.
+- 신뢰 경계: 이력은 이 PC 사용자의 로컬 데이터이고 내용은 depbee가 만든 보고서(패키지에서 온 문자열 포함)다. 표시할 때는 4절 텍스트·Markdown과 같이 다시 이스케이프하고, 이력의 값을 업데이트 반영 게이트(5.1)나 다른 판정의 입력으로 쓰지 않는다.
+- 업데이트 반영(`apply_update`)의 실행 기록 표는 그 기능을 구현할 때 `user_version`을 올려 더한다. 지금은 없다.

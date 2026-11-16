@@ -83,6 +83,10 @@ STATUS_ORDER = {"flagged": 0, "incomplete": 1, "not_flagged": 2, "removed": 3}
 # --output is always a JSON file; markdown is a stdout format (e.g. a GitHub job summary).
 FORMATS = ("text", "json", "markdown")
 SAFETY_NOTE = "'통과'는 모델의 판정일 뿐 패키지가 안전하다는 보증이 아닙니다."
+# No path or package text: the report above is already printed and unchanged.
+HISTORY_FAILED = (
+    "depbee: 이 검사 결과를 로컬 이력에 기록하지 못했습니다. 출력과 종료 코드는 그대로입니다."
+)
 
 
 def _cache_arguments(cmd: argparse.ArgumentParser) -> None:
@@ -594,6 +598,27 @@ def _emit(report: dict, args: argparse.Namespace, preview: dict | None = None) -
     _print_text(report)
 
 
+def _record(kind: str, args: argparse.Namespace, report: dict, preview: dict | None = None) -> None:
+    """Add a printed report to the local history if its project is registered (depbee.history).
+
+    Never changes stdout or the exit code: any failure is one fixed line on stderr. The import
+    is here so that a Python without sqlite3 still runs every command.
+    """
+    try:
+        from . import history
+
+        scan = preview is None  # update has no base options
+        history.record(
+            kind, args.project, report, preview,
+            base_ref=args.base_ref if scan else None,
+            base_lock=args.base_lock is not None if scan else None,
+        )  # fmt: skip
+    except Exception:
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(errors="backslashreplace")
+        print(HISTORY_FAILED, file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -625,6 +650,7 @@ def main(argv: list[str] | None = None) -> int:
                 no_cache=args.no_cache,
             )
             _emit(result["report"], args, result["preview"])
+            _record("update_preview", args, result["report"], result["preview"])
             return result["report"]["exit_code"]
         if args.command == "check":
             name, version = _split_package(args.package)
@@ -652,6 +678,7 @@ def main(argv: list[str] | None = None) -> int:
             no_cache=args.no_cache,
         )
         _emit(report, args)
+        _record("scan", args, report)
         return report["exit_code"]
     except (GuardError, OSError, ValueError, RecursionError) as exc:
         error = {"status": "error", "exit_code": 2, "error": str(exc)}

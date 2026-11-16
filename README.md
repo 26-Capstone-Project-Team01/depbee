@@ -18,6 +18,7 @@ npm 프로젝트에서 바뀐 의존성 버전을 찾아, 각 버전의 변경�
 | CLI 출력  | `plan`/`scan`/`check`/`update`(미리보기), 한국어 텍스트·JSON·Markdown, 새 파일 저장, 종료 코드 0/1/2                 | GitHub job summary 화면 확인            |
 | MCP       | `depbee mcp`(stdio): 검사 전용 도구 `check_package`·`scan_lockfile`, CLI와 같은 보고서            | 실제 MCP 클라이언트에서의 호출 확인     |
 | Actions   | composite action(`action.yml`): PR 기준 커밋 대비 검사, 항목별 판정·주석·summary·artifact([사용법](docs/ci-cd.md)) | 공개 뒤 실제 PR 실행 확인               |
+| 이력      | 로컬 SQLite 이력 저장소: 등록한 프로젝트의 `scan`·`update` 미리보기 보고서 기록과 조회 API([로컬 이력 저장소](#로컬-이력-저장소)) | 대시보드의 등록·조회 화면(예정)         |
 | 테스트    | 합성 입력 회귀 테스트, 합성 native 모델 연동 테스트                                                |                                         |
 | 개발 CI   | push/PR에서 Ubuntu·Windows × Python 3.11·3.13 검사·테스트·패키지 빌드                              | GitHub 서버 실행 확인                   |
 
@@ -43,6 +44,7 @@ src/depbee/
   pipeline.py             # 입력→분석→추론 처리 조율
   service.py              # CLI·Actions·MCP·대시보드 공통 진입점(요청·분석기·모델 조립)
   mcp.py                  # 검사 전용 MCP 진입점(check_package, scan_lockfile)
+  history.py              # 로컬 이력 저장소(SQLite): 프로젝트 등록, 보고서 기록·조회
 scripts/write_manifest.py # 모델 파일로 manifest.json 생성
 tests/                    # 합성 자료를 이용한 회귀·모델 연동 테스트
 examples/                 # 실행 가능한 명령에 사용할 가상 lockfile
@@ -148,6 +150,19 @@ registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때�
 - npm은 Windows에서 `npm.cmd`·`npm.ps1`이 아니라 PATH에서 찾은 `node.exe`(절대 경로)와 그 옆 `node_modules\npm\bin\npm-cli.js`로 셸 없이 실행합니다(cmd.exe의 인자 재해석을 피함). macOS·Linux에서는 `node` 위치 기준 `../lib/node_modules/npm/bin/npm-cli.js`를 씁니다. 찾지 못하면 오류입니다.
 - npm 실행에는 호출마다 120초 제한과 출력 상한(stdout 1 MiB, stderr 64 KiB)이 있고, 실패·시간 초과·`node_modules` 생성·읽을 수 없는 새 lockfile은 판정 없는 오류(종료 코드 2)입니다. 시간 초과나 출력 상한에 걸리면 npm이 띄운 하위 프로세스까지 함께 종료합니다(Windows는 Job Object, macOS·Linux는 프로세스 그룹). Windows의 Job에는 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`를 설정해 depbee가 강제로 끝나 Job 핸들이 닫혀도 남은 프로세스가 종료됩니다. npm은 일시 정지 상태로 만들어 Job에 넣은 뒤 `ntdll`의 `NtResumeProcess`로 시작합니다. 이 함수는 Microsoft가 문서화하지 않은 API이며 psutil의 `Process.resume()`도 같은 함수를 씁니다(`psutil/arch/windows/proc.c`). Windows 11 64비트에서만 확인했고 32비트·다른 Windows 버전은 확인하지 않았습니다. macOS·Linux의 프로세스 그룹은 새 세션을 만든 후손까지 묶지 못합니다. npm 출력에는 주소나 토큰이 있을 수 있어 오류에 옮기지 않고 종료 코드만 적습니다. 임시 폴더를 만들거나 지우지 못한 오류와 그 안 파일에 관한 오류도 그 경로를 적지 않습니다.
 - 지원하지 않는 프로젝트(npm을 실행하기 전에 오류, 종료 코드 2): `npm-shrinkwrap.json`이 있음, `package.json`에 `workspaces`가 있음, `package.json` 의존성이 registry 버전·범위·태그가 아님(Git·파일·URL·`npm:` alias처럼 `:`·`/`·`\`가 든 값, `..`처럼 `.`으로 시작하는 값, npm-package-arg가 파일로 읽는 `.tgz`·`.tar.gz`·`.tar`로 끝나는 값(대소문자 무관, npm 정규식의 가운데 점은 아무 문자라 `x.tarXgz`도 포함), 제어 문자가 든 값), `overrides`(중첩 포함)의 값이나 키의 범위가 같은 기준을 벗어남(값은 루트 의존성을 가리키는 `$이름`도 허용), lockfile v2/v3가 아님, lockfile에 링크·workspace 항목, `https://registry.npmjs.org/` 밖의 `resolved`(Git, file, 사설 registry 등), registry 범위가 아닌 항목별 의존성 값이 있음.
+
+## 로컬 이력 저장소
+
+depbee는 대시보드(예정, 아직 구현하지 않음)에 등록한 프로젝트의 검사 결과를 이 PC의 SQLite 파일 하나에 기록합니다. 대시보드와 CLI가 같은 파일을 씁니다. 등록 화면은 아직 없어 지금은 Python API(`depbee.history.register_project`)로만 등록할 수 있습니다. 이 파일은 등록할 때만 만들어집니다. `scan`·`update`는 파일이 없으면 아무것도 만들지 않고, 파일이 있으면 그 프로젝트가 등록돼 있는지 확인하려고 읽으며, 등록하지 않은 프로젝트의 결과는 쓰지 않습니다(그 읽기가 실패하면 아래의 고정 문구가 나올 수 있습니다).
+
+- 기록하는 것: 등록한 프로젝트의 `scan`(`depbee scan <프로젝트>`)과 `update` 미리보기(`--project`, 기본은 현재 폴더) 결과입니다. 보고서를 출력한 뒤 보고서 원문, 미리보기 요약(`preview`), 실행 시각(UTC), depbee 버전, 기준 지정(`--base-ref` 값, `--base-lock` 사용 여부), 판정별 개수와 항목별 판정·점수를 남깁니다. 판정·이유·종료 코드는 보고서 값 그대로이고 다시 계산하지 않습니다. 미리보기가 계산한 새 lockfile 내용은 저장하지 않습니다(해시만 미리보기 요약에 있습니다).
+- 기록하지 않는 것: 이력 파일이 없을 때(만들지 않음), 등록하지 않은 프로젝트, `check`, `plan`, 오류로 끝난 실행, MCP 도구. GitHub 호스팅 러너처럼 이력 파일이 없는 환경에서는 GitHub Action의 `scan`도 기록되지 않습니다. 다만 이력 파일이 있는 PC에서 그 체크아웃 폴더를 등록해 둔 자기 호스팅 러너라면, 그 `scan`도 등록한 프로젝트의 실행으로 기록됩니다.
+- 출력: 기록해도 stdout, stderr, 종료 코드는 기록하지 않을 때와 같습니다. 기록에 실패하면(잠금 대기 초과, 손상된 파일, 더 새 depbee가 만든 파일, depbee가 만들지 않은 파일, 쓰기 권한 없음 등) stdout과 종료 코드는 그대로 두고 표준 오류에 경로나 패키지 이름이 없는 고정 문구 한 줄만 씁니다.
+- 위치: 환경 변수 `DEPBEE_HISTORY_DB`(파일 경로, 실행할 때마다 읽고 빈 값은 없는 것으로 봄)가 있으면 그 파일, 없으면 `~/.local/share/depbee/history.sqlite3`입니다(Windows도 홈 폴더 기준). 대상 프로젝트의 파일로는 위치를 바꿀 수 없습니다. `DEPBEE_HISTORY_DB` 없이 홈 폴더를 정하지 못하면 `scan`·`update`는 기록만 건너뛰고(출력 없음), 등록·조회 API는 오류(`RuntimeError`)를 냅니다.
+- 이 파일은 SQLite 헤더의 application_id로 depbee 이력임을 표시합니다. 그 표시가 없는 파일(다른 프로그램의 SQLite 파일 등)에는 쓰지 않습니다.
+- 프로젝트는 절대 경로로 구분합니다(Windows에서는 대소문자 무시). 폴더를 옮기면 다른 프로젝트이고, 폴더가 사라져도 기록은 지우지 않습니다.
+- 내용: 이력에는 검사한 패키지의 이름·버전과 근거 문자열(예: 추가된 설치 스크립트 명령의 앞부분)이 그대로 들어갑니다. 악성 사례를 검사한 기록에는 그 문자열이 남으므로, 다른 사람이 쓸 수 있는 폴더나 동기화 폴더에 두지 않습니다. 이 파일의 내용은 표시용 기록이며 다른 검사나 반영의 입력으로 쓰지 않습니다.
+- 지우기: 자동으로 지우지 않습니다. 이력을 없애려면 그 파일을 지웁니다(쓰는 동안에만 옆에 `-journal` 파일이 생깁니다).
 
 ## MCP 진입점 (검사 전용)
 

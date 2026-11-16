@@ -20,6 +20,8 @@
 
 `preview_update()`(`depbee update [이름...]`)는 `inputs/npm_cli.py`로 프로젝트의 `package.json`·`package-lock.json`만 임시 폴더에 복사해 `npm update --package-lock-only --ignore-scripts`(node와 npm-cli.js 직접 실행, 셸 없음)로 새 lockfile을 계산하고, 원본 lockfile 바이트를 기준으로 `scan_project(extract=True)`를 부른다. npm의 `--version`과 `update` 모두에 `--prefix=<임시 폴더>`·`--workspaces=false`(상위 workspace 루트 탐색 차단)와 없는 파일을 가리키는 `--git`(Git 실행 차단)을 고정하고, `overrides`와 lockfile 항목의 의존성 값도 registry 범위만 받는다. npm 실행은 `inputs/git.py`의 `_run(tree=True)`로 하위 프로세스까지 묶어(Windows는 `KILL_ON_JOB_CLOSE`를 설정한 Job Object, POSIX는 프로세스 그룹) 시간 초과·출력 상한과 정상 종료 뒤 모두 종료하고 끝난 것을 확인한다. 판정은 그대로 `pipeline.scan()`이 하고, 미리보기 메타데이터는 보고서 밖 `preview`에 둔다. 프로젝트 파일은 읽기만 한다.
 
+`history.py`는 로컬 이력 저장소(표준 라이브러리 `sqlite3`)다. 서비스 함수와 `pipeline.scan()` 밖에 두어, `cli.main`의 `scan`·`update` 분기가 보고서를 출력한 뒤에만 `record()`를 부른다(그래서 `preview_update()` 안의 임시 폴더 스캔, MCP 도구, `check`, `plan`, 오류 실행은 기록되지 않는다). 대시보드(예정)도 같은 등록·기록·조회 API를 쓴다. 보고서 값을 그대로 저장하고 판정을 다시 계산하지 않는다. 형식과 규칙은 [연결 규약](contracts.md) 6절.
+
 | 영역 | 담당 | 인계할 결과물 |
 |---|---|---|
 | 학습·평가 | 모델 담당 팀원 | native LightGBM 모델, 임계값, 학습 기록. manifest는 `scripts/write_manifest.py`로 만든다 |
