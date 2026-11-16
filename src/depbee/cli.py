@@ -9,7 +9,14 @@ from pathlib import Path
 
 from . import __version__
 from .contracts import GuardError
-from .service import check_package, plan_project, preview_update, scan_project
+from .service import (
+    APPLY_MODES,
+    apply_update,
+    check_package,
+    plan_project,
+    preview_update,
+    scan_project,
+)
 
 STATUS_LABELS = {
     "flagged": "위험",
@@ -87,6 +94,33 @@ STATUS_ORDER = {"flagged": 0, "incomplete": 1, "not_flagged": 2, "removed": 3}
 # --output is always a JSON file; markdown is a stdout format (e.g. a GitHub job summary).
 FORMATS = ("text", "json", "markdown")
 SAFETY_NOTE = "'통과'는 모델의 판정일 뿐 패키지가 안전하다는 보증이 아닙니다."
+# update --apply (service.apply_update): outcome, mode, reason and gate cause labels.
+OUTCOME_LABELS = {
+    "applied": "반영함",
+    "unchanged": "바뀐 항목 없음(반영할 것 없음)",
+    "refused": "반영하지 않음",
+    "failed": "실패",
+}
+MODE_LABELS = {"lockfile": "lockfile 반영", "install": "설치까지(npm ci --ignore-scripts)"}
+CONFIRM_OPTION = "--confirm-warnings"
+APPLY_REASON_LABELS = {
+    "known_malicious_hit": "기지 악성 기록 일치(예외 없이 거부)",
+    "confirmation_required": f"확인이 필요한 항목이 있는데 {CONFIRM_OPTION}가 없음",
+    "project_npmrc": "프로젝트 .npmrc가 있어 설치 거부",
+    "project_unsupported": "미리보기 뒤 프로젝트가 지원 범위를 벗어남",
+    "project_changed": "미리보기 뒤 package.json 또는 package-lock.json이 바뀜",
+    "new_lock_mismatch": "반영할 lockfile이 검사한 것과 다름",
+    "backup_failed": "원본을 백업하지 못함",
+    "write_failed": "프로젝트 파일을 바꾸지 못함",
+    "install_failed": "npm ci 실패",
+    "lockfile_changed": "npm ci 뒤 package.json 또는 package-lock.json이 반영한 것과 다름",
+}
+CAUSE_LABELS = {
+    "known_malicious_hit": "기지 악성 기록 일치",
+    "ml_hit": "ML 위험 점수 기준 이상",
+    "incomplete": "보류(통과가 아님)",
+    "known_malicious_unchecked": "기지 악성 목록 미확인",
+}
 # No path or package text: the report above is already printed and unchanged.
 HISTORY_FAILED = (
     "depbee: 이 검사 결과를 로컬 이력에 기록하지 못했습니다. 출력과 종료 코드는 그대로입니다."
@@ -182,6 +216,22 @@ def _parser() -> argparse.ArgumentParser:
     update.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
     update.add_argument("--format", choices=FORMATS, default="text")
     _cache_arguments(update)
+    update.add_argument(
+        "--apply",
+        choices=APPLY_MODES,
+        help="After the check, write the checked package-lock.json (and package.json if npm "
+        "changed it) to the project (lockfile), or also run npm ci --ignore-scripts there "
+        "(install; refused if the project has a .npmrc). The two original files are backed up "
+        "next to the history file first. Known malicious matches are always refused",
+    )
+    update.add_argument(
+        CONFIRM_OPTION,
+        action="store_true",
+        help="With --apply: proceed although the output lists items with an ML risk score at or "
+        "above the threshold, incomplete items, or items not checked against a known malicious "
+        "list (every item while no such list is connected). Known malicious matches are refused "
+        "anyway",
+    )
     serve = commands.add_parser(
         "mcp",
         help="Serve the read-only check_package and scan_lockfile tools over MCP stdio "
@@ -637,8 +687,69 @@ def _preview_lines(preview: dict, esc) -> list[str]:
     ]  # fmt: skip
 
 
-def _emit(report: dict, args: argparse.Namespace, preview: dict | None = None) -> None:
+def _apply_item(item: dict, esc, label) -> str:
+    version = item["after_version"] or item["before_version"]
+    causes = []
+    for cause in item["causes"]:
+        text = label(CAUSE_LABELS, cause)
+        if cause == "incomplete" and item.get("reason"):
+            text += f", 이유: {label(REASON_LABELS, item['reason'])}"
+        causes.append(text)
+    if item.get("score") is not None:
+        causes.append(f"ML 위험 점수 {item['score']:.3f}")
+    status = label(STATUS_LABELS, item["status"])
+    return (f"[{status}] {esc(item['package'])}@{esc(version)} ({esc(item['location'])}): "
+            + "; ".join(causes))  # fmt: skip
+
+
+def _apply_lines(apply: dict, esc, label) -> list[tuple[str, list[str]]]:
+    """The update --apply section after the report: lines and their sub-lines."""
+    lines = [(f"방식: {label(MODE_LABELS, apply['mode'])}", [])]
+    if apply["reason"]:
+        lines.append((f"이유: {label(APPLY_REASON_LABELS, apply['reason'])}", []))
+    if apply["error"]:
+        lines.append((f"오류: {esc(apply['error'])}", []))
+    if apply["blocked"]:
+        lines.append((
+            f"기지 악성 기록 일치로 거부한 항목 {len(apply['blocked'])}개:",
+            [_apply_item(item, esc, label) for item in apply["blocked"]],
+        ))  # fmt: skip
+    if apply["confirmation_required"]:
+        state = f"{CONFIRM_OPTION}로 확인함" if apply["confirmed"] else "확인하지 않음"
+        lines.append((
+            f"확인이 필요한 항목 {len(apply['confirmation_required'])}개({state}):",
+            [_apply_item(item, esc, label) for item in apply["confirmation_required"]],
+        ))  # fmt: skip
+    if apply["outcome"] == "refused" and apply["reason"] == "confirmation_required":
+        lines.append((f"위 항목을 검토한 뒤 진행하려면 {CONFIRM_OPTION}를 함께 줍니다.", []))
+    for changed in apply["files"]:
+        lines.append((f"바꾼 파일: {esc(changed['path'])} (sha256 {changed['sha256'][:12]}... → "
+                      f"{changed['new_sha256'][:12]}...)", []))  # fmt: skip
+    if apply["backup"]:
+        lines.append((f"원본 백업: {esc(apply['backup'])}", []))
+    if apply["npm_ci_exit_code"] is not None:
+        lines.append((f"npm {esc(apply['npm_version'])}, npm ci 종료 코드 "
+                      f"{apply['npm_ci_exit_code']}", []))  # fmt: skip
+    lines += [(notice, []) for notice in apply["notices"]]
+    return lines
+
+
+def _apply_exit(report: dict, apply: dict) -> int:
+    """The report's exit code; 2 for a failed apply, and for a refused one whose report is 0
+    (the requested apply did not happen)."""
+    if apply["outcome"] == "failed":
+        return 2
+    if apply["outcome"] == "refused":
+        return report["exit_code"] or 2
+    return report["exit_code"]
+
+
+def _emit(
+    report: dict, args: argparse.Namespace, preview: dict | None = None, apply: dict | None = None
+) -> None:
     data = report if preview is None else {"preview": preview, "report": report}
+    if apply is not None:
+        data["apply"] = apply
     payload = json.dumps(data, ensure_ascii=True, indent=2, allow_nan=False) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -655,6 +766,12 @@ def _emit(report: dict, args: argparse.Namespace, preview: dict | None = None) -
             lines += [f"- {line}" for line in _preview_lines(preview, _md)]
             print("\n".join(lines) + "\n")
         _print_markdown(report)
+        if apply is not None:
+            outcome = _md_label(OUTCOME_LABELS, apply["outcome"])
+            lines = ["", f"## depbee 업데이트 반영: {outcome}", ""]
+            for line, subs in _apply_lines(apply, _md, _md_label):
+                lines += [f"- {line}", *(f"  - {sub}" for sub in subs)]
+            print("\n".join(lines))
         return
     if preview is not None:
         print("depbee 업데이트 미리보기")
@@ -662,9 +779,22 @@ def _emit(report: dict, args: argparse.Namespace, preview: dict | None = None) -
             print(line)
         print()
     _print_text(report)
+    if apply is not None:
+        print()
+        print(f"depbee 업데이트 반영: {_text_label(OUTCOME_LABELS, apply['outcome'])}")
+        for line, subs in _apply_lines(apply, _clean, _text_label):
+            print(line)
+            for sub in subs:
+                print(f"  - {sub}")
 
 
-def _record(kind: str, args: argparse.Namespace, report: dict, preview: dict | None = None) -> None:
+def _record(
+    kind: str,
+    args: argparse.Namespace,
+    report: dict,
+    preview: dict | None = None,
+    apply: dict | None = None,
+) -> None:
     """Add a printed report to the local history if its project is registered (depbee.history).
 
     Never changes stdout or the exit code: any failure is one fixed line on stderr. The import
@@ -677,7 +807,7 @@ def _record(kind: str, args: argparse.Namespace, report: dict, preview: dict | N
         history.record(
             kind, args.project, report, preview,
             base_ref=args.base_ref if scan else None,
-            base_lock=args.base_lock is not None if scan else None,
+            base_lock=args.base_lock is not None if scan else None, apply=apply,
         )  # fmt: skip
     except Exception:
         if hasattr(sys.stderr, "reconfigure"):
@@ -712,17 +842,19 @@ def main(argv: list[str] | None = None) -> int:
                 sys.stderr.reconfigure(errors="backslashreplace")
             progress = _progress
         if args.command == "update":
-            result = preview_update(
-                args.project,
-                args.packages,
-                model_dir=args.model_dir,
-                progress=progress,
-                cache_dir=args.cache_dir,
-                no_cache=args.no_cache,
-            )
-            _emit(result["report"], args, result["preview"])
-            _record("update_preview", args, result["report"], result["preview"])
-            return result["report"]["exit_code"]
+            if args.confirm_warnings and args.apply is None:
+                raise GuardError(f"{CONFIRM_OPTION} needs --apply")
+            options = {"model_dir": args.model_dir, "progress": progress,
+                       "cache_dir": args.cache_dir, "no_cache": args.no_cache}  # fmt: skip
+            if args.apply is None:
+                result = preview_update(args.project, args.packages, **options)
+            else:
+                result = apply_update(args.project, args.packages, mode=args.apply,
+                                      confirm=args.confirm_warnings, **options)  # fmt: skip
+            report, apply = result["report"], result.get("apply")
+            _emit(report, args, result["preview"], apply)
+            _record("update_preview", args, report, result["preview"], apply)
+            return report["exit_code"] if apply is None else _apply_exit(report, apply)
         if args.command == "check":
             name, version = _split_package(args.package)
             report = check_package(

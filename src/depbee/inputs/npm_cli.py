@@ -1,9 +1,10 @@
 """Update preview inputs: check the project, then run npm on copies in a folder depbee made.
 
-npm only ever runs as `--version` and `update --package-lock-only --ignore-scripts` in that
-folder, never in the project: no node_modules and no lifecycle scripts. With registry-only inputs
-npm 11.6.1 fetched package metadata and no tarball (docs/validation.md). Git never runs because
-npm's git setting points to a file that does not exist.
+For the preview npm only ever runs as `--version` and `update --package-lock-only
+--ignore-scripts` in that folder, never in the project: no node_modules and no lifecycle scripts.
+With registry-only inputs npm 11.6.1 fetched package metadata and no tarball (docs/validation.md).
+Git never runs because npm's git setting points to a file that does not exist. Only an apply with
+install (clean_install) runs `npm ci --ignore-scripts` in the project itself.
 
 Known exception (not blocked, not run): a registry package fetched during the update may depend on
 a hosted Git commit (40-character sha). npm 11.6.1 then downloads that commit's tarball from the
@@ -25,8 +26,13 @@ from ..contracts import MAX_JSON_BYTES, GuardError, parse_json
 from .git import _run
 
 TIMEOUT_SECONDS = 120
+# npm ci downloads and unpacks every tarball of the tree, not only metadata as the preview does:
+# minutes for a large project on a slow link. It is the ceiling of one MCP call too.
+CI_TIMEOUT_SECONDS = 600
 STDOUT_LIMIT = 1024 * 1024
 STDERR_LIMIT = 64 * 1024
+# A large tree can print a deprecation warning per package; past the cap npm is killed mid-install.
+CI_STDERR_LIMIT = 1024 * 1024
 # Checked with npm 11.6.1: --no-audit drops the audit request, --no-update-notifier the version
 # check and its state file; the rest keep the output plain whatever the user's settings.
 FIXED_OPTIONS = (
@@ -39,6 +45,10 @@ FIXED_OPTIONS = (
     "--color=false",
     "--loglevel=warn",
 )
+# npm ci never writes package.json or the lockfile (lib/commands/ci.js, save: false) and with
+# ignore-scripts runs no root (ci.js 102-124) or dependency script, binding.gyp included
+# (@npmcli/arborist rebuild.js 150-166). The command line beats every npmrc and the environment.
+CI_OPTIONS = FIXED_OPTIONS[1:]
 # A target is a bare registry name: no leading "-", "." or "_" (so never an option or a path),
 # ASCII only, and none of the characters a shell or cmd.exe would read (space, : \ % & | ^ < > ").
 _PART = r"[A-Za-z0-9~!*'()][A-Za-z0-9._~!*'()-]*"
@@ -201,16 +211,31 @@ def _environment() -> dict[str, str]:
     return env
 
 
-def _call(argv: list[str], cwd: Path, env: dict[str, str]) -> tuple[int, bytes]:
+def _call(
+    argv: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    timeout: float = TIMEOUT_SECONDS,
+    stderr_limit: int = STDERR_LIMIT,
+) -> tuple[int, bytes]:
     """Exit code and stdout. npm output is never put in errors: it may hold URLs or tokens."""
     try:
         code, out, _ = _run(
             argv, cwd, STDOUT_LIMIT, env,
-            timeout=TIMEOUT_SECONDS, stderr_limit=STDERR_LIMIT, name="npm", tree=True,
+            timeout=timeout, stderr_limit=stderr_limit, name="npm", tree=True,
         )  # fmt: skip
     except OSError as exc:
         raise GuardError(f"Unable to run npm: {exc.strerror or type(exc).__name__}") from exc
     return code, out
+
+
+def _version(npm: list[str], pinned: tuple[str, ...], cwd: Path, env: dict[str, str]) -> str:
+    # npm loads its config, and so searches for a workspace root, even for --version (lib/npm.js).
+    code, out = _call([*npm, "--version", *pinned], cwd, env)
+    version = out.decode("ascii", "replace").strip()
+    if code or not _NPM_VERSION.fullmatch(version):
+        raise GuardError(f"Cannot read the npm version (exit code {code})")
+    return version
 
 
 def update_lock(work: Path, names: list[str]) -> str:
@@ -226,15 +251,36 @@ def update_lock(work: Path, names: list[str]) -> str:
     # stops the search for a workspace root above it (lib/index.js loadLocalPrefix). @npmcli/git
     # runs the git setting as the Git program (lib/which.js), so a missing file makes every Git
     # step fail; npm exports the setting to the npm it starts for a Git package (set-envs.js).
-    # npm loads its config, and so searches for a workspace root, even for --version (lib/npm.js).
     pinned = (f"--prefix={work}", "--workspaces=false", f"--git={no_git}")
-    code, out = _call([*npm, "--version", *pinned], work, env)
-    version = out.decode("ascii", "replace").strip()
-    if code or not _NPM_VERSION.fullmatch(version):
-        raise GuardError(f"Cannot read the npm version (exit code {code})")
+    version = _version(npm, pinned, work, env)
     code, _ = _call([*npm, "update", *FIXED_OPTIONS, *pinned, "--", *names], work, env)
     if code:
         raise GuardError(f"npm update failed with exit code {code}")
     if os.path.lexists(work / "node_modules"):
         raise GuardError("npm created node_modules during the lockfile-only update")
     return version
+
+
+def clean_install(project: Path, scratch: Path) -> tuple[str, int]:
+    """Run `npm ci --ignore-scripts` in project; return (npm version, npm ci exit code).
+
+    project is the absolute project folder, checked by read_project() and without a project
+    .npmrc (the caller refuses one). scratch is an absolute, new folder depbee made outside the
+    project: the missing Git program and global config file are named inside it. npm ci removes
+    what node_modules holds before it installs.
+    """
+    npm, env = _npm(), _environment()
+    no_git, no_global = scratch / "no-git" / "git", scratch / "no-globalconfig" / "npmrc"
+    if not (project.is_absolute() and scratch.is_absolute()) or os.path.lexists(no_git.parent):
+        raise GuardError("npm needs an absolute project and a new, absolute scratch folder")
+    # As in update_lock(), plus globalconfig: with a CLI prefix npm reads <prefix>/etc/npmrc as
+    # the global config (@npmcli/config lib/index.js 296-312), here a file of the project.
+    pinned = (
+        f"--prefix={project}", "--workspaces=false", f"--git={no_git}",
+        f"--globalconfig={no_global}",
+    )  # fmt: skip
+    version = _version(npm, pinned, project, env)
+    code, _ = _call(
+        [*npm, "ci", *CI_OPTIONS, *pinned], project, env, CI_TIMEOUT_SECONDS, CI_STDERR_LIMIT
+    )
+    return version, code
