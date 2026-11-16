@@ -1,5 +1,19 @@
 # 검증 기록
 
+## 2026-11-16: 업데이트 반영 검토 후속(UPD-02 fix_r1)
+
+- 교차 검토 REV-UPD02-R1(major 1, minor 2, nit 1)과 하람 결정(2026-11-16 18:0x)을 반영했다. 규칙은 [연결 규약](contracts.md) 5.1절.
+- M1(사용자 npm 설정으로 설치 생략): npm 11.6.1 소스로 확인했다. `npm ci`는 `dry-run`이 아니면 `node_modules` 내용을 먼저 지우고(`lib/commands/ci.js` 79-100행) 사용자 설정의 `packageLockOnly`를 그대로 넘기며(40-46행), arborist는 `dryRun`·`packageLockOnly`이면 패키지를 풀지 않고 돌아간다(`@npmcli/arborist/lib/arborist/reify.js` 279-286행). 이제 `npm ci`에 `--package-lock-only=false`·`--dry-run=false`를 고정한다(명령줄이 모든 npmrc보다 우선). `global`·`location=global`은 `npm ci`가 `ECIGLOBAL`로 실패하므로(`ci.js` 32-36행) 고정하지 않았다. 실제 npm으로 이 설정을 넣어 실행하지는 않았다.
+- m1(삭제 항목): 하람 결정 1로 지금 동작(새로 설치되는 버전이 있는 항목만 확인, 삭제만 있는 반영은 확인 없이 진행, 삭제 항목도 기지 악성 일치면 거부)을 유지하고 README·연결 규약 문장을 고쳤다. 삭제만 있는 반영의 전체 경로 테스트를 더했다.
+- m2(임시 폴더 위치): install은 `npm ci`용 임시 폴더를 백업·교체보다 먼저 만들고, 링크·정션을 푼 실제 경로가 프로젝트 안이면(Windows 대소문자 무시) `scratch_in_project`로 거부한다.
+- n1: README 첫 문장과 최상위 `--help`의 update 설명을 기본 미리보기와 `--apply` 반영·설치에 맞게 고쳤다.
+- 하람 결정 3: install은 새 lockfile에서 내려받는 항목마다 `integrity`가 있어야 한다(`integrity_missing`, 백업·교체 전). bundled 항목(`resolved` 없음)은 부모 tarball의 `integrity`로 확인되므로 제외했다.
+- 검토의 2번 관찰(설치 뒤 확인은 반영한 파일만 봄): 문서대로 `package.json`과 lockfile 둘 다 확인하게 고쳤다.
+- 단위 테스트 `tests/test_apply.py` 23개에서 26개: `npm ci` argv의 두 고정값, integrity 없는 항목의 install 거부와 같은 입력의 lockfile 반영(bundled 항목은 제외), `TMP`를 프로젝트 안 폴더·대문자 경로·프로젝트로 가는 정션(POSIX는 심볼릭 링크)으로 둔 install 거부와 파일·백업 불변, `npm ci`가 바꾸지 않은 `package.json`을 바꾼 경우의 실패, 삭제만 있는 반영의 확인 없는 진행. 전체 380개에서 383개, skip 32개(앞 기록과 같은 이유).
+- 보호를 하나씩 깨뜨린 확인(내보낸 사본에서 19가지, 전체 테스트): 이번 보호 5가지(`--package-lock-only=false` 제거, `--dry-run=false` 제거, 프로젝트 안 임시 폴더 허용, integrity 없는 install 허용, `npm ci` 뒤 두 파일 확인 제거)와 앞 기록의 14가지. 모두 테스트가 실패했다.
+- 기존 명령 출력 비교(base `c1d2e8a`, 같은 13개 명령 × 세 이력 상태): 최상위 `--help`는 update 항목 줄만, `update --help`는 usage와 새 두 옵션만 달랐고(둘 다 의도된 변화), 나머지는 바이트가 같고 기록 수도 같았다.
+- 확인하지 못한 것: 사용자 npmrc에 `package-lock-only=true`·`dry-run=true`를 둔 실제 `npm ci`(소스로만 확인), POSIX의 심볼릭 링크 경우(CI 예정), 그 밖은 아래 UPD-02 기록과 같다.
+
 ## 2026-11-16: 업데이트 반영(`depbee update --apply`, UPD-02)
 
 - 구현: `service.apply_update`·`apply_preview`·`update_gate`(미리보기 재사용, 항목별 게이트, 반영 직전 재확인, 백업, 임시 파일과 `os.replace` 교체), `inputs/npm_cli.clean_install`(`npm ci --ignore-scripts`)과 `check_files`(read_project의 내용 검사를 새 파일에도), CLI `--apply {lockfile,install}`·`--confirm-warnings`, `{preview, report, apply}` JSON과 텍스트·Markdown 반영 절, 종료 코드 규칙, 이력 `user_version` 2(`applies` 표, 버전 1 올림, `list_applies`, `get_run`의 `apply`). `pipeline.py`, `contracts.py`, `mcp.py`, `actions.py`, `analysis/`, `inference/`, `dashboard/`, `action.yml`, `docs/examples/`, `.github/`, `pyproject.toml`은 바꾸지 않았다. 규칙은 [연결 규약](contracts.md) 5.1·6절.

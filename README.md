@@ -3,7 +3,7 @@
 npm 프로젝트에서 바뀐 의존성 버전을 찾아, 각 버전의 변경점에서 feature를 추출하고 학습된 LightGBM 모델로 악성 업데이트 위험을 판정하는 Python CLI입니다.
 이름은 dependency와 bee를 합친 것입니다.
 
-패키지를 설치하거나 패키지 코드를 실행하지 않습니다. tarball을 받아 읽기만 합니다.
+검사는 패키지를 설치하거나 패키지 코드를 실행하지 않고 tarball을 받아 읽기만 합니다. 프로젝트 파일을 바꾸거나 패키지를 설치하는 것은 `depbee update --apply`를 줄 때뿐이고(기본은 미리보기), 그때도 설치 스크립트는 실행하지 않습니다.
 점수는 모델의 판정이며 패키지가 안전하다는 보증이 아닙니다.
 
 ## 구현 현황
@@ -166,19 +166,21 @@ registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때�
 - `--apply install`: lockfile을 반영한 뒤 프로젝트에서 `npm ci --ignore-scripts`를 실행합니다. `npm ci`는 기존 `node_modules`의 내용을 지우고 lockfile 그대로 다시 설치합니다.
 - 반영 게이트: 최상위 종료 코드가 아니라 항목별 판정으로 정합니다.
   - 기지 악성 기록 일치(`known_malicious.status`가 `hit`)가 하나라도 있으면 반영·설치하지 않습니다. 확인 옵션으로도 바꿀 수 없습니다.
-  - ML 위험 점수 기준 이상(`ml.status`가 `hit`), 보류(`incomplete`), 기지 악성 목록과 대조하지 못한 항목(`known_malicious.status`가 `not_run`이나 `failed`)이 있으면 그 목록(판정, 이유, ML 위험 점수, 탐지기 상태)을 보여 주고 반영하지 않습니다. 목록을 검토한 뒤 `--confirm-warnings`를 함께 주면 한 번의 확인으로 모두 진행하고, 확인한 사실과 항목을 결과와 이력에 남깁니다. 삭제 항목은 설치되는 것이 없어 확인 대상이 아닙니다.
-  - 지금 CLI에는 기지 악성 탐지기가 연결되지 않아 설치되는 모든 항목이 미확인이므로, 반영할 때마다 `--confirm-warnings`가 필요합니다.
+  - 새로 설치되는 버전이 있는 항목 중 ML 위험 점수 기준 이상(`ml.status`가 `hit`), 보류(`incomplete`), 기지 악성 목록과 대조하지 못한 항목(`known_malicious.status`가 `not_run`이나 `failed`)이 있으면 그 목록(판정, 이유, ML 위험 점수, 탐지기 상태)을 보여 주고 반영하지 않습니다. 목록을 검토한 뒤 `--confirm-warnings`를 함께 주면 한 번의 확인으로 모두 진행하고, 확인한 사실과 항목을 결과와 이력에 남깁니다.
+  - 삭제 항목은 설치되는 것이 없어 확인 대상이 아닙니다. 그래서 삭제만 있는 반영은 확인 없이 진행합니다. 다만 삭제 항목도 기지 악성 기록과 일치하면 위와 같이 거부합니다.
+  - 지금 CLI에는 기지 악성 탐지기가 연결되지 않아 새로 설치되는 모든 버전이 미확인이므로, 새로 설치되는 버전이 있는 반영마다 `--confirm-warnings`가 필요합니다.
   - `--confirm-warnings`는 `--apply`와 함께만 받습니다. 없이 주면 npm을 실행하기 전에 오류(종료 코드 2)입니다.
 - 반영 직전 재확인: 프로젝트를 미리보기와 같은 지원 범위 검사로 다시 읽고, `package.json`·`package-lock.json`의 SHA-256이 미리보기 때와 같고 쓸 lockfile의 SHA-256이 검사한 새 lockfile과 같을 때만 반영합니다. npm이 계산한 새 `package.json`·`package-lock.json`도 같은 지원 범위 검사(registry 밖 `resolved` 거부 등)를 통과해야 합니다. 하나라도 어긋나면 아무것도 바꾸지 않습니다.
+- `--apply install`의 추가 조건(어긋나면 아무것도 바꾸지 않고 거부): 새 lockfile에서 내려받는 항목(`resolved`가 있는 모든 `node_modules/` 항목)마다 `integrity`가 있어야 합니다. 부모 tarball 안에 들어 있는 bundled 항목은 부모의 `integrity`로 확인되므로 따지지 않습니다. `--apply lockfile`은 `integrity`가 없어도 반영합니다. 또 아래 `npm ci`용 임시 폴더를 백업·교체보다 먼저 만들어, 링크·정션을 푼 실제 경로가 프로젝트 안이면(Windows는 대소문자 무시, 예: `TMP`·`TEMP`가 프로젝트 안 폴더) 거부합니다.
 - 바뀐 항목이 없으면 아무것도 쓰지 않고(백업도 만들지 않음) `npm ci`도 실행하지 않습니다.
 - 백업: 프로젝트 파일을 바꾸기 전에 원본 `package.json`·`package-lock.json`과 설명 파일 `backup.json`(프로젝트 경로, 원본·새 SHA-256, 시각, 방식)을 이력 파일 옆 `backups/<UTC 시각>-<무작위 8자>/`에 씁니다. 기본은 `~/.local/share/depbee/backups/`이고, `DEPBEE_HISTORY_DB`를 지정했으면 그 파일이 있는 폴더의 `backups/`입니다. 위치는 대상 프로젝트의 파일로 바꿀 수 없습니다. 백업을 쓰지 못하거나 홈 폴더를 정하지 못하면 반영하지 않고 실패(종료 코드 2)입니다. 백업은 자동으로 지우지 않습니다.
 - 되돌리기: depbee는 자동으로 되돌리지 않습니다. 반영 중 실패(예: lockfile을 바꾼 뒤 `npm ci` 실패)는 오류로 알리고 백업 위치와 되돌리는 방법을 보여 줍니다. 되돌리려면 백업 폴더의 두 파일을 프로젝트에 복사하고, 설치한 `node_modules`도 되돌리려면 그 뒤 `npm ci --ignore-scripts`를 실행합니다.
 - 파일 교체: 바뀐 파일을 모두 프로젝트 폴더 안 임시 파일(`.package-lock.json.<무작위>.depbee` 등)에 쓴 뒤 `os.replace`로 하나씩 바꿉니다. 실패하면 남은 임시 파일을 지우고, 이미 바꾼 파일이 있으면 그 이름을 오류에 적습니다.
 - 설치 스크립트는 실행하지 않습니다. `npm ci`는 항상 `--ignore-scripts`로 실행하고 설치 스크립트를 실행하는 옵션은 없습니다. 설치 스크립트가 필요한 패키지(네이티브 모듈 빌드 등)는 직접 검토한 뒤 `npm rebuild`를 실행합니다.
-- `npm ci` 실행 규칙: 미리보기와 같이 `node.exe`와 `npm-cli.js`를 셸 없이 실행하고, `npm_config_*`·`NODE_OPTIONS`를 넘기지 않으며 `npm_config_ignore_scripts=true`를 넣습니다. 인자는 `ci --ignore-scripts --no-audit --no-fund --no-update-notifier --no-progress --color=false --loglevel=warn --prefix=<프로젝트> --workspaces=false --git=<없는 파일> --globalconfig=<없는 파일>`이고, 두 없는 파일은 depbee가 만든 임시 폴더(Python 임시 폴더 아래 `depbee_install_*`, 끝나면 지움) 안의 경로입니다. npm은 `--prefix`를 받으면 `<프로젝트>/etc/npmrc`를 전역 설정 파일로 읽으므로 `--globalconfig`로 막습니다. 그래서 이 설치에서는 기본 위치의 전역 npmrc도 읽지 않습니다. 시간 제한은 600초(모든 tarball을 받아 풀기 때문에 미리보기의 120초보다 깁니다), 출력 상한은 stdout·stderr 각 1 MiB이고, 넘으면 npm과 하위 프로세스를 함께 종료합니다. npm 출력은 오류에 옮기지 않습니다. 끝난 뒤 `package.json`·`package-lock.json`이 반영한 그대로인지 확인합니다.
+- `npm ci` 실행 규칙: 미리보기와 같이 `node.exe`와 `npm-cli.js`를 셸 없이 실행하고, `npm_config_*`·`NODE_OPTIONS`를 넘기지 않으며 `npm_config_ignore_scripts=true`를 넣습니다. 인자는 `ci --ignore-scripts --no-audit --no-fund --no-update-notifier --no-progress --color=false --loglevel=warn --package-lock-only=false --dry-run=false --prefix=<프로젝트> --workspaces=false --git=<없는 파일> --globalconfig=<없는 파일>`이고, 두 없는 파일은 depbee가 만든 임시 폴더(Python 임시 폴더 아래 `depbee_install_*`, 프로젝트 밖인지 확인, 끝나면 지움) 안의 경로입니다. `--package-lock-only=false`·`--dry-run=false`는 사용자 npm 설정에 그 값이 켜져 있어도 `npm ci`가 `node_modules`를 비운 뒤 설치를 건너뛰고 성공으로 끝나지 않게 합니다. npm은 `--prefix`를 받으면 `<프로젝트>/etc/npmrc`를 전역 설정 파일로 읽으므로 `--globalconfig`로 막습니다. 그래서 이 설치에서는 기본 위치의 전역 npmrc도 읽지 않습니다. 시간 제한은 600초(모든 tarball을 받아 풀기 때문에 미리보기의 120초보다 깁니다), 출력 상한은 stdout·stderr 각 1 MiB이고, 넘으면 npm과 하위 프로세스를 함께 종료합니다. npm 출력은 오류에 옮기지 않습니다. 끝난 뒤 `package.json`·`package-lock.json`이 반영한 그대로인지 확인합니다.
 - 프로젝트 `.npmrc`와 install: 미리보기는 임시 폴더에서 돌아 프로젝트 `.npmrc`를 읽지 않지만 `npm ci`는 프로젝트 폴더에서 돌아 읽습니다. depbee가 명령줄로 고정한 설정(`ignore-scripts`, `git`, `prefix`, `workspaces`, `globalconfig`, `audit` 등)은 `.npmrc`보다 우선하지만 `registry`, scope별 registry, 인증, 프록시·인증서, 캐시 위치, `userconfig` 같은 설정은 `.npmrc` 값이 쓰입니다. 그래서 프로젝트에 `.npmrc`가 있으면 `--apply install`은 아무것도 바꾸지 않고 거부합니다. `--apply lockfile`로 반영한 뒤 `.npmrc`를 직접 검토하고 `npm ci --ignore-scripts`로 설치합니다. 사용자 `~/.npmrc`는 미리보기와 같이 npm이 읽습니다.
 - 출력: 텍스트·Markdown은 미리보기 요약과 검사 결과 뒤에 반영 결과(반영했는지, 방식, 거부·실패 이유, 거부한 항목과 확인이 필요한 항목, 바꾼 파일과 SHA-256, 백업 위치, npm 버전과 `npm ci` 종료 코드, 안내)를 붙입니다. 이때 미리보기 요약의 "미리보기만 했고 프로젝트 파일은 아무것도 바꾸지 않았습니다." 안내는 빠집니다. JSON(`--format json`, `--output`)은 `{"preview": {...}, "report": <scan 보고서>, "apply": {...}}`입니다([연결 규약](docs/contracts.md) 5절).
-- 종료 코드: 0/1/2의 뜻은 그대로이고 보고서의 종료 코드를 씁니다. 반영을 요청했는데 반영하지 않았고(게이트 거부, 확인 없음, 프로젝트 `.npmrc`, 재확인 불일치) 보고서 값이 0이면 2(요청한 동작을 끝내지 못함)입니다. 백업·교체·`npm ci` 중 실패는 2입니다. 확인하고 반영했어도 보고서가 1(위험)이나 2(보류)면 그 값입니다. 미리보기 단계의 입력·지원 범위·npm 오류는 반영 없이 지금처럼 판정 없는 오류(표준 오류의 error JSON, 종료 코드 2)입니다.
+- 종료 코드: 0/1/2의 뜻은 그대로이고 보고서의 종료 코드를 씁니다. 반영을 요청했는데 반영하지 않았고(게이트 거부, 확인 없음, 프로젝트 `.npmrc`, 재확인 불일치, install의 `integrity` 누락, 프로젝트 안 임시 폴더) 보고서 값이 0이면 2(요청한 동작을 끝내지 못함)입니다. 백업·교체·`npm ci` 중 실패는 2입니다. 확인하고 반영했어도 보고서가 1(위험)이나 2(보류)면 그 값입니다. 미리보기 단계의 입력·지원 범위·npm 오류는 반영 없이 지금처럼 판정 없는 오류(표준 오류의 error JSON, 종료 코드 2)입니다.
 - 이력: 등록한 프로젝트면 업데이트 미리보기 실행 기록과 함께 반영 기록을 남깁니다([로컬 이력 저장소](#로컬-이력-저장소)).
 
 ## 로컬 이력 저장소
