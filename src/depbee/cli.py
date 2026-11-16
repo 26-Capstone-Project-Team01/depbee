@@ -188,6 +188,14 @@ def _parser() -> argparse.ArgumentParser:
         "(needs .[mcp] and, to analyze, .[extract])",
     )
     serve.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
+    dashboard = commands.add_parser(
+        "dashboard",
+        help="Serve the local history dashboard on 127.0.0.1: registered projects, their "
+        "dependencies and recorded reports; it runs no scan (needs .[web])",
+    )
+    dashboard.add_argument(
+        "--port", type=int, default=0, help="Port on 127.0.0.1 (default 0: a free port)"
+    )
     return parser
 
 
@@ -684,6 +692,11 @@ def main(argv: list[str] | None = None) -> int:
             from .mcp import serve
 
             serve(args.model_dir)
+            return 0
+        if args.command == "dashboard":
+            from .dashboard import serve as dashboard
+
+            dashboard(args.port)
             return 0
         # Refuse a taken --output before any download or extraction; _emit's "x" mode still
         # guards against a file created meanwhile. Same error text as that open().

@@ -16,15 +16,22 @@ ml = ["lightgbm>=4.6,<5", "numpy>=1.26,<3"]
 extract = [
     "feature-extractor @ git+https://github.com/26-Capstone-Project-Team01/feature-extractor@c24761d26f44d93216e231462b5b1208d7a6a488",
 ]
-dev = ["ruff>=0.12,<1", "build>=1.2,<2"]
+# httpx2: the Starlette TestClient of the dashboard tests.
+dev = ["ruff>=0.12,<1", "build>=1.2,<2", "httpx2>=2.16,<3"]
 # Read-only MCP entry point (depbee mcp); the depbee package itself never imports it.
 mcp = ["mcp>=2.3,<3"]
+# Local history dashboard (depbee dashboard); only depbee.dashboard.app imports these.
+web = ["starlette>=1.10,<2", "jinja2>=3.1.6,<4", "uvicorn>=0.54,<0.55"]
 
 [project.scripts]
 depbee = "depbee.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# The dashboard's pages and stylesheet; include-package-data alone takes only MANIFEST.in files.
+[tool.setuptools.package-data]
+"depbee.dashboard" = ["templates/*.html", "static/*.css"]
 
 [tool.ruff]
 target-version = "py311"
