@@ -57,6 +57,8 @@ class Fixture(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("DEPBEE_MODEL_DIR", None)
+        # The local history (depbee.history) stays in this run; the file is not created.
+        os.environ["DEPBEE_HISTORY_DB"] = str(self.root / "history.sqlite3")
         self.project = self.root / "project"
         self.project.mkdir()
         self.base = self.root / "base.json"
