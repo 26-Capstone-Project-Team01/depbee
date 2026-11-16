@@ -59,6 +59,10 @@ AGREEMENT_LABELS = {
 }
 ML_LABELS = {"hit": "기준 이상", "not_hit": "기준 미만", "not_run": "미실행", "failed": "실패"}
 NOT_CONFIGURED = "연결 안 됨(미실행)"
+# A report without the detector fields (older than them, contract 6): unknown, never not_hit.
+NOT_CHECKED = "확인 안 됨"
+# After an ML status derived from older fields when a report has no ml (contract 4.1, 6).
+ML_DERIVED = "참고값"
 FEATURE_LABELS = {
     "installScriptPresent": "새 버전에 설치 스크립트 있음",
     "installScriptAdded": "설치 스크립트 추가",
@@ -184,6 +188,14 @@ def _parser() -> argparse.ArgumentParser:
         "(needs .[mcp] and, to analyze, .[extract])",
     )
     serve.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
+    dashboard = commands.add_parser(
+        "dashboard",
+        help="Serve the local history dashboard on 127.0.0.1: registered projects, their "
+        "dependencies and recorded reports; it runs no scan (needs .[web])",
+    )
+    dashboard.add_argument(
+        "--port", type=int, default=0, help="Port on 127.0.0.1 (default 0: a free port)"
+    )
     return parser
 
 
@@ -265,7 +277,7 @@ def _notices(report: dict) -> list[tuple[str, str]]:
 def _detector_setup(report: dict, esc) -> list[str]:
     """Which detectors besides the model ran; an unconnected one is said here, not per result."""
     if "detectors" not in report:
-        return []
+        return [f"기지 악성 목록: {NOT_CHECKED}", f"규칙: {NOT_CHECKED}"]
     known, rules = report["detectors"]["known_malicious"], report["detectors"]["rules"]
     return [
         "기지 악성 목록: "
@@ -275,13 +287,38 @@ def _detector_setup(report: dict, esc) -> list[str]:
     ]  # fmt: skip
 
 
-def _ml_score(row: dict, label) -> str | None:
+def _ml_status(row: dict, report: dict) -> tuple[str | None, bool]:
+    """ml.status, and whether it is only derived: a report without ml (older) gets the contract
+    4.1 value from its status and reason, a reference value (contract 6). Before the detectors
+    existed the item status was the ML path's own."""
+    if "ml" in row:
+        return (row["ml"] or {}).get("status"), False
+    status, reason = row.get("status"), row.get("reason")
+    if status == "flagged":
+        return "hit", True
+    if status == "not_flagged":
+        return "not_hit", True
+    if status == "removed":
+        return "not_run", True
+    if status == "incomplete":
+        connected = isinstance(report.get("analyzer_version"), str)
+        failed = reason in ("analysis_failed", "inference_failed") or (
+            reason == "analysis_missing" and connected
+        )
+        return ("failed" if failed else "not_run"), True
+    return None, False
+
+
+def _ml_score(row: dict, label, report: dict) -> str | None:
     """The ML risk score with the ML path's own status (contract 4.1); not a probability.
 
-    An unknown ml.status is shown as other unknown states are (label); no ml field shows none.
+    An unknown ml.status is shown as other unknown states are (label); one derived for a report
+    without ml is marked ML_DERIVED.
     """
-    status = (row.get("ml") or {}).get("status")
+    status, derived = _ml_status(row, report)
     shown = None if status is None else label(ML_LABELS, status)
+    if shown is not None and derived:
+        shown += f", {ML_DERIVED}"
     if row["score"] is not None:
         return f"{row['score']:.3f}" + (f" ({shown})" if shown is not None else "")
     if row["status"] != "removed" and shown is not None:
@@ -306,8 +343,19 @@ def _alternative(row: dict) -> tuple[str, str] | None:
     return version, source
 
 
-def _slot(slot: dict, labels: dict, esc, label) -> str:
+def _slot_status(slot: dict, labels: dict, label) -> str:
+    """The slot's status, with the count of failed rule checks under any other status: rules
+    hit with some checks failed (DEC-01 n4) shows both, so that the item's detection_failed
+    reason does not read as contradicting it."""
     text = label(labels, slot["status"])
+    failed = sum(check.get("status") == "failed" for check in slot.get("checks") or [])
+    if failed and slot["status"] != "failed":
+        text += f", 실패 {failed}개"
+    return text
+
+
+def _slot(slot: dict, labels: dict, esc, label) -> str:
+    text = _slot_status(slot, labels, label)
     if slot.get("reason"):
         text += f" ({label(DETECTOR_REASON_LABELS, slot['reason'])})"
     if slot.get("detail"):
@@ -315,11 +363,20 @@ def _slot(slot: dict, labels: dict, esc, label) -> str:
     return text
 
 
-def _detector_lines(row: dict, esc, label) -> list[tuple[str, list[str]]]:
-    """Each connected detector's slot of one result as a line and its sub-lines."""
+def _unchecked(row: dict, key: str, report: dict) -> bool:
+    """The result has no slot for this detector and the report does not say it was unconnected
+    (a report older than the detectors): shown as NOT_CHECKED, never as not_hit (contract 6)."""
+    return key not in row and (report.get("detectors") or {}).get(key, True) is not None
+
+
+def _detector_lines(row: dict, esc, label, report: dict) -> list[tuple[str, list[str]]]:
+    """Each connected detector's slot of one result as a line and its sub-lines; a slot missing
+    from an older report is NOT_CHECKED."""
     lines = []
     known, rules = row.get("known_malicious"), row.get("rules")
-    if known and known.get("reason") != "detector_not_configured":
+    if _unchecked(row, "known_malicious", report):
+        lines.append((f"기지 악성: {NOT_CHECKED}", []))
+    elif known and known.get("reason") != "detector_not_configured":
         matches = [
             f"{esc(match['advisory_id'])} ({label(MATCH_KIND_LABELS, match['match_kind'])}"
             + (f", 영향 버전 {esc(match['affected'])}" if match["affected"] is not None else "")
@@ -327,7 +384,9 @@ def _detector_lines(row: dict, esc, label) -> list[tuple[str, list[str]]]:
             for match in known["matches"]
         ]
         lines.append((f"기지 악성: {_slot(known, KNOWN_STATUS_LABELS, esc, label)}", matches))
-    if rules and rules.get("reason") != "detector_not_configured":
+    if _unchecked(row, "rules", report):
+        lines.append((f"규칙: {NOT_CHECKED}", []))
+    elif rules and rules.get("reason") != "detector_not_configured":
         checks = []
         for check in rules["checks"]:
             text = (f"{label(RULE_STATUS_LABELS, check['status'])} {esc(check['rule_id'])}"
@@ -342,9 +401,31 @@ def _detector_lines(row: dict, esc, label) -> list[tuple[str, list[str]]]:
                 text += f", 상세: {esc(check['detail'])}"
             checks.append(text)
         lines.append((f"규칙: {_slot(rules, RULE_STATUS_LABELS, esc, label)}", checks))
-        agreement = label(AGREEMENT_LABELS, row["rule_ml_agreement"])
-        lines.append((f"규칙/ML: {agreement}. 판정에 쓰지 않는 표시입니다.", []))
+        if "rule_ml_agreement" in row:
+            agreement = label(AGREEMENT_LABELS, row["rule_ml_agreement"])
+            lines.append((f"규칙/ML: {agreement}. 판정에 쓰지 않는 표시입니다.", []))
     return lines
+
+
+def _ordered(results: list[dict]) -> list[dict]:
+    """D-13: risky, unfinished, passed, removed, then by ML risk score (the JSON keeps the
+    lockfile order)."""
+    return sorted(
+        results,
+        key=lambda r: (STATUS_ORDER.get(r["status"], len(STATUS_ORDER)), -(r["score"] or 0.0)),
+    )
+
+
+def _rest_line(row: dict) -> str:
+    """The explanation_rest line: the other features, the base value and their total."""
+    rest = row["explanation_rest"]
+    shown = sum(item["contribution"] for item in row.get("explanation") or [])
+    total = shown + rest["others_sum"] + rest["base_value"]
+    return (
+        f"나머지 특징 {rest['others_count']}개 합 {rest['others_sum']:+.2f},"
+        f" 모델 기준값 {rest['base_value']:+.2f}"
+        f" (합계 {total:+.2f} → 점수 {row['score']:.3f})"
+    )
 
 
 def _print_text(report: dict) -> None:
@@ -373,17 +454,12 @@ def _print_text(report: dict) -> None:
     # Only extraction reports (scan --extract, check) carry times.
     if report.get("elapsed_seconds") is not None:
         print(f"소요 시간: {report['elapsed_seconds']:.3f}초")
-    # Risky and unfinished results first; the JSON report keeps the lockfile order.
-    rows = sorted(
-        report["results"],
-        key=lambda r: (STATUS_ORDER.get(r["status"], len(STATUS_ORDER)), -(r["score"] or 0.0)),
-    )
-    for row in rows:
+    for row in _ordered(report["results"]):
         label = STATUS_LABELS.get(row["status"], row["status"])
         version = row["after_version"] or row["before_version"]
         print()
         print(f"[{label}] {_clean(row['package'])}@{_clean(version)}  ({_clean(row['location'])})")
-        score = _ml_score(row, _text_label)
+        score = _ml_score(row, _text_label, report)
         if score is not None:
             print(f"  ML 위험 점수: {score}")
         if row.get("reason"):
@@ -394,7 +470,7 @@ def _print_text(report: dict) -> None:
             print(f"  대안(안전 보증 아님): {_clean(alternative[0])} ({alternative[1]})")
         if row.get("detail"):
             print(f"  상세: {_clean(row['detail'])}")
-        for line, subs in _detector_lines(row, _clean, _text_label):
+        for line, subs in _detector_lines(row, _clean, _text_label, report):
             print(f"  {line}")
             for sub in subs:
                 print(f"    - {sub}")
@@ -416,13 +492,7 @@ def _print_text(report: dict) -> None:
                     f" ({item['contribution']:+.2f})"
                 )
         if rest:
-            shown = sum(item["contribution"] for item in row.get("explanation", []))
-            total = shown + rest["others_sum"] + rest["base_value"]
-            print(
-                f"    나머지 특징 {rest['others_count']}개 합 {rest['others_sum']:+.2f},"
-                f" 모델 기준값 {rest['base_value']:+.2f}"
-                f" (합계 {total:+.2f} → 점수 {row['score']:.3f})"
-            )
+            print(f"    {_rest_line(row)}")
     print()
     print(SAFETY_NOTE)
 
@@ -468,16 +538,14 @@ def _print_markdown(report: dict) -> None:
     lines.append(f"- 범위: {checked} 검사했습니다. 프로젝트 전체의 안전성 평가가 아닙니다.")
     if timed:
         lines.append(f"- 소요 시간: {report['elapsed_seconds']:.3f}초")
-    rows = sorted(
-        report["results"],
-        key=lambda r: (STATUS_ORDER.get(r["status"], len(STATUS_ORDER)), -(r["score"] or 0.0)),
-    )
-    # Detector columns only when a detector is connected; otherwise the list above says so.
+    rows = _ordered(report["results"])
+    # Detector columns only when a detector is connected (otherwise the list above says so) or
+    # when the report predates them (then each cell says NOT_CHECKED).
     connected = [
         (key, name, labels)
         for key, name, labels in (("known_malicious", "기지 악성", KNOWN_STATUS_LABELS),
                                   ("rules", "규칙", RULE_STATUS_LABELS))
-        if (report.get("detectors") or {}).get(key) is not None
+        if (report.get("detectors") or {}).get(key, True) is not None
     ]  # fmt: skip
     if rows:
         header = ["판정", "패키지", "설치될 버전", "비교 버전", *(c[1] for c in connected),
@@ -492,10 +560,14 @@ def _print_markdown(report: dict) -> None:
             _md(row["compared_version"]) if row.get("compared_version") is not None else "-",
         ]
         for key, _, labels in connected:
-            status = (row.get(key) or {}).get("status")
-            cell = "-" if status is None else _md_label(labels, status)
+            slot = row.get(key) or {}
+            status = slot.get("status")
+            if _unchecked(row, key, report):
+                cell = NOT_CHECKED
+            else:
+                cell = "-" if status is None else _slot_status(slot, labels, _md_label)
             cells.append(f"**{cell}**" if key == "known_malicious" and status == "hit" else cell)
-        score = _ml_score(row, _md_label)
+        score = _ml_score(row, _md_label, report)
         cells += [
             score if score is not None else "-",
             _md_label(REASON_LABELS, row["reason"]) if row.get("reason") else "-",
@@ -507,15 +579,15 @@ def _print_markdown(report: dict) -> None:
             cells.append(f"{seconds:.3f}초{cache}" if seconds is not None else "-")
         lines.append("| " + " | ".join(_cell(c) for c in cells) + " |")
     for row in rows:
-        lines += _markdown_details(row)
+        lines += _markdown_details(row, report)
     lines += ["", f"> {SAFETY_NOTE}"]
     print("\n".join(lines))
 
 
-def _markdown_details(row: dict) -> list[str]:
+def _markdown_details(row: dict, report: dict) -> list[str]:
     """Detector slots, extracted facts and the model's explanation of one result, kept apart."""
     explanation, rest = row.get("explanation") or [], row.get("explanation_rest")
-    detectors = _detector_lines(row, _md, _md_label)
+    detectors = _detector_lines(row, _md, _md_label, report)
     alternative = _alternative(row)
     if not (
         alternative or row.get("detail") or detectors or row.get("evidence") or explanation or rest
@@ -548,13 +620,7 @@ def _markdown_details(row: dict) -> list[str]:
                 f" ({item['contribution']:+.2f})"
             )
         if rest:
-            shown = sum(item["contribution"] for item in explanation)
-            total = shown + rest["others_sum"] + rest["base_value"]
-            lines.append(
-                f"  - 나머지 특징 {rest['others_count']}개 합 {rest['others_sum']:+.2f},"
-                f" 모델 기준값 {rest['base_value']:+.2f}"
-                f" (합계 {total:+.2f} → 점수 {row['score']:.3f})"
-            )
+            lines.append(f"  - {_rest_line(row)}")
     return lines
 
 
@@ -626,6 +692,11 @@ def main(argv: list[str] | None = None) -> int:
             from .mcp import serve
 
             serve(args.model_dir)
+            return 0
+        if args.command == "dashboard":
+            from .dashboard import serve as dashboard
+
+            dashboard(args.port)
             return 0
         # Refuse a taken --output before any download or extraction; _emit's "x" mode still
         # guards against a file created meanwhile. Same error text as that open().

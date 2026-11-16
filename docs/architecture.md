@@ -20,7 +20,9 @@
 
 `preview_update()`(`depbee update [이름...]`)는 `inputs/npm_cli.py`로 프로젝트의 `package.json`·`package-lock.json`만 임시 폴더에 복사해 `npm update --package-lock-only --ignore-scripts`(node와 npm-cli.js 직접 실행, 셸 없음)로 새 lockfile을 계산하고, 원본 lockfile 바이트를 기준으로 `scan_project(extract=True)`를 부른다. npm의 `--version`과 `update` 모두에 `--prefix=<임시 폴더>`·`--workspaces=false`(상위 workspace 루트 탐색 차단)와 없는 파일을 가리키는 `--git`(Git 실행 차단)을 고정하고, `overrides`와 lockfile 항목의 의존성 값도 registry 범위만 받는다. npm 실행은 `inputs/git.py`의 `_run(tree=True)`로 하위 프로세스까지 묶어(Windows는 `KILL_ON_JOB_CLOSE`를 설정한 Job Object, POSIX는 프로세스 그룹) 시간 초과·출력 상한과 정상 종료 뒤 모두 종료하고 끝난 것을 확인한다. 판정은 그대로 `pipeline.scan()`이 하고, 미리보기 메타데이터는 보고서 밖 `preview`에 둔다. 프로젝트 파일은 읽기만 한다.
 
-`history.py`는 로컬 이력 저장소(표준 라이브러리 `sqlite3`)다. 서비스 함수와 `pipeline.scan()` 밖에 두어, `cli.main`의 `scan`·`update` 분기가 보고서를 출력한 뒤에만 `record()`를 부른다(그래서 `preview_update()` 안의 임시 폴더 스캔, MCP 도구, `check`, `plan`, 오류 실행은 기록되지 않는다). 대시보드(예정)도 같은 등록·기록·조회 API를 쓴다. 보고서 값을 그대로 저장하고 판정을 다시 계산하지 않는다. 형식과 규칙은 [연결 규약](contracts.md) 6절.
+`history.py`는 로컬 이력 저장소(표준 라이브러리 `sqlite3`)다. 서비스 함수와 `pipeline.scan()` 밖에 두어, `cli.main`의 `scan`·`update` 분기가 보고서를 출력한 뒤에만 `record()`를 부른다(그래서 `preview_update()` 안의 임시 폴더 스캔, MCP 도구, `check`, `plan`, 오류 실행은 기록되지 않는다). 대시보드도 같은 등록·조회 API를 쓴다. 보고서 값을 그대로 저장하고 판정을 다시 계산하지 않는다. 형식과 규칙은 [연결 규약](contracts.md) 6절.
+
+`dashboard/`는 로컬 대시보드(`depbee dashboard`)다. `__init__.py`의 `serve()`가 웹 라이브러리(`web` extra: Starlette, Jinja2, uvicorn)를 쓰는 `app.py`를 지연 import하므로, extra가 없어도 다른 명령은 그대로 돈다. `app.py`는 입력 받기(등록 폼, 경로 검사는 `mcp._local_path`·`_unlinked` 재사용)와 표시만 한다. 이력은 `history`의 조회·등록 API로, 의존성은 `service.list_dependencies()`(`inputs/npm.py`의 `read_dependencies()`)로 읽고, 판정 문구와 순서는 텍스트 출력과 같은 `cli` 함수로 만든다. 탐지·판정 코드는 없다. 보안 확인(Host, 세션, Origin, 응답 헤더)은 앱 전체를 감싸는 ASGI 미들웨어 `Guard` 한 곳에 있고, 템플릿과 CSS는 패키지 데이터(`templates/`, `static/`)다. 규칙은 [연결 규약](contracts.md) 7절.
 
 | 영역 | 담당 | 인계할 결과물 |
 |---|---|---|

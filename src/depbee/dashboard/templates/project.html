@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}depbee 프로젝트 상세{% endblock %}
+{% block main %}
+<h1>{{ project.path }}{% if not found %} <span class="flag">찾을 수 없음</span>{% endif %}</h1>
+<p>등록 시각(UTC): {{ project.registered_at }}</p>
+<h2>의존성(현재 package-lock.json)</h2>
+{% if problem %}
+<p class="error">{{ problem }}</p>
+{% else %}
+{% set direct = dependencies|selectattr("direct")|list %}
+{% set nested = dependencies|rejectattr("direct")|list %}
+<p>직접 {{ direct|length }}개, 중첩 {{ nested|length }}개. npm을 실행하지 않고 lockfile만 읽었습니다.</p>
+{% for title, rows in (("직접 의존성", direct), ("중첩 의존성", nested)) %}
+<h3>{{ title }}</h3>
+{% if rows %}
+<table>
+<thead><tr><th>이름</th><th>버전</th><th>위치</th></tr></thead>
+<tbody>
+{% for row in rows %}
+<tr><td>{{ row.name }}</td><td>{{ row.version if row.version is not none else "-" }}</td><td>{{ row.location }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+{% else %}
+<p>없음</p>
+{% endif %}
+{% endfor %}
+{% endif %}
+<h2>실행 기록(최근순)</h2>
+{% if runs %}
+{% include "counts.html" %}
+{% else %}
+<p>기록된 실행이 없습니다.</p>
+{% endif %}
+{% endblock %}

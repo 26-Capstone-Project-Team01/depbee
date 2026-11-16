@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}depbee 프로젝트{% endblock %}
+{% block main %}
+<h1>프로젝트</h1>
+{% if not projects %}
+<p>등록한 프로젝트가 없습니다.</p>
+{% endif %}
+{% for project in projects %}
+<section class="project">
+<h2><a href="/projects/{{ project.id }}">{{ project.path }}</a>{% if not project.found %} <span class="flag">찾을 수 없음</span>{% endif %}</h2>
+<p>등록 시각(UTC): {{ project.registered_at }}</p>
+{% if project.runs %}
+{% set latest = project.runs[0] %}
+<p>최근 실행: {{ latest.kind }}, {{ latest.created_at }}, {{ latest.status }}. 위험 {{ latest.counts.flagged }}, 보류 {{ latest.counts.incomplete }}, 통과 {{ latest.counts.not_flagged }}, 삭제 {{ latest.counts.removed }}</p>
+<h3>추이(최근 {{ project.runs|length }}개 실행, 최근순)</h3>
+{% with runs = project.runs %}{% include "counts.html" %}{% endwith %}
+{% else %}
+<p>기록된 실행이 없습니다. 이 폴더에서 depbee scan이나 depbee update를 실행하면 기록됩니다.</p>
+{% endif %}
+</section>
+{% endfor %}
+<section>
+<h2>프로젝트 등록</h2>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<form method="post" action="/projects">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="path">package-lock.json이 있는 폴더의 절대 경로</label>
+<input id="path" name="path" type="text" maxlength="1024" required>
+<button type="submit">등록</button>
+</form>
+<p class="note">등록만 합니다. 검사는 이 폴더에서 depbee scan이나 depbee update로 실행하면 기록됩니다.</p>
+</section>
+{% endblock %}

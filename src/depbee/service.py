@@ -15,11 +15,23 @@ from .analysis.artifact import ArtifactAnalyzer
 from .contracts import GuardError, elapsed_since, read_json
 from .inference.lightgbm import LightGBMPredictor
 from .inputs import npm_cli
-from .inputs.npm import build_package_request, build_request, check_package_spec
+from .inputs.npm import (
+    build_package_request,
+    build_request,
+    check_package_spec,
+    read_dependencies,
+)
 from .pipeline import scan
 
 NPMRC_NOTICE = "프로젝트 .npmrc는 복사하지 않았습니다. 사용자·전역 npm 설정은 적용될 수 있습니다."
 PREVIEW_NOTICE = "미리보기만 했고 프로젝트 파일은 아무것도 바꾸지 않았습니다."
+
+
+def list_dependencies(project: Path) -> list[dict]:
+    """The project's installed dependencies from package-lock.json, without npm or the network:
+    [{location, name, version, direct}] (inputs.npm.read_dependencies). Raises GuardError,
+    OSError or ValueError for a missing or invalid lockfile, as a scan would."""
+    return read_dependencies(project)
 
 
 def plan_project(
