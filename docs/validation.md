@@ -1,5 +1,14 @@
 # 검증 기록
 
+## 2026-11-16: install의 유효한 integrity와 bundled 항목(UPD-02 fix_r3)
+
+- 재검토(REV-UPD02-R1 재검토, major 1, minor 1)와 하람 결정(2026-11-16 19:3x)을 반영했다. 규칙은 [연결 규약](contracts.md) 5.1절.
+- M2: install 전 검사가 비어 있지 않은 문자열만 보아 공백이나 해시 형식이 아닌 `integrity`를 통과시켰다. npm 11.6.1 소스(실행하지 않음)에서 pacote가 lockfile 값을 ssri로 파싱하고(`pacote/lib/fetcher.js` 59-60행), ssri가 공백으로 나눠 읽지 못한 값을 버린 뒤 남은 것이 없으면 null을 돌려줘(`ssri/lib/index.js` 373-390행) 대조할 기대 해시가 사라지는 것을 확인했다. 이제 `npm_cli.valid_sri`가 값 하나하나를 `sha512`·`sha384`·`sha256`·`sha1`과 그 digest 길이의 padding 있는 base64로 확인하고(ssri보다 엄격, 하나라도 틀리면 거부), 백업·교체 전에 `integrity_missing`으로 거부한다. `sha1`은 오래된 lockfile에 있고 ssri가 대조하므로 받아들였다.
+- m3: `resolved` 없는 bundled 항목을 부모 tarball로 보호된다고 보고 뺐지만, 루트 `bundleDependencies` 항목(`@npmcli/arborist/lib/node.js` 565-570행)과 부모 tarball에 없는 항목(`reify.js` 930-962·1110-1121행)은 npm이 따로 받는다. 하람 결정 2로 bundled 항목도 유효한 `integrity`가 없으면 install을 거부하고, 오류 문구에 bundled 항목 수와 lockfile만 반영해 직접 설치하라는 안내를 붙인다. `lockfile` 모드는 그대로 허용한다.
+- 단위 테스트 `tests/test_apply.py` 26개에서 28개: `valid_sri`의 구분(null·빈 값·공백·해시 아님·알 수 없는 알고리즘·대문자 알고리즘·다른 알고리즘 길이·padding 없음·base64 밖 문자·`?` 옵션·정상 값 뒤의 잘못된 값은 거부, 네 알고리즘과 여러 해시·앞뒤 공백은 허용), 키 없음·null·공백·해시 아님·알 수 없는 알고리즘·잘못된 길이의 install 거부와 파일·백업 불변·`npm ci` 미실행·같은 입력의 lockfile 반영, 빈 문자열은 미리보기의 입력 검사(`inputs/npm.py`)에서 먼저 오류, 루트 `bundleDependencies` 항목과 의존 패키지 안 bundled 항목의 install 거부와 lockfile 반영. 업데이트 테스트 fixture의 `integrity`를 형식·길이가 맞는 합성 SRI로 바꿨다(실제 tarball 해시 아님). 전체 383개에서 385개, skip 32개(앞 기록과 같은 이유).
+- 도움말은 바뀌지 않아 기존 명령 출력 비교는 다시 돌리지 않았다. 텍스트 출력의 거부 이유 문구(`integrity_missing`)만 바뀌었다.
+- 확인하지 못한 것: 실제 npm으로 잘못된 `integrity`나 bundled 항목이 있는 lockfile의 `npm ci`(로컬 세션이 다시 확인), npm 12의 ssri.
+
 ## 2026-11-16: 미리보기 npm update의 무동작 경로(UPD-02 fix_r2)
 
 - 발견: 로컬 세션의 실제 npm 확인(케이스 F)에서 사용자 npmrc에 `dry-run=true`가 있으면 미리보기의 `npm update --package-lock-only`가 새 lockfile을 쓰지 않고 종료 0으로 끝나, 업데이트가 있는데 바뀐 항목 0개·통과·종료 코드 0으로 보였다(UPD-01부터 있던 경로).
