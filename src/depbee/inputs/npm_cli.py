@@ -44,14 +44,21 @@ FIXED_OPTIONS = (
     "--no-progress",
     "--color=false",
     "--loglevel=warn",
+    # The command line beats every npmrc and the environment. From a user npmrc, dry-run makes
+    # reify return before it saves anything (arborist reify.js 279-281, 1300-1304) and
+    # package-lock=false skips the lockfile save (reify.js 1534): npm update would exit 0 with
+    # the lockfile unchanged, which reads as "nothing to update". global and location=global
+    # fail with a lockfile-only update (ESHRINKWRAPGLOBAL, reify.js 95-99).
+    "--dry-run=false",
+    "--package-lock=true",
 )
 # npm ci never writes package.json or the lockfile (lib/commands/ci.js, save: false) and with
 # ignore-scripts runs no root (ci.js 102-124) or dependency script, binding.gyp included
-# (@npmcli/arborist rebuild.js 150-166). The command line beats every npmrc and the environment.
-# ci empties node_modules unless dry-run (ci.js 79-100) and passes package-lock-only on
-# (ci.js 40-46); either from a user npmrc would make reify skip the install (arborist reify.js
-# 279-286) and still exit 0. global and location=global make ci fail (ci.js 32-36).
-CI_OPTIONS = (*FIXED_OPTIONS[1:], "--package-lock-only=false", "--dry-run=false")
+# (@npmcli/arborist rebuild.js 150-166). ci empties node_modules unless dry-run (ci.js 79-100)
+# and passes package-lock-only on (ci.js 40-46); either from a user npmrc would make reify skip
+# the install (arborist reify.js 279-286) and still exit 0. ci sets packageLock itself (ci.js
+# 42). global and location=global make ci fail (ci.js 32-36).
+CI_OPTIONS = (*FIXED_OPTIONS[1:], "--package-lock-only=false")
 # A target is a bare registry name: no leading "-", "." or "_" (so never an option or a path),
 # ASCII only, and none of the characters a shell or cmd.exe would read (space, : \ % & | ^ < > ").
 _PART = r"[A-Za-z0-9~!*'()][A-Za-z0-9._~!*'()-]*"

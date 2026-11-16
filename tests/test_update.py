@@ -119,7 +119,7 @@ class PreviewTests(UpdateFixture):
         self.assertEqual(update, [
             str(self.node), str(self.npm_js), "update", "--package-lock-only", "--ignore-scripts",
             "--no-audit", "--no-fund", "--no-update-notifier", "--no-progress", "--color=false",
-            "--loglevel=warn", *pinned, "--", "example",
+            "--loglevel=warn", "--dry-run=false", "--package-lock=true", *pinned, "--", "example",
         ])  # fmt: skip
         self.assertEqual(update.index("--"), len(update) - 2)  # names only after "--"
         self.assertFalse(self.work_files_have_git)  # the git setting names a missing file

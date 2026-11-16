@@ -361,7 +361,7 @@ class InstallTests(ApplyFixture):
         self.assertEqual(ci["argv"], [
             str(self.node), str(self.npm_js), "ci", "--ignore-scripts", "--no-audit", "--no-fund",
             "--no-update-notifier", "--no-progress", "--color=false", "--loglevel=warn",
-            "--package-lock-only=false", "--dry-run=false", *pinned,
+            "--dry-run=false", "--package-lock=true", "--package-lock-only=false", *pinned,
         ])  # fmt: skip
         self.assertEqual(version["argv"], [str(self.node), str(self.npm_js), "--version", *pinned])
         self.assertEqual((ci["cwd"], version["cwd"]), (project, project))
