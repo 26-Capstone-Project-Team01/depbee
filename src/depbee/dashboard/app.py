@@ -91,7 +91,9 @@ ENV = jinja2.Environment(
 
 
 def cookie_name(port: int) -> str:
-    # Cookies are not isolated by port; the name keeps another local app's or run's apart.
+    # The port in the name only keeps this run's cookie apart from other runs' and apps' cookies.
+    # Cookies are not isolated by port: a browser still sends it to any other server on
+    # 127.0.0.1, which could reuse it (accepted, docs/contracts.md 7).
     return f"depbee_session_{port}"
 
 

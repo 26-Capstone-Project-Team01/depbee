@@ -25,7 +25,7 @@ from test_output_formats import EXAMPLES, FormatFixture, older
 from test_workflow import Fixture, package
 
 from depbee import history
-from depbee.cli import SAFETY_NOTE, main
+from depbee.cli import SAFETY_NOTE, _clean, main
 
 WEB = all(importlib.util.find_spec(name) for name in ("starlette", "jinja2", "uvicorn", "httpx2"))
 NO_WEB = "web extra ([web] and httpx2) not installed; the dashboard is not tested here"
@@ -312,12 +312,54 @@ class SecurityTests(DashboardFixture):
         self.assertEqual(code, 2)
         self.assertIn("--port must be between 0 and 65535", err.getvalue())
 
+    def test_an_unexpected_error_is_a_fixed_500_with_the_headers(self):
+        from starlette.testclient import TestClient
+
+        client = TestClient(self.app.build_app(PORT, TOKEN), base_url=BASE,
+                            raise_server_exceptions=False)  # fmt: skip
+        self.addCleanup(client.close)
+        self.assertEqual(client.get(f"/login?token={TOKEN}", follow_redirects=False).status_code,
+                         303)  # fmt: skip
+        marker = "C:\\private\\folder\\history.sqlite3 synthetic-secret-0123456789"
+        with mock.patch.object(history, "list_projects", side_effect=RuntimeError(marker)):
+            response = client.get("/")
+        self.assertEqual(response.status_code, 500)
+        self.assert_headers(response)
+        self.assertEqual(
+            response.text, "요청을 처리하지 못했습니다(이력 데이터베이스나 파일을 읽지 못함)."
+        )
+        exposed = response.text + "".join(f"{k}: {v}" for k, v in response.headers.items())
+        for secret in (marker, "private", "synthetic-secret", "RuntimeError", TOKEN):
+            self.assertNotIn(secret, exposed)
+
 
 class EscapeTests(DashboardFixture):
     STRINGS = [*HOSTILE, '"><script>alert(1)</script>', "' onmouseover='x", "javascript:alert(1)",
                "\u202eexe.js", "zero\u200cwidth", "\x1b[31mred", "lone\udc80surrogate"]  # fmt: skip
 
-    def test_report_lockfile_and_path_strings_stay_inert(self):
+    def test_lockfile_strings_in_the_dependency_table_stay_inert(self):
+        # The project keeps its real path, so /projects/1 really reads and renders the lockfile.
+        from markupsafe import escape
+
+        self.login()
+        history.register_project(self.project)
+        shown = []
+        for index, text in enumerate(self.STRINGS):
+            named, nested = f"node_modules/h{index}", f"node_modules/h{index}/node_modules/{text}"
+            self.new["packages"][named] = {**package(), "name": text}
+            self.new["packages"][nested] = package("2.0.0")  # name inferred from the location
+            shown += [(text, named), (text, nested)]
+        self.save_locks()
+        html = self.page("/projects/1")
+        self.assertIn(f"직접 0개, 중첩 {len(shown) + 1}개.", html)
+        for name, location in shown:
+            with self.subTest(name=name):
+                # Present, as _clean then HTML escaping made it: the row was really rendered.
+                self.assertIn(f"<td>{escape(_clean(name))}</td>", html)
+                self.assertIn(f"<td>{escape(_clean(location))}</td>", html)
+        self.check(html)
+
+    def test_report_and_path_strings_stay_inert(self):
         self.login()
         report = self.scan_with(
             0.9, known_malicious=KnownList((ADVISORY,)), rules=Rules((rule("hit"),))
@@ -335,10 +377,6 @@ class EscapeTests(DashboardFixture):
                     connection.execute(sql, (history._text(text),))
                 for url in ("/", "/projects/1", f"/runs/{run}"):
                     self.check(self.page(url))
-        self.new["packages"][f"node_modules/{self.STRINGS[0]}"] = package()
-        self.new["packages"]["node_modules/b"] = {**package(), "name": '"><script>x</script>'}
-        self.save_locks()
-        self.check(self.page("/projects/1"))
 
     def check(self, html):
         self.assertNotIn("<script", html)
