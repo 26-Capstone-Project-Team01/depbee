@@ -1,5 +1,14 @@
 # 검증 기록
 
+## 2026-11-17: integrity 구분자를 ASCII로 한정(UPD-02 fix_r4)
+
+- 재검토 R3의 M2-R3(major)를 반영했다. `valid_sri`가 Python `str.split()`으로 나눠, Python만 공백으로 보는 U+0085·U+001C~U+001F를 정상 SRI 앞에 붙인 값을 유효로 봤다. ssri는 JavaScript `trim().split(/\s+/)`(`ssri/lib/index.js` 138·379행)로 나눠 그 문자를 토큰에 남기고, 정규식에 맞지 않는 토큰을 버려 결과가 null이 되므로 npm은 대조하지 않는다(소스로 확인, 실행하지 않음).
+- 이제 구분자는 ASCII 공백·탭·LF·CR(`npm_cli.SRI_SEPARATORS`)뿐이고 그 밖의 문자는 토큰에 남아 알고리즘·base64 검사에서 거부된다. 원문을 고치지 않고 검사만 하므로 npm에 넘어가는 값과 검사한 값이 같다.
+- 단위 테스트 `tests/test_apply.py` 28개에서 30개: U+0085·U+001C~U+001F와 VT·FF·NBSP·U+2028·U+FEFF·U+3000·NUL을 정상 SRI의 앞·뒤·두 해시 사이(붙임과 공백 사이)에 넣은 값의 거부, ASCII 구분자로 나눈 여러 해시와 실제 형식의 sha512 허용, 앞에 붙인 다섯 문자 각각의 install 거부(`integrity_missing`)·원본 두 파일과 백업 불변·`npm ci` 미실행·같은 입력의 lockfile 반영. 전체 385개에서 387개, skip 32개(앞 기록과 같은 이유).
+- 정정: fix_r3 보고의 "Python과 JavaScript 공백 정의 차이는 거부 쪽으로만 달라진다"는 틀렸다(앞에 붙인 경우 허용 쪽으로 달라졌다).
+- 도움말은 바뀌지 않아 기존 명령 출력 비교는 다시 돌리지 않았다.
+- 확인하지 못한 것: 실제 npm으로 이런 값을 둔 `npm ci`(로컬 세션이 다시 확인), npm 12의 ssri.
+
 ## 2026-11-16: install의 유효한 integrity와 bundled 항목(UPD-02 fix_r3)
 
 - 재검토(REV-UPD02-R1 재검토, major 1, minor 1)와 하람 결정(2026-11-16 19:3x)을 반영했다. 규칙은 [연결 규약](contracts.md) 5.1절.
