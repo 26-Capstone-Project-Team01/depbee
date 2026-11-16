@@ -234,6 +234,9 @@ class EquivalenceTests(FormatFixture):
         ):
             if detectors[key] is not None:
                 expected = labels[item[key]["status"]]
+                failed = sum(c["status"] == "failed" for c in item[key].get("checks", []))
+                if failed and item[key]["status"] != "failed":  # DEC-01 n4: hit and failed
+                    expected += f", 실패 {failed}개"
                 hit = key == "known_malicious" and item[key]["status"] == "hit"
                 self.assertEqual(cells[column], f"**{expected}**" if hit else expected)
                 column += 1
@@ -289,9 +292,10 @@ class EquivalenceTests(FormatFixture):
         text = capture(_print_text, cases["not configured"])
         self.assertIn("기지 악성 목록: 연결 안 됨(미실행)\n규칙: 연결 안 됨(미실행)\n", text)
 
-    def test_unknown_ml_status_is_shown_and_no_ml_field_shows_none(self):
+    def test_unknown_ml_status_is_shown_and_no_ml_field_shows_a_reference_value(self):
         # REV-SVC-04-R1 n1: an unknown ml.status is shown like other unknown states
-        # (contracts.md 4), with or without a score; a report without ml (older) shows nothing.
+        # (contracts.md 4), with or without a score. A report without ml (older) gets the
+        # contract 4.1 value from its status and reason, marked as a reference value (contract 6).
         for score, text, markdown in (
             (0.1, "  ML 위험 점수: 0.100 (future_state)\n", "| 0.100 (` future_state `) |"),
             (None, "  ML 위험 점수: 없음(future_state)\n", "| 없음(` future_state `) |"),
@@ -303,8 +307,8 @@ class EquivalenceTests(FormatFixture):
                 self.assertIn(markdown, capture(_print_markdown, report))
         report = self.scan_with(row={"status": "failed", "error": "mismatch"})
         del report["results"][0]["ml"]
-        self.assertNotIn("ML 위험 점수", capture(_print_text, report))
-        self.assertIn("| - | 분석 실패 |", capture(_print_markdown, report))
+        self.assertIn("  ML 위험 점수: 없음(실패, 참고값)\n", capture(_print_text, report))
+        self.assertIn("| 없음(실패, 참고값) | 분석 실패 |", capture(_print_markdown, report))
 
     def test_cli_exit_code_and_json_do_not_depend_on_the_format(self):
         for label, report in self.cases().items():
@@ -480,6 +484,89 @@ class AlternativeVersionTests(FormatFixture):
         for name in ("01-rule-only", "04-analysis-failed", "06-analyzer-not-configured"):
             report = json.loads((EXAMPLES / f"{name}.json").read_text("utf-8"))
             self.assertEqual(self.lines(report), ([], []))
+
+
+def older(report):
+    """The report as a depbee older than the detector fields wrote it (contract 6)."""
+    report = copy.deepcopy(report)
+    for key in ("detectors", "provenance"):
+        del report[key]
+    for row in report["results"]:
+        for key in ("known_malicious", "rules", "ml", "rule_ml_agreement"):
+            del row[key]
+    return report
+
+
+class OlderReportTests(FormatFixture):
+    def test_missing_detector_fields_are_not_checked_and_ml_is_a_reference_value(self):
+        unsupported = {"status": "unsupported", "reason": "no_baseline", "error": "none"}
+        cases = {
+            "flagged": (self.scan_with(0.9), "0.900 (기준 이상, 참고값)"),
+            "passed": (self.scan_with(0.1), "0.100 (기준 미만, 참고값)"),
+            "analyzer not connected": (self.scan_with(analyzer=False), "없음(미실행, 참고값)"),
+            "analysis failed": (self.scan_with(row={"status": "failed", "error": "x"}),
+                                "없음(실패, 참고값)"),
+            "no baseline": (self.scan_with(row=unsupported), "없음(미실행, 참고값)"),
+        }  # fmt: skip
+        for label, (report, score) in cases.items():
+            with self.subTest(label):
+                report = older(report)
+                text, markdown = capture(_print_text, report), capture(_print_markdown, report)
+                self.assertIn("기지 악성 목록: 확인 안 됨\n규칙: 확인 안 됨\n", text)
+                self.assertIn("  ML 위험 점수: " + score + "\n", text)
+                self.assertIn("  기지 악성: 확인 안 됨\n  규칙: 확인 안 됨\n", text)
+                self.assertIn("- 기지 악성 목록: 확인 안 됨\n- 규칙: 확인 안 됨\n", markdown)
+                self.assertIn("| 기지 악성 | 규칙 | ML 위험 점수 |", markdown)
+                self.assertIn(f"| 확인 안 됨 | 확인 안 됨 | {score} |", markdown)
+                self.assertIn("\n- 기지 악성: 확인 안 됨\n- 규칙: 확인 안 됨\n", markdown)
+                for output in (text, markdown):
+                    self.assertNotIn("미적중", output)  # missing is never not_hit
+                    self.assertNotIn("연결 안 됨", output)
+
+    def test_removed_item_and_a_connected_analyzer_without_its_result(self):
+        self.old["packages"]["node_modules/gone"] = package()
+        self.save_locks()
+        report = older(self.scan_with(analyzer=False))
+        report["analyzer_version"] = "test-only"  # analysis_missing from a connected analyzer
+        text = capture(_print_text, report)
+        self.assertIn("[보류] example@1.1.0  (node_modules/example)\n  ML 위험 점수: 없음(실패, 참고값)\n",
+                      text)  # fmt: skip
+        self.assertIn("[삭제] gone@1.0.0  (node_modules/gone)\n  이유: 현재 lockfile에서 삭제됨\n"
+                      "  기지 악성: 확인 안 됨\n", text)  # fmt: skip
+
+    def test_current_reports_do_not_change(self):
+        # Every case has all fields: nothing says NOT_CHECKED or a reference value.
+        for label, report in self.cases().items():
+            with self.subTest(label):
+                for output in (capture(_print_text, report), capture(_print_markdown, report)):
+                    self.assertNotIn("확인 안 됨", output)
+                    self.assertNotIn("참고값", output)
+
+
+class RuleFailureCountTests(FormatFixture):
+    def test_rules_hit_with_failed_checks_shows_both(self):
+        # DEC-01 n4 (45-table cells 17 and 22): rules.status hit, a failed check, the item
+        # incomplete with detection_failed; the rule slot must not read as a plain hit.
+        for signal in (0.1, 0.9):
+            with self.subTest(signal=signal):
+                rules = Rules((rule("hit"), rule("failed", "R2", detail="timeout"),
+                               rule("failed", "R3", detail="timeout")))  # fmt: skip
+                report = self.scan_with(signal, known_malicious=KnownList(), rules=rules)
+                item = report["results"][0]
+                self.assertEqual((item["status"], item["reason"], item["rules"]["status"]),
+                                 ("incomplete", "detection_failed", "hit"))  # fmt: skip
+                text, markdown = capture(_print_text, report), capture(_print_markdown, report)
+                self.assertIn("  이유: 연결된 탐지기 실패\n", text)
+                self.assertIn("  규칙: 적중, 실패 2개\n", text)
+                self.assertIn("\n- 규칙: 적중, 실패 2개\n", markdown)
+                table = markdown.split("\n")
+                (row,) = [line for line in table if "` node_modules/example `" in line]
+                self.assertIn(" | 미적중 | 적중, 실패 2개 | ", row)
+                self.assertIn(" | 연결된 탐지기 실패 | ", row)
+
+    def test_a_failed_slot_does_not_count_its_checks_again(self):
+        report = self.scan_with(0.1, rules=Rules((rule("failed", detail="t"),)))
+        self.assertIn("  규칙: 실패 (탐지기 실패)\n", capture(_print_text, report))
 
 
 class EscapeTests(FormatFixture):
