@@ -1,5 +1,15 @@
 # 검증 기록
 
+## 2026-11-16: 미리보기 npm update의 무동작 경로(UPD-02 fix_r2)
+
+- 발견: 로컬 세션의 실제 npm 확인(케이스 F)에서 사용자 npmrc에 `dry-run=true`가 있으면 미리보기의 `npm update --package-lock-only`가 새 lockfile을 쓰지 않고 종료 0으로 끝나, 업데이트가 있는데 바뀐 항목 0개·통과·종료 코드 0으로 보였다(UPD-01부터 있던 경로).
+- npm 11.6.1 소스 확인(실행하지 않음): `dry-run`은 arborist가 저장 전에 돌아가게 하고(`reify.js` 279-281·1301-1305행), `package-lock=false`는 lockfile 저장을 건너뛴다(1534행). 미리보기 고정 인자에 `--dry-run=false`·`--package-lock=true`를 더했고 `npm ci`도 같은 값을 받는다. `global`·`location=global`은 lockfile만 계산하는 갱신에서 `ESHRINKWRAPGLOBAL`(95-99행), `npm ci`에서 `ECIGLOBAL`(`ci.js` 32-36행)로 오류가 나 조용하지 않으므로 고정하지 않았다. `save`(`update.js` 46-48행, 켜면 `package.json`도 바뀌어 `package_json_changed`로 보임), `before`, `lockfile-version`은 사용자 선택으로 남기고 연결 규약 5절에 적었다.
+- 바이트가 같은 새 lockfile: arborist는 lockfile을 비교 없이 항상 다시 쓰므로(`shrinkwrap.js` 1160-1180행) 수정 시각으로 실제 쓰기를 확인할 수는 있지만 내부 구현과 시각 정밀도에 기대는 검사라 넣지 않았다. 알려진 무동작 경로를 막은 뒤의 같은 바이트는 UPD-01 확인(업데이트할 것이 없으면 바이트 그대로)과 같은 정상 결과로 본다.
+- 단위 테스트: 미리보기와 `npm ci`의 정확한 argv에 새 고정값을 더했다(테스트 수 383 그대로, skip 32).
+- 보호를 하나씩 깨뜨린 확인(내보낸 사본에서 20가지, 전체 테스트): 이번 2가지(`--dry-run=false` 제거, `--package-lock=true` 제거, 둘 다 미리보기와 `npm ci` argv 테스트가 실패)와 fix_r1까지의 18가지. 모두 테스트가 실패했다. 처음 돌린 `--package-lock-only=false` 제거는 바꾼 코드가 문법 오류여서 테스트가 잡은 것이 아니었고, 올바른 tuple로 다시 돌려 테스트 실패를 확인했다.
+- 기존 명령 출력 비교(base `c1d2e8a`, fix_r1 스크립트, 13개 명령 × 세 이력 상태): 도움말은 이번에 바뀌지 않았고, 최상위 `--help`의 update 항목과 `update --help`만 앞과 같이 의도대로 다르며 나머지는 바이트가 같았다.
+- 확인하지 못한 것: 사용자 npmrc에 `dry-run=true`·`package-lock=false`를 둔 실제 미리보기(로컬 세션이 다시 확인), `save`·`before`·`lockfile-version`을 켠 실제 동작.
+
 ## 2026-11-16: 업데이트 반영 검토 후속(UPD-02 fix_r1)
 
 - 교차 검토 REV-UPD02-R1(major 1, minor 2, nit 1)과 하람 결정(2026-11-16 18:0x)을 반영했다. 규칙은 [연결 규약](contracts.md) 5.1절.
