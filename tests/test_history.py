@@ -12,7 +12,7 @@ import os
 import sqlite3
 import stat
 import warnings
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest import mock
 
 from test_extract import FakeBackend, packument
@@ -72,6 +72,7 @@ class StoreTests(HistoryFixture):
     def test_register_record_and_read_back(self):
         project_id = history.register_project(self.project)
         self.assertEqual(sql(self.db, "PRAGMA user_version"), [(1,)])
+        self.assertEqual(sql(self.db, "PRAGMA application_id"), [(history.APPLICATION_ID,)])
         self.assertEqual(history.register_project(self.project), project_id)
         (project,) = history.list_projects()
         self.assertEqual(project["path"], str(self.project.resolve()))
@@ -127,6 +128,11 @@ class StoreTests(HistoryFixture):
         def foreign():
             sql(self.db, "CREATE TABLE other (x)")
 
+        def lookalike():  # another program's file at version 1 with the same projects table
+            sql(self.db, "CREATE TABLE projects (id INTEGER PRIMARY KEY, key TEXT NOT NULL "
+                "UNIQUE, path TEXT NOT NULL, registered_at TEXT NOT NULL)")  # fmt: skip
+            sql(self.db, "PRAGMA user_version = 1")
+
         def broken():
             self.db.write_bytes(b"not a database, synthetic\n" * 10)
 
@@ -134,7 +140,8 @@ class StoreTests(HistoryFixture):
             self.db.write_bytes(b"")
 
         report = {"status": "passed", "exit_code": 0, "results": []}
-        for label, make in (("newer", newer), ("foreign", foreign), ("broken", broken)):
+        for label, make in (("newer", newer), ("foreign", foreign), ("lookalike", lookalike),
+                            ("broken", broken)):  # fmt: skip
             with self.subTest(label):
                 make()
                 before = self.db.read_bytes()
@@ -150,6 +157,42 @@ class StoreTests(HistoryFixture):
         self.assertEqual(self.db.read_bytes(), b"")
         history.register_project(self.project)
         self.assertEqual(sql(self.db, "PRAGMA user_version"), [(1,)])
+
+    def test_a_failed_first_registration_leaves_no_marks(self):
+        # The application_id and user_version roll back with the schema.
+        with mock.patch.object(history, "_now", side_effect=RuntimeError("synthetic")):
+            with self.assertRaises(RuntimeError):
+                history.register_project(self.project)
+        self.assertEqual(sql(self.db, "PRAGMA application_id"), [(0,)])
+        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(0,)])
+        self.assertEqual(sql(self.db, "SELECT count(*) FROM sqlite_master"), [(0,)])
+        history.register_project(self.project)  # still an empty file it may set up
+        self.assertEqual(sql(self.db, "PRAGMA application_id"), [(history.APPLICATION_ID,)])
+
+    def test_a_lone_surrogate_and_its_escape_text_are_different_projects(self):
+        # POSIX names: byte 0x80 + "x" is "\udc80x"; a folder may also be named "\\udc80x".
+        # resolve() is fixed so that the same strings are tested on every OS (PurePosixPath keeps
+        # the backslash a Windows path would read as a separator).
+        real = Path.resolve
+        a, b = self.root / "a", self.root / "b"
+        a.mkdir()
+        b.mkdir()
+        fixed = {str(a): PurePosixPath("/p/\udc80x"), str(b): PurePosixPath("/p/\\udc80x")}
+        report = {"status": "passed", "exit_code": 0, "results": []}
+
+        def resolve(path, *args, **kwargs):
+            return fixed.get(str(path)) or real(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "resolve", resolve):
+            self.assertNotEqual(history._project(a)[0], history._project(b)[0])
+            id_a = history.register_project(a)
+            self.assertIsNone(history.record("scan", b, report))  # b is not registered
+            self.assertEqual(sql(self.db, "SELECT count(*) FROM runs"), [(0,)])
+            id_b = history.register_project(b)
+            self.assertNotEqual(id_a, id_b)
+            run_b = history.record("scan", b, report)
+        self.assertEqual(history.get_run(run_b)["project_id"], id_b)
+        self.assertEqual(history.list_runs(id_a), [])
 
     def test_project_key_is_the_resolved_path(self):
         project_id = history.register_project(self.project)

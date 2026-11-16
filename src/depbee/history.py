@@ -17,6 +17,8 @@ from . import __version__
 
 # PRAGMA user_version of a depbee history database; separate from contracts.SCHEMA_VERSION.
 USER_VERSION = 1
+# PRAGMA application_id ("DPBE"): marks the file as a depbee history; the version alone does not.
+APPLICATION_ID = 0x44504245
 TIMEOUT = 1.5  # seconds to wait for a lock; the CLI has already printed its report
 KINDS = ("scan", "update_preview")
 STATUSES = ("flagged", "not_flagged", "incomplete", "removed")
@@ -96,9 +98,13 @@ def _text(value: object) -> object:
 
 
 def _project(project: Path | str) -> tuple[str, str]:
-    """(key, display path): the resolved absolute path, case-folded on Windows for the key."""
+    """(key, display path) of the resolved absolute path.
+
+    The key is the path case-folded on Windows, as ASCII JSON: reversible, so a lone surrogate
+    and the literal text \\udc80 stay different projects. The display path is _text().
+    """
     path = str(Path(project).resolve())
-    return _text(os.path.normcase(path)), _text(path)
+    return _json(os.path.normcase(path)), _text(path)
 
 
 def _now() -> str:
@@ -131,23 +137,31 @@ def _write(connection):
 
 
 def _check(connection, create: bool = False) -> bool:
-    """True if the database is ours at USER_VERSION; False if empty and create may set it up."""
+    """True if the database is ours at USER_VERSION; False if empty and create may set it up.
+
+    Ours means APPLICATION_ID; any other file is refused whatever its user_version.
+    """
+    application = connection.execute("PRAGMA application_id").fetchone()[0]
     version = connection.execute("PRAGMA user_version").fetchone()[0]
-    if version > USER_VERSION:
-        raise HistoryError(f"History database version {version} is newer than {USER_VERSION}")
-    if version == USER_VERSION:
-        return True
-    tables = connection.execute("SELECT count(*) FROM sqlite_master").fetchone()[0]
-    if version != 0 or tables or not create:
-        raise HistoryError("Not a depbee history database")
-    return False
+    if application == APPLICATION_ID:
+        if version > USER_VERSION:
+            raise HistoryError(f"History database version {version} is newer than {USER_VERSION}")
+        if version == USER_VERSION:
+            return True
+    elif application == version == 0 and create:
+        tables = connection.execute("SELECT count(*) FROM sqlite_master").fetchone()[0]
+        if not tables:
+            return False
+    raise HistoryError("Not a depbee history database")
 
 
 def register_project(project: Path | str) -> int:
     """Register an existing project folder and return its id; creates the database if needed.
 
     Registering again keeps the first registration. Web input checks (UNC, device paths,
-    reserved names, links) belong to the dashboard's boundary, not here.
+    reserved names, links) belong to the dashboard's boundary, not here. Without a home
+    directory (and no DEPBEE_HISTORY_DB) this and the read functions raise RuntimeError; only
+    record() skips.
     """
     if not Path(project).is_dir():
         raise ValueError("The project must be an existing directory")
@@ -160,6 +174,8 @@ def register_project(project: Path | str) -> int:
             for statement in SCHEMA.split(";"):
                 if statement.strip():
                     connection.execute(statement)
+            # Both header values are part of this transaction and roll back with it.
+            connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
             connection.execute(f"PRAGMA user_version = {USER_VERSION}")
         connection.execute(
             "INSERT OR IGNORE INTO projects (key, path, registered_at) VALUES (?, ?, ?)",
