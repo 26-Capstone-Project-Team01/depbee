@@ -71,7 +71,7 @@ class HistoryFixture(Fixture):
 class StoreTests(HistoryFixture):
     def test_register_record_and_read_back(self):
         project_id = history.register_project(self.project)
-        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(1,)])
+        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(2,)])
         self.assertEqual(sql(self.db, "PRAGMA application_id"), [(history.APPLICATION_ID,)])
         self.assertEqual(history.register_project(self.project), project_id)
         (project,) = history.list_projects()
@@ -99,6 +99,8 @@ class StoreTests(HistoryFixture):
         self.assertEqual((row["package"], row["after_version"], row["score"]),
                          ("example", "1.1.0", 0.9))  # fmt: skip
         self.assertEqual((row["known_malicious_status"], row["ml_status"]), ("not_run", "hit"))
+        self.assertIsNone(stored["apply"])
+        self.assertEqual(history.list_applies(project_id), [])
         self.assertIsNone(history.get_run(second + 1))
 
     def test_register_creates_the_folders_and_needs_an_existing_project(self):
@@ -123,7 +125,7 @@ class StoreTests(HistoryFixture):
     def test_newer_foreign_and_broken_files_are_not_written(self):
         def newer():
             history.register_project(self.project)
-            sql(self.db, "PRAGMA user_version = 2")
+            sql(self.db, "PRAGMA user_version = 3")
 
         def foreign():
             sql(self.db, "CREATE TABLE other (x)")
@@ -156,7 +158,7 @@ class StoreTests(HistoryFixture):
             history.record("scan", self.project, report)
         self.assertEqual(self.db.read_bytes(), b"")
         history.register_project(self.project)
-        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(1,)])
+        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(2,)])
 
     def test_a_failed_first_registration_leaves_no_marks(self):
         # The application_id and user_version roll back with the schema.
@@ -236,6 +238,114 @@ class StoreTests(HistoryFixture):
             self.assertEqual(run(self.scan_argv()), expected)
 
 
+PREVIEW = {"package_json_sha256": "a" * 64, "package_lock_sha256": "b" * 64,
+           "new_package_lock_sha256": "c" * 64}  # fmt: skip
+
+
+def apply_document(outcome="applied"):
+    """A synthetic apply document in the shape service.apply_update returns."""
+    files = [{"path": "package-lock.json", "sha256": "b" * 64, "new_sha256": "c" * 64}]
+    return {
+        "mode": "install", "outcome": outcome, "reason": None, "error": None,
+        "confirmation_required": [{"location": "node_modules/example", "causes": ["ml_hit"]}],
+        "confirmed": True, "blocked": [], "files": files if outcome == "applied" else [],
+        "backup": "C:/synthetic/backups/x" if outcome == "applied" else None,
+        "npm_version": "11.6.1", "npm_ci_exit_code": 0, "notices": [],
+    }  # fmt: skip
+
+
+class ApplyStoreTests(HistoryFixture):
+    """user_version 2: the applies table, the upgrade of version 1 files and the read API."""
+
+    def report(self):
+        return scan_project(self.project, self.base, analysis=self.analysis, model_dir=Path("m"))
+
+    def make_version_1(self, register=True):
+        """A database as the version 1 code wrote it, with this project registered."""
+        with contextlib.closing(sqlite3.connect(self.db, isolation_level=None)) as connection:
+            for statement in history.SCHEMA.split(";"):
+                if statement.strip():
+                    connection.execute(statement)
+            connection.execute(f"PRAGMA application_id = {history.APPLICATION_ID}")
+            connection.execute("PRAGMA user_version = 1")
+            if register:
+                key, path = history._project(self.project)
+                connection.execute("INSERT INTO projects (key, path, registered_at) VALUES "
+                                   "(?, ?, '2026-11-16T00:00:00.000Z')", (key, path))  # fmt: skip
+
+    def tables(self):
+        return {name for (name,) in sql(self.db, "SELECT name FROM sqlite_master WHERE "
+                                                 "type = 'table'")}  # fmt: skip
+
+    def test_an_apply_is_stored_with_its_update_preview_run(self):
+        project_id = history.register_project(self.project)
+        self.assertIn("applies", self.tables())
+        apply = apply_document()
+        run_id = history.record("update_preview", self.project, self.report(), PREVIEW,
+                                apply=apply)  # fmt: skip
+        stored = history.get_run(run_id)["apply"]
+        self.assertEqual(stored["apply"], apply)
+        self.assertEqual(
+            {k: stored[k] for k in ("run_id", "mode", "outcome", "reason", "confirmed",
+                                    "package_json_sha256", "package_lock_sha256",
+                                    "new_package_json_sha256", "new_package_lock_sha256",
+                                    "backup", "npm_version", "npm_ci_exit_code")},
+            {"run_id": run_id, "mode": "install", "outcome": "applied", "reason": None,
+             "confirmed": True, "package_json_sha256": "a" * 64, "package_lock_sha256": "b" * 64,
+             "new_package_json_sha256": None, "new_package_lock_sha256": "c" * 64,
+             "backup": "C:/synthetic/backups/x", "npm_version": "11.6.1", "npm_ci_exit_code": 0},
+        )  # fmt: skip
+        self.assertTrue(stored["created_at"].endswith("Z"))
+        refused = history.record("update_preview", self.project, self.report(), PREVIEW,
+                                 apply=apply_document("refused"))  # fmt: skip
+        self.assertEqual([a["run_id"] for a in history.list_applies(project_id)], [refused, run_id])
+        self.assertEqual(len(history.list_applies(project_id, limit=1)), 1)
+        self.assertIsNone(history.get_run(refused)["apply"]["new_package_lock_sha256"])
+        with self.assertRaises(ValueError):
+            history.record("scan", self.project, self.report(), apply=apply)
+
+    def test_version_1_is_read_as_is_and_upgraded_by_the_next_write(self):
+        self.make_version_1()
+        before = self.db.read_bytes()
+        (project,) = history.list_projects()
+        self.assertEqual(history.list_runs(project["id"]), [])
+        self.assertEqual(history.list_applies(project["id"]), [])
+        self.assertIsNone(history.get_run(1))
+        (self.root / "other").mkdir()
+        self.assertIsNone(history.record("scan", self.root / "other", self.report()))
+        self.assertEqual(self.db.read_bytes(), before)  # reads and skipped records do not upgrade
+        run_id = history.record("update_preview", self.project, self.report(), PREVIEW,
+                                apply=apply_document())  # fmt: skip
+        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(2,)])
+        self.assertEqual(sql(self.db, "PRAGMA application_id"), [(history.APPLICATION_ID,)])
+        self.assertIn("applies", self.tables())
+        self.assertEqual(history.get_run(run_id)["apply"]["outcome"], "applied")
+
+    def test_registering_also_upgrades_version_1(self):
+        self.make_version_1(register=False)
+        history.register_project(self.project)
+        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(2,)])
+        self.assertIn("applies", self.tables())
+
+    def test_a_failed_upgrading_write_leaves_version_1(self):
+        self.make_version_1()
+        real = history._now
+        calls = []
+
+        def now():  # the run's time is taken before the transaction, the apply's inside it
+            calls.append(1)
+            if len(calls) > 1:
+                raise RuntimeError("synthetic")
+            return real()
+
+        with mock.patch.object(history, "_now", now), self.assertRaises(RuntimeError):
+            history.record("update_preview", self.project, self.report(), PREVIEW,
+                           apply=apply_document())  # fmt: skip
+        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(1,)])
+        self.assertNotIn("applies", self.tables())
+        self.assertEqual(sql(self.db, "SELECT count(*) FROM runs"), [(0,)])
+
+
 class CliTests(HistoryFixture):
     def test_without_a_database_nothing_is_created(self):
         os.environ["DEPBEE_HISTORY_DB"] = str(self.root / "deep" / "history.sqlite3")
@@ -307,7 +417,7 @@ class CliTests(HistoryFixture):
 
         def newer():
             history.register_project(self.project)
-            sql(self.db, "PRAGMA user_version = 2")
+            sql(self.db, "PRAGMA user_version = 3")
 
         def foreign():
             sql(self.db, "CREATE TABLE other (x)")
@@ -332,7 +442,7 @@ class CliTests(HistoryFixture):
             warnings.simplefilter("always")
             self.assertEqual(run(self.scan_argv())[2], "")
             history.list_projects(), history.list_runs(1), history.get_run(1)
-            sql(self.db, "PRAGMA user_version = 2")
+            sql(self.db, "PRAGMA user_version = 3")
             self.assertEqual(run(self.scan_argv())[2], HISTORY_FAILED + "\n")
             gc.collect()
         self.assertFalse([w for w in caught if issubclass(w.category, ResourceWarning)])
