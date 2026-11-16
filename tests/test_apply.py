@@ -201,6 +201,23 @@ class RecheckTests(ApplyFixture):
         with self.assertRaises(GuardError):
             apply_preview(self.upd, result, b"", b"", mode="other")
 
+    def test_new_files_outside_the_supported_range_are_refused_even_when_confirmed(self):
+        lock = json.loads(self.head.read_text(encoding="utf-8"))
+        entry = lock["packages"]["node_modules/example"]
+        entry["resolved"] = "https://codeload.github.com/x/example/tar.gz/" + "a" * 40
+
+        def update(work):
+            (work / "package-lock.json").write_text(json.dumps(lock), encoding="utf-8")
+            return 0, b"", b""
+
+        self.npm_update = update
+        self.verdict([{**PASS, "status": "incomplete", "reason": "unsupported_registry_source"}], 2)
+        apply = self.apply("install", confirm=True)["apply"]
+        self.assertEqual((apply["outcome"], apply["reason"]), ("refused", "new_files_unsupported"))
+        self.assertIn("node_modules/example", apply["error"])
+        self.assert_unchanged()
+        self.assertEqual(self.ci_calls, [])
+
     def test_no_change_writes_nothing(self):
         self.npm_update = lambda work: (0, b"", b"")
         for mode in ("lockfile", "install"):

@@ -392,7 +392,8 @@ def apply_preview(
     Nothing is written when there is no change, a known malicious match, items to confirm and no
     confirm, a project .npmrc with mode install (refused: npm ci would read it), or when the
     project no longer passes read_project(), its two files differ from the preview's hashes or
-    new_lock from preview.new_package_lock_sha256. Otherwise the two original files go to a new
+    new_lock from preview.new_package_lock_sha256, or when the new files fail the same checks
+    (npm_cli.check_files). Otherwise the two original files go to a new
     backup folder next to the history file first, then each changed file is written to a
     temporary file in the project and swapped in with os.replace(). Mode install then runs npm
     ci --ignore-scripts (npm_cli.clean_install) and checks that npm left the lockfile as written.
@@ -401,7 +402,7 @@ def apply_preview(
     Returns {mode, outcome, reason, error, blocked, confirmation_required, confirmed, files,
     backup, npm_version, npm_ci_exit_code, notices}. outcome: applied, unchanged (no change),
     refused (nothing changed; reason known_malicious_hit, confirmation_required, project_npmrc,
-    project_unsupported, project_changed, new_lock_mismatch) or failed (reason backup_failed,
+    project_unsupported, project_changed, new_lock_mismatch, new_files_unsupported) or failed (reason backup_failed,
     write_failed, install_failed, lockfile_changed; files lists what was already replaced).
     error is a message without npm output or temporary paths.
     """
@@ -448,6 +449,14 @@ def apply_preview(
         return done("refused", "project_changed")
     if _sha256(new_lock) != preview["new_package_lock_sha256"]:
         return done("refused", "new_lock_mismatch")
+    try:
+        # The scan only marks what npm resolved outside the registry as incomplete, which a
+        # confirmation lets through; npm ci would then fetch it.
+        npm_cli.check_files(
+            new_package, new_lock, "the new package.json", "the new package-lock.json"
+        )
+    except (GuardError, RecursionError) as exc:
+        return done("refused", "new_files_unsupported", str(exc))
     writes = [
         (name, old, new)
         for name, old, new in (("package-lock.json", lock_bytes, new_lock),

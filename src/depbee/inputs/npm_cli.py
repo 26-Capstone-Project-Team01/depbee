@@ -118,8 +118,17 @@ def read_project(project: Path) -> tuple[bytes, bytes, dict]:
         raise GuardError("update does not support projects with npm-shrinkwrap.json")
     package_bytes = _regular_file(project / "package.json")
     lock_bytes = _regular_file(project / "package-lock.json")
-    package, _ = parse_json(package_bytes, project / "package.json")
-    lock, _ = parse_json(lock_bytes, project / "package-lock.json")
+    package = check_files(
+        package_bytes, lock_bytes, project / "package.json", project / "package-lock.json"
+    )
+    return package_bytes, lock_bytes, package
+
+
+def check_files(package_bytes: bytes, lock_bytes: bytes, package_source, lock_source) -> dict:
+    """read_project()'s checks of the two files' contents; returns package.json. Also used on
+    the new files npm wrote before they are applied (service.apply_preview)."""
+    package, _ = parse_json(package_bytes, package_source)
+    lock, _ = parse_json(lock_bytes, lock_source)
     if "workspaces" in package:
         raise GuardError("update does not support npm workspaces")
     for field in LOCK_SPEC_FIELDS:
@@ -159,7 +168,7 @@ def read_project(project: Path) -> tuple[bytes, bytes, dict]:
             raise GuardError(
                 f"update supports only {REGISTRY_TARBALL} dependencies in the lockfile: {location}"
             )
-    return package_bytes, lock_bytes, package
+    return package
 
 
 def check_names(names: list[str], package: dict) -> None:

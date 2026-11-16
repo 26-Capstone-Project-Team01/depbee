@@ -110,6 +110,7 @@ APPLY_REASON_LABELS = {
     "project_unsupported": "미리보기 뒤 프로젝트가 지원 범위를 벗어남",
     "project_changed": "미리보기 뒤 package.json 또는 package-lock.json이 바뀜",
     "new_lock_mismatch": "반영할 lockfile이 검사한 것과 다름",
+    "new_files_unsupported": "npm이 계산한 새 파일이 지원 범위를 벗어남(registry 밖 출처 등)",
     "backup_failed": "원본을 백업하지 못함",
     "write_failed": "프로젝트 파일을 바꾸지 못함",
     "install_failed": "npm ci 실패",
