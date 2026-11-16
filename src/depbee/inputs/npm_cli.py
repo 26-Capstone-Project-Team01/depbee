@@ -35,6 +35,8 @@ STDERR_LIMIT = 64 * 1024
 # A large tree can print a deprecation warning per package; past the cap npm is killed mid-install.
 CI_STDERR_LIMIT = 1024 * 1024
 SRI_DIGEST_BYTES = {"sha512": 64, "sha384": 48, "sha256": 32, "sha1": 20}
+# Space, tab, LF, CR: ASCII and whitespace for both ECMAScript \s and trim() and Python.
+SRI_SEPARATORS = " \t\n\r"
 # Checked with npm 11.6.1: --no-audit drops the audit request, --no-update-notifier the version
 # check and its state file; the rest keep the output plain whatever the user's settings.
 FIXED_OPTIONS = (
@@ -192,10 +194,17 @@ def valid_sri(integrity: object) -> bool:
     expected hash. Every token here must be a known algorithm (the ones registry.verify takes;
     sha1 is still in old lockfiles and ssri checks it) with a padded base64 digest of that
     algorithm's length and no ?options, which npm never writes.
+
+    Tokens are split only on SRI_SEPARATORS, not str.split(): Python also treats U+0085 and
+    U+001C-U+001F as whitespace, which ssri's trim().split(/\\s+/) (index.js 138, 379) keeps in
+    the token and then drops it. Any other character stays in a token and fails the checks.
     """
-    if not isinstance(integrity, str) or not integrity.split():
+    if not isinstance(integrity, str):
         return False
-    for token in integrity.split():
+    tokens = [token for token in re.split(f"[{SRI_SEPARATORS}]+", integrity) if token]
+    if not tokens:
+        return False
+    for token in tokens:
         algorithm, _, digest = token.partition("-")
         if algorithm not in SRI_DIGEST_BYTES:
             return False

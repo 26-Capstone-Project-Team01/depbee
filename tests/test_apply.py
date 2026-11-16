@@ -431,6 +431,31 @@ class InstallTests(ApplyFixture):
         self.assertEqual([v for v in good if not valid(v)], [])
         self.assertEqual([v for v in bad if valid(v)], [])
 
+    def test_valid_sri_splits_only_on_ascii_space_tab_lf_cr(self):
+        valid = service.npm_cli.valid_sri
+        s, t = sri("a"), sri("b", "sha1")
+        # A real lockfile value (lodash 4.17.21) and ASCII separators keep working.
+        lodash = "sha512-v2kDEe57lecTulaDIuNTPy3Ry4gLGJ6Z1O3vE1krgXZNrsQ+LFTGHVxVjcXPs17LhbZVGedAJv8XZ1tvj5FvSg=="
+        good = [lodash, f"{s} {t}", f" {s}\t{t} ", f"{s}\r\n{t}\n", f"\t\t{s}  \r{t}"]
+        self.assertEqual([v for v in good if not valid(v)], [])
+        # Python whitespace that ECMAScript \s and trim() do not strip (ssri keeps it in the
+        # token and drops it), then other characters outside the four separators.
+        others = ["\x85", "\x1c", "\x1d", "\x1e", "\x1f", "\x0b", "\x0c", "\xa0", " ",
+                  "﻿", "　", "\x00"]  # fmt: skip
+        bad = [v for c in others for v in (c + s, s + c, f"{s}{c}{t}", f"{s} {c} {t}")]
+        self.assertEqual([v for v in bad if valid(v)], [])
+
+    def test_install_refuses_a_python_only_whitespace_in_front(self):
+        for char in ("\x85", "\x1c", "\x1d", "\x1e", "\x1f"):
+            with self.subTest(char=hex(ord(char))):
+                lock = json.loads(self.head.read_text(encoding="utf-8"))
+                entry = lock["packages"]["node_modules/example"]
+                entry["integrity"] = char + entry["integrity"]
+                self.assert_install_refused_lockfile_applied(
+                    lock,
+                    "1 lockfile entries have no valid integrity to check: node_modules/example",
+                )
+
     def npm_writes(self, lock):
         """The fake npm update writes lock as the new lockfile; returns its bytes."""
         new_lock = json.dumps(lock).encode("utf-8")
