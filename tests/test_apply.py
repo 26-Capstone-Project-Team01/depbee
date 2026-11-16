@@ -156,6 +156,19 @@ class GateTests(ApplyFixture):
         self.assertEqual([i["causes"] for i in confirm], [["known_malicious_unchecked"]])
         self.assertEqual(update_gate({"exit_code": 2, "results": rows[:2]}), ([], []))
 
+    def test_a_removal_only_apply_needs_no_confirmation(self):
+        # Decision 2026-11-16 18:0x: only items that install a new version need confirming.
+        def update(work):
+            self.write(work / "package-lock.json", {"lockfileVersion": 3, "packages": {}})
+            return 0, b"", b""
+
+        self.npm_update = update
+        result = self.apply()
+        (row,) = result["report"]["results"]
+        self.assertEqual((row["status"], row["known_malicious"]["status"]), ("removed", "not_run"))
+        self.assertEqual(result["apply"]["confirmation_required"], [])
+        self.assertEqual(result["apply"]["outcome"], "applied")
+
     def test_today_every_item_needs_confirmation(self):
         # No known malicious detector is connected: every installed item is not_run.
         apply = self.apply()["apply"]
@@ -347,7 +360,8 @@ class InstallTests(ApplyFixture):
                   f"--globalconfig={scratch / 'no-globalconfig' / 'npmrc'}"]  # fmt: skip
         self.assertEqual(ci["argv"], [
             str(self.node), str(self.npm_js), "ci", "--ignore-scripts", "--no-audit", "--no-fund",
-            "--no-update-notifier", "--no-progress", "--color=false", "--loglevel=warn", *pinned,
+            "--no-update-notifier", "--no-progress", "--color=false", "--loglevel=warn",
+            "--package-lock-only=false", "--dry-run=false", *pinned,
         ])  # fmt: skip
         self.assertEqual(version["argv"], [str(self.node), str(self.npm_js), "--version", *pinned])
         self.assertEqual((ci["cwd"], version["cwd"]), (project, project))
@@ -368,11 +382,17 @@ class InstallTests(ApplyFixture):
             (project / "package-lock.json").write_text("{}", encoding="utf-8")
             return 0, b"", b""
 
+        def rewrite_package(project):  # package.json was not replaced: still checked
+            (project / "package.json").write_text("{}", encoding="utf-8")
+            return 0, b"", b""
+
         cases = {
             "exit code": (lambda project: (1, ERROR_SECRET, ERROR_SECRET),
                           "npm ci failed with exit code 1"),
             "timeout": (timeout, "npm did not finish within 600 seconds"),
             "lockfile changed": (rewrite, "npm ci changed package.json or package-lock.json"),
+            "package.json changed": (rewrite_package,
+                                     "npm ci changed package.json or package-lock.json"),
         }  # fmt: skip
         for case, (ci, message) in cases.items():
             with self.subTest(case):
@@ -397,6 +417,63 @@ class InstallTests(ApplyFixture):
         self.assert_unchanged()
         self.assertEqual(self.ci_calls, [])
         self.assert_applied(self.apply("lockfile")["apply"])
+
+    def test_install_needs_integrity_on_every_downloaded_entry(self):
+        lock = json.loads(self.head.read_text(encoding="utf-8"))
+        del lock["packages"]["node_modules/example"]["integrity"]
+        lock["packages"]["node_modules/example/node_modules/inner"] = {
+            "version": "1.0.0", "inBundle": True,  # inside its parent's tarball: not listed
+        }  # fmt: skip
+        new_lock = json.dumps(lock).encode("utf-8")
+
+        def update(work):
+            (work / "package-lock.json").write_bytes(new_lock)
+            return 0, b"", b""
+
+        self.npm_update = update
+        # The bundled entry is a second, unchecked result: confirmed so that the gate passes.
+        apply = self.apply("install", confirm=True)["apply"]
+        self.assertEqual((apply["outcome"], apply["reason"]), ("refused", "integrity_missing"))
+        self.assertEqual(
+            apply["error"], "1 lockfile entries have no integrity to check: node_modules/example"
+        )
+        self.assert_unchanged()
+        self.assertEqual(self.ci_calls, [])
+        apply = self.apply("lockfile", confirm=True)["apply"]  # the same lockfile, no install
+        self.assertEqual(apply["outcome"], "applied")
+        self.assertEqual((self.upd / "package-lock.json").read_bytes(), new_lock)
+        self.assertEqual(service.npm_cli.missing_integrity(self.head.read_bytes()), [])
+
+    def test_a_scratch_folder_inside_the_project_is_refused_before_any_change(self):
+        inside = self.upd / "tmp"
+        inside.mkdir()
+        names = [str(inside)]
+        if os.name == "nt":
+            names.append(str(inside).upper())  # Windows paths compare without case
+        link = self.root / "link"
+        try:
+            if os.name == "nt":
+                import _winapi
+
+                _winapi.CreateJunction(str(self.upd), str(link))
+            else:
+                os.symlink(self.upd, link, target_is_directory=True)
+            self.addCleanup(lambda: os.rmdir(link) if os.name == "nt" else os.unlink(link))
+            names.append(str(link / "tmp"))  # resolved to the project's own folder
+        except OSError:
+            pass
+        for name in names:
+            with self.subTest(tmp=name), mock.patch("tempfile.tempdir", name):
+                apply = self.apply("install")["apply"]
+                self.assertEqual((apply["outcome"], apply["reason"]),
+                                 ("refused", "scratch_in_project"))  # fmt: skip
+                self.assertEqual(self.ci_calls, [])
+                self.assertFalse(self.backups.exists())
+                for file, data in self.original.items():
+                    self.assertEqual((self.upd / file).read_bytes(), data)
+                self.assertEqual(list(inside.iterdir()), [])  # scratch and preview removed
+        self.assertTrue(link.exists() or len(names) < 3)
+        self.assertEqual(len(names), 3 if os.name == "nt" else 2, "the link case did not run")
 
     def test_clean_install_needs_absolute_folders(self):
         with self.assertRaisesRegex(GuardError, "absolute"):

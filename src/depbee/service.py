@@ -393,16 +393,19 @@ def apply_preview(
     confirm, a project .npmrc with mode install (refused: npm ci would read it), or when the
     project no longer passes read_project(), its two files differ from the preview's hashes or
     new_lock from preview.new_package_lock_sha256, or when the new files fail the same checks
-    (npm_cli.check_files). Otherwise the two original files go to a new
-    backup folder next to the history file first, then each changed file is written to a
-    temporary file in the project and swapped in with os.replace(). Mode install then runs npm
-    ci --ignore-scripts (npm_cli.clean_install) and checks that npm left the lockfile as written.
-    Nothing is ever restored automatically.
+    (npm_cli.check_files). Mode install also refuses a new lockfile entry without integrity and
+    a scratch folder (temporary folder for npm's missing paths) that lands inside the project.
+    Otherwise the two original files go to a new backup folder next to the history file first,
+    then each changed file is written to a temporary file in the project and swapped in with
+    os.replace(). Mode install then runs npm ci --ignore-scripts (npm_cli.clean_install) and
+    checks that npm left package.json and the lockfile as written. Nothing is ever restored
+    automatically.
 
     Returns {mode, outcome, reason, error, blocked, confirmation_required, confirmed, files,
     backup, npm_version, npm_ci_exit_code, notices}. outcome: applied, unchanged (no change),
     refused (nothing changed; reason known_malicious_hit, confirmation_required, project_npmrc,
-    project_unsupported, project_changed, new_lock_mismatch, new_files_unsupported) or failed (reason backup_failed,
+    project_unsupported, project_changed, new_lock_mismatch, new_files_unsupported,
+    integrity_missing, scratch_in_project) or failed (reason backup_failed,
     write_failed, install_failed, lockfile_changed; files lists what was already replaced).
     error is a message without npm output or temporary paths.
     """
@@ -457,53 +460,87 @@ def apply_preview(
         )
     except (GuardError, RecursionError) as exc:
         return done("refused", "new_files_unsupported", str(exc))
+    if mode == "install":
+        missing = npm_cli.missing_integrity(new_lock)
+        if missing:
+            shown = ", ".join(missing[:5]) + (", ..." if len(missing) > 5 else "")
+            return done(
+                "refused", "integrity_missing",
+                f"{len(missing)} lockfile entries have no integrity to check: {shown}",
+            )  # fmt: skip
     writes = [
         (name, old, new)
         for name, old, new in (("package-lock.json", lock_bytes, new_lock),
                                ("package.json", package_bytes, new_package))
         if new != old
     ]  # fmt: skip
-    try:
-        apply["backup"] = str(_backup(project, mode, package_bytes, lock_bytes, writes))
-    except (ImportError, RuntimeError, OSError, ValueError) as exc:
-        return done(
-            "failed", "backup_failed", f"The backup could not be written ({type(exc).__name__})"
-        )
-    try:
-        _replace(project, writes, apply["files"])
-    except OSError as exc:
-        replaced = ", ".join(f["path"] for f in apply["files"]) or "none"
-        return done(
-            "failed", "write_failed",
-            f"The project files could not be replaced ({type(exc).__name__}); "
-            f"replaced before the error: {replaced}",
-        )  # fmt: skip
-    if mode == "lockfile":
+
+    def change(scratch: Path | None) -> dict:
+        """Back up, replace and, given a scratch folder, install."""
+        try:
+            apply["backup"] = str(_backup(project, mode, package_bytes, lock_bytes, writes))
+        except (ImportError, RuntimeError, OSError, ValueError) as exc:
+            error = f"The backup could not be written ({type(exc).__name__})"
+            return done("failed", "backup_failed", error)
+        try:
+            _replace(project, writes, apply["files"])
+        except OSError as exc:
+            replaced = ", ".join(f["path"] for f in apply["files"]) or "none"
+            return done(
+                "failed", "write_failed",
+                f"The project files could not be replaced ({type(exc).__name__}); "
+                f"replaced before the error: {replaced}",
+            )  # fmt: skip
+        if scratch is None:
+            return done("applied")
+        try:
+            version, code = npm_cli.clean_install(project.absolute(), scratch)
+        except (GuardError, OSError) as exc:
+            if isinstance(exc, GuardError) and "depbee_install_" not in str(exc):
+                error = str(exc)  # npm_cli's own messages: no npm output
+            else:
+                error = f"npm ci could not be run ({type(exc).__name__})"
+            return done("failed", "install_failed", error)
+        apply["npm_version"], apply["npm_ci_exit_code"] = version, code
+        if code:
+            return done("failed", "install_failed", f"npm ci failed with exit code {code}")
+        try:
+            kept = [(project / "package.json").read_bytes(),
+                    (project / "package-lock.json").read_bytes()] == [new_package, new_lock]  # fmt: skip
+        except OSError:
+            kept = False
+        if not kept:
+            error = "npm ci changed package.json or package-lock.json"
+            return done("failed", "lockfile_changed", error)
         return done("applied")
-    ran = False
+
+    if mode == "lockfile":
+        return change(None)
     try:
-        with tempfile.TemporaryDirectory(prefix="depbee_install_") as scratch:
-            version, code = npm_cli.clean_install(project.absolute(), Path(scratch))
-            apply["npm_version"], apply["npm_ci_exit_code"], ran = version, code, True
-    except (GuardError, OSError) as exc:
-        if ran:
-            error = "The temporary install folder could not be removed"
-        elif isinstance(exc, GuardError) and "depbee_install_" not in str(exc):
-            error = str(exc)  # npm_cli's own messages: no npm output
-        else:
-            error = f"npm ci could not be run ({type(exc).__name__})"
+        folder = tempfile.TemporaryDirectory(prefix="depbee_install_")
+    except OSError as exc:
+        error = f"The temporary install folder could not be created ({type(exc).__name__})"
         return done("failed", "install_failed", error)
-    if code:
-        return done("failed", "install_failed", f"npm ci failed with exit code {code}")
     try:
-        written = [(project / name).read_bytes() == new for name, _, new in writes]
-    except OSError:
-        written = [False]
-    if not all(written):
-        return done(
-            "failed", "lockfile_changed", "npm ci changed package.json or package-lock.json"
-        )
-    return done("applied")
+        # The missing --git and --globalconfig files must not be paths of the project: checked
+        # before anything changes, on the real paths (links and junctions resolved).
+        if _inside(Path(folder.name), project):
+            return done("refused", "scratch_in_project")
+        return change(Path(folder.name))
+    finally:
+        try:
+            folder.cleanup()
+        except OSError:
+            if apply["outcome"] == "applied":
+                done(
+                    "failed", "install_failed", "The temporary install folder could not be removed"
+                )
+
+
+def _inside(path: Path, folder: Path) -> bool:
+    """path is folder or under it, comparing real paths (case-folded on Windows)."""
+    real, top = (Path(os.path.normcase(os.path.realpath(p))) for p in (path, folder))
+    return real.is_relative_to(top)
 
 
 def _backup(

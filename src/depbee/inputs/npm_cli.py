@@ -48,7 +48,10 @@ FIXED_OPTIONS = (
 # npm ci never writes package.json or the lockfile (lib/commands/ci.js, save: false) and with
 # ignore-scripts runs no root (ci.js 102-124) or dependency script, binding.gyp included
 # (@npmcli/arborist rebuild.js 150-166). The command line beats every npmrc and the environment.
-CI_OPTIONS = FIXED_OPTIONS[1:]
+# ci empties node_modules unless dry-run (ci.js 79-100) and passes package-lock-only on
+# (ci.js 40-46); either from a user npmrc would make reify skip the install (arborist reify.js
+# 279-286) and still exit 0. global and location=global make ci fail (ci.js 32-36).
+CI_OPTIONS = (*FIXED_OPTIONS[1:], "--package-lock-only=false", "--dry-run=false")
 # A target is a bare registry name: no leading "-", "." or "_" (so never an option or a path),
 # ASCII only, and none of the characters a shell or cmd.exe would read (space, : \ % & | ^ < > ").
 _PART = r"[A-Za-z0-9~!*'()][A-Za-z0-9._~!*'()-]*"
@@ -171,6 +174,22 @@ def check_files(package_bytes: bytes, lock_bytes: bytes, package_source, lock_so
     return package
 
 
+def missing_integrity(lock_bytes: bytes) -> list[str]:
+    """Lock entries npm would download without an integrity to check (install needs one each).
+
+    The lockfile has passed check_files(). A bundled entry without resolved ships inside its
+    parent's tarball, which is checked against the parent's integrity, so it is not listed.
+    """
+    lock, _ = parse_json(lock_bytes, "the new package-lock.json")
+    return [
+        location
+        for location, entry in lock["packages"].items()
+        if location
+        and entry.get("resolved") is not None
+        and not (isinstance(entry.get("integrity"), str) and entry["integrity"])
+    ]
+
+
 def check_names(names: list[str], package: dict) -> None:
     """Each target must be a bare name declared in package.json; npm ignores unknown names."""
     declared = {name for field in DEPENDENCY_FIELDS for name in package.get(field, {})}
@@ -274,8 +293,9 @@ def clean_install(project: Path, scratch: Path) -> tuple[str, int]:
     """Run `npm ci --ignore-scripts` in project; return (npm version, npm ci exit code).
 
     project is the absolute project folder, checked by read_project() and without a project
-    .npmrc (the caller refuses one). scratch is an absolute, new folder depbee made outside the
-    project: the missing Git program and global config file are named inside it. npm ci removes
+    .npmrc (the caller refuses one). scratch is an absolute, new folder depbee made, which the
+    caller has checked is outside the project: the missing Git program and global config file
+    are named inside it. npm ci removes
     what node_modules holds before it installs.
     """
     npm, env = _npm(), _environment()
