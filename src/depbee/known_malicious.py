@@ -19,7 +19,9 @@ import hashlib
 import io
 import json
 import re
+import struct
 import zipfile
+import zlib
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
@@ -36,6 +38,11 @@ MAX_INDEX_BYTES = 128 * 1024 * 1024
 # 385 MB in all; the largest record is far below a megabyte.
 MAX_SNAPSHOT_BYTES = 1024 * 1024 * 1024
 MAX_SNAPSHOT_ENTRIES = 2_000_000
+# The 2026-10 all.zip has a 15,043,787-byte central directory (230,001 entries, ZIP64); about four
+# times that. zipfile reads exactly this many bytes and builds one entry per record of at least
+# 46 bytes inside them, so the limit bounds the entries it creates (at most about 1.46 million),
+# whatever count the end record declares.
+MAX_CENTRAL_DIRECTORY_BYTES = 64 * 1024 * 1024
 MAX_RECORD_BYTES = 8 * 1024 * 1024
 MAX_SNAPSHOT_UNPACKED = 4 * 1024 * 1024 * 1024
 MAX_AFFECTED = 256  # contract: matches[].affected is at most 256 characters
@@ -285,6 +292,42 @@ def _record(raw: bytes, stem: str, parts: dict) -> tuple[dict | None, str | None
     return names, None
 
 
+_END = b"PK\x05\x06"
+_END_FORMAT = "<4s4H2LH"  # 22 bytes
+_ZIP64_LOCATOR = b"PK\x06\x07"  # 20 bytes, right before the end record
+_ZIP64_END = b"PK\x06\x06"
+_ZIP64_END_FORMAT = "<4sQ2H2L4Q"  # 56 bytes, right before the locator
+
+
+def _central_directory(data: bytes) -> tuple[int, int]:
+    """(central directory bytes, declared entries) of a zip, found the way zipfile finds them:
+    the end record at the very end (no comment) or the last one in the final 64 KiB + 22 bytes,
+    replaced by the ZIP64 end record when a ZIP64 locator sits right before it. GuardError if
+    there is no end record. Reads the bytes only; public zipfile API has no such step."""
+    end = len(data) - 22
+    if not (end >= 0 and data[end : end + 4] == _END and data[-2:] == b"\0\0"):
+        end = data.rfind(_END, max(len(data) - 65535 - 22, 0))
+        if end < 0 or len(data) - end < 22:
+            raise GuardError("Snapshot is not a readable zip file: no end of central directory")
+    fields = struct.unpack(_END_FORMAT, data[end : end + 22])
+    entries, size = fields[4], fields[5]
+    locator = end - 20
+    if locator >= 0 and data[locator : locator + 4] == _ZIP64_LOCATOR:
+        record = locator - 56
+        if record >= 0 and data[record : record + 4] == _ZIP64_END:
+            fields = struct.unpack(_ZIP64_END_FORMAT, data[record:locator])
+            entries, size = fields[7], fields[8]
+    return size, entries
+
+
+# What zipfile raises for an archive it cannot read: a bad or unsupported structure, method or
+# version (NotImplementedError), an encrypted entry (RuntimeError), a damaged stream.
+_ZIP_ERRORS = (
+    zipfile.BadZipFile, OSError, ValueError, NotImplementedError, RuntimeError, EOFError,
+    zlib.error, struct.error,
+)  # fmt: skip
+
+
 def build_index(snapshot: bytes, list_as_of: str) -> tuple[bytes, bytes, dict]:
     """(index.json bytes, manifest.json bytes, header) from the bytes of an OSV npm all.zip.
 
@@ -292,17 +335,24 @@ def build_index(snapshot: bytes, list_as_of: str) -> tuple[bytes, bytes, dict]:
     memory, never unpacked to files. Only top-level MAL-*.json records are read; every other
     entry, withdrawn record and unusable record, version or range is counted by reason in the
     header (counts.skipped_records, counts.skipped_parts). The same snapshot and list_as_of always
-    give the same bytes. GuardError for a bad list_as_of, a snapshot over the limits or not a zip.
+    give the same bytes. GuardError for a bad list_as_of, a snapshot over the limits (checked on
+    the end record before zipfile reads the central directory), not a zip, or a zip that cannot
+    be read (encrypted, unsupported or damaged).
     """
     problem = utc_time_problem(list_as_of)
     if problem:
         raise GuardError(problem)
     if len(snapshot) > MAX_SNAPSHOT_BYTES:
         raise GuardError(f"Snapshot exceeds {MAX_SNAPSHOT_BYTES} bytes")
+    directory, declared = _central_directory(snapshot)
+    if directory > MAX_CENTRAL_DIRECTORY_BYTES:
+        raise GuardError(f"Snapshot central directory exceeds {MAX_CENTRAL_DIRECTORY_BYTES} bytes")
+    if declared > MAX_SNAPSHOT_ENTRIES:
+        raise GuardError(f"Snapshot has more than {MAX_SNAPSHOT_ENTRIES} entries")
     try:
         archive = zipfile.ZipFile(io.BytesIO(snapshot))
         entries = archive.infolist()
-    except (zipfile.BadZipFile, OSError, ValueError) as exc:
+    except _ZIP_ERRORS as exc:
         raise GuardError(f"Snapshot is not a readable zip file: {exc}") from exc
     if len(entries) > MAX_SNAPSHOT_ENTRIES:
         raise GuardError(f"Snapshot has more than {MAX_SNAPSHOT_ENTRIES} entries")
@@ -317,10 +367,12 @@ def build_index(snapshot: bytes, list_as_of: str) -> tuple[bytes, bytes, dict]:
             continue
         if entry.file_size > MAX_RECORD_BYTES:
             raise GuardError(f"Snapshot record {entry.filename} exceeds {MAX_RECORD_BYTES} bytes")
+        if entry.flag_bits & 0x1:
+            raise GuardError(f"Snapshot record {entry.filename} is encrypted")
         try:
             with archive.open(entry) as stream:
                 raw = stream.read(MAX_RECORD_BYTES + 1)
-        except (zipfile.BadZipFile, OSError, ValueError, NotImplementedError) as exc:
+        except _ZIP_ERRORS as exc:
             raise GuardError(f"Snapshot record {entry.filename} cannot be read: {exc}") from exc
         if len(raw) > MAX_RECORD_BYTES:
             raise GuardError(f"Snapshot record {entry.filename} exceeds {MAX_RECORD_BYTES} bytes")

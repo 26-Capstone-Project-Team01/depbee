@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import os
+import struct
 import subprocess
 import sys
 import tempfile
@@ -647,6 +648,91 @@ class MemoRaceTests(IndexDir, unittest.TestCase):
         known_malicious._last = (Replaced(key_a), first)
         self.assertIs(load(self.dir), first)
         self.assertIs(known_malicious._last[1], second)  # the replacement did happen
+
+
+def patch_headers(data, offsets):
+    """data with {(signature, field offset): (struct format, value)} set in every header of that
+    signature (local b"PK\\x03\\x04" or central b"PK\\x01\\x02")."""
+    data = bytearray(data)
+    for (signature, offset), (fmt, value) in offsets.items():
+        start = data.find(signature)
+        while start != -1:
+            struct.pack_into(fmt, data, start + offset, value)
+            start = data.find(signature, start + 4)
+    return bytes(data)
+
+
+def zip64(data, dirsize=None):
+    """The same zip with a ZIP64 end record and locator, as large archives (and OSV's) have."""
+    end = data.rindex(b"PK\x05\x06")
+    _, _, _, this_disk, total, size, offset, _ = struct.unpack("<4s4H2LH", data[end : end + 22])
+    record = struct.pack("<4sQ2H2L4Q", b"PK\x06\x06", 44, 45, 45, 0, 0, this_disk, total,
+                         size if dirsize is None else dirsize, offset)  # fmt: skip
+    locator = struct.pack("<4sLQL", b"PK\x06\x07", 0, end, 1)
+    eocd = struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, 0xFFFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0)
+    return data[:end] + record + locator + eocd
+
+
+class ZipBoundaryTests(unittest.TestCase):
+    """REV-KM01-R1 F4 and F5: zipfile errors are GuardError, and the central directory is
+    checked before zipfile builds an entry for each of its records."""
+
+    def setUp(self):
+        self.zipped = snapshot(RECORDS[:3])
+
+    def test_encrypted_unsupported_and_damaged_entries(self):
+        cases = {
+            "encrypted": patch_headers(self.zipped, {(b"PK\x03\x04", 6): ("<H", 1),
+                                                     (b"PK\x01\x02", 8): ("<H", 1)}),
+            "unsupported version": patch_headers(self.zipped, {(b"PK\x01\x02", 6): ("<H", 99)}),
+            "unsupported method": patch_headers(self.zipped, {(b"PK\x03\x04", 8): ("<H", 99),
+                                                              (b"PK\x01\x02", 10): ("<H", 99)}),
+        }  # fmt: skip
+        damaged = bytearray(self.zipped)
+        first = damaged.find(b"PK\x03\x04")
+        name_length, extra_length = struct.unpack_from("<2H", damaged, first + 26)
+        data_start = first + 30 + name_length + extra_length
+        damaged[data_start : data_start + 8] = b"\xff" * 8
+        cases["damaged stream"] = bytes(damaged)
+        for label, data in cases.items():
+            with self.subTest(label), self.assertRaises(GuardError):
+                build_index(data, AS_OF)
+
+    def test_script_fails_without_a_traceback(self):
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        zipped = tmp / "all.zip"
+        zipped.write_bytes(patch_headers(self.zipped, {(b"PK\x03\x04", 6): ("<H", 1),
+                                                       (b"PK\x01\x02", 8): ("<H", 1)}))  # fmt: skip
+        done = run_build_script(zipped, tmp / "out")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertNotIn("Traceback", done.stderr)
+        self.assertIn("encrypted", done.stderr)
+        self.assertFalse((tmp / "out").exists())
+
+    def test_zip64_trailer_is_read_as_zipfile_reads_it(self):
+        plain = json.loads(build_index(self.zipped, AS_OF)[0])
+        wide = json.loads(build_index(zip64(self.zipped), AS_OF)[0])
+        self.assertEqual(wide["packages"], plain["packages"])
+
+    def test_central_directory_is_checked_before_zipfile_reads_it(self):
+        refuse = mock.patch.object(known_malicious.zipfile, "ZipFile",
+                                   side_effect=AssertionError("zipfile was called"))  # fmt: skip
+        size = len(self.zipped) - self.zipped.index(b"PK\x01\x02") - 22
+        cases = [
+            ("central directory bytes", self.zipped, "MAX_CENTRAL_DIRECTORY_BYTES", size - 1),
+            ("ZIP64 central directory bytes", zip64(self.zipped, dirsize=2**40),
+             "MAX_CENTRAL_DIRECTORY_BYTES", 64 * 1024 * 1024),
+            ("declared entries", self.zipped, "MAX_SNAPSHOT_ENTRIES", 2),
+            ("ZIP64 declared entries", zip64(self.zipped), "MAX_SNAPSHOT_ENTRIES", 2),
+            ("no end record", self.zipped[:-22], "MAX_SNAPSHOT_ENTRIES", 2_000_000),
+        ]  # fmt: skip
+        for label, data, limit, value in cases:
+            with self.subTest(label), refuse, \
+                    mock.patch.object(known_malicious, limit, value, create=True), \
+                    self.assertRaises(GuardError):  # fmt: skip
+                build_index(data, AS_OF)
+        with mock.patch.object(known_malicious, "MAX_CENTRAL_DIRECTORY_BYTES", size, create=True):
+            build_index(self.zipped, AS_OF)  # exactly at the limit
 
 
 class LongIntegerLoadTests(IndexDir, unittest.TestCase):
