@@ -3,16 +3,22 @@
 Detection and verdicts stay in pipeline.scan(); output formats and exit handling stay with callers.
 """
 
+import contextlib
 import hashlib
+import json
 import os
+import secrets
+import shutil
 import tempfile
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
+from . import __version__
 from .analysis import bounded, cache
 from .analysis.artifact import ArtifactAnalyzer
-from .contracts import GuardError, elapsed_since, read_json
+from .contracts import GuardError, elapsed_since, parse_json
 from .inference.lightgbm import LightGBMPredictor
 from .inputs import npm_cli
 from .inputs.npm import (
@@ -25,6 +31,23 @@ from .pipeline import scan
 
 NPMRC_NOTICE = "프로젝트 .npmrc는 복사하지 않았습니다. 사용자·전역 npm 설정은 적용될 수 있습니다."
 PREVIEW_NOTICE = "미리보기만 했고 프로젝트 파일은 아무것도 바꾸지 않았습니다."
+APPLY_MODES = ("lockfile", "install")
+# Fixed apply notices (apply_update); no package text and no path, the backup has its own field.
+UNCHANGED_NOTICE = "프로젝트 파일은 바꾸지 않았습니다."
+LOCKFILE_NOTICE = "lockfile만 반영했고 node_modules는 설치하지 않았습니다."
+SCRIPTS_NOTICE = (
+    "설치 스크립트는 실행하지 않았습니다(npm ci --ignore-scripts). 설치 스크립트가 필요한 "
+    "패키지는 검토한 뒤 직접 npm rebuild를 실행합니다."
+)
+NPMRC_INSTALL_NOTICE = (
+    "프로젝트 .npmrc가 있어 설치하지 않았습니다. lockfile만 반영한 뒤 .npmrc를 직접 검토하고 "
+    "npm ci --ignore-scripts로 설치합니다."
+)
+RESTORE_NOTICE = (
+    "depbee는 자동으로 되돌리지 않습니다. 되돌리려면 백업 폴더의 package.json과 "
+    "package-lock.json을 프로젝트에 복사하고, 설치한 node_modules도 되돌리려면 그 뒤 "
+    "npm ci --ignore-scripts를 실행합니다."
+)
 
 
 def list_dependencies(project: Path) -> list[dict]:
@@ -221,6 +244,18 @@ def preview_update(
     about the temporary folder or the files in it never name its path, and a folder that cannot
     be created or removed is a GuardError.
     """
+    result, _, _ = _preview(
+        project, packages, model_dir=model_dir, progress=progress, cache_dir=cache_dir,
+        no_cache=no_cache,
+    )  # fmt: skip
+    return result
+
+
+def _preview(
+    project: Path, packages: list[str] | None, **scan_options
+) -> tuple[dict, bytes, bytes]:
+    """preview_update()'s result and the new package.json and lockfile bytes, in memory only:
+    they leave the temporary folder as values, never as files."""
     names = list(packages or [])
     package_bytes, lock_bytes, package = npm_cli.read_project(project)
     npm_cli.check_names(names, package)
@@ -243,11 +278,9 @@ def preview_update(
                 base.write_bytes(lock_bytes)
                 npm_version = npm_cli.update_lock(work, names)
                 new_package = (work / "package.json").read_bytes()
-                _, new_lock_sha256 = read_json(work / "package-lock.json")
-                report = scan_project(
-                    work, base, extract=True, model_dir=model_dir, progress=progress,
-                    cache_dir=cache_dir, no_cache=no_cache,
-                )  # fmt: skip
+                new_lock = (work / "package-lock.json").read_bytes()
+                _, new_lock_sha256 = parse_json(new_lock, work / "package-lock.json")
+                report = scan_project(work, base, extract=True, **scan_options)
             except (GuardError, OSError, ValueError) as exc:
                 if Path(tmp).name not in str(exc):
                     raise  # npm errors, or about the model or cache folders the caller gave
@@ -270,4 +303,293 @@ def preview_update(
         "project_npmrc_ignored": npmrc,
         "notices": [NPMRC_NOTICE] * npmrc + [PREVIEW_NOTICE],
     }
-    return {"preview": preview, "report": report}
+    return {"preview": preview, "report": report}, new_package, new_lock
+
+
+def apply_update(
+    project: Path,
+    packages: list[str] | None = None,
+    *,
+    mode: str,
+    confirm: bool = False,
+    model_dir: Path | None = None,
+    progress: Callable[[int, int, dict], None] | None = None,
+    cache_dir: Path | None = None,
+    no_cache: bool = False,
+) -> dict:
+    """Preview, check and apply npm update in one call: {preview, report, apply}.
+
+    mode: "lockfile" writes the checked package-lock.json (and package.json if npm changed it)
+    to the project; "install" then runs npm ci --ignore-scripts there. confirm: the user's one
+    explicit confirmation of every item the gate lists (update_gate()). The preview and its
+    errors are those of preview_update(), whose notice that nothing was changed is left out
+    here; the apply is apply_preview()'s.
+    """
+    if mode not in APPLY_MODES:
+        raise GuardError(f"Unknown apply mode: {mode!r}")
+    result, new_package, new_lock = _preview(
+        project, packages, model_dir=model_dir, progress=progress, cache_dir=cache_dir,
+        no_cache=no_cache,
+    )  # fmt: skip
+    preview = result["preview"]
+    preview["notices"] = [notice for notice in preview["notices"] if notice != PREVIEW_NOTICE]
+    apply = apply_preview(project, result, new_package, new_lock, mode=mode, confirm=confirm)
+    return {**result, "apply": apply}
+
+
+def _gate_item(row: dict, causes: list[str]) -> dict:
+    return {
+        "location": row.get("location"),
+        "package": row.get("package"),
+        "before_version": row.get("before_version"),
+        "after_version": row.get("after_version"),
+        "status": row.get("status"),
+        "reason": row.get("reason"),
+        "score": row.get("score"),
+        "known_malicious_status": (row.get("known_malicious") or {}).get("status"),
+        "ml_status": (row.get("ml") or {}).get("status"),
+        "causes": causes,
+    }
+
+
+def update_gate(report: dict) -> tuple[list[dict], list[dict]]:
+    """(refused, to confirm) items of report.results, from the per-item fields only.
+
+    The top-level exit_code is not used: 2 (unfinished) would hide 1 (risk), as in
+    actions.decide(). A known malicious match (known_malicious.status hit) is always refused.
+    An ML hit, an incomplete item, or a known malicious check that did not say not_hit
+    (not_run, failed) needs the user's confirmation. A removed item installs nothing, so only a
+    match would refuse it. Each item has its location, package, versions, status, reason, score,
+    the two detector statuses and causes: known_malicious_hit, ml_hit, incomplete,
+    known_malicious_unchecked.
+    """
+    refused, confirm = [], []
+    for row in report["results"]:
+        known = (row.get("known_malicious") or {}).get("status")
+        if known == "hit":
+            refused.append(_gate_item(row, ["known_malicious_hit"]))
+            continue
+        if row.get("status") == "removed":
+            continue
+        causes = ["ml_hit"] * ((row.get("ml") or {}).get("status") == "hit")
+        causes += ["incomplete"] * (row.get("status") == "incomplete")
+        causes += ["known_malicious_unchecked"] * (known != "not_hit")
+        if causes:
+            confirm.append(_gate_item(row, causes))
+    return refused, confirm
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def apply_preview(
+    project: Path, result: dict, new_package: bytes, new_lock: bytes, *, mode: str,
+    confirm: bool = False,
+) -> dict:  # fmt: skip
+    """Apply a checked preview ({preview, report} and the new file bytes of the same preview).
+
+    Nothing is written when there is no change, a known malicious match, items to confirm and no
+    confirm, a project .npmrc with mode install (refused: npm ci would read it), or when the
+    project no longer passes read_project(), its two files differ from the preview's hashes or
+    new_lock from preview.new_package_lock_sha256, or when the new files fail the same checks
+    (npm_cli.check_files). Mode install also refuses a new lockfile entry without integrity and
+    a scratch folder (temporary folder for npm's missing paths) that lands inside the project.
+    Otherwise the two original files go to a new backup folder next to the history file first,
+    then each changed file is written to a temporary file in the project and swapped in with
+    os.replace(). Mode install then runs npm ci --ignore-scripts (npm_cli.clean_install) and
+    checks that npm left package.json and the lockfile as written. Nothing is ever restored
+    automatically.
+
+    Returns {mode, outcome, reason, error, blocked, confirmation_required, confirmed, files,
+    backup, npm_version, npm_ci_exit_code, notices}. outcome: applied, unchanged (no change),
+    refused (nothing changed; reason known_malicious_hit, confirmation_required, project_npmrc,
+    project_unsupported, project_changed, new_lock_mismatch, new_files_unsupported,
+    integrity_missing, scratch_in_project) or failed (reason backup_failed,
+    write_failed, install_failed, lockfile_changed; files lists what was already replaced).
+    error is a message without npm output or temporary paths.
+    """
+    if mode not in APPLY_MODES:
+        raise GuardError(f"Unknown apply mode: {mode!r}")
+    preview, report = result["preview"], result["report"]
+    blocked, required = update_gate(report)
+    apply = {
+        "mode": mode, "outcome": None, "reason": None, "error": None, "blocked": blocked,
+        "confirmation_required": required, "confirmed": bool(confirm), "files": [],
+        "backup": None, "npm_version": None, "npm_ci_exit_code": None, "notices": [],
+    }  # fmt: skip
+
+    def done(outcome: str, reason: str | None = None, error: str | None = None) -> dict:
+        notices = []
+        if outcome in ("unchanged", "refused") or (outcome == "failed" and not apply["files"]):
+            notices.append(UNCHANGED_NOTICE)
+        if reason == "project_npmrc":
+            notices.append(NPMRC_INSTALL_NOTICE)
+        if outcome == "applied" and mode == "lockfile":
+            notices.append(LOCKFILE_NOTICE)
+        if apply["npm_ci_exit_code"] is not None:
+            notices.append(SCRIPTS_NOTICE)
+        if apply["backup"] is not None:
+            notices.append(RESTORE_NOTICE)
+        apply.update(outcome=outcome, reason=reason, error=error, notices=notices)
+        return apply
+
+    if not report["results"]:
+        return done("unchanged")
+    if blocked:
+        return done("refused", "known_malicious_hit")
+    if required and not confirm:
+        return done("refused", "confirmation_required")
+    if mode == "install" and os.path.lexists(project / ".npmrc"):
+        return done("refused", "project_npmrc")
+    try:
+        package_bytes, lock_bytes, _ = npm_cli.read_project(project)
+    except (GuardError, OSError, ValueError) as exc:
+        return done("refused", "project_unsupported", str(exc))
+    if (_sha256(package_bytes), _sha256(lock_bytes)) != (
+        preview["package_json_sha256"], preview["package_lock_sha256"],
+    ):  # fmt: skip
+        return done("refused", "project_changed")
+    if _sha256(new_lock) != preview["new_package_lock_sha256"]:
+        return done("refused", "new_lock_mismatch")
+    try:
+        # The scan only marks what npm resolved outside the registry as incomplete, which a
+        # confirmation lets through; npm ci would then fetch it.
+        npm_cli.check_files(
+            new_package, new_lock, "the new package.json", "the new package-lock.json"
+        )
+    except (GuardError, RecursionError) as exc:
+        return done("refused", "new_files_unsupported", str(exc))
+    if mode == "install":
+        missing = npm_cli.missing_integrity(new_lock)
+        if missing:
+            shown = ", ".join(loc for loc, _ in missing[:5]) + (", ..." if len(missing) > 5 else "")
+            bundled = sum(in_bundle for _, in_bundle in missing)
+            return done(
+                "refused", "integrity_missing",
+                f"{len(missing)} lockfile entries have no valid integrity to check: {shown}"
+                + (f"; {bundled} of them bundled (bundleDependencies), which depbee does not "
+                   "install: apply the lockfile only and install yourself" if bundled else ""),
+            )  # fmt: skip
+    writes = [
+        (name, old, new)
+        for name, old, new in (("package-lock.json", lock_bytes, new_lock),
+                               ("package.json", package_bytes, new_package))
+        if new != old
+    ]  # fmt: skip
+
+    def change(scratch: Path | None) -> dict:
+        """Back up, replace and, given a scratch folder, install."""
+        try:
+            apply["backup"] = str(_backup(project, mode, package_bytes, lock_bytes, writes))
+        except (ImportError, RuntimeError, OSError, ValueError) as exc:
+            error = f"The backup could not be written ({type(exc).__name__})"
+            return done("failed", "backup_failed", error)
+        try:
+            _replace(project, writes, apply["files"])
+        except OSError as exc:
+            replaced = ", ".join(f["path"] for f in apply["files"]) or "none"
+            return done(
+                "failed", "write_failed",
+                f"The project files could not be replaced ({type(exc).__name__}); "
+                f"replaced before the error: {replaced}",
+            )  # fmt: skip
+        if scratch is None:
+            return done("applied")
+        try:
+            version, code = npm_cli.clean_install(project.absolute(), scratch)
+        except (GuardError, OSError) as exc:
+            if isinstance(exc, GuardError) and "depbee_install_" not in str(exc):
+                error = str(exc)  # npm_cli's own messages: no npm output
+            else:
+                error = f"npm ci could not be run ({type(exc).__name__})"
+            return done("failed", "install_failed", error)
+        apply["npm_version"], apply["npm_ci_exit_code"] = version, code
+        if code:
+            return done("failed", "install_failed", f"npm ci failed with exit code {code}")
+        try:
+            kept = [(project / "package.json").read_bytes(),
+                    (project / "package-lock.json").read_bytes()] == [new_package, new_lock]  # fmt: skip
+        except OSError:
+            kept = False
+        if not kept:
+            error = "npm ci changed package.json or package-lock.json"
+            return done("failed", "lockfile_changed", error)
+        return done("applied")
+
+    if mode == "lockfile":
+        return change(None)
+    try:
+        folder = tempfile.TemporaryDirectory(prefix="depbee_install_")
+    except OSError as exc:
+        error = f"The temporary install folder could not be created ({type(exc).__name__})"
+        return done("failed", "install_failed", error)
+    try:
+        # The missing --git and --globalconfig files must not be paths of the project: checked
+        # before anything changes, on the real paths (links and junctions resolved).
+        if _inside(Path(folder.name), project):
+            return done("refused", "scratch_in_project")
+        return change(Path(folder.name))
+    finally:
+        try:
+            folder.cleanup()
+        except OSError:
+            if apply["outcome"] == "applied":
+                done(
+                    "failed", "install_failed", "The temporary install folder could not be removed"
+                )
+
+
+def _inside(path: Path, folder: Path) -> bool:
+    """path is folder or under it, comparing real paths (case-folded on Windows)."""
+    real, top = (Path(os.path.normcase(os.path.realpath(p))) for p in (path, folder))
+    return real.is_relative_to(top)
+
+
+def _backup(
+    project: Path, mode: str, package_bytes: bytes, lock_bytes: bytes, writes: list
+) -> Path:
+    """A new folder under backups/ next to the history file (history.db_path(): never chosen by
+    the project) with the two original files and backup.json; never removed by depbee."""
+    from . import history  # its sqlite3 import stays out of the commands that do not apply
+
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    folder = Path(os.path.abspath(history.db_path())).parent / "backups"
+    folder = folder / f"{stamp}-{secrets.token_hex(4)}"
+    folder.mkdir(parents=True)
+    (folder / "package.json").write_bytes(package_bytes)
+    (folder / "package-lock.json").write_bytes(lock_bytes)
+    new = {name: _sha256(data) for name, _, data in writes}
+    about = {
+        "project": str(project.absolute()),
+        "created_at": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "depbee_version": __version__,
+        "mode": mode,
+        "package_json_sha256": _sha256(package_bytes),
+        "package_lock_sha256": _sha256(lock_bytes),
+        "new_package_json_sha256": new.get("package.json"),
+        "new_package_lock_sha256": new.get("package-lock.json"),
+    }
+    text = json.dumps(about, ensure_ascii=True, indent=2) + "\n"
+    (folder / "backup.json").write_text(text, encoding="utf-8", newline="\n")
+    return folder
+
+
+def _replace(project: Path, writes: list, replaced: list) -> None:
+    """Write every new file to a temporary file in the project, then os.replace() each in turn,
+    adding {path, sha256, new_sha256} to replaced; temporary files never stay behind."""
+    temporary = []
+    try:
+        for name, _, data in writes:
+            handle, path = tempfile.mkstemp(prefix=f".{name}.", suffix=".depbee", dir=project)
+            temporary.append(path)
+            with os.fdopen(handle, "wb") as stream:
+                stream.write(data)
+            shutil.copymode(project / name, path)
+        for (name, old, new), path in zip(writes, temporary, strict=True):
+            os.replace(path, project / name)
+            replaced.append({"path": name, "sha256": _sha256(old), "new_sha256": _sha256(new)})
+    finally:
+        for path in temporary:
+            with contextlib.suppress(OSError):  # gone once replaced
+                os.unlink(path)

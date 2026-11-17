@@ -2,7 +2,8 @@
 
 Standard library only. Reports are stored as given: verdicts, reasons and exit codes are never
 recomputed, and nothing here detects anything. The CLI records through record(), which never
-creates the database; only register_project() does. The dashboard (planned) uses the same API.
+creates the database; only register_project() does. The dashboard uses the same API. An update
+apply (service.apply_update) is stored next to its update_preview run, never the new lockfile.
 """
 
 import contextlib
@@ -16,7 +17,8 @@ from pathlib import Path
 from . import __version__
 
 # PRAGMA user_version of a depbee history database; separate from contracts.SCHEMA_VERSION.
-USER_VERSION = 1
+# 2 added the applies table; a version 1 file is upgraded in the transaction of its next write.
+USER_VERSION = 2
 # PRAGMA application_id ("DPBE"): marks the file as a depbee history; the version alone does not.
 APPLICATION_ID = 0x44504245
 TIMEOUT = 1.5  # seconds to wait for a lock; the CLI has already printed its report
@@ -71,6 +73,32 @@ CREATE TABLE results (
     rules_status TEXT,
     ml_status TEXT,
     PRIMARY KEY (run_id, position)
+);
+"""
+APPLY_COLUMNS = (
+    "id", "run_id", "created_at", "mode", "outcome", "reason", "confirmed",
+    "package_json_sha256", "package_lock_sha256", "new_package_json_sha256",
+    "new_package_lock_sha256", "backup", "npm_version", "npm_ci_exit_code",
+)  # fmt: skip
+# Version 2: one row per update apply, tied to the update_preview run of the same command.
+# apply is the whole apply document (service.apply_update); the new lockfile is never stored.
+SCHEMA_2 = """
+CREATE TABLE applies (
+    id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL UNIQUE REFERENCES runs (id),
+    created_at TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    reason TEXT,
+    confirmed INTEGER NOT NULL,
+    package_json_sha256 TEXT,
+    package_lock_sha256 TEXT,
+    new_package_json_sha256 TEXT,
+    new_package_lock_sha256 TEXT,
+    backup TEXT,
+    npm_version TEXT,
+    npm_ci_exit_code INTEGER,
+    apply TEXT NOT NULL
 );
 """
 
@@ -136,23 +164,39 @@ def _write(connection):
         raise
 
 
-def _check(connection, create: bool = False) -> bool:
-    """True if the database is ours at USER_VERSION; False if empty and create may set it up.
+def _check(connection, create: bool = False) -> int:
+    """The user_version of our database (1 to USER_VERSION), or 0 if it is empty and create may
+    set it up.
 
-    Ours means APPLICATION_ID; any other file is refused whatever its user_version.
+    Ours means APPLICATION_ID; any other file is refused whatever its user_version, and so is a
+    newer one.
     """
     application = connection.execute("PRAGMA application_id").fetchone()[0]
     version = connection.execute("PRAGMA user_version").fetchone()[0]
     if application == APPLICATION_ID:
         if version > USER_VERSION:
             raise HistoryError(f"History database version {version} is newer than {USER_VERSION}")
-        if version == USER_VERSION:
-            return True
+        if version >= 1:
+            return version
     elif application == version == 0 and create:
         tables = connection.execute("SELECT count(*) FROM sqlite_master").fetchone()[0]
         if not tables:
-            return False
+            return 0
     raise HistoryError("Not a depbee history database")
+
+
+def _upgrade(connection, version: int) -> None:
+    """Bring a database _check() returned version for to USER_VERSION, inside the caller's write
+    transaction: the tables and both header values roll back with it."""
+    # Statement by statement: executescript() would commit outside this transaction.
+    script = (SCHEMA if version == 0 else "") + (SCHEMA_2 if version < 2 else "")
+    for statement in script.split(";"):
+        if statement.strip():
+            connection.execute(statement)
+    if version == 0:
+        connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
+    if version < USER_VERSION:
+        connection.execute(f"PRAGMA user_version = {USER_VERSION}")
 
 
 def register_project(project: Path | str) -> int:
@@ -169,14 +213,7 @@ def register_project(project: Path | str) -> int:
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with _connect(path, create=True) as connection, _write(connection):
-        if not _check(connection, create=True):
-            # Statement by statement: executescript() would commit outside this transaction.
-            for statement in SCHEMA.split(";"):
-                if statement.strip():
-                    connection.execute(statement)
-            # Both header values are part of this transaction and roll back with it.
-            connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
-            connection.execute(f"PRAGMA user_version = {USER_VERSION}")
+        _upgrade(connection, _check(connection, create=True))
         connection.execute(
             "INSERT OR IGNORE INTO projects (key, path, registered_at) VALUES (?, ?, ?)",
             (key, display, _now()),
@@ -192,17 +229,23 @@ def record(
     *,
     base_ref: str | None = None,
     base_lock: bool | None = None,
+    apply: dict | None = None,
 ) -> int | None:
     """Store one report for a registered project and return the run id.
 
     kind: "scan" or "update_preview" (then preview is the update preview). base_ref, base_lock:
     the scan's --base-ref value and whether --base-lock was given (None for update previews).
+    apply: the apply document of service.apply_update for this update preview, stored in the
+    same transaction as its run (applies table: the original hashes from the preview, the new
+    ones of the files it replaced).
     Returns None without touching anything if there is no home directory, no database file or
     the project is not registered. Raises sqlite3.Error, HistoryError, OSError or ValueError if
     the database cannot be read or written; the caller decides how to report that.
     """
     if kind not in KINDS:
         raise ValueError(f"Unknown history kind: {kind}")
+    if apply is not None and (kind != "update_preview" or preview is None):
+        raise ValueError("An apply is recorded with its update preview")
     try:
         path = db_path()
     except RuntimeError:  # no home directory: no history, as the feature cache
@@ -230,7 +273,7 @@ def record(
         if connection.execute("SELECT 1 FROM projects WHERE key = ?", (key,)).fetchone() is None:
             return None
         with _write(connection):
-            _check(connection)
+            _upgrade(connection, _check(connection))
             (project_id,) = connection.execute(
                 "SELECT id FROM projects WHERE key = ?", (key,)
             ).fetchone()
@@ -247,16 +290,34 @@ def record(
                     for position, row in enumerate(rows)
                 ],
             )
+            if apply is not None:
+                new = {f["path"]: f["new_sha256"] for f in apply.get("files") or []}
+                values = (
+                    run_id, _now(), _text(apply.get("mode")), _text(apply.get("outcome")),
+                    _text(apply.get("reason")), bool(apply.get("confirmed")),
+                    _text(preview.get("package_json_sha256")),
+                    _text(preview.get("package_lock_sha256")),
+                    _text(new.get("package.json")), _text(new.get("package-lock.json")),
+                    _text(apply.get("backup")), _text(apply.get("npm_version")),
+                    apply.get("npm_ci_exit_code"), _json(apply),
+                )  # fmt: skip
+                connection.execute(
+                    f"INSERT INTO applies ({', '.join(APPLY_COLUMNS[1:])}, apply) "
+                    f"VALUES ({', '.join('?' * len(APPLY_COLUMNS))})",
+                    values,
+                )
         return run_id
 
 
-def _read(query: str, parameters: tuple = ()) -> list[sqlite3.Row]:
-    """Rows of a read-only query; none if there is no database (it is not created)."""
+def _read(query: str, parameters: tuple = (), since: int = 1) -> list[sqlite3.Row]:
+    """Rows of a read-only query; none if there is no database (it is not created) or it is
+    older than version since (a version 1 file has no applies table and is not upgraded here)."""
     path = db_path()
     if not path.exists():
         return []
     with _connect(path, create=False) as connection:
-        _check(connection)
+        if _check(connection) < since:
+            return []
         connection.row_factory = sqlite3.Row
         return connection.execute(query, parameters).fetchall()
 
@@ -287,8 +348,30 @@ def list_runs(project_id: int, limit: int | None = None) -> list[dict]:
     return [_run(row) for row in _read(query, parameters)]
 
 
+def _apply(row: sqlite3.Row) -> dict:
+    apply = {name: row[name] for name in APPLY_COLUMNS}
+    apply["confirmed"] = bool(apply["confirmed"])
+    apply["apply"] = json.loads(row["apply"])
+    return apply
+
+
+def list_applies(project_id: int, limit: int | None = None) -> list[dict]:
+    """A project's update applies, newest first: the applies columns (run_id is the update
+    preview run of the same command) and the stored apply document as apply."""
+    columns = ", ".join(f"a.{name}" for name in APPLY_COLUMNS)
+    query = (
+        f"SELECT {columns}, a.apply FROM applies a JOIN runs r ON r.id = a.run_id "
+        "WHERE r.project_id = ? ORDER BY a.id DESC"
+    )
+    parameters: tuple = (project_id,)
+    if limit is not None:
+        query, parameters = query + " LIMIT ?", (project_id, limit)
+    return [_apply(row) for row in _read(query, parameters, since=2)]
+
+
 def get_run(run_id: int) -> dict | None:
-    """One run with its report, preview (None for a scan) and result rows in report order."""
+    """One run with its report, preview (None for a scan), result rows in report order and apply
+    (as in list_applies(), None if the run applied nothing)."""
     runs = _read(f"SELECT {', '.join(RUN_COLUMNS)}, report, preview FROM runs WHERE id = ?",
                  (run_id,))  # fmt: skip
     if not runs:
@@ -302,4 +385,7 @@ def get_run(run_id: int) -> dict | None:
         (run_id,),
     )
     run["results"] = [dict(result) for result in rows]
+    applies = _read(f"SELECT {', '.join(APPLY_COLUMNS)}, apply FROM applies WHERE run_id = ?",
+                    (run_id,), since=2)  # fmt: skip
+    run["apply"] = _apply(applies[0]) if applies else None
     return run

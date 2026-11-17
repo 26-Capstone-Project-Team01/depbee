@@ -1,5 +1,6 @@
 """depbee update (preview): npm is always mocked; no test runs npm, Node.js or the registry."""
 
+import base64
 import contextlib
 import hashlib
 import io
@@ -34,6 +35,12 @@ def without_times(report):
     return report
 
 
+def sri(text, algorithm="sha512"):
+    return (
+        f"{algorithm}-" + base64.b64encode(hashlib.new(algorithm, text.encode()).digest()).decode()
+    )
+
+
 class UpdateFixture(Fixture):
     def setUp(self):
         super().setUp()
@@ -42,6 +49,11 @@ class UpdateFixture(Fixture):
         self.upd.mkdir()
         self.package = {"name": "app", "dependencies": {"example": "^1.0.0"}}
         self.write(self.upd / "package.json", self.package)
+        # apply install needs a well-formed SRI (npm_cli.valid_sri); not the digest of any tarball.
+        for lock in (self.old, self.new):
+            for entry in lock["packages"].values():
+                entry["integrity"] = sri(entry["version"])
+        self.save_locks()
         (self.upd / "package-lock.json").write_bytes(self.base.read_bytes())
         # A fake Node.js install; nothing in it is executed because _run is mocked.
         if os.name == "nt":
@@ -119,7 +131,7 @@ class PreviewTests(UpdateFixture):
         self.assertEqual(update, [
             str(self.node), str(self.npm_js), "update", "--package-lock-only", "--ignore-scripts",
             "--no-audit", "--no-fund", "--no-update-notifier", "--no-progress", "--color=false",
-            "--loglevel=warn", *pinned, "--", "example",
+            "--loglevel=warn", "--dry-run=false", "--package-lock=true", *pinned, "--", "example",
         ])  # fmt: skip
         self.assertEqual(update.index("--"), len(update) - 2)  # names only after "--"
         self.assertFalse(self.work_files_have_git)  # the git setting names a missing file

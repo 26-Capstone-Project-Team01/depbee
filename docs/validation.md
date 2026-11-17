@@ -1,5 +1,56 @@
 # 검증 기록
 
+## 2026-11-17: integrity 구분자를 ASCII로 한정(UPD-02 fix_r4)
+
+- 재검토 R3의 M2-R3(major)를 반영했다. `valid_sri`가 Python `str.split()`으로 나눠, Python만 공백으로 보는 U+0085·U+001C~U+001F를 정상 SRI 앞에 붙인 값을 유효로 봤다. ssri는 JavaScript `trim().split(/\s+/)`(`ssri/lib/index.js` 138·379행)로 나눠 그 문자를 토큰에 남기고, 정규식에 맞지 않는 토큰을 버려 결과가 null이 되므로 npm은 대조하지 않는다(소스로 확인, 실행하지 않음).
+- 이제 구분자는 ASCII 공백·탭·LF·CR(`npm_cli.SRI_SEPARATORS`)뿐이고 그 밖의 문자는 토큰에 남아 알고리즘·base64 검사에서 거부된다. 원문을 고치지 않고 검사만 하므로 npm에 넘어가는 값과 검사한 값이 같다.
+- 단위 테스트 `tests/test_apply.py` 28개에서 30개: U+0085·U+001C~U+001F와 VT·FF·NBSP·U+2028·U+FEFF·U+3000·NUL을 정상 SRI의 앞·뒤·두 해시 사이(붙임과 공백 사이)에 넣은 값의 거부, ASCII 구분자로 나눈 여러 해시와 실제 형식의 sha512 허용, 앞에 붙인 다섯 문자 각각의 install 거부(`integrity_missing`)·원본 두 파일과 백업 불변·`npm ci` 미실행·같은 입력의 lockfile 반영. 전체 385개에서 387개, skip 32개(앞 기록과 같은 이유).
+- 정정: fix_r3 보고의 "Python과 JavaScript 공백 정의 차이는 거부 쪽으로만 달라진다"는 틀렸다(앞에 붙인 경우 허용 쪽으로 달라졌다).
+- 도움말은 바뀌지 않아 기존 명령 출력 비교는 다시 돌리지 않았다.
+- 확인하지 못한 것: 실제 npm으로 이런 값을 둔 `npm ci`(로컬 세션이 다시 확인), npm 12의 ssri.
+
+## 2026-11-16: install의 유효한 integrity와 bundled 항목(UPD-02 fix_r3)
+
+- 재검토(REV-UPD02-R1 재검토, major 1, minor 1)와 하람 결정(2026-11-16 19:3x)을 반영했다. 규칙은 [연결 규약](contracts.md) 5.1절.
+- M2: install 전 검사가 비어 있지 않은 문자열만 보아 공백이나 해시 형식이 아닌 `integrity`를 통과시켰다. npm 11.6.1 소스(실행하지 않음)에서 pacote가 lockfile 값을 ssri로 파싱하고(`pacote/lib/fetcher.js` 59-60행), ssri가 공백으로 나눠 읽지 못한 값을 버린 뒤 남은 것이 없으면 null을 돌려줘(`ssri/lib/index.js` 373-390행) 대조할 기대 해시가 사라지는 것을 확인했다. 이제 `npm_cli.valid_sri`가 값 하나하나를 `sha512`·`sha384`·`sha256`·`sha1`과 그 digest 길이의 padding 있는 base64로 확인하고(ssri보다 엄격, 하나라도 틀리면 거부), 백업·교체 전에 `integrity_missing`으로 거부한다. `sha1`은 오래된 lockfile에 있고 ssri가 대조하므로 받아들였다.
+- m3: `resolved` 없는 bundled 항목을 부모 tarball로 보호된다고 보고 뺐지만, 루트 `bundleDependencies` 항목(`@npmcli/arborist/lib/node.js` 565-570행)과 부모 tarball에 없는 항목(`reify.js` 930-962·1110-1121행)은 npm이 따로 받는다. 하람 결정 2로 bundled 항목도 유효한 `integrity`가 없으면 install을 거부하고, 오류 문구에 bundled 항목 수와 lockfile만 반영해 직접 설치하라는 안내를 붙인다. `lockfile` 모드는 그대로 허용한다.
+- 단위 테스트 `tests/test_apply.py` 26개에서 28개: `valid_sri`의 구분(null·빈 값·공백·해시 아님·알 수 없는 알고리즘·대문자 알고리즘·다른 알고리즘 길이·padding 없음·base64 밖 문자·`?` 옵션·정상 값 뒤의 잘못된 값은 거부, 네 알고리즘과 여러 해시·앞뒤 공백은 허용), 키 없음·null·공백·해시 아님·알 수 없는 알고리즘·잘못된 길이의 install 거부와 파일·백업 불변·`npm ci` 미실행·같은 입력의 lockfile 반영, 빈 문자열은 미리보기의 입력 검사(`inputs/npm.py`)에서 먼저 오류, 루트 `bundleDependencies` 항목과 의존 패키지 안 bundled 항목의 install 거부와 lockfile 반영. 업데이트 테스트 fixture의 `integrity`를 형식·길이가 맞는 합성 SRI로 바꿨다(실제 tarball 해시 아님). 전체 383개에서 385개, skip 32개(앞 기록과 같은 이유).
+- 도움말은 바뀌지 않아 기존 명령 출력 비교는 다시 돌리지 않았다. 텍스트 출력의 거부 이유 문구(`integrity_missing`)만 바뀌었다.
+- 확인하지 못한 것: 실제 npm으로 잘못된 `integrity`나 bundled 항목이 있는 lockfile의 `npm ci`(로컬 세션이 다시 확인), npm 12의 ssri.
+
+## 2026-11-16: 미리보기 npm update의 무동작 경로(UPD-02 fix_r2)
+
+- 발견: 로컬 세션의 실제 npm 확인(케이스 F)에서 사용자 npmrc에 `dry-run=true`가 있으면 미리보기의 `npm update --package-lock-only`가 새 lockfile을 쓰지 않고 종료 0으로 끝나, 업데이트가 있는데 바뀐 항목 0개·통과·종료 코드 0으로 보였다(UPD-01부터 있던 경로).
+- npm 11.6.1 소스 확인(실행하지 않음): `dry-run`은 arborist가 저장 전에 돌아가게 하고(`reify.js` 279-281·1301-1305행), `package-lock=false`는 lockfile 저장을 건너뛴다(1534행). 미리보기 고정 인자에 `--dry-run=false`·`--package-lock=true`를 더했고 `npm ci`도 같은 값을 받는다. `global`·`location=global`은 lockfile만 계산하는 갱신에서 `ESHRINKWRAPGLOBAL`(95-99행), `npm ci`에서 `ECIGLOBAL`(`ci.js` 32-36행)로 오류가 나 조용하지 않으므로 고정하지 않았다. `save`(`update.js` 46-48행, 켜면 `package.json`도 바뀌어 `package_json_changed`로 보임), `before`, `lockfile-version`은 사용자 선택으로 남기고 연결 규약 5절에 적었다.
+- 바이트가 같은 새 lockfile: arborist는 lockfile을 비교 없이 항상 다시 쓰므로(`shrinkwrap.js` 1160-1180행) 수정 시각으로 실제 쓰기를 확인할 수는 있지만 내부 구현과 시각 정밀도에 기대는 검사라 넣지 않았다. 알려진 무동작 경로를 막은 뒤의 같은 바이트는 UPD-01 확인(업데이트할 것이 없으면 바이트 그대로)과 같은 정상 결과로 본다.
+- 단위 테스트: 미리보기와 `npm ci`의 정확한 argv에 새 고정값을 더했다(테스트 수 383 그대로, skip 32).
+- 보호를 하나씩 깨뜨린 확인(내보낸 사본에서 20가지, 전체 테스트): 이번 2가지(`--dry-run=false` 제거, `--package-lock=true` 제거, 둘 다 미리보기와 `npm ci` argv 테스트가 실패)와 fix_r1까지의 18가지. 모두 테스트가 실패했다. 처음 돌린 `--package-lock-only=false` 제거는 바꾼 코드가 문법 오류여서 테스트가 잡은 것이 아니었고, 올바른 tuple로 다시 돌려 테스트 실패를 확인했다.
+- 기존 명령 출력 비교(base `c1d2e8a`, fix_r1 스크립트, 13개 명령 × 세 이력 상태): 도움말은 이번에 바뀌지 않았고, 최상위 `--help`의 update 항목과 `update --help`만 앞과 같이 의도대로 다르며 나머지는 바이트가 같았다.
+- 확인하지 못한 것: 사용자 npmrc에 `dry-run=true`·`package-lock=false`를 둔 실제 미리보기(로컬 세션이 다시 확인), `save`·`before`·`lockfile-version`을 켠 실제 동작.
+
+## 2026-11-16: 업데이트 반영 검토 후속(UPD-02 fix_r1)
+
+- 교차 검토 REV-UPD02-R1(major 1, minor 2, nit 1)과 하람 결정(2026-11-16 18:0x)을 반영했다. 규칙은 [연결 규약](contracts.md) 5.1절.
+- M1(사용자 npm 설정으로 설치 생략): npm 11.6.1 소스로 확인했다. `npm ci`는 `dry-run`이 아니면 `node_modules` 내용을 먼저 지우고(`lib/commands/ci.js` 79-100행) 사용자 설정의 `packageLockOnly`를 그대로 넘기며(40-46행), arborist는 `dryRun`·`packageLockOnly`이면 패키지를 풀지 않고 돌아간다(`@npmcli/arborist/lib/arborist/reify.js` 279-286행). 이제 `npm ci`에 `--package-lock-only=false`·`--dry-run=false`를 고정한다(명령줄이 모든 npmrc보다 우선). `global`·`location=global`은 `npm ci`가 `ECIGLOBAL`로 실패하므로(`ci.js` 32-36행) 고정하지 않았다. 실제 npm으로 이 설정을 넣어 실행하지는 않았다.
+- m1(삭제 항목): 하람 결정 1로 지금 동작(새로 설치되는 버전이 있는 항목만 확인, 삭제만 있는 반영은 확인 없이 진행, 삭제 항목도 기지 악성 일치면 거부)을 유지하고 README·연결 규약 문장을 고쳤다. 삭제만 있는 반영의 전체 경로 테스트를 더했다.
+- m2(임시 폴더 위치): install은 `npm ci`용 임시 폴더를 백업·교체보다 먼저 만들고, 링크·정션을 푼 실제 경로가 프로젝트 안이면(Windows 대소문자 무시) `scratch_in_project`로 거부한다.
+- n1: README 첫 문장과 최상위 `--help`의 update 설명을 기본 미리보기와 `--apply` 반영·설치에 맞게 고쳤다.
+- 하람 결정 3: install은 새 lockfile에서 내려받는 항목마다 `integrity`가 있어야 한다(`integrity_missing`, 백업·교체 전). bundled 항목(`resolved` 없음)은 부모 tarball의 `integrity`로 확인되므로 제외했다.
+- 검토의 2번 관찰(설치 뒤 확인은 반영한 파일만 봄): 문서대로 `package.json`과 lockfile 둘 다 확인하게 고쳤다.
+- 단위 테스트 `tests/test_apply.py` 23개에서 26개: `npm ci` argv의 두 고정값, integrity 없는 항목의 install 거부와 같은 입력의 lockfile 반영(bundled 항목은 제외), `TMP`를 프로젝트 안 폴더·대문자 경로·프로젝트로 가는 정션(POSIX는 심볼릭 링크)으로 둔 install 거부와 파일·백업 불변, `npm ci`가 바꾸지 않은 `package.json`을 바꾼 경우의 실패, 삭제만 있는 반영의 확인 없는 진행. 전체 380개에서 383개, skip 32개(앞 기록과 같은 이유).
+- 보호를 하나씩 깨뜨린 확인(내보낸 사본에서 19가지, 전체 테스트): 이번 보호 5가지(`--package-lock-only=false` 제거, `--dry-run=false` 제거, 프로젝트 안 임시 폴더 허용, integrity 없는 install 허용, `npm ci` 뒤 두 파일 확인 제거)와 앞 기록의 14가지. 모두 테스트가 실패했다.
+- 기존 명령 출력 비교(base `c1d2e8a`, 같은 13개 명령 × 세 이력 상태): 최상위 `--help`는 update 항목 줄만, `update --help`는 usage와 새 두 옵션만 달랐고(둘 다 의도된 변화), 나머지는 바이트가 같고 기록 수도 같았다.
+- 확인하지 못한 것: 사용자 npmrc에 `package-lock-only=true`·`dry-run=true`를 둔 실제 `npm ci`(소스로만 확인), POSIX의 심볼릭 링크 경우(CI 예정), 그 밖은 아래 UPD-02 기록과 같다.
+
+## 2026-11-16: 업데이트 반영(`depbee update --apply`, UPD-02)
+
+- 구현: `service.apply_update`·`apply_preview`·`update_gate`(미리보기 재사용, 항목별 게이트, 반영 직전 재확인, 백업, 임시 파일과 `os.replace` 교체), `inputs/npm_cli.clean_install`(`npm ci --ignore-scripts`)과 `check_files`(read_project의 내용 검사를 새 파일에도), CLI `--apply {lockfile,install}`·`--confirm-warnings`, `{preview, report, apply}` JSON과 텍스트·Markdown 반영 절, 종료 코드 규칙, 이력 `user_version` 2(`applies` 표, 버전 1 올림, `list_applies`, `get_run`의 `apply`). `pipeline.py`, `contracts.py`, `mcp.py`, `actions.py`, `analysis/`, `inference/`, `dashboard/`, `action.yml`, `docs/examples/`, `.github/`, `pyproject.toml`은 바꾸지 않았다. 규칙은 [연결 규약](contracts.md) 5.1·6절.
+- npm 소스 확인(설치된 npm 11.6.1, 실행하지 않음): 설정 우선순위는 명령줄 > 환경 > 프로젝트 `.npmrc` > 사용자 > 전역 > 내장(`@npmcli/config/lib/index.js` 49-56·118-124·178-185행)이라 명령줄로 고정한 `ignore-scripts`·`git`·`prefix`·`workspaces`는 프로젝트 `.npmrc`가 바꿀 수 없지만, `registry`·인증·프록시·`cache`·`userconfig` 등은 `.npmrc` 값이 쓰인다. `registry`는 lockfile의 registry.npmjs.org tarball 주소 호스트를 바꾸고(pacote 21.0.3 `lib/fetcher.js` 87-88행, `lib/remote.js` 13-16행) 받은 바이트는 lockfile `integrity`와 대조된다(`lib/remote.js` 38행). 그래서 프로젝트 `.npmrc`가 있으면 install을 거부한다. CLI `prefix`가 있으면 전역 설정 파일 기본값이 `<prefix>/etc/npmrc`가 되어(`index.js` 296-312행) 프로젝트 파일이 전역 설정으로 읽히므로 `--globalconfig`를 depbee 임시 폴더 안의 없는 파일로 고정했다. `npm ci`는 `save: false`(`lib/commands/ci.js` 40-46행)이고 `ignore-scripts`이면 루트 script(102-124행)와 의존성 script·`binding.gyp` 빌드(`@npmcli/arborist/lib/arborist/rebuild.js` 150-166행)를 실행하지 않으며, 설치 전에 `node_modules` 내용을 지운다(88-97행).
+- 단위 테스트(합성 자료, npm·Node.js·registry 실행 없음, 가짜 npm 실행기): `tests/test_apply.py` 23개. 게이트(기지 악성 `hit`은 확인을 줘도 거부, ML `hit`·보류·기지 악성 `not_run`·`failed`는 확인 없으면 파일·폴더 불변으로 거부하고 확인하면 반영, 통과 항목은 보고서 종료 코드 2여도 확인 없이 반영, 삭제 항목과 칸 없는 항목, 지금 보고서는 모든 설치 항목이 확인 대상), 재확인(미리보기 중 원본 두 파일 각각 변경, `npm-shrinkwrap.json` 생김, 새 lockfile 바이트 불일치, 새 lockfile의 registry 밖 `resolved`는 확인해도 거부, 바뀐 항목 0개는 두 방식 모두 무변경·백업 없음·`npm ci` 없음), 백업(원본 바이트, `backup.json` 값, `DEPBEE_HISTORY_DB` 옆과 빈 값일 때 홈 기준 위치, 프로젝트 안 `.env`와 무관, 백업 폴더 자리에 파일이 있거나 홈이 없으면 실패하고 프로젝트 불변), 교체(첫 번째·두 번째 `os.replace` 실패, 권한 복사 실패에서 원본 유지·이미 바꾼 파일 이름·임시 파일 없음), 설치(`npm ci`와 `--version` argv, 임시 폴더가 프로젝트 밖이고 끝나면 없음, 환경 정리, 600초·1 MiB, 종료 코드 1·시간 초과·lockfile 변경은 실패와 백업 안내이고 npm 출력 없음, 프로젝트 `.npmrc`면 install 거부·lockfile 허용, 상대 경로 거부), CLI(세 형식, `{preview, report, apply}` 키 순서, 확인 목록 문구, 종료 코드: 거부이고 보고서 1이면 1, 보고서 0이면 2, 확인 뒤 반영이면 보고서 값, 실패는 2, `--apply` 없는 `--confirm-warnings`는 npm 실행 전 2), 이력(미등록 무기록과 DB 바이트 불변, 등록 프로젝트의 실행·반영 기록과 원문 일치, 새 lockfile 내용 없음). `tests/test_history.py` 4개 추가와 버전 기대값 수정(새 DB 버전 2, 더 새 버전 예시를 3으로): 반영 기록 저장·조회, 버전 1 파일 읽기·미등록 기록이 바이트를 바꾸지 않음, 쓰기·등록 때 버전 2로 올림, 쓰기 중 실패하면 버전 1과 표가 그대로. 전체 353개에서 380개. 이 `.venv`에는 `[dev,ml]`만 있어 skip 32개(`[web]` 미설치 대시보드 22개, `.[extract]` 미설치 4개, `.[mcp]` 미설치 4개, Windows에서 만들 수 없는 LF 파일 이름 1개, POSIX 전용 1개).
+- 보호를 하나씩 깨뜨린 확인(내보낸 사본에서 15가지, 새 파일 검사는 그 커밋의 `test_apply.py`만 실행): `--ignore-scripts` 제거, `--globalconfig` 제거, `.npmrc` 거부 제거, 기지 악성 거부 제거, 확인 요구 제거, 기지 악성 미확인 무시, 원본 해시 재확인 제거, 새 lockfile 해시 확인 제거, 지원 범위 재확인을 예외로, 바뀐 항목 0개에도 쓰기, 임시 파일 남김, `npm ci` 뒤 lockfile 확인 제거, 거부이고 보고서 0인 종료 코드를 0으로, 기록이 버전 1을 올리지 않음, 새 파일 지원 범위 검사 무시. 모두 테스트가 실패했다.
+- 기존 명령 출력 비교(base `c1d2e8a`와 HEAD의 `src`를 `git archive`로 풀어 `PYTHONPATH`로 실행, import 위치 확인): HIST-01·SVC-07과 같은 13개 명령 × 세 이력 상태. HEAD가 버전 1 파일을 처음 쓸 때 버전 2로 올리면 base가 그 파일에 쓰지 않으므로, 시작 DB를 base 코드로 만들어 base·HEAD에 같은 사본을 따로 주었다. `update --help`만 usage 줄과 새 두 옵션 때문에 달랐고(의도된 변화, 그 밖의 줄은 같음), 최상위 `--help`를 포함한 나머지는 모두 바이트가 같았다. 기록 수도 같았고(등록한 상태에서 scan 4개가 양쪽에 하나씩), 등록하지 않은 상태의 두 DB 바이트는 그대로, 등록한 상태에서 base 사본은 버전 1, HEAD 사본은 버전 2가 됐다.
+- 확인하지 못한 것: 실제 npm·registry로의 반영과 `npm ci`(로컬 세션이 따로 확인), npm 12, POSIX(프로세스 그룹, 파일 권한 복사)와 Python 3.11(CI에서 돌 예정), 실제 `.npmrc`가 있는 프로젝트의 동작(소스로만 확인), 대시보드와 CLI가 동시에 쓰는 실제 경합, 반영과 사용자 편집이 겹치는 재확인 뒤의 짧은 구간.
+
 ## 2026-11-16: 로컬 대시보드 조회·이력 화면(SVC-07)
 
 - 구현: `depbee dashboard`(`dashboard/`, `web` extra), 의존성 목록 서비스 함수(`service.list_dependencies`, `inputs.npm.read_dependencies`), 텍스트·Markdown의 '확인 안 됨'·참고값과 규칙 일부 실패 표시(`cli.py`). `pipeline.py`, `contracts.py`, `mcp.py`, `actions.py`, `analysis/`, `inference/`, `action.yml`, `docs/examples/`, `history.py`는 바꾸지 않았다. 규칙은 [연결 규약](contracts.md) 4·7절.

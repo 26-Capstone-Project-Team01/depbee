@@ -3,7 +3,7 @@
 npm 프로젝트에서 바뀐 의존성 버전을 찾아, 각 버전의 변경점에서 feature를 추출하고 학습된 LightGBM 모델로 악성 업데이트 위험을 판정하는 Python CLI입니다.
 이름은 dependency와 bee를 합친 것입니다.
 
-패키지를 설치하거나 패키지 코드를 실행하지 않습니다. tarball을 받아 읽기만 합니다.
+검사는 패키지를 설치하거나 패키지 코드를 실행하지 않고 tarball을 받아 읽기만 합니다. 프로젝트 파일을 바꾸거나 패키지를 설치하는 것은 `depbee update --apply`를 줄 때뿐이고(기본은 미리보기), 그때도 설치 스크립트는 실행하지 않습니다.
 점수는 모델의 판정이며 패키지가 안전하다는 보증이 아닙니다.
 
 ## 구현 현황
@@ -15,10 +15,10 @@ npm 프로젝트에서 바뀐 의존성 버전을 찾아, 각 버전의 변경�
 | 분석 연결 | `--analysis`: 다른 분석기가 만든 JSON의 요청 ID·변경 ID·중복·상태·feature 형식 검증               |                                         |
 | 모델 추론 | native LightGBM 로딩, 모델 해시·이진 분류·feature 이름/순서·자료형 검증, feature별 기여도 계산     | 검증 세트로 정한 임계값 수령            |
 | 판정 조율 | feature 스키마 확인, 임계값 판정, 실패·학습 범위 밖 입력은 `incomplete` 처리                      |                                         |
-| CLI 출력  | `plan`/`scan`/`check`/`update`(미리보기), 한국어 텍스트·JSON·Markdown, 새 파일 저장, 종료 코드 0/1/2                 | GitHub job summary 화면 확인            |
+| CLI 출력  | `plan`/`scan`/`check`/`update`(미리보기·반영), 한국어 텍스트·JSON·Markdown, 새 파일 저장, 종료 코드 0/1/2                 | GitHub job summary 화면 확인            |
 | MCP       | `depbee mcp`(stdio): 검사 전용 도구 `check_package`·`scan_lockfile`, CLI와 같은 보고서            | 실제 MCP 클라이언트에서의 호출 확인     |
 | Actions   | composite action(`action.yml`): PR 기준 커밋 대비 검사, 항목별 판정·주석·summary·artifact([사용법](docs/ci-cd.md)) | 공개 뒤 실제 PR 실행 확인               |
-| 이력      | 로컬 SQLite 이력 저장소: 등록한 프로젝트의 `scan`·`update` 미리보기 보고서 기록과 조회 API([로컬 이력 저장소](#로컬-이력-저장소)) |                                         |
+| 이력      | 로컬 SQLite 이력 저장소: 등록한 프로젝트의 `scan`·`update` 미리보기 보고서와 업데이트 반영 기록, 조회 API([로컬 이력 저장소](#로컬-이력-저장소)) |                                         |
 | 대시보드  | `depbee dashboard`(127.0.0.1만): 프로젝트 등록, 의존성 목록, 실행 기록과 판정별 개수 추이, 검사 결과, 모델 정보 조회([로컬 대시보드](#로컬-대시보드-depbee-dashboard)) | 대시보드에서 검사·미리보기·반영 실행(다음 작업) |
 | 테스트    | 합성 입력 회귀 테스트, 합성 native 모델 연동 테스트                                                |                                         |
 | 개발 CI   | push/PR에서 Ubuntu·Windows × Python 3.11·3.13 검사·테스트·패키지 빌드                              | GitHub 서버 실행 확인                   |
@@ -35,7 +35,7 @@ src/depbee/
   contracts.py            # 공통 규약과 Analyzer/Predictor 인터페이스
   inputs/npm.py           # 대상 프로젝트와 기준 lockfile 비교, check의 단일 버전 요청
   inputs/git.py           # Git 커밋에서 기준 lockfile 읽기
-  inputs/npm_cli.py       # update 미리보기의 프로젝트 검사와 npm 실행(lockfile만)
+  inputs/npm_cli.py       # update의 프로젝트 검사와 npm 실행(미리보기의 lockfile 계산, 반영의 npm ci)
   analysis/extractor.py   # feature-extractor 호출, 근거 정리
   analysis/baseline.py    # 비교 기준 버전(직전 stable) 선정
   analysis/cache.py       # 추출한 feature의 실행 간 캐시
@@ -137,7 +137,7 @@ registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때�
 
 ## 업데이트 미리보기 (`depbee update`)
 
-`depbee update`는 npm이 지금 프로젝트에 `npm update`를 하면 바뀔 lockfile을 임시 폴더에서 계산하고, 그 변경을 `scan --extract`와 같은 방식으로 검사합니다. 미리보기만 하며 프로젝트의 파일은 아무것도 바꾸지 않습니다. 검사한 결과를 프로젝트에 반영하는 기능은 아직 없습니다.
+`depbee update`는 npm이 지금 프로젝트에 `npm update`를 하면 바뀔 lockfile을 임시 폴더에서 계산하고, 그 변경을 `scan --extract`와 같은 방식으로 검사합니다. 미리보기만 하며 프로젝트의 파일은 아무것도 바꾸지 않습니다. 검사한 결과를 프로젝트에 반영하려면 `--apply`를 줍니다([업데이트 반영](#업데이트-반영-depbee-update---apply)).
 
 ```powershell
 .\.venv\Scripts\python.exe -m depbee update --project C:/path/to/target --model-dir models/<model-id>
@@ -146,22 +146,54 @@ registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때�
 
 - Node.js와 npm(Node.js에 함께 설치된 것), 분석용 `extract`가 필요합니다. `--project`를 생략하면 현재 폴더입니다. `--format`, `--output`, `--model-dir`, `--cache-dir`/`--no-cache`는 `scan`과 같습니다.
 - 대상은 `package.json`의 `dependencies`·`devDependencies`·`optionalDependencies`에 있는 패키지 이름만 받습니다(`lodash`, `@scope/name`). 버전이나 범위(`lodash@4.17.21`, `^4`)는 받지 않고, 이름을 주지 않으면 전체를 미리봅니다. npm `update`라서 `package.json`에 적힌 범위 안에서만 올립니다. `-`·`.`·`_`로 시작하는 이름, ASCII가 아닌 문자, 공백, `:`, `\`, `%&|^<>"`가 든 이름, 214자를 넘는 이름, `package.json`에 없는 이름은 npm을 실행하기 전에 오류(종료 코드 2)로 끝납니다.
-- 임시 폴더(Python 임시 폴더 아래 `depbee_preview_*`, `TMP`/`TEMP`를 따름)에 `package.json`과 `package-lock.json`만 복사하고, 그 안에서 `npm update --package-lock-only --ignore-scripts --no-audit --no-fund --no-update-notifier --no-progress --color=false --loglevel=warn --prefix=<임시 폴더> --workspaces=false --git=<없는 파일> -- <이름...>`을 실행합니다. 그 전에 npm 버전을 읽는 `--version`에도 `--prefix`·`--workspaces=false`·`--git`을 같이 줍니다(npm은 `--version`에도 설정을 읽으며 상위 workspace를 찾습니다). 패키지를 설치하거나 lifecycle script를 실행하지 않습니다. registry 의존성만 있는 정상 데모에서는 npm이 tarball을 받지 않고 registry 메타데이터만 읽었습니다(npm 11.6.1에서 확인, [검증 기록](docs/validation.md)). `--prefix`와 `--workspaces=false`는 npm이 임시 폴더 위의 workspace 루트를 찾아 그 폴더의 lockfile을 쓰지 않게 합니다. `--git`은 npm이 실행할 Git 프로그램을 없는 파일로 정해, 새로 받은 패키지 정보가 Git 의존성을 가져와도 Git이 실행되지 않고 npm이 실패(종료 코드 2)하게 합니다. Git 호스트(GitHub 등)의 커밋을 40자 sha로 정확히 가리키는 의존성은 알려진 예외로, 막지 않습니다. update 중 registry에서 새로 받은 패키지가 그런 의존성을 가지면 npm 11.6.1은 Git 없이 그 호스트에서 커밋의 tarball을 받아 npm 캐시의 임시 폴더(`_cacache/tmp/git-clone*`)에 풀고, 그 패키지에 준비용 script(`prepare`, `build`, `install` 등)나 `workspaces`가 있으면 그 폴더에서 준비용 설치(`npm install --force ... --no-package-lock-only --no-dry-run`)를 실행할 수 있습니다(pacote 21.0.3 `lib/git.js` 43-50·152-188·193-248·297-310행, `lib/fetcher.js` 98-120행, `lib/util/npm.js` 4-13행). 이 설치는 원본 프로젝트나 depbee 임시 폴더와 무관하고, 상속된 `npm_config_ignore_scripts=true`와 `npm_config_git` 때문에 lifecycle script와 Git은 실행되지 않는다고 소스로 판단하지만 실행으로 확인하지 않았습니다. npm 11에는 이를 끄는 설정이 없고, npm 12는 Git 의존성을 `--allow-git` 없이는 막습니다(GitHub Changelog 2026-06-09, 실행하지 않음). 끝나면 npm과 npm이 띄운 프로세스가 모두 끝난 것을 확인한 뒤 임시 폴더를 지우고, 지우지 못하면 오류(종료 코드 2)입니다.
+- 임시 폴더(Python 임시 폴더 아래 `depbee_preview_*`, `TMP`/`TEMP`를 따름)에 `package.json`과 `package-lock.json`만 복사하고, 그 안에서 `npm update --package-lock-only --ignore-scripts --no-audit --no-fund --no-update-notifier --no-progress --color=false --loglevel=warn --dry-run=false --package-lock=true --prefix=<임시 폴더> --workspaces=false --git=<없는 파일> -- <이름...>`을 실행합니다. `--dry-run=false`·`--package-lock=true`는 사용자·전역 npm 설정의 `dry-run=true`나 `package-lock=false`가 npm이 새 lockfile을 쓰지 않고 성공으로 끝나게 만들어(업데이트가 있는데 바뀐 항목 0개로 보임) 고정합니다. 그 전에 npm 버전을 읽는 `--version`에도 `--prefix`·`--workspaces=false`·`--git`을 같이 줍니다(npm은 `--version`에도 설정을 읽으며 상위 workspace를 찾습니다). 패키지를 설치하거나 lifecycle script를 실행하지 않습니다. registry 의존성만 있는 정상 데모에서는 npm이 tarball을 받지 않고 registry 메타데이터만 읽었습니다(npm 11.6.1에서 확인, [검증 기록](docs/validation.md)). `--prefix`와 `--workspaces=false`는 npm이 임시 폴더 위의 workspace 루트를 찾아 그 폴더의 lockfile을 쓰지 않게 합니다. `--git`은 npm이 실행할 Git 프로그램을 없는 파일로 정해, 새로 받은 패키지 정보가 Git 의존성을 가져와도 Git이 실행되지 않고 npm이 실패(종료 코드 2)하게 합니다. Git 호스트(GitHub 등)의 커밋을 40자 sha로 정확히 가리키는 의존성은 알려진 예외로, 막지 않습니다. update 중 registry에서 새로 받은 패키지가 그런 의존성을 가지면 npm 11.6.1은 Git 없이 그 호스트에서 커밋의 tarball을 받아 npm 캐시의 임시 폴더(`_cacache/tmp/git-clone*`)에 풀고, 그 패키지에 준비용 script(`prepare`, `build`, `install` 등)나 `workspaces`가 있으면 그 폴더에서 준비용 설치(`npm install --force ... --no-package-lock-only --no-dry-run`)를 실행할 수 있습니다(pacote 21.0.3 `lib/git.js` 43-50·152-188·193-248·297-310행, `lib/fetcher.js` 98-120행, `lib/util/npm.js` 4-13행). 이 설치는 원본 프로젝트나 depbee 임시 폴더와 무관하고, 상속된 `npm_config_ignore_scripts=true`와 `npm_config_git` 때문에 lifecycle script와 Git은 실행되지 않는다고 소스로 판단하지만 실행으로 확인하지 않았습니다. npm 11에는 이를 끄는 설정이 없고, npm 12는 Git 의존성을 `--allow-git` 없이는 막습니다(GitHub Changelog 2026-06-09, 실행하지 않음). 끝나면 npm과 npm이 띄운 프로세스가 모두 끝난 것을 확인한 뒤 임시 폴더를 지우고, 지우지 못하면 오류(종료 코드 2)입니다.
 - 새 lockfile은 지금 `package-lock.json`과 비교해 `scan --extract`와 같은 판정·근거·종료 코드로 보여 줍니다. 텍스트·Markdown은 앞에 미리보기 요약(대상, npm 버전, `package.json` 변경 여부, 바뀐 항목 수, 안내)을 붙이고, JSON(`--format json`, `--output`)은 `{"preview": {...}, "report": <scan 보고서>}`입니다([연결 규약](docs/contracts.md) 5절).
-- 프로젝트의 `.npmrc`는 복사하지 않습니다. 있으면 "프로젝트 .npmrc는 복사하지 않았습니다. 사용자·전역 npm 설정은 적용될 수 있습니다."라고 안내합니다. 사용자 설정 파일(`~/.npmrc`)은 npm이 평소처럼 읽으므로 그 안의 registry·scope별 registry 설정이 미리보기에 쓰일 수 있고, depbee는 그 내용을 읽거나 출력하지 않습니다. 부모 프로세스의 `npm_config_*` 환경 변수와 `NODE_OPTIONS`는 npm에 넘기지 않고 `npm_config_ignore_scripts=true`를 넣습니다.
+- 프로젝트의 `.npmrc`는 복사하지 않습니다. 있으면 "프로젝트 .npmrc는 복사하지 않았습니다. 사용자·전역 npm 설정은 적용될 수 있습니다."라고 안내합니다. 사용자 설정 파일(`~/.npmrc`)은 npm이 평소처럼 읽으므로 그 안의 registry·scope별 registry 설정이 미리보기에 쓰일 수 있고, depbee는 그 내용을 읽거나 출력하지 않습니다. 명령줄로 고정한 값(위 인자)은 사용자 설정이 바꿀 수 없습니다. 고정하지 않아 사용자 설정이 남는 것 중 결과에 영향을 주는 것은 `save`(켜면 npm이 `package.json`의 범위도 고쳐 미리보기에 `package.json` 바뀜으로 보이고 반영 때 함께 씀), `before`(그 시각 이전 버전으로만 올림), `lockfile-version`(lockfile 형식)입니다. `global`·`location=global`은 lockfile만 계산하는 갱신에서 npm이 오류로 끝나므로 미리보기도 오류(종료 코드 2)입니다. 부모 프로세스의 `npm_config_*` 환경 변수와 `NODE_OPTIONS`는 npm에 넘기지 않고 `npm_config_ignore_scripts=true`를 넣습니다.
 - npm은 Windows에서 `npm.cmd`·`npm.ps1`이 아니라 PATH에서 찾은 `node.exe`(절대 경로)와 그 옆 `node_modules\npm\bin\npm-cli.js`로 셸 없이 실행합니다(cmd.exe의 인자 재해석을 피함). macOS·Linux에서는 `node` 위치 기준 `../lib/node_modules/npm/bin/npm-cli.js`를 씁니다. 찾지 못하면 오류입니다.
 - npm 실행에는 호출마다 120초 제한과 출력 상한(stdout 1 MiB, stderr 64 KiB)이 있고, 실패·시간 초과·`node_modules` 생성·읽을 수 없는 새 lockfile은 판정 없는 오류(종료 코드 2)입니다. 시간 초과나 출력 상한에 걸리면 npm이 띄운 하위 프로세스까지 함께 종료합니다(Windows는 Job Object, macOS·Linux는 프로세스 그룹). Windows의 Job에는 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`를 설정해 depbee가 강제로 끝나 Job 핸들이 닫혀도 남은 프로세스가 종료됩니다. npm은 일시 정지 상태로 만들어 Job에 넣은 뒤 `ntdll`의 `NtResumeProcess`로 시작합니다. 이 함수는 Microsoft가 문서화하지 않은 API이며 psutil의 `Process.resume()`도 같은 함수를 씁니다(`psutil/arch/windows/proc.c`). Windows 11 64비트에서만 확인했고 32비트·다른 Windows 버전은 확인하지 않았습니다. macOS·Linux의 프로세스 그룹은 새 세션을 만든 후손까지 묶지 못합니다. npm 출력에는 주소나 토큰이 있을 수 있어 오류에 옮기지 않고 종료 코드만 적습니다. 임시 폴더를 만들거나 지우지 못한 오류와 그 안 파일에 관한 오류도 그 경로를 적지 않습니다.
 - 지원하지 않는 프로젝트(npm을 실행하기 전에 오류, 종료 코드 2): `npm-shrinkwrap.json`이 있음, `package.json`에 `workspaces`가 있음, `package.json` 의존성이 registry 버전·범위·태그가 아님(Git·파일·URL·`npm:` alias처럼 `:`·`/`·`\`가 든 값, `..`처럼 `.`으로 시작하는 값, npm-package-arg가 파일로 읽는 `.tgz`·`.tar.gz`·`.tar`로 끝나는 값(대소문자 무관, npm 정규식의 가운데 점은 아무 문자라 `x.tarXgz`도 포함), 제어 문자가 든 값), `overrides`(중첩 포함)의 값이나 키의 범위가 같은 기준을 벗어남(값은 루트 의존성을 가리키는 `$이름`도 허용), lockfile v2/v3가 아님, lockfile에 링크·workspace 항목, `https://registry.npmjs.org/` 밖의 `resolved`(Git, file, 사설 registry 등), registry 범위가 아닌 항목별 의존성 값이 있음.
+
+## 업데이트 반영 (`depbee update --apply`)
+
+`depbee update`에 `--apply`를 주면 같은 명령 안에서 미리보기와 검사를 마친 뒤, 아래 확인을 모두 통과할 때만 이번 실행에서 검사한 lockfile을 프로젝트에 반영합니다. 미리보기 결과를 따로 보관하지 않습니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m depbee update --project C:/path/to/target --model-dir models/<model-id> --apply lockfile
+.\.venv\Scripts\python.exe -m depbee update lodash --project C:/path/to/target --model-dir models/<model-id> --apply install --confirm-warnings
+```
+
+- `--apply lockfile`: 검사한 `package-lock.json`을 프로젝트에 씁니다(npm이 `package.json`도 바꿨다면 함께). `node_modules`는 건드리지 않습니다.
+- `--apply install`: lockfile을 반영한 뒤 프로젝트에서 `npm ci --ignore-scripts`를 실행합니다. `npm ci`는 기존 `node_modules`의 내용을 지우고 lockfile 그대로 다시 설치합니다.
+- 반영 게이트: 최상위 종료 코드가 아니라 항목별 판정으로 정합니다.
+  - 기지 악성 기록 일치(`known_malicious.status`가 `hit`)가 하나라도 있으면 반영·설치하지 않습니다. 확인 옵션으로도 바꿀 수 없습니다.
+  - 새로 설치되는 버전이 있는 항목 중 ML 위험 점수 기준 이상(`ml.status`가 `hit`), 보류(`incomplete`), 기지 악성 목록과 대조하지 못한 항목(`known_malicious.status`가 `not_run`이나 `failed`)이 있으면 그 목록(판정, 이유, ML 위험 점수, 탐지기 상태)을 보여 주고 반영하지 않습니다. 목록을 검토한 뒤 `--confirm-warnings`를 함께 주면 한 번의 확인으로 모두 진행하고, 확인한 사실과 항목을 결과와 이력에 남깁니다.
+  - 삭제 항목은 설치되는 것이 없어 확인 대상이 아닙니다. 그래서 삭제만 있는 반영은 확인 없이 진행합니다. 다만 삭제 항목도 기지 악성 기록과 일치하면 위와 같이 거부합니다.
+  - 지금 CLI에는 기지 악성 탐지기가 연결되지 않아 새로 설치되는 모든 버전이 미확인이므로, 새로 설치되는 버전이 있는 반영마다 `--confirm-warnings`가 필요합니다.
+  - `--confirm-warnings`는 `--apply`와 함께만 받습니다. 없이 주면 npm을 실행하기 전에 오류(종료 코드 2)입니다.
+- 반영 직전 재확인: 프로젝트를 미리보기와 같은 지원 범위 검사로 다시 읽고, `package.json`·`package-lock.json`의 SHA-256이 미리보기 때와 같고 쓸 lockfile의 SHA-256이 검사한 새 lockfile과 같을 때만 반영합니다. npm이 계산한 새 `package.json`·`package-lock.json`도 같은 지원 범위 검사(registry 밖 `resolved` 거부 등)를 통과해야 합니다. 하나라도 어긋나면 아무것도 바꾸지 않습니다.
+- `--apply install`의 추가 조건(어긋나면 아무것도 바꾸지 않고 거부): 새 lockfile의 모든 `node_modules/` 항목마다 npm이 받은 바이트와 대조할 수 있는 유효한 `integrity`(ASCII 공백·탭·LF·CR로만 나눈 값 하나하나가 `sha512`·`sha384`·`sha256`·`sha1` 중 하나와 그 길이에 맞는 base64 digest이고, 그 밖의 문자는 어디에 있든 거부)가 있어야 합니다. 비었거나 공백뿐이거나 해시 형식이 아닌 값은 npm이 대조 없이 받으므로 거부합니다. bundled 항목(`inBundle`)도 예외가 아닙니다. 루트의 `bundleDependencies` 항목이나 부모 tarball에 없는 항목은 npm이 따로 받기 때문입니다. 그래서 `bundleDependencies`를 쓰는 프로젝트는 대개 install이 거부되며, `--apply lockfile`로 반영한 뒤 직접 설치하세요. `--apply lockfile`은 `integrity`가 없거나 유효하지 않아도 반영합니다. 또 아래 `npm ci`용 임시 폴더를 백업·교체보다 먼저 만들어, 링크·정션을 푼 실제 경로가 프로젝트 안이면(Windows는 대소문자 무시, 예: `TMP`·`TEMP`가 프로젝트 안 폴더) 거부합니다.
+- 바뀐 항목이 없으면 아무것도 쓰지 않고(백업도 만들지 않음) `npm ci`도 실행하지 않습니다.
+- 백업: 프로젝트 파일을 바꾸기 전에 원본 `package.json`·`package-lock.json`과 설명 파일 `backup.json`(프로젝트 경로, 원본·새 SHA-256, 시각, 방식)을 이력 파일 옆 `backups/<UTC 시각>-<무작위 8자>/`에 씁니다. 기본은 `~/.local/share/depbee/backups/`이고, `DEPBEE_HISTORY_DB`를 지정했으면 그 파일이 있는 폴더의 `backups/`입니다. 위치는 대상 프로젝트의 파일로 바꿀 수 없습니다. 백업을 쓰지 못하거나 홈 폴더를 정하지 못하면 반영하지 않고 실패(종료 코드 2)입니다. 백업은 자동으로 지우지 않습니다.
+- 되돌리기: depbee는 자동으로 되돌리지 않습니다. 반영 중 실패(예: lockfile을 바꾼 뒤 `npm ci` 실패)는 오류로 알리고 백업 위치와 되돌리는 방법을 보여 줍니다. 되돌리려면 백업 폴더의 두 파일을 프로젝트에 복사하고, 설치한 `node_modules`도 되돌리려면 그 뒤 `npm ci --ignore-scripts`를 실행합니다.
+- 파일 교체: 바뀐 파일을 모두 프로젝트 폴더 안 임시 파일(`.package-lock.json.<무작위>.depbee` 등)에 쓴 뒤 `os.replace`로 하나씩 바꿉니다. 실패하면 남은 임시 파일을 지우고, 이미 바꾼 파일이 있으면 그 이름을 오류에 적습니다.
+- 설치 스크립트는 실행하지 않습니다. `npm ci`는 항상 `--ignore-scripts`로 실행하고 설치 스크립트를 실행하는 옵션은 없습니다. 설치 스크립트가 필요한 패키지(네이티브 모듈 빌드 등)는 직접 검토한 뒤 `npm rebuild`를 실행합니다.
+- `npm ci` 실행 규칙: 미리보기와 같이 `node.exe`와 `npm-cli.js`를 셸 없이 실행하고, `npm_config_*`·`NODE_OPTIONS`를 넘기지 않으며 `npm_config_ignore_scripts=true`를 넣습니다. 인자는 `ci --ignore-scripts --no-audit --no-fund --no-update-notifier --no-progress --color=false --loglevel=warn --dry-run=false --package-lock=true --package-lock-only=false --prefix=<프로젝트> --workspaces=false --git=<없는 파일> --globalconfig=<없는 파일>`이고, 두 없는 파일은 depbee가 만든 임시 폴더(Python 임시 폴더 아래 `depbee_install_*`, 프로젝트 밖인지 확인, 끝나면 지움) 안의 경로입니다. `--package-lock-only=false`·`--dry-run=false`는 사용자 npm 설정에 그 값이 켜져 있어도 `npm ci`가 `node_modules`를 비운 뒤 설치를 건너뛰고 성공으로 끝나지 않게 합니다. `--package-lock=true`는 미리보기와 같은 고정값입니다(`npm ci`는 스스로 lockfile을 씀). 사용자 설정의 `omit`·`include`(그리고 `NODE_ENV=production`)는 일부 패키지를 설치하지 않게 할 수 있고, `global`·`location=global`이면 `npm ci`가 오류로 끝나 설치 실패(종료 코드 2)입니다. npm은 `--prefix`를 받으면 `<프로젝트>/etc/npmrc`를 전역 설정 파일로 읽으므로 `--globalconfig`로 막습니다. 그래서 이 설치에서는 기본 위치의 전역 npmrc도 읽지 않습니다. 시간 제한은 600초(모든 tarball을 받아 풀기 때문에 미리보기의 120초보다 깁니다), 출력 상한은 stdout·stderr 각 1 MiB이고, 넘으면 npm과 하위 프로세스를 함께 종료합니다. npm 출력은 오류에 옮기지 않습니다. 끝난 뒤 `package.json`·`package-lock.json`이 반영한 그대로인지 확인합니다.
+- 프로젝트 `.npmrc`와 install: 미리보기는 임시 폴더에서 돌아 프로젝트 `.npmrc`를 읽지 않지만 `npm ci`는 프로젝트 폴더에서 돌아 읽습니다. depbee가 명령줄로 고정한 설정(`ignore-scripts`, `git`, `prefix`, `workspaces`, `globalconfig`, `audit` 등)은 `.npmrc`보다 우선하지만 `registry`, scope별 registry, 인증, 프록시·인증서, 캐시 위치, `userconfig` 같은 설정은 `.npmrc` 값이 쓰입니다. 그래서 프로젝트에 `.npmrc`가 있으면 `--apply install`은 아무것도 바꾸지 않고 거부합니다. `--apply lockfile`로 반영한 뒤 `.npmrc`를 직접 검토하고 `npm ci --ignore-scripts`로 설치합니다. 사용자 `~/.npmrc`는 미리보기와 같이 npm이 읽습니다.
+- 출력: 텍스트·Markdown은 미리보기 요약과 검사 결과 뒤에 반영 결과(반영했는지, 방식, 거부·실패 이유, 거부한 항목과 확인이 필요한 항목, 바꾼 파일과 SHA-256, 백업 위치, npm 버전과 `npm ci` 종료 코드, 안내)를 붙입니다. 이때 미리보기 요약의 "미리보기만 했고 프로젝트 파일은 아무것도 바꾸지 않았습니다." 안내는 빠집니다. JSON(`--format json`, `--output`)은 `{"preview": {...}, "report": <scan 보고서>, "apply": {...}}`입니다([연결 규약](docs/contracts.md) 5절).
+- 종료 코드: 0/1/2의 뜻은 그대로이고 보고서의 종료 코드를 씁니다. 반영을 요청했는데 반영하지 않았고(게이트 거부, 확인 없음, 프로젝트 `.npmrc`, 재확인 불일치, install의 유효한 `integrity` 없음, 프로젝트 안 임시 폴더) 보고서 값이 0이면 2(요청한 동작을 끝내지 못함)입니다. 백업·교체·`npm ci` 중 실패는 2입니다. 확인하고 반영했어도 보고서가 1(위험)이나 2(보류)면 그 값입니다. 미리보기 단계의 입력·지원 범위·npm 오류는 반영 없이 지금처럼 판정 없는 오류(표준 오류의 error JSON, 종료 코드 2)입니다.
+- 이력: 등록한 프로젝트면 업데이트 미리보기 실행 기록과 함께 반영 기록을 남깁니다([로컬 이력 저장소](#로컬-이력-저장소)).
 
 ## 로컬 이력 저장소
 
 depbee는 [대시보드](#로컬-대시보드-depbee-dashboard)에 등록한 프로젝트의 검사 결과를 이 PC의 SQLite 파일 하나에 기록합니다. 대시보드와 CLI가 같은 파일을 씁니다. 등록은 대시보드 화면이나 Python API(`depbee.history.register_project`)로 합니다. 이 파일은 등록할 때만 만들어집니다. `scan`·`update`는 파일이 없으면 아무것도 만들지 않고, 파일이 있으면 그 프로젝트가 등록돼 있는지 확인하려고 읽으며, 등록하지 않은 프로젝트의 결과는 쓰지 않습니다(그 읽기가 실패하면 아래의 고정 문구가 나올 수 있습니다).
 
 - 기록하는 것: 등록한 프로젝트의 `scan`(`depbee scan <프로젝트>`)과 `update` 미리보기(`--project`, 기본은 현재 폴더) 결과입니다. 보고서를 출력한 뒤 보고서 원문, 미리보기 요약(`preview`), 실행 시각(UTC), depbee 버전, 기준 지정(`--base-ref` 값, `--base-lock` 사용 여부), 판정별 개수와 항목별 판정·점수를 남깁니다. 판정·이유·종료 코드는 보고서 값 그대로이고 다시 계산하지 않습니다. 미리보기가 계산한 새 lockfile 내용은 저장하지 않습니다(해시만 미리보기 요약에 있습니다).
+- `update --apply`는 같은 미리보기 실행 기록에 반영 기록 하나를 더합니다: 방식, 결과(반영함·바뀐 항목 없음·거부·실패), 거부·실패 이유, 확인 여부와 확인한 항목, 원본·새 SHA-256, 백업 위치, npm 버전과 `npm ci` 종료 코드, 반영 결과 원문(`apply`). 새 lockfile 내용은 여기에도 저장하지 않습니다.
 - 기록하지 않는 것: 이력 파일이 없을 때(만들지 않음), 등록하지 않은 프로젝트, `check`, `plan`, 오류로 끝난 실행, MCP 도구. GitHub 호스팅 러너처럼 이력 파일이 없는 환경에서는 GitHub Action의 `scan`도 기록되지 않습니다. 다만 이력 파일이 있는 PC에서 그 체크아웃 폴더를 등록해 둔 자기 호스팅 러너라면, 그 `scan`도 등록한 프로젝트의 실행으로 기록됩니다.
 - 출력: 기록해도 stdout, stderr, 종료 코드는 기록하지 않을 때와 같습니다. 기록에 실패하면(잠금 대기 초과, 손상된 파일, 더 새 depbee가 만든 파일, depbee가 만들지 않은 파일, 쓰기 권한 없음 등) stdout과 종료 코드는 그대로 두고 표준 오류에 경로나 패키지 이름이 없는 고정 문구 한 줄만 씁니다.
 - 위치: 환경 변수 `DEPBEE_HISTORY_DB`(파일 경로, 실행할 때마다 읽고 빈 값은 없는 것으로 봄)가 있으면 그 파일, 없으면 `~/.local/share/depbee/history.sqlite3`입니다(Windows도 홈 폴더 기준). 대상 프로젝트의 파일로는 위치를 바꿀 수 없습니다. `DEPBEE_HISTORY_DB` 없이 홈 폴더를 정하지 못하면 `scan`·`update`는 기록만 건너뛰고(출력 없음), 등록·조회 API는 오류(`RuntimeError`)를 냅니다.
 - 이 파일은 SQLite 헤더의 application_id로 depbee 이력임을 표시합니다. 그 표시가 없는 파일(다른 프로그램의 SQLite 파일 등)에는 쓰지 않습니다.
+- 이력 형식 버전은 2입니다(반영 기록 표 추가). 이전 depbee가 만든 버전 1 파일은 그대로 읽고, 처음 쓸 때 같은 트랜잭션에서 버전 2로 올립니다. 올린 뒤에는 이전 depbee가 이 파일을 "더 새 depbee가 만든 파일"로 보고 쓰지 않습니다(기록 실패 문구).
 - 프로젝트는 절대 경로로 구분합니다(Windows에서는 대소문자 무시). 폴더를 옮기면 다른 프로젝트이고, 폴더가 사라져도 기록은 지우지 않습니다.
 - 내용: 이력에는 검사한 패키지의 이름·버전과 근거 문자열(예: 추가된 설치 스크립트 명령의 앞부분)이 그대로 들어갑니다. 악성 사례를 검사한 기록에는 그 문자열이 남으므로, 다른 사람이 쓸 수 있는 폴더나 동기화 폴더에 두지 않습니다. 이 파일의 내용은 표시용 기록이며 다른 검사나 반영의 입력으로 쓰지 않습니다.
 - 지우기: 자동으로 지우지 않습니다. 이력을 없애려면 그 파일을 지웁니다(쓰는 동안에만 옆에 `-journal` 파일이 생깁니다).
@@ -276,6 +308,7 @@ MCP는 에이전트가 도구를 부를 때만 효과가 있습니다. 프로젝
 
 변경 없음·삭제만 있는 요청도 0입니다. 프로젝트 전체가 안전하다는 뜻이 아닙니다.
 기지 악성·규칙 탐지기가 연결되면 기지 악성 기록과 일치한 변경은 모델 점수와 관계없이 1, 연결된 탐지기가 실패한 변경은 2로 처리합니다(둘이 겹치면 1). 지금 CLI에는 연결할 탐지기가 없어 위 표대로 모델 결과로만 정해집니다.
+`update --apply`가 반영하지 못했을 때의 종료 코드는 [업데이트 반영](#업데이트-반영-depbee-update---apply)에 있습니다.
 
 ## 현재 제한
 
@@ -286,7 +319,7 @@ MCP는 에이전트가 도구를 부를 때만 효과가 있습니다. 프로젝
 - 학습 데이터와 달리 비교 기준 후보를 OSV 악성 목록과 대조하지 않고, 새 버전 직전 24시간 안의 후보도 별도로 검증하지 않습니다.
 - typosquat처럼 패키지 자체가 악성인 경우는 "업데이트 변경점"을 보는 이 모델의 범위가 아닙니다.
 - `package.json`만 있는 프로젝트, yarn/pnpm, Git URL 입력은 후속 범위입니다.
-- `update`는 미리보기만 합니다. 검사한 lockfile을 프로젝트에 반영하거나 설치(`npm ci`)하는 기능, 새 의존성 추가(`depbee add`), 대안 버전 고정은 없습니다.
+- `update --apply`는 검사한 lockfile 반영과 `npm ci --ignore-scripts` 설치만 합니다. 설치 스크립트 실행, 자동 되돌리기, 새 의존성 추가(`depbee add`), 대안 버전 고정은 없습니다. 대시보드에서의 반영은 다음 작업입니다.
 - `update`는 `npm:` alias 의존성(`"lodash4": "npm:lodash@^4"`)이 있는 프로젝트를 지원하지 않습니다. Git·파일·URL 의존성과 같은 기준(`:`가 든 값)으로 거부합니다.
 
 ## 검증

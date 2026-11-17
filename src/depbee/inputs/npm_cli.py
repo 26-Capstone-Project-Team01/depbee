@@ -1,9 +1,10 @@
 """Update preview inputs: check the project, then run npm on copies in a folder depbee made.
 
-npm only ever runs as `--version` and `update --package-lock-only --ignore-scripts` in that
-folder, never in the project: no node_modules and no lifecycle scripts. With registry-only inputs
-npm 11.6.1 fetched package metadata and no tarball (docs/validation.md). Git never runs because
-npm's git setting points to a file that does not exist.
+For the preview npm only ever runs as `--version` and `update --package-lock-only
+--ignore-scripts` in that folder, never in the project: no node_modules and no lifecycle scripts.
+With registry-only inputs npm 11.6.1 fetched package metadata and no tarball (docs/validation.md).
+Git never runs because npm's git setting points to a file that does not exist. Only an apply with
+install (clean_install) runs `npm ci --ignore-scripts` in the project itself.
 
 Known exception (not blocked, not run): a registry package fetched during the update may depend on
 a hosted Git commit (40-character sha). npm 11.6.1 then downloads that commit's tarball from the
@@ -16,6 +17,7 @@ folder depbee made is used. npm 11 has no setting to turn this off; npm 12 block
 dependencies unless --allow-git is given.
 """
 
+import base64
 import os
 import re
 import shutil
@@ -25,8 +27,16 @@ from ..contracts import MAX_JSON_BYTES, GuardError, parse_json
 from .git import _run
 
 TIMEOUT_SECONDS = 120
+# npm ci downloads and unpacks every tarball of the tree, not only metadata as the preview does:
+# minutes for a large project on a slow link. It is the ceiling of one MCP call too.
+CI_TIMEOUT_SECONDS = 600
 STDOUT_LIMIT = 1024 * 1024
 STDERR_LIMIT = 64 * 1024
+# A large tree can print a deprecation warning per package; past the cap npm is killed mid-install.
+CI_STDERR_LIMIT = 1024 * 1024
+SRI_DIGEST_BYTES = {"sha512": 64, "sha384": 48, "sha256": 32, "sha1": 20}
+# Space, tab, LF, CR: ASCII and whitespace for both ECMAScript \s and trim() and Python.
+SRI_SEPARATORS = " \t\n\r"
 # Checked with npm 11.6.1: --no-audit drops the audit request, --no-update-notifier the version
 # check and its state file; the rest keep the output plain whatever the user's settings.
 FIXED_OPTIONS = (
@@ -38,7 +48,21 @@ FIXED_OPTIONS = (
     "--no-progress",
     "--color=false",
     "--loglevel=warn",
+    # The command line beats every npmrc and the environment. From a user npmrc, dry-run makes
+    # reify return before it saves anything (arborist reify.js 279-281, 1300-1304) and
+    # package-lock=false skips the lockfile save (reify.js 1534): npm update would exit 0 with
+    # the lockfile unchanged, which reads as "nothing to update". global and location=global
+    # fail with a lockfile-only update (ESHRINKWRAPGLOBAL, reify.js 95-99).
+    "--dry-run=false",
+    "--package-lock=true",
 )
+# npm ci never writes package.json or the lockfile (lib/commands/ci.js, save: false) and with
+# ignore-scripts runs no root (ci.js 102-124) or dependency script, binding.gyp included
+# (@npmcli/arborist rebuild.js 150-166). ci empties node_modules unless dry-run (ci.js 79-100)
+# and passes package-lock-only on (ci.js 40-46); either from a user npmrc would make reify skip
+# the install (arborist reify.js 279-286) and still exit 0. ci sets packageLock itself (ci.js
+# 42). global and location=global make ci fail (ci.js 32-36).
+CI_OPTIONS = (*FIXED_OPTIONS[1:], "--package-lock-only=false")
 # A target is a bare registry name: no leading "-", "." or "_" (so never an option or a path),
 # ASCII only, and none of the characters a shell or cmd.exe would read (space, : \ % & | ^ < > ").
 _PART = r"[A-Za-z0-9~!*'()][A-Za-z0-9._~!*'()-]*"
@@ -108,8 +132,17 @@ def read_project(project: Path) -> tuple[bytes, bytes, dict]:
         raise GuardError("update does not support projects with npm-shrinkwrap.json")
     package_bytes = _regular_file(project / "package.json")
     lock_bytes = _regular_file(project / "package-lock.json")
-    package, _ = parse_json(package_bytes, project / "package.json")
-    lock, _ = parse_json(lock_bytes, project / "package-lock.json")
+    package = check_files(
+        package_bytes, lock_bytes, project / "package.json", project / "package-lock.json"
+    )
+    return package_bytes, lock_bytes, package
+
+
+def check_files(package_bytes: bytes, lock_bytes: bytes, package_source, lock_source) -> dict:
+    """read_project()'s checks of the two files' contents; returns package.json. Also used on
+    the new files npm wrote before they are applied (service.apply_preview)."""
+    package, _ = parse_json(package_bytes, package_source)
+    lock, _ = parse_json(lock_bytes, lock_source)
     if "workspaces" in package:
         raise GuardError("update does not support npm workspaces")
     for field in LOCK_SPEC_FIELDS:
@@ -144,12 +177,60 @@ def read_project(project: Path) -> tuple[bytes, bytes, dict]:
             raise GuardError(f"update does not support link or workspace entries: {location}")
         resolved = entry.get("resolved")
         if resolved is None and entry.get("inBundle"):
-            continue  # shipped inside its parent's tarball
+            continue  # often unpacked from its parent's tarball; install still refuses it
+            # without an integrity (missing_integrity)
         if not isinstance(resolved, str) or not resolved.startswith(REGISTRY_TARBALL):
             raise GuardError(
                 f"update supports only {REGISTRY_TARBALL} dependencies in the lockfile: {location}"
             )
-    return package_bytes, lock_bytes, package
+    return package
+
+
+def valid_sri(integrity: object) -> bool:
+    """Whether npm checks a download against this lockfile integrity, read stricter than npm.
+
+    pacote parses it with ssri (fetcher.js 59-60), which splits on whitespace, drops tokens it
+    cannot read and returns null when none is left (ssri index.js 373-390): npm then has no
+    expected hash. Every token here must be a known algorithm (the ones registry.verify takes;
+    sha1 is still in old lockfiles and ssri checks it) with a padded base64 digest of that
+    algorithm's length and no ?options, which npm never writes.
+
+    Tokens are split only on SRI_SEPARATORS, not str.split(): Python also treats U+0085 and
+    U+001C-U+001F as whitespace, which ssri's trim().split(/\\s+/) (index.js 138, 379) keeps in
+    the token and then drops it. Any other character stays in a token and fails the checks.
+    """
+    if not isinstance(integrity, str):
+        return False
+    tokens = [token for token in re.split(f"[{SRI_SEPARATORS}]+", integrity) if token]
+    if not tokens:
+        return False
+    for token in tokens:
+        algorithm, _, digest = token.partition("-")
+        if algorithm not in SRI_DIGEST_BYTES:
+            return False
+        try:  # validate: only the base64 alphabet with correct padding, non-ASCII is ValueError
+            if len(base64.b64decode(digest, validate=True)) != SRI_DIGEST_BYTES[algorithm]:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def missing_integrity(lock_bytes: bytes) -> list[tuple[str, bool]]:
+    """(location, bundled) of every lock entry without a valid_sri() integrity; install needs one
+    on each. The lockfile has passed check_files().
+
+    Bundled entries are listed too (decision 2026-11-16 19:3x): npm installs a root
+    bundleDependencies entry, or one missing from its parent's tarball, on its own
+    (arborist node.js 565-570, reify.js 930-962, 1110-1121), so the parent's integrity does not
+    always cover it.
+    """
+    lock, _ = parse_json(lock_bytes, "the new package-lock.json")
+    return [
+        (location, bool(entry.get("inBundle")))
+        for location, entry in lock["packages"].items()
+        if location and not valid_sri(entry.get("integrity"))
+    ]
 
 
 def check_names(names: list[str], package: dict) -> None:
@@ -201,16 +282,31 @@ def _environment() -> dict[str, str]:
     return env
 
 
-def _call(argv: list[str], cwd: Path, env: dict[str, str]) -> tuple[int, bytes]:
+def _call(
+    argv: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    timeout: float = TIMEOUT_SECONDS,
+    stderr_limit: int = STDERR_LIMIT,
+) -> tuple[int, bytes]:
     """Exit code and stdout. npm output is never put in errors: it may hold URLs or tokens."""
     try:
         code, out, _ = _run(
             argv, cwd, STDOUT_LIMIT, env,
-            timeout=TIMEOUT_SECONDS, stderr_limit=STDERR_LIMIT, name="npm", tree=True,
+            timeout=timeout, stderr_limit=stderr_limit, name="npm", tree=True,
         )  # fmt: skip
     except OSError as exc:
         raise GuardError(f"Unable to run npm: {exc.strerror or type(exc).__name__}") from exc
     return code, out
+
+
+def _version(npm: list[str], pinned: tuple[str, ...], cwd: Path, env: dict[str, str]) -> str:
+    # npm loads its config, and so searches for a workspace root, even for --version (lib/npm.js).
+    code, out = _call([*npm, "--version", *pinned], cwd, env)
+    version = out.decode("ascii", "replace").strip()
+    if code or not _NPM_VERSION.fullmatch(version):
+        raise GuardError(f"Cannot read the npm version (exit code {code})")
+    return version
 
 
 def update_lock(work: Path, names: list[str]) -> str:
@@ -226,15 +322,37 @@ def update_lock(work: Path, names: list[str]) -> str:
     # stops the search for a workspace root above it (lib/index.js loadLocalPrefix). @npmcli/git
     # runs the git setting as the Git program (lib/which.js), so a missing file makes every Git
     # step fail; npm exports the setting to the npm it starts for a Git package (set-envs.js).
-    # npm loads its config, and so searches for a workspace root, even for --version (lib/npm.js).
     pinned = (f"--prefix={work}", "--workspaces=false", f"--git={no_git}")
-    code, out = _call([*npm, "--version", *pinned], work, env)
-    version = out.decode("ascii", "replace").strip()
-    if code or not _NPM_VERSION.fullmatch(version):
-        raise GuardError(f"Cannot read the npm version (exit code {code})")
+    version = _version(npm, pinned, work, env)
     code, _ = _call([*npm, "update", *FIXED_OPTIONS, *pinned, "--", *names], work, env)
     if code:
         raise GuardError(f"npm update failed with exit code {code}")
     if os.path.lexists(work / "node_modules"):
         raise GuardError("npm created node_modules during the lockfile-only update")
     return version
+
+
+def clean_install(project: Path, scratch: Path) -> tuple[str, int]:
+    """Run `npm ci --ignore-scripts` in project; return (npm version, npm ci exit code).
+
+    project is the absolute project folder, checked by read_project() and without a project
+    .npmrc (the caller refuses one). scratch is an absolute, new folder depbee made, which the
+    caller has checked is outside the project: the missing Git program and global config file
+    are named inside it. npm ci removes
+    what node_modules holds before it installs.
+    """
+    npm, env = _npm(), _environment()
+    no_git, no_global = scratch / "no-git" / "git", scratch / "no-globalconfig" / "npmrc"
+    if not (project.is_absolute() and scratch.is_absolute()) or os.path.lexists(no_git.parent):
+        raise GuardError("npm needs an absolute project and a new, absolute scratch folder")
+    # As in update_lock(), plus globalconfig: with a CLI prefix npm reads <prefix>/etc/npmrc as
+    # the global config (@npmcli/config lib/index.js 296-312), here a file of the project.
+    pinned = (
+        f"--prefix={project}", "--workspaces=false", f"--git={no_git}",
+        f"--globalconfig={no_global}",
+    )  # fmt: skip
+    version = _version(npm, pinned, project, env)
+    code, _ = _call(
+        [*npm, "ci", *CI_OPTIONS, *pinned], project, env, CI_TIMEOUT_SECONDS, CI_STDERR_LIMIT
+    )
+    return version, code
