@@ -340,9 +340,12 @@ def record_apply(run_id: int, preview: dict, apply: dict) -> int | None:
                 return None
             if row[0] != "update_preview":
                 raise ValueError("An apply is recorded with its update preview")
-            if version >= 2 and connection.execute(
-                "SELECT 1 FROM applies WHERE run_id = ?", (run_id,)
-            ).fetchone():
+            if (
+                version >= 2
+                and connection.execute(
+                    "SELECT 1 FROM applies WHERE run_id = ?", (run_id,)
+                ).fetchone()
+            ):
                 raise ValueError("This update preview already has an apply")
             _upgrade(connection, version)
             return _insert_apply(connection, run_id, preview, apply)
