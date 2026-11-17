@@ -106,6 +106,15 @@ def check_inputs(env: dict, workspace: Path) -> None:
     for name in ("MODEL_SHA256", "MANIFEST_SHA256"):
         if not SHA256.fullmatch(env.get(name, "")):
             raise ActionError(f"{name.lower().replace('_', '-')} must be 64 lowercase hex digits")
+    # The known malicious index is required like the model: a run without it could never fail
+    # on a known malicious match (client-dev 2.3 1).
+    if not MODEL_VERSION.fullmatch(env.get("KNOWN_MALICIOUS_VERSION", "")):
+        raise ActionError(
+            "known-malicious-version must be a Release tag name: "
+            f"{env.get('KNOWN_MALICIOUS_VERSION')!r}"
+        )
+    if not SHA256.fullmatch(env.get("KNOWN_MALICIOUS_SHA256", "")):
+        raise ActionError("known-malicious-sha256 must be 64 lowercase hex digits")
     if not COMMIT.fullmatch(env.get("BASE_SHA", "")):
         raise ActionError(
             "No pull request base commit: run this action on pull_request events "
