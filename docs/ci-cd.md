@@ -35,6 +35,8 @@ jobs:
           model-version: <모델이 첨부된 Release 태그>
           model-sha256: <model.txt의 sha256>
           manifest-sha256: <manifest.json의 sha256>
+          known-malicious-version: <기지 악성 색인이 첨부된 Release 태그>
+          known-malicious-sha256: <known-malicious-index.json의 sha256>
           # fail-on: ml-hit, incomplete
 ```
 
@@ -54,10 +56,12 @@ jobs:
 | `model-version` | 없음(필수) | `model.txt`·`manifest.json`이 첨부된 depbee Release의 태그. |
 | `model-sha256` | 없음(필수) | `model.txt`의 기대 sha256(소문자 16진수 64자). |
 | `manifest-sha256` | 없음(필수) | `manifest.json`의 기대 sha256(소문자 16진수 64자). |
+| `known-malicious-version` | 없음(필수) | 기지 악성 색인 `known-malicious-index.json`·`known-malicious-manifest.json`이 첨부된 depbee Release의 태그. 색인은 모델보다 자주 갱신하므로 `model-version`과 다른 태그여도 된다. 형식은 `model-version`과 같다. |
+| `known-malicious-sha256` | 없음(필수) | `known-malicious-index.json`(색인 본문 `index.json`)의 기대 sha256(소문자 16진수 64자). 보고서의 `detectors.known_malicious.list_sha256`과 같은 값이다. |
 | `report` | 빈 값 | depbee 자체 CI의 자기 검사 전용. 비워 둔다. |
 
-모델 세 입력은 `required: true`를 달지 않았다. GitHub는 composite action 입력의 `required`를 강제하지 않으므로, 첫 단계(`actions.py inputs`)가 값을 직접 검사해 없거나 형식이 틀리면 실패한다.
-기지 악성 색인 입력은 아직 없다. depbee CLI에 색인을 넘기는 옵션이 생기면(KM-01) 모델과 같은 방식(Release 다운로드와 sha256 비교)으로 더한다.
+모델 세 입력과 색인 두 입력은 `required: true`를 달지 않았다. GitHub는 composite action 입력의 `required`를 강제하지 않으므로, 첫 단계(`actions.py inputs`)가 값을 직접 검사해 없거나 형식이 틀리면 실패한다(`report` 자기 검사 모드에서는 검사하지 않음).
+색인 입력을 모델처럼 필수로 둔 이유: 이 action의 기본 실패 조건은 기지 악성 일치뿐이라 색인 없이 돈 실행은 절대 실패하지 않는다(client-dev-handoff 2.3절 1번, 검사하지 못한 것을 통과로 두지 않음). `known-malicious-manifest.json`의 sha256은 따로 받지 않는다. depbee가 색인을 열 때 manifest의 `index_sha256`을 확인한 본문의 해시와, manifest의 `source`·`list_as_of`·`snapshot_sha256`을 본문 머리와 대조해 다르면 오류(보고서 없음)로 끝나기 때문이다.
 
 ### 단계
 
@@ -65,10 +69,11 @@ jobs:
 2. 입력 검사, 임시 폴더 생성, `pyproject.toml`에서 feature-extractor 고정 커밋 읽기.
 3. depbee 설치: `python -I -m pip install "$GITHUB_ACTION_PATH[extract,ml]"`. 실패하면 step이 실패한다.
 4. Release에서 `model.txt`, `manifest.json`을 HTTPS로 받고(파일당 100 MiB, 300초 상한) 입력의 sha256과 비교한다. 다르면 실패한다. depbee도 모델을 열 때 `manifest.json`의 `model_sha256`과 `model.txt`를 다시 비교한다.
-5. `depbee plan --base-ref`로 바뀐 항목 수를 세어 `max-changes`를 넘으면 실패한다.
-6. 캐시 복원, `depbee scan . --base-ref <base sha> --extract --model-dir ... --cache-dir ... --format markdown --output report.json`, 캐시 저장.
-7. `report.json`을 artifact `depbee-report`로 올린다.
-8. 판정: `actions.py report`가 보고서를 읽어 주석과 job summary를 쓰고 step의 성공·실패를 정한다.
+5. `known-malicious-version` Release에서 `known-malicious-index.json`, `known-malicious-manifest.json`을 모델과 같은 curl 옵션(HTTPS만, 파일당 128 MiB, 300초 상한)으로 받아 `$OUT/known-malicious/index.json`, `manifest.json`에 두고, `index.json`을 `known-malicious-sha256`과 비교한다. 다르면 실패한다.
+6. `depbee plan --base-ref`로 바뀐 항목 수를 세어 `max-changes`를 넘으면 실패한다.
+7. 캐시 복원, `depbee scan . --base-ref <base sha> --extract --model-dir ... --known-malicious-dir ... --cache-dir ... --format markdown --output report.json`, 캐시 저장. 캐시 키에는 색인을 넣지 않는다(캐시는 feature만 담고, 색인이 바꿀 수 있는 비교 기준 버전은 이미 캐시 항목의 키에 있다).
+8. `report.json`을 artifact `depbee-report`로 올린다.
+9. 판정: `actions.py report`가 보고서를 읽어 주석과 job summary를 쓰고 step의 성공·실패를 정한다.
 
 `depbee scan`의 종료 코드(0/1/2)는 로그에만 남긴다. 종료 코드 2는 1을 덮으므로(보류가 하나라도 있으면 2) 판정에 쓰지 않는다.
 action의 Python 단계는 `python -I`로 실행해 PR checkout 안의 파일이 import를 가로채지 못하게 한다.
@@ -83,10 +88,11 @@ action의 Python 단계는 `python -I`로 실행해 PR checkout 안의 파일이
 | 기지 악성 일치(`known_malicious.status`가 `hit`) | 실패, `::error` | 항상 실패. 낮은 ML 점수가 이를 취소하지 않는다. |
 | ML 위험 점수 기준 이상(`ml.status`가 `hit`) | 경고, `::warning` | `ml-hit`이면 실패, `::error` |
 | 보류(`status`가 `incomplete`) | 경고, `::warning` | `incomplete`이면 실패, `::error` |
-| 입력 오류, 모델 sha256 불일치, depbee 설치 실패, 변경 수 초과, 보고서 없음·깨진 JSON·필요한 필드 없음 | 실패 | 바꿀 수 없음 |
+| 입력 오류(색인 입력 누락·형식 오류 포함), 모델·색인 sha256 불일치, depbee 설치 실패, 변경 수 초과, 보고서 없음·깨진 JSON·필요한 필드 없음 | 실패 | 바꿀 수 없음 |
 
 보류는 검사를 끝내지 못한 항목이며 경고로 두더라도 통과로 바꾸지 않는다. summary와 주석은 "보류, 통과가 아님"으로 쓴다.
-보고서를 만들지 못한 오류(CLI 입력 오류 등)는 `report.json`이 없으므로 판정 단계가 실패한다.
+보고서를 만들지 못한 오류(CLI 입력 오류, depbee가 연 색인의 manifest 불일치·형식 오류 등)는 `report.json`이 없으므로 판정 단계가 실패한다.
+기지 악성 대조의 한계: depbee는 lockfile 항목의 이름(`name` 필드나 위치)과 버전 문자열을 대조한다. PR이 만든 lockfile에서 이름을 바꾸거나 버전에 `+build`가 아닌 표기(앞자리 0 등)를 쓰면 그 항목은 일치 대신 분석 실패·대조 실패(보류)로 끝나 기본 판정이 실패가 아니라 경고가 된다(조용히 통과하지는 않음). 엄격한 저장소는 `fail-on: incomplete`를 권장한다.
 실패한 검사가 병합을 실제로 막는지는 저장소 소유자의 필수 검사(branch protection, ruleset) 설정이 정한다.
 CLI 종료 코드 0/1/2의 의미는 그대로다.
 
@@ -124,13 +130,13 @@ CLI 종료 코드 0/1/2의 의미는 그대로다.
 
 - CODEOWNERS에 `.github/workflows/`를 넣고 브랜치 보호(또는 ruleset)에서 code owner 리뷰를 필수로 한다. workflow 변경은 지정한 리뷰어의 승인이 있어야 병합된다.
 - 이 job을 필수 검사로 지정한다. 실패하거나 실행되지 않은 검사는 병합을 막는다.
-- 대상 저장소의 모델 sha256 입력도 workflow 파일에 있으므로 같은 보호를 받는다.
+- 대상 저장소의 모델·색인 sha256 입력도 workflow 파일에 있으므로 같은 보호를 받는다.
 
 ### 공개 전 제한과 미검증
 
 - depbee와 feature-extractor가 아직 비공개라 다른 저장소에서 이 action을 실행할 수 없다. 설치 단계(`[extract]`는 feature-extractor를 git 주소와 커밋으로 받음)가 토큰 없이 되지 않는다.
-- 모델을 첨부한 Release가 아직 없어 모델 입력에 기본값이 없다.
-- 실제 PR에서의 설치, 모델 다운로드, `depbee scan --extract`, 캐시 저장·복원, 주석 표시는 확인하지 않았다. 확인한 범위는 아래 자기 검사와 `docs/validation.md`에 있다.
+- 모델과 기지 악성 색인을 첨부한 Release가 아직 없어 그 입력에 기본값이 없다.
+- 실제 PR에서의 설치, 모델·색인 다운로드, `depbee scan --extract`, 캐시 저장·복원, 주석 표시는 확인하지 않았다. 확인한 범위는 아래 자기 검사와 `docs/validation.md`에 있다.
 - Linux runner만 고려했다. Windows·macOS runner는 확인하지 않았다(`bash`, `curl`, `sed`, `mktemp`를 쓴다).
 
 ### 자기 검사 (depbee CI `action` job)
@@ -138,12 +144,12 @@ CLI 종료 코드 0/1/2의 의미는 그대로다.
 공개 전이라 실제 설치·다운로드는 CI에서 돌릴 수 없어, 합성 자료로 되는 범위만 검사한다.
 
 - 판정 모듈을 직접 호출해 종료 코드를 확인한다(`docs/examples/result-contract/`의 예시 보고서). 실패를 기대하는 경우도 `continue-on-error` 없이 `if`로 종료 코드를 본다. 기지 악성 일치는 실패, ML 기준 이상·보류는 기본 성공이고 `fail-on`으로 실패, 보고서 없음·알 수 없는 `fail-on`·sha256 불일치는 실패다.
-- `uses: ./`를 `report` 입력(보류 예시 보고서)으로 실행해 입력 검사, summary, artifact, 경고 주석의 배선을 확인한다. `report`가 있으면 설치·모델 다운로드·변경 수·캐시·scan 단계는 건너뛴다.
-- 판정 모듈의 단위 테스트는 `tests/test_actions.py`이다(적대적 패키지 이름 이스케이프, lockfile 줄 찾기 포함).
+- `uses: ./`를 `report` 입력(보류 예시 보고서)으로 실행해 입력 검사, summary, artifact, 경고 주석의 배선을 확인한다. `report`가 있으면 설치·모델·색인 다운로드·변경 수·캐시·scan 단계는 건너뛰고 모델·색인 입력도 검사하지 않는다.
+- 판정 모듈의 단위 테스트는 `tests/test_actions.py`이다(적대적 패키지 이름 이스케이프, lockfile 줄 찾기, 색인 입력 검사, `verify` 여러 쌍, `action.yml` 단계 순서·인자를 텍스트로 확인 포함).
 
 ## CI 신뢰 경계
 
-- PR이 수정할 수 있는 모델·특징 JSON을 판정 근거로 신뢰하지 않는다. 모델은 workflow의 sha256과 비교한 Release 파일만 쓴다.
+- PR이 수정할 수 있는 모델·특징 JSON을 판정 근거로 신뢰하지 않는다. 모델과 기지 악성 색인은 workflow의 sha256과 비교한 Release 파일만 쓴다.
 - 도구/정책/모델은 보호된 참조에서 로딩한다. 대상 package.json의 script를 실행하지 않는다.
 - `pull_request_target`으로 외부 PR 코드를 실행하지 않는다. 토큰·secrets를 분석기에 넘기지 않는다.
 - 모델 실패를 무시하는 `continue-on-error`, `|| true`를 보안 게이트에 사용하지 않는다.
