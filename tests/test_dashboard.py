@@ -19,13 +19,15 @@ from pathlib import Path
 from unittest import mock
 
 import test_mcp
+from test_apply import ApplyFixture, sha
 from test_detectors import ADVISORY, KnownList, Rules, rule
 from test_markdown import HOSTILE
 from test_output_formats import EXAMPLES, FormatFixture, older
 from test_workflow import Fixture, package
 
-from depbee import history
+from depbee import history, service
 from depbee.cli import SAFETY_NOTE, _clean, main
+from depbee.contracts import GuardError
 
 WEB = all(importlib.util.find_spec(name) for name in ("starlette", "jinja2", "uvicorn", "httpx2"))
 NO_WEB = "web extra ([web] and httpx2) not installed; the dashboard is not tested here"
@@ -174,8 +176,9 @@ class PageTests(DashboardFixture):
         package_dir = Path(self.app.__file__).parent
         files = [*package_dir.glob("templates/*.html"), *package_dir.glob("static/*")]
         self.assertEqual(sorted(p.name for p in files), [
-            "base.html", "counts.html", "model.html", "project.html", "projects.html", "run.html",
-            "style.css"])  # fmt: skip
+            "applied.html", "apply_lines.html", "base.html", "counts.html", "error.html",
+            "model.html", "preview.html", "project.html", "projects.html", "report.html",
+            "run.html", "style.css"])  # fmt: skip
         for path in files:
             self.assertIsNone(re.search(r"https?:|//", path.read_text("utf-8")), path.name)
         self.assertNotIn("<script", "".join(p.read_text("utf-8") for p in files))
@@ -430,7 +433,9 @@ class RegistrationTests(DashboardFixture):
 
     def test_register_and_register_again(self):
         response = self.register(str(self.project))
-        self.assertEqual((response.status_code, response.headers["location"]), (303, S + "/projects/1"))
+        self.assertEqual(
+            (response.status_code, response.headers["location"]), (303, S + "/projects/1")
+        )
         again = self.post(str(self.project) + os.sep, self.form_session())
         self.assertEqual(again.headers["location"], S + "/projects/1")
         (project,) = history.list_projects()
@@ -478,6 +483,480 @@ class RegistrationTests(DashboardFixture):
         self.assertEqual(response.status_code, 400)
         self.assertIn(self.app.REGISTER_ERRORS["link"], response.text)
         self.assertEqual(history.list_projects(), [])
+
+
+def applied_document(outcome="applied", reason=None, mode="lockfile", **extra):
+    """A synthetic apply document in the shape service.apply_preview returns."""
+    files = [{"path": "package-lock.json", "sha256": "1" * 64, "new_sha256": "2" * 64}]
+    document = {
+        "mode": mode, "outcome": outcome, "reason": reason, "error": None, "blocked": [],
+        "confirmation_required": [], "confirmed": True,
+        "files": files if outcome in ("applied", "failed") else [],
+        "backup": BACKUP if outcome in ("applied", "failed") else None,
+        "npm_version": None, "npm_ci_exit_code": None, "notices": [],
+    }  # fmt: skip
+    return {**document, **extra}
+
+
+BACKUP = "C:/synthetic/backups/20261117T000000Z-0123abcd"
+
+
+class ScreenFixture(DashboardFixture):
+    """Update check and apply screens with service.preview_files and apply_preview replaced."""
+
+    def setUp(self):
+        super().setUp()
+        self.project_id = history.register_project(self.project)
+        self.report = self.scan_with(0.1)  # not flagged; known malicious list not connected
+        self.npmrc, self.targets = False, None
+        self.previewed, self.applied = [], []
+        self.document = applied_document()
+        self.preview_files = self.patch_service("preview_files", self.fake_preview)
+        self.apply_preview = self.patch_service("apply_preview", self.fake_apply)
+
+    def patch_service(self, name, function):
+        patcher = mock.patch.object(service, name, side_effect=function)
+        self.addCleanup(patcher.stop)
+        return patcher.start()
+
+    def fake_preview(self, project, names, **options):
+        self.previewed.append((project, names, options))
+        preview = {**PREVIEW, "targets": self.targets or names or None,
+                   "changed_count": len(self.report["results"]),
+                   "project_npmrc_ignored": self.npmrc}  # fmt: skip
+        return {"preview": preview, "report": self.report}, b"new package.json", b"new lockfile"
+
+    def fake_apply(self, project, result, new_package, new_lock, *, mode, confirm=False):
+        self.applied.append({"project": project, "result": result, "new_package": new_package,
+                             "new_lock": new_lock, "mode": mode, "confirm": confirm})  # fmt: skip
+        _, required = service.update_gate(result["report"])
+        return {**self.document, "mode": mode, "confirmed": confirm,
+                "confirmation_required": required}  # fmt: skip
+
+    def check(self, packages="", session=SESSION, origin=BASE, project_id=None):
+        url = f"{S}/projects/{project_id or self.project_id}/previews"
+        headers = {} if origin is None else {"origin": origin}
+        return self.client.post(url, data={"session": session, "packages": packages},
+                                headers=headers, follow_redirects=False)  # fmt: skip
+
+    def preview_id(self, packages=""):
+        response = self.check(packages)
+        self.assertEqual(response.status_code, 303, response.text)
+        location = response.headers["location"]
+        self.assertTrue(location.startswith(f"{S}/previews/"), location)
+        return location.rsplit("/", 1)[1]
+
+    def apply(self, preview_id, mode="lockfile", confirm=True, session=SESSION, origin=BASE):
+        data = {"session": session, "mode": mode, **({"confirm": "yes"} if confirm else {})}
+        headers = {} if origin is None else {"origin": origin}
+        return self.client.post(f"{S}/previews/{preview_id}/apply", data=data, headers=headers,
+                                follow_redirects=False)  # fmt: skip
+
+    def assert_form(self, html, present):
+        (self.assertIn if present else self.assertNotIn)(
+            '<button type="submit">반영</button>', html
+        )
+
+
+class UpdateCheckTests(ScreenFixture):
+    def test_a_check_is_recorded_kept_in_memory_and_shown(self):
+        from starlette.testclient import TestClient
+
+        client = TestClient(self.app.build_app(PORT, SESSION, model_dir=Path("m"),
+                                               cache_dir=Path("c")), base_url=BASE)  # fmt: skip
+        self.addCleanup(client.close)
+        self.client = client
+        project_page = self.page(f"/projects/{self.project_id}")
+        self.assertIn(f'action="{S}/projects/{self.project_id}/previews"', project_page)
+        preview_id = self.preview_id("example  other\tthird")
+        ((project, names, options),) = self.previewed
+        self.assertEqual(project, Path(str(self.project.resolve())))  # the registered path
+        self.assertEqual(names, ["example", "other", "third"])
+        self.assertEqual(options, {"model_dir": Path("m"), "cache_dir": Path("c"),
+                                   "no_cache": False})  # fmt: skip
+        (run,) = history.list_runs(self.project_id)
+        stored = history.get_run(run["id"])
+        self.assertEqual((stored["kind"], stored["report"]), ("update_preview", self.report))
+        self.assertEqual(stored["preview"]["targets"], ["example", "other", "third"])
+        html = self.page(f"/previews/{preview_id}")
+        self.assertIn("<li>대상: example, other, third</li>", html)
+        self.assertIn(f'<a href="{S}/runs/{run["id"]}">실행 #{run["id"]}</a>', html)
+        self.assertIn("검사 결과: ", html)  # the report, rendered as on the run page
+        self.assertIn("대시보드 프로세스 메모리에만 있습니다", html)
+        self.assertNotIn(self.app.PREVIEW_NOT_RECORDED, html)
+        self.preview_id()
+        self.assertEqual(self.previewed[1][1], [])  # an empty field previews everything
+        self.assertEqual(self.apply_preview.call_count, 0)
+
+    def test_dashboard_options_reach_the_app(self):
+        class Server:
+            def __init__(self, config):
+                pass
+
+            def run(self, sockets):
+                pass
+
+        with mock.patch.object(self.app.uvicorn, "Server", Server),                 mock.patch.object(self.app, "build_app", wraps=self.app.build_app) as built,                 contextlib.redirect_stdout(io.StringIO()):  # fmt: skip
+            self.assertEqual(main(["dashboard", "--model-dir", "m", "--no-cache"]), 0)
+            self.assertEqual(main(["dashboard", "--cache-dir", "c"]), 0)
+        self.assertEqual([call.kwargs for call in built.call_args_list], [
+            {"model_dir": Path("m"), "cache_dir": None, "no_cache": True},
+            {"model_dir": None, "cache_dir": Path("c"), "no_cache": False}])  # fmt: skip
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            main(["dashboard", "--cache-dir", "c", "--no-cache"])
+
+    def test_errors_show_a_page_and_record_nothing(self):
+        extract = 'Install analyzer dependencies: python -m pip install -e ".[extract]"'
+        node = "node.exe not found on PATH (the current directory is not used)"
+        hostile = '<script>alert(1)</script> "quoted" \u202e'
+        secret = "C:\\private\\folder synthetic-secret-0123456789"
+        cases = [
+            (GuardError(extract), 400, extract.replace('"', "&#34;")),
+            (GuardError(node), 400, node),
+            (GuardError(hostile), 400, "&lt;script&gt;alert(1)&lt;/script&gt; &#34;quoted&#34; \\u202e"),
+            (ValueError(secret), 400, self.app.PREVIEW_FAILED),
+            (OSError(secret), 400, self.app.PREVIEW_FAILED),
+            (RecursionError(secret), 400, self.app.PREVIEW_FAILED),
+        ]  # fmt: skip
+        for error, status, shown in cases:
+            with self.subTest(error=type(error).__name__, text=str(error)[:20]):
+                self.preview_files.side_effect = error
+                response = self.check("example")
+                self.assertEqual(response.status_code, status)
+                self.assertIn(shown, response.text)
+                self.assertIn("이력에 기록하지 않았습니다.", response.text)
+                for hidden in ("private", "synthetic-secret", "<script>", "\u202e"):
+                    self.assertNotIn(hidden, response.text)
+        self.assertEqual(history.list_runs(self.project_id), [])
+
+    def test_missing_or_unknown_projects_run_nothing(self):
+        self.assertEqual(self.check(project_id=99).status_code, 404)
+        self.assertEqual(self.check(project_id=2**70).status_code, 404)
+        self.head.unlink()
+        self.project.rmdir()
+        response = self.check()
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(self.app.PROJECT_MISSING, response.text)
+        self.assertIn("업데이트를 확인할 수 없습니다", self.page(f"/projects/{self.project_id}"))
+        self.assertEqual(self.preview_files.call_count, 0)
+
+    def test_form_session_origin_and_limits(self):
+        for response in (self.check(session="wrong"), self.check(origin=None),
+                         self.check(origin=f"http://127.0.0.1:{PORT + 1}")):  # fmt: skip
+            self.assertEqual(response.status_code, 403)
+        too_long = self.check("a" * (self.app.MAX_TARGETS + 1))
+        self.assertEqual(too_long.status_code, 400)
+        self.assertIn(self.app.TARGETS_TOO_LONG, too_long.text)
+        url = f"{S}/projects/{self.project_id}/previews"
+        two = self.client.post(url, content=f"session={SESSION}&packages=a&packages=b",
+                               headers={"origin": BASE, "content-type":
+                                        "application/x-www-form-urlencoded"})  # fmt: skip
+        self.assertEqual(two.status_code, 400)
+        self.assertEqual(self.get(f"/projects/{self.project_id}/previews").status_code, 405)
+        self.assertEqual(self.preview_files.call_count, 0)
+
+    def test_one_change_at_a_time_while_pages_stay_open(self):
+        seen = {}
+
+        def during(project, names, **options):
+            # Another request arrives while this preview runs in its worker thread.
+            seen["check"] = self.check("example")
+            seen["page"] = self.get(f"/projects/{self.project_id}")
+            self.preview_files.side_effect = self.fake_preview
+            return self.fake_preview(project, names, **options)
+
+        self.preview_files.side_effect = during
+        preview_id = self.preview_id()
+        self.assertEqual(seen["check"].status_code, 409)
+        self.assertEqual(seen["check"].text, self.app.BUSY)
+        self.assertEqual(seen["page"].status_code, 200)
+        self.assertEqual(len(self.previewed), 1)
+        self.apply_preview.side_effect = lambda *a, **k: (
+            seen.setdefault("apply", self.check("example")),
+            self.fake_apply(*a, **k),
+        )[1]
+        self.assertEqual(self.apply(preview_id).status_code, 200)
+        self.assertEqual(seen["apply"].status_code, 409)
+        self.assertEqual(self.check().status_code, 303)  # free again
+
+    def test_only_the_newest_previews_are_kept(self):
+        ids = [self.preview_id() for _ in range(self.app.KEPT_PREVIEWS + 1)]
+        gone = self.get(f"/previews/{ids[0]}")
+        self.assertEqual((gone.status_code, gone.text), (404, self.app.PREVIEW_GONE))
+        for preview_id in ids[1:]:
+            self.page(f"/previews/{preview_id}")
+        self.assertEqual(self.apply(ids[0]).status_code, 404)
+        self.assertEqual(self.get("/previews/unknown").status_code, 404)
+
+    def test_a_failed_record_keeps_the_preview(self):
+        with mock.patch.object(history, "record", side_effect=sqlite3.OperationalError("x")):
+            preview_id = self.preview_id()
+        html = self.page(f"/previews/{preview_id}")
+        self.assertIn(self.app.PREVIEW_NOT_RECORDED, html)
+        self.assertNotIn(f"{S}/runs/", html)
+        response = self.apply(preview_id)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(self.app.PREVIEW_NOT_RECORDED, response.text)
+        self.assertEqual(history.list_applies(self.project_id), [])
+
+
+class GateDisplayTests(ScreenFixture):
+    def test_a_known_malicious_match_has_no_apply_form(self):
+        self.report = self.scan_with(0.1, known_malicious=KnownList((ADVISORY,)))
+        html = self.page(f"/previews/{self.preview_id()}")
+        self.assert_form(html, False)
+        self.assertIn("반영할 수 없습니다: 기지 악성 기록 일치(예외 없이 거부)", html)
+        self.assertIn("기지 악성 기록 일치로 거부한 항목 1개:", html)
+        self.assertIn("<li>[위험] example@1.1.0 (node_modules/example): 기지 악성 기록 일치", html)
+
+    def test_items_to_confirm_with_their_causes(self):
+        self.report = self.scan_with(0.9)
+        html = self.page(f"/previews/{self.preview_id()}")
+        self.assert_form(html, True)
+        self.assertIn("<strong>확인이 필요한 항목 1개:</strong>", html)
+        self.assertIn("<li>[위험] example@1.1.0 (node_modules/example): ML 위험 점수 기준 이상; "
+                      "기지 악성 목록 미확인; ML 위험 점수 0.900</li>", html)  # fmt: skip
+        self.assertIn('name="confirm" value="yes" required> <label for="confirm">위 1개 항목을 '
+                      "검토했고 진행합니다.</label>", html)  # fmt: skip
+        self.assertIn('value="lockfile" checked>', html)
+        self.assertIn('value="install">', html)
+        self.assertNotIn(self.app.NPMRC_NO_INSTALL, html)
+
+    def test_passing_items_need_no_confirmation(self):
+        self.report = self.scan_with(0.1, known_malicious=KnownList())
+        html = self.page(f"/previews/{self.preview_id()}")
+        self.assert_form(html, True)
+        self.assertNotIn('name="confirm"', html)
+        self.assertNotIn("확인이 필요한 항목", html)
+
+    def test_no_change_has_no_apply_form(self):
+        self.report = {**self.scan_with(0.1), "results": []}
+        html = self.page(f"/previews/{self.preview_id()}")
+        self.assert_form(html, False)
+        self.assertIn("lockfile에서 바뀐 항목이 없어 반영할 것이 없습니다.", html)
+
+    def test_a_project_npmrc_disables_install(self):
+        self.npmrc = True
+        html = self.page(f"/previews/{self.preview_id()}")
+        self.assert_form(html, True)
+        self.assertIn('value="install" disabled>', html)
+        self.assertIn(self.app.NPMRC_NO_INSTALL, html)
+
+
+class ApplyScreenTests(ScreenFixture):
+    def test_without_the_confirmation_nothing_runs_and_the_preview_stays(self):
+        preview_id = self.preview_id()
+        response = self.apply(preview_id, confirm=False)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(self.app.CONFIRM_NEEDED, response.text)
+        self.assert_form(response.text, True)
+        for mode in ("", "both", "LOCKFILE"):
+            with self.subTest(mode=mode):
+                response = self.apply(preview_id, mode=mode)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(self.app.CHOOSE_MODE, response.text)
+        self.assertEqual(self.apply(preview_id, session="wrong").status_code, 403)
+        self.assertEqual(self.apply(preview_id, origin=None).status_code, 403)
+        self.assertEqual(self.apply_preview.call_count, 0)
+        self.page(f"/previews/{preview_id}")  # still there
+        self.assertEqual(self.apply(preview_id).status_code, 200)
+        self.assertEqual(self.apply_preview.call_count, 1)
+
+    def test_install_after_a_project_npmrc_is_refused_before_the_service(self):
+        self.npmrc = True
+        preview_id = self.preview_id()
+        response = self.apply(preview_id, mode="install")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(self.app.NPMRC_NO_INSTALL, response.text)
+        self.assertEqual(self.apply_preview.call_count, 0)
+        self.assertEqual(self.apply(preview_id, mode="lockfile").status_code, 200)
+
+    def test_an_apply_uses_the_registered_path_once_and_is_recorded(self):
+        preview_id = self.preview_id("example")
+        (run,) = history.list_runs(self.project_id)
+        self.document = applied_document(mode="install", npm_version="11.6.1", npm_ci_exit_code=0,
+                                          notices=[service.SCRIPTS_NOTICE,
+                                                   service.RESTORE_NOTICE])  # fmt: skip
+        response = self.apply(preview_id, mode="install")
+        self.assertEqual(response.status_code, 200)
+        (call,) = self.applied
+        self.assertEqual(call["project"], Path(str(self.project.resolve())))
+        self.assertEqual((call["mode"], call["confirm"]), ("install", True))
+        self.assertEqual((call["new_package"], call["new_lock"]),
+                         (b"new package.json", b"new lockfile"))  # fmt: skip
+        self.assertEqual(call["result"]["report"], self.report)
+        html = response.text
+        self.assertIn("<h1>업데이트 반영: 반영함</h1>", html)
+        self.assertIn(f"원본 백업: {BACKUP}", html)
+        self.assertIn("npm 11.6.1, npm ci 종료 코드 0", html)
+        self.assertIn(service.SCRIPTS_NOTICE, html)
+        self.assertIn(service.RESTORE_NOTICE, html)
+        self.assertIn("확인이 필요한 항목 1개(대시보드에서 확인함):", html)
+        self.assertNotIn("--confirm-warnings", html)
+        self.assertIn(f'<a href="{S}/runs/{run["id"]}">실행 #{run["id"]}</a>에 반영 기록', html)
+        # The preview is gone: a reload or a resent form applies nothing again.
+        self.assertEqual(self.get(f"/previews/{preview_id}").status_code, 404)
+        again = self.apply(preview_id, mode="install")
+        self.assertEqual((again.status_code, again.text), (404, self.app.PREVIEW_GONE))
+        self.assertEqual(self.apply_preview.call_count, 1)
+        (stored,) = history.list_applies(self.project_id)
+        self.assertEqual((stored["run_id"], stored["outcome"], stored["backup"]),
+                         (run["id"], "applied", BACKUP))  # fmt: skip
+        self.assertEqual(stored["apply"]["confirmation_required"][0]["causes"],
+                         ["known_malicious_unchecked"])  # fmt: skip
+        run_page = self.page(f"/runs/{run['id']}")
+        self.assertIn("<h2>업데이트 반영: 반영함</h2>", run_page)
+        self.assertIn("확인이 필요한 항목 1개(확인함):", run_page)
+        project_page = self.page(f"/projects/{self.project_id}")
+        self.assertIn("<td>설치까지(npm ci --ignore-scripts)</td>\n<td>반영함</td>\n<td>-</td>\n"
+                      f"<td>예</td>\n<td>{BACKUP}</td>\n<td>0</td>", project_page)  # fmt: skip
+        self.assertIn(f'<a href="{S}/runs/{run["id"]}">#{run["id"]}</a>', project_page)
+
+    def test_a_failed_apply_record_still_shows_the_result_and_backup(self):
+        preview_id = self.preview_id()
+        with mock.patch.object(history, "record_apply", side_effect=sqlite3.OperationalError("x")):
+            response = self.apply(preview_id)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("업데이트 반영: 반영함", response.text)
+        self.assertIn(f"원본 백업: {BACKUP}", response.text)
+        self.assertIn(self.app.APPLY_NOT_RECORDED, response.text)
+        self.assertEqual(history.list_applies(self.project_id), [])
+
+    def test_refused_and_failed_results_are_shown_and_need_a_new_check(self):
+        cases = [
+            (applied_document("refused", "project_changed", notices=[service.UNCHANGED_NOTICE]),
+             ["업데이트 반영: 반영하지 않음", "이유: 미리보기 뒤 package.json 또는 package-lock.json이 바뀜",
+              service.UNCHANGED_NOTICE]),
+            (applied_document("refused", "confirmation_required"),
+             ["이유: 확인이 필요한 항목이 있는데 확인하지 않음", self.app.RETRY_HERE]),
+            (applied_document("failed", "install_failed", mode="install",
+                              error="npm ci failed with exit code 1", npm_version="11.6.1",
+                              npm_ci_exit_code=1),
+             ["업데이트 반영: 실패", "이유: npm ci 실패", "오류: npm ci failed with exit code 1",
+              f"원본 백업: {BACKUP}", "npm 11.6.1, npm ci 종료 코드 1"]),
+        ]  # fmt: skip
+        for document, lines in cases:
+            with self.subTest(reason=document["reason"]):
+                self.document = document
+                preview_id = self.preview_id()
+                response = self.apply(preview_id, mode=document["mode"])
+                self.assertEqual(response.status_code, 200)
+                for line in lines:
+                    self.assertIn(line, response.text)
+                self.assertNotIn("--confirm-warnings", response.text)
+                self.assertEqual(self.apply(preview_id).status_code, 404)
+        reasons = [a["reason"] for a in history.list_applies(self.project_id)]
+        self.assertEqual(reasons, ["install_failed", "confirmation_required", "project_changed"])
+
+    def test_an_unexpected_service_error_is_a_fixed_page(self):
+        preview_id = self.preview_id()
+        self.apply_preview.side_effect = OSError("C:\\private synthetic-secret-0123456789")
+        response = self.apply(preview_id)
+        self.assertEqual(response.status_code, 500)
+        self.assertIn(self.app.APPLY_FAILED, response.text)
+        self.assertNotIn("synthetic-secret", response.text)
+        self.assertEqual(self.get(f"/previews/{preview_id}").status_code, 404)
+
+    def test_a_missing_project_folder_runs_nothing_and_keeps_the_preview(self):
+        preview_id = self.preview_id()
+        self.head.unlink()
+        self.project.rmdir()
+        response = self.apply(preview_id)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(self.app.PROJECT_MISSING, response.text)
+        self.assertEqual(self.apply_preview.call_count, 0)
+        self.page(f"/previews/{preview_id}")
+
+    def test_cli_applies_are_shown_with_neutral_wording(self):
+        document = applied_document(confirmation_required=[
+            {"location": "node_modules/example", "package": "example", "before_version": "1.0.0",
+             "after_version": "1.1.0", "status": "not_flagged", "reason": None, "score": 0.1,
+             "known_malicious_status": "not_run", "ml_status": "not_hit",
+             "causes": ["known_malicious_unchecked"]}])  # fmt: skip
+        run_id = history.record("update_preview", self.project, self.report, PREVIEW,
+                                apply=document)  # fmt: skip
+        run_page = self.page(f"/runs/{run_id}")
+        self.assertIn("<h2>업데이트 반영: 반영함</h2>", run_page)
+        self.assertIn("확인이 필요한 항목 1개(확인함):", run_page)
+        self.assertNotIn("--confirm-warnings", run_page)
+        self.assertIn(f"<td>{BACKUP}</td>", self.page(f"/projects/{self.project_id}"))
+        scan_page = self.page(f"/runs/{history.record('scan', self.project, self.report)}")
+        self.assertNotIn("업데이트 반영", scan_page)
+
+
+class UpdateEscapeTests(ScreenFixture):
+    STRINGS = EscapeTests.STRINGS
+    check_html = EscapeTests.check
+
+    def test_gate_lists_errors_backups_and_targets_stay_inert(self):
+        from markupsafe import escape
+
+        for text in self.STRINGS:
+            with self.subTest(text=text):
+                self.report = self.scan_with(0.9)
+                for key in ("package", "location"):
+                    self.report["results"][0][key] = text
+                self.targets = [text]
+                self.document = applied_document("failed", "write_failed", error=text,
+                                                 backup=text)  # fmt: skip
+                preview_id = self.preview_id()
+                self.check_html(self.page(f"/previews/{preview_id}"))
+                response = self.apply(preview_id)
+                self.assertEqual(response.status_code, 200)
+                self.check_html(response.text)
+                self.assertIn(f"원본 백업: {escape(_clean(text))}", response.text)
+                self.check_html(self.page(f"/projects/{self.project_id}"))
+                self.preview_files.side_effect = GuardError(f"{text} is not a dependency")
+                response = self.check()  # the name is in the service's message
+                self.assertEqual(response.status_code, 400)
+                self.check_html(response.text)
+                self.assertIn(escape(_clean(f"{text} is not a dependency")), response.text)
+                self.preview_files.side_effect = self.fake_preview
+        known = self.scan_with(0.1, known_malicious=KnownList((ADVISORY,)))
+        known["results"][0]["package"] = self.STRINGS[-1]
+        self.report = known
+        self.check_html(self.page(f"/previews/{self.preview_id()}"))
+
+
+@unittest.skipUnless(WEB, NO_WEB)
+class EndToEndTests(ApplyFixture):
+    """The real service with the fake npm of test_apply: check, confirm and apply a lockfile."""
+
+    def test_check_and_apply_through_the_dashboard(self):
+        from starlette.testclient import TestClient
+
+        from depbee.dashboard import app
+
+        client = TestClient(app.build_app(PORT, SESSION, model_dir=self.root), base_url=BASE)
+        self.addCleanup(client.close)
+        project_id = history.register_project(self.upd)
+        response = client.post(f"{S}/projects/{project_id}/previews",
+                               data={"session": SESSION, "packages": "example"},
+                               headers={"origin": BASE}, follow_redirects=False)  # fmt: skip
+        self.assertEqual(response.status_code, 303, response.text)
+        self.assert_unchanged()  # the preview changed nothing
+        page = client.get(response.headers["location"])
+        self.assertIn("확인이 필요한 항목 1개", page.text)  # FakePredictor flags it
+        action = re.search(r'<form method="post" action="([^"]+/apply)">', page.text).group(1)
+        applied = client.post(action, data={"session": SESSION, "mode": "lockfile",
+                                            "confirm": "yes"}, headers={"origin": BASE})  # fmt: skip
+        self.assertEqual(applied.status_code, 200)
+        self.assertIn("업데이트 반영: 반영함", applied.text)
+        backup = self.assert_applied({"outcome": "applied",
+                                      "backup": str(next(self.backups.iterdir()))})  # fmt: skip
+        self.assertEqual((backup / "package-lock.json").read_bytes(),
+                         self.original["package-lock.json"])  # fmt: skip
+        self.assertIn(f"원본 백업: {backup}", applied.text)
+        (run,) = history.list_runs(project_id)
+        (stored,) = history.list_applies(project_id)
+        self.assertEqual((stored["run_id"], stored["outcome"], stored["confirmed"],
+                          stored["backup"]), (run["id"], "applied", True, str(backup)))  # fmt: skip
+        self.assertEqual(stored["new_package_lock_sha256"], sha(self.head.read_bytes()))
+        self.assertEqual(self.ci_calls, [])  # lockfile only: no npm ci
+        again = client.post(action, data={"session": SESSION, "mode": "lockfile",
+                                          "confirm": "yes"}, headers={"origin": BASE})  # fmt: skip
+        self.assertEqual(again.status_code, 404)
+        self.assertEqual(len(list(self.backups.iterdir())), 1)
 
 
 class WithoutWebTests(Fixture):

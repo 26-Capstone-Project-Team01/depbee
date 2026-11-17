@@ -1,0 +1,5 @@
+{# cli._apply_lines with the dashboard's wording: lines and their sub-lines. #}
+<ul>
+{% for line, subs in apply.lines %}<li>{{ line }}{% if subs %}<ul>{% for sub in subs %}<li>{{ sub }}</li>{% endfor %}</ul>{% endif %}</li>
+{% endfor %}
+</ul>

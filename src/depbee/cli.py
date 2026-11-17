@@ -244,12 +244,15 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
     dashboard = commands.add_parser(
         "dashboard",
-        help="Serve the local history dashboard on 127.0.0.1: registered projects, their "
-        "dependencies and recorded reports; it runs no scan (needs .[web])",
+        help="Serve the local dashboard on 127.0.0.1: registered projects, their dependencies "
+        "and recorded reports, update previews and applies (needs .[web]; previews also need "
+        "Node.js with npm and .[extract])",
     )
     dashboard.add_argument(
         "--port", type=int, default=0, help="Port on 127.0.0.1 (default 0: a free port)"
     )
+    dashboard.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
+    _cache_arguments(dashboard)
     return parser
 
 
@@ -706,11 +709,16 @@ def _apply_item(item: dict, esc, label) -> str:
             + "; ".join(causes))  # fmt: skip
 
 
-def _apply_lines(apply: dict, esc, label) -> list[tuple[str, list[str]]]:
-    """The update --apply section after the report: lines and their sub-lines."""
+def _apply_lines(
+    apply: dict, esc, label, *, reasons: dict = APPLY_REASON_LABELS,
+    confirmed: str = f"{CONFIRM_OPTION}로 확인함",
+    retry: str | None = f"위 항목을 검토한 뒤 진행하려면 {CONFIRM_OPTION}를 함께 줍니다.",
+) -> list[tuple[str, list[str]]]:  # fmt: skip
+    """The update --apply section after the report: lines and their sub-lines. reasons,
+    confirmed and retry: the wording that names the CLI option, which the dashboard replaces."""
     lines = [(f"방식: {label(MODE_LABELS, apply['mode'])}", [])]
     if apply["reason"]:
-        lines.append((f"이유: {label(APPLY_REASON_LABELS, apply['reason'])}", []))
+        lines.append((f"이유: {label(reasons, apply['reason'])}", []))
     if apply["error"]:
         lines.append((f"오류: {esc(apply['error'])}", []))
     if apply["blocked"]:
@@ -719,13 +727,16 @@ def _apply_lines(apply: dict, esc, label) -> list[tuple[str, list[str]]]:
             [_apply_item(item, esc, label) for item in apply["blocked"]],
         ))  # fmt: skip
     if apply["confirmation_required"]:
-        state = f"{CONFIRM_OPTION}로 확인함" if apply["confirmed"] else "확인하지 않음"
+        state = confirmed if apply["confirmed"] else "확인하지 않음"
         lines.append((
             f"확인이 필요한 항목 {len(apply['confirmation_required'])}개({state}):",
             [_apply_item(item, esc, label) for item in apply["confirmation_required"]],
         ))  # fmt: skip
-    if apply["outcome"] == "refused" and apply["reason"] == "confirmation_required":
-        lines.append((f"위 항목을 검토한 뒤 진행하려면 {CONFIRM_OPTION}를 함께 줍니다.", []))
+    refused_unconfirmed = (
+        apply["outcome"] == "refused" and apply["reason"] == "confirmation_required"
+    )
+    if refused_unconfirmed and retry:
+        lines.append((retry, []))
     for changed in apply["files"]:
         lines.append((f"바꾼 파일: {esc(changed['path'])} (sha256 {changed['sha256'][:12]}... → "
                       f"{changed['new_sha256'][:12]}...)", []))  # fmt: skip
@@ -830,7 +841,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "dashboard":
             from .dashboard import serve as dashboard
 
-            dashboard(args.port)
+            dashboard(args.port, model_dir=args.model_dir, cache_dir=args.cache_dir,
+                      no_cache=args.no_cache)  # fmt: skip
             return 0
         # Refuse a taken --output before any download or extraction; _emit's "x" mode still
         # guards against a file created meanwhile. Same error text as that open().
