@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, quote
 import jinja2
 import uvicorn
 from starlette.applications import Starlette
-from starlette.requests import HTTPConnection, Request
+from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route
 
@@ -74,6 +74,8 @@ REGISTER_ERRORS = {
     "lockfile": "폴더에 package-lock.json 파일이 없습니다.",
     "unreadable": "경로를 확인할 수 없습니다.",
 }
+SESSION_REFUSED = "세션 주소가 맞지 않습니다. depbee dashboard가 이번 실행에서 출력한 주소로 여세요."
+FORM_REFUSED = "폼의 세션 값이 맞지 않습니다. 화면을 새로 열고 다시 시도하세요."
 
 
 def _finalize(value):
@@ -90,25 +92,20 @@ ENV = jinja2.Environment(
 )
 
 
-def cookie_name(port: int) -> str:
-    # The port in the name only keeps this run's cookie apart from other runs' and apps' cookies.
-    # Cookies are not isolated by port: a browser still sends it to any other server on
-    # 127.0.0.1, which could reuse it (accepted, docs/contracts.md 7).
-    return f"depbee_session_{port}"
-
-
 def _text(status: int, text: str) -> Response:
     return Response(text, status, media_type="text/plain; charset=utf-8")
 
 
 class Guard:
     """Wraps the whole app. Every request: exactly one Host header equal to 127.0.0.1:<port>
-    (any case), else 400; a valid session except GET /login, else 403; a request other than GET
-    or HEAD also needs Origin exactly http://127.0.0.1:<port>, else 403 (the form handler checks
-    the CSRF token). Every response, errors included, gets SECURITY_HEADERS."""
+    (any case), else 400; a path under /s/<session>/ with this run's session (compared with
+    hmac.compare_digest), else 403; a request other than GET or HEAD also needs Origin exactly
+    http://127.0.0.1:<port>, else 403 (the form handlers check the form's session field). The
+    app sees the path without the /s/<session> prefix. Cookies are neither read nor set. Every
+    response, errors included, gets SECURITY_HEADERS."""
 
-    def __init__(self, app, port: int, sessions: dict[str, str]):
-        self.app, self.sessions, self.cookie = app, sessions, cookie_name(port)
+    def __init__(self, app, port: int, session: str):
+        self.app, self.session = app, session.encode()
         self.host, self.origin = f"{HOST}:{port}".encode(), f"http://{HOST}:{port}".encode()
 
     async def __call__(self, scope, receive, send):
@@ -120,54 +117,44 @@ class Guard:
                 message = {**message, "headers": [*message.get("headers", []), *SECURITY_HEADERS]}
             await send(message)
 
-        refused = self.refused(scope)
-        app = self.app if refused is None else _text(*refused)
-        await app(scope, receive, secured)
+        refused, path = self.refused(scope)
+        if refused is not None:
+            await _text(*refused)(scope, receive, secured)
+            return
+        await self.app({**scope, "path": path}, receive, secured)
 
-    def refused(self, scope) -> tuple[int, str] | None:
+    def refused(self, scope) -> tuple[tuple[int, str] | None, str]:
+        """(status and fixed text, or None) and the path after /s/<session>."""
         headers = scope["headers"]  # ASGI header names are lowercase
         hosts = [value for name, value in headers if name == b"host"]
         if len(hosts) != 1 or hosts[0].lower() != self.host:
-            return 400, "잘못된 Host 헤더입니다."
-        reading = scope["method"] in ("GET", "HEAD")
-        if reading and scope["path"] == "/login":
-            return None
-        if HTTPConnection(scope).cookies.get(self.cookie) not in self.sessions:
-            return 403, "로그인이 필요합니다. depbee dashboard가 출력한 주소로 여세요."
-        if not reading and [v for n, v in headers if n == b"origin"] != [self.origin]:
-            return 403, "다른 출처의 요청은 받지 않습니다."
-        return None
+            return (400, "잘못된 Host 헤더입니다."), ""
+        parts = scope["path"].split("/", 3)  # "", "s", session, rest
+        given = parts[2].encode("utf-8", "replace") if len(parts) == 4 else b""
+        if parts[:2] != ["", "s"] or not hmac.compare_digest(given, self.session):
+            return (403, SESSION_REFUSED), ""
+        if scope["method"] not in ("GET", "HEAD") and [
+            v for n, v in headers if n == b"origin"
+        ] != [self.origin]:
+            return (403, "다른 출처의 요청은 받지 않습니다."), ""
+        return None, "/" + parts[3]
 
 
-def build_app(port: int, token: str):
-    """The guarded ASGI app for 127.0.0.1:port; token is the login token printed at start."""
-    sessions: dict[str, str] = {}  # session value -> its CSRF token, for this process only
+def build_app(port: int, session: str):
+    """The guarded ASGI app for 127.0.0.1:port; session is the value in the address printed at
+    start (/s/<session>/), which every link, redirect and form carries."""
+    base = f"/s/{session}"
 
     def page(request: Request, name: str, status: int = 200, **context) -> Response:
-        csrf = sessions.get(request.cookies.get(cookie_name(port)), "")
-        html = ENV.get_template(name).render(safety_note=SAFETY_NOTE, csrf=csrf, **context)
+        html = ENV.get_template(name).render(
+            safety_note=SAFETY_NOTE, base=base, session=session, **context
+        )
         # _finalize has escaped lone surrogates; backslashreplace keeps any left from a 500.
         body = html.encode("utf-8", "backslashreplace")
         return Response(body, status, media_type="text/html; charset=utf-8")
 
-    def login(request: Request) -> Response:
-        given = request.query_params.get("token", "")
-        if not hmac.compare_digest(given.encode(), token.encode()):
-            return _text(403, "로그인 토큰이 맞지 않습니다.")
-        session = secrets.token_urlsafe(32)
-        sessions[session] = secrets.token_urlsafe(32)
-        response = RedirectResponse("/", 303)  # drops the token from the address bar
-        response.set_cookie(cookie_name(port), session, httponly=True, samesite="strict", path="/")
-        return response
-
-    def projects(request: Request, status: int = 200, error: str | None = None) -> Response:
-        rows = []
-        for project in history.list_projects():
-            runs = [_run_row(run) for run in history.list_runs(project["id"], RECENT_RUNS)]
-            rows.append({**project, "found": _found(project["path"]), "runs": runs})
-        return page(request, "projects.html", status, projects=rows, error=error)
-
-    async def register(request: Request) -> Response:
+    async def read_form(request: Request) -> dict | Response:
+        """The urlencoded form whose session field is this run's session, or the refusal."""
         kind = request.headers.get("content-type", "").split(";")[0].strip().lower()
         if kind != "application/x-www-form-urlencoded":
             return _text(415, "폼(application/x-www-form-urlencoded)만 받습니다.")
@@ -177,17 +164,30 @@ def build_app(port: int, token: str):
                             max_num_fields=MAX_FIELDS, errors="strict")  # fmt: skip
         except ValueError:  # also UnicodeError
             return _text(400, "폼을 읽을 수 없습니다.")
-        expected = sessions[request.cookies[cookie_name(port)]]  # Guard checked the session
-        csrf, paths = form.get("csrf", []), form.get("path", [])
-        if len(csrf) != 1 or not hmac.compare_digest(csrf[0].encode(), expected.encode()):
-            return _text(403, "폼의 확인 값이 맞지 않습니다. 화면을 새로 열고 다시 시도하세요.")
+        given = form.get("session", [])
+        if len(given) != 1 or not hmac.compare_digest(given[0].encode(), session.encode()):
+            return _text(403, FORM_REFUSED)
+        return form
+
+    def projects(request: Request, status: int = 200, error: str | None = None) -> Response:
+        rows = []
+        for project in history.list_projects():
+            runs = [_run_row(run) for run in history.list_runs(project["id"], RECENT_RUNS)]
+            rows.append({**project, "found": _found(project["path"]), "runs": runs})
+        return page(request, "projects.html", status, projects=rows, error=error)
+
+    async def register(request: Request) -> Response:
+        form = await read_form(request)
+        if isinstance(form, Response):
+            return form
+        paths = form.get("path", [])
         if len(paths) != 1:
             return _text(400, "경로 하나를 입력하세요.")
         problem = _registration_problem(paths[0])
         if problem:  # the input is not echoed
             return projects(request, 400, REGISTER_ERRORS[problem])
         project_id = history.register_project(Path(paths[0]))
-        return RedirectResponse(f"/projects/{project_id}", 303)
+        return RedirectResponse(f"{base}/projects/{project_id}", 303)
 
     def project(request: Request) -> Response:
         found = _project(request.path_params["project_id"])
@@ -229,7 +229,6 @@ def build_app(port: int, token: str):
 
     app = Starlette(
         routes=[
-            Route("/login", login),
             Route("/", projects),
             Route("/projects", register, methods=["POST"]),
             Route("/projects/{project_id:int}", project),
@@ -240,7 +239,8 @@ def build_app(port: int, token: str):
         exception_handlers={Exception: failed},
         max_body_size=MAX_BODY,
     )
-    return Guard(app, port, sessions)
+    app.router.redirect_slashes = False  # its redirect would drop the /s/<session> prefix
+    return Guard(app, port, session)
 
 
 def _found(path: str) -> bool:
@@ -385,20 +385,20 @@ def _models() -> list[dict]:
 
 
 def serve(port: int) -> None:
-    """Bind 127.0.0.1:port (0 picks a free one), print the login address once and serve until
-    Ctrl+C. The token is in that line only: no access log, and errors never quote requests."""
+    """Bind 127.0.0.1:port (0 picks a free one), print the session address once and serve until
+    Ctrl+C. The session is in that line only: no access log, and errors never quote requests."""
     if not 0 <= port <= 65535:
         raise GuardError("--port must be between 0 and 65535")
     sock = socket.create_server((HOST, port))
     try:
         actual = sock.getsockname()[1]
-        token = secrets.token_urlsafe(32)
+        session = secrets.token_urlsafe(32)
         config = uvicorn.Config(
-            build_app(actual, token), host=HOST, port=actual, access_log=False,
+            build_app(actual, session), host=HOST, port=actual, access_log=False,
             server_header=False, proxy_headers=False, log_level="warning", lifespan="off",
             ws="none",
         )  # fmt: skip
-        print(f"http://{HOST}:{actual}/login?token={token}", flush=True)
+        print(f"http://{HOST}:{actual}/s/{session}/", flush=True)
         print("이 주소를 브라우저에서 여세요. 종료하려면 Ctrl+C를 누르세요.", flush=True)
         uvicorn.Server(config).run(sockets=[sock])
     finally:

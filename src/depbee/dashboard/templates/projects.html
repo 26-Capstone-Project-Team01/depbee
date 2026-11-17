@@ -7,7 +7,7 @@
 {% endif %}
 {% for project in projects %}
 <section class="project">
-<h2><a href="/projects/{{ project.id }}">{{ project.path }}</a>{% if not project.found %} <span class="flag">찾을 수 없음</span>{% endif %}</h2>
+<h2><a href="{{ base }}/projects/{{ project.id }}">{{ project.path }}</a>{% if not project.found %} <span class="flag">찾을 수 없음</span>{% endif %}</h2>
 <p>등록 시각(UTC): {{ project.registered_at }}</p>
 {% if project.runs %}
 {% set latest = project.runs[0] %}
@@ -22,8 +22,8 @@
 <section>
 <h2>프로젝트 등록</h2>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
-<form method="post" action="/projects">
-<input type="hidden" name="csrf" value="{{ csrf }}">
+<form method="post" action="{{ base }}/projects">
+<input type="hidden" name="session" value="{{ session }}">
 <label for="path">package-lock.json이 있는 폴더의 절대 경로</label>
 <input id="path" name="path" type="text" maxlength="1024" required>
 <button type="submit">등록</button>

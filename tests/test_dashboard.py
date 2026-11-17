@@ -31,7 +31,8 @@ WEB = all(importlib.util.find_spec(name) for name in ("starlette", "jinja2", "uv
 NO_WEB = "web extra ([web] and httpx2) not installed; the dashboard is not tested here"
 PORT = 48213
 BASE = f"http://127.0.0.1:{PORT}"
-TOKEN = "synthetic-login-token-for-tests-only-0123456789"
+SESSION = "synthetic-session-value-for-tests-only-0123456789"
+S = f"/s/{SESSION}"  # every page, form and link is under this prefix
 WEB_MODULES = ("starlette", "jinja2", "uvicorn", "markupsafe")
 PREVIEW = {
     "targets": ["example"], "npm_version": "11.6.1", "package_json_sha256": "0" * 64,
@@ -50,38 +51,39 @@ class DashboardFixture(FormatFixture):
         from depbee.dashboard import app
 
         self.app = app
-        self.client = TestClient(app.build_app(PORT, TOKEN), base_url=BASE)
+        self.client = TestClient(app.build_app(PORT, SESSION), base_url=BASE)
         self.addCleanup(self.client.close)
         self.db = Path(os.environ["DEPBEE_HISTORY_DB"])
 
-    def login(self):
-        response = self.client.get(f"/login?token={TOKEN}", follow_redirects=False)
-        self.assertEqual(response.status_code, 303)
-        return response
+    def get(self, url, **kwargs):
+        return self.client.get(S + url, **kwargs)
 
     def page(self, url):
-        response = self.client.get(url)
+        response = self.get(url)
         self.assertEqual(response.status_code, 200, url)
-        self.assertNotIn(TOKEN, response.text)
+        self.assertNotIn("set-cookie", response.headers)
+        # Every link and form of the dashboard keeps the session prefix.
+        for target in re.findall(r'(?:href|action)="([^"]*)"', response.text):
+            if not target.startswith("https://www.npmjs.com/package/"):
+                self.assertTrue(target.startswith(S + "/"), target)
         return response.text
 
     def record(self, report, kind="scan", preview=None):
         history.register_project(self.project)
         return history.record(kind, self.project, report, preview)
 
-    def csrf(self):
-        return re.search(r'name="csrf" value="([^"]+)"', self.page("/")).group(1)
+    def form_session(self):
+        return re.search(r'name="session" value="([^"]+)"', self.page("/")).group(1)
 
-    def post(self, path, csrf=None, origin=BASE, **extra):
-        fields = {"path": path} if csrf is None else {"path": path, "csrf": csrf}
+    def post(self, path, session=None, origin=BASE, **extra):
+        fields = {"path": path} if session is None else {"path": path, "session": session}
         headers = {} if origin is None else {"origin": origin}
-        return self.client.post("/projects", data=fields, headers=headers,
+        return self.client.post(S + "/projects", data=fields, headers=headers,
                                 follow_redirects=False, **extra)  # fmt: skip
 
 
 class PageTests(DashboardFixture):
     def test_every_page_of_the_example_reports(self):
-        self.login()
         for path in sorted(EXAMPLES.glob("*.json")):
             with self.subTest(path.name):
                 report = json.loads(path.read_text("utf-8"))
@@ -99,10 +101,9 @@ class PageTests(DashboardFixture):
         self.assertIn("example-model-001", model)
         self.assertIn("학습 데이터 버전과 공격 유형별 탐지율은", model)
         self.assertIn("0123456789abcdef" * 4, model)  # provenance model_sha256, as stored
-        self.assertIn("text/css", self.client.get("/static/style.css").headers["content-type"])
+        self.assertIn("text/css", self.get("/static/style.css").headers["content-type"])
 
     def test_values_are_the_stored_ones_and_known_malicious_is_emphasized(self):
-        self.login()
         report = json.loads((EXAMPLES / "03-known-malicious-low-ml.json").read_text("utf-8"))
         text = self.page(f"/runs/{self.record(report)}")
         self.assertIn("<strong>경고: 기지 악성 기록 일치 1개.</strong>", text)
@@ -114,7 +115,6 @@ class PageTests(DashboardFixture):
         self.assertIn('<rect class="normal" width="100" height="8"/>', text)
 
     def test_order_null_scores_and_unfinished_items(self):
-        self.login()
         report = self.cases()["mixed"]
         text = self.page(f"/runs/{self.record(report)}")
         heads = re.findall(r"<h3>\[([^\]]+)\] ([^@<]+)@", text)
@@ -127,7 +127,6 @@ class PageTests(DashboardFixture):
         self.assertIn("<dd>없음(미실행)</dd>", text)  # a null score is never 0 or passed
 
     def test_update_preview_run(self):
-        self.login()
         run = self.record(self.scan_with(0.1), "update_preview", PREVIEW)
         text = self.page(f"/runs/{run}")
         self.assertIn("<h2>업데이트 미리보기</h2>", text)
@@ -137,7 +136,6 @@ class PageTests(DashboardFixture):
         self.assertIn("업데이트 미리보기", self.page("/"))
 
     def test_older_report_and_rule_failures(self):
-        self.login()
         text = self.page(f"/runs/{self.record(older(self.scan_with(0.9)))}")
         for line in ("기지 악성 목록: 확인 안 됨", "규칙: 확인 안 됨", "<li>기지 악성: 확인 안 됨</li>",
                      "<dd>0.900 (기준 이상, 참고값)</dd>"):  # fmt: skip
@@ -150,7 +148,6 @@ class PageTests(DashboardFixture):
         self.assertIn("<li>규칙: 적중, 실패 1개<ul>", text)
 
     def test_project_without_folder_or_lockfile(self):
-        self.login()
         history.register_project(self.project)
         self.head.unlink()
         self.assertIn("package-lock.json이 없습니다.", self.page("/projects/1"))
@@ -162,7 +159,6 @@ class PageTests(DashboardFixture):
         self.assertIn("프로젝트 폴더를 찾을 수 없습니다.", self.page("/projects/1"))
 
     def test_dependencies_and_unknown_ids(self):
-        self.login()
         self.new["packages"][""] = {"dependencies": {"example": "^1.0.0"}}
         self.new["packages"]["node_modules/example/node_modules/inner"] = package("2.0.0")
         self.save_locks()
@@ -172,7 +168,7 @@ class PageTests(DashboardFixture):
         self.assertIn("<td>inner</td><td>2.0.0</td><td>node_modules/example/node_modules/inner</td>",
                       text)  # fmt: skip
         for url in ("/projects/2", "/runs/1", f"/runs/{2**70}"):
-            self.assertEqual(self.client.get(url).status_code, 404, url)
+            self.assertEqual(self.get(url).status_code, 404, url)
 
     def test_resources_have_no_external_urls(self):
         package_dir = Path(self.app.__file__).parent
@@ -200,10 +196,9 @@ class SecurityTests(DashboardFixture):
         self.assertNotIn("server", headers)
 
     def test_host_must_be_this_address_and_port(self):
-        self.login()
         for host in (f"127.0.0.1:{PORT + 1}", "127.0.0.1", f"localhost:{PORT}",
                      f"evil.test:{PORT}", ""):  # fmt: skip
-            for url in ("/", f"/login?token={TOKEN}"):
+            for url in (S + "/", S + "/static/style.css", "/"):
                 with self.subTest(host=host, url=url):
                     response = self.client.get(url, headers={"host": host},
                                                follow_redirects=False)  # fmt: skip
@@ -211,77 +206,96 @@ class SecurityTests(DashboardFixture):
                     self.assert_headers(response)
                     self.assertNotIn("set-cookie", response.headers)
 
-    def test_every_request_needs_a_session(self):
+    def test_every_request_needs_the_session_prefix(self):
+        wrong = SESSION[:-1] + ("A" if SESSION[-1] != "A" else "B")
+        urls = [*self.URLS, f"/login?token={SESSION}", f"/s/{wrong}/", f"/s/{SESSION}",
+                f"/s/{SESSION[:-1]}/", f"/s/{SESSION}x/", f"/s//{SESSION}/", f"/x/{SESSION}/",
+                f"/S/{SESSION}/", "/s/", "/s", f"/s/{wrong}/static/style.css",
+                f"/static/{SESSION}/style.css", f"/{SESSION}/", "/s/%C3%A9/"]  # fmt: skip
+        for url in urls:
+            with self.subTest(url=url):
+                response = self.client.get(url, follow_redirects=False)
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.text, self.app.SESSION_REFUSED)  # fixed, no path
+                self.assert_headers(response)
+                self.assertNotIn("set-cookie", response.headers)
+        # A cookie, even holding the session, is not a credential: the address is.
+        self.client.cookies.set(f"depbee_session_{PORT}", SESSION)
+        self.client.cookies.set("session", SESSION)
+        for url in ("/", "/model"):
+            self.assertEqual(self.client.get(url).status_code, 403, url)
+        self.client.cookies.clear()
+        self.assertEqual(self.client.get(S + "/", headers={"cookie": "x=1"}).status_code, 200)
+
+    def test_the_session_prefix_opens_every_page_without_cookies(self):
+        self.record(self.scan_with(0.1))
         for url in self.URLS:
-            response = self.client.get(url)
-            self.assertEqual(response.status_code, 403, url)
+            response = self.get(url)
+            self.assertEqual(response.status_code, 200, url)
             self.assert_headers(response)
-        wrong = self.client.get("/login?token=" + TOKEN[:-1] + "X", follow_redirects=False)
-        self.assertEqual(wrong.status_code, 403)
-        self.assertNotIn("set-cookie", wrong.headers)
-        self.assertEqual(self.client.get("/login", follow_redirects=False).status_code, 403)
-        self.client.cookies.set(self.app.cookie_name(PORT), TOKEN)  # the token is not a session
-        self.assertEqual(self.client.get("/").status_code, 403)
+            self.assertNotIn("set-cookie", response.headers)
+            self.assertEqual(len(self.client.cookies), 0)
+        html = self.page("/")
+        self.assertIn(f'<link rel="stylesheet" href="{S}/static/style.css">', html)
+        self.assertIn(f'<a href="{S}/projects/1">', html)
+        self.assertIn(f'<form method="post" action="{S}/projects">', html)
+        self.assertIn(f'<input type="hidden" name="session" value="{SESSION}">', html)
+        self.assertEqual(self.get("/login").status_code, 404)  # no login step any more
 
-    def test_login_sets_a_strict_http_only_session_and_drops_the_token(self):
-        response = self.login()
-        self.assert_headers(response)
-        self.assertEqual(response.headers["location"], "/")
-        cookie = response.headers["set-cookie"]
-        name, value = cookie.split(";")[0].split("=", 1)
-        self.assertEqual(name, f"depbee_session_{PORT}")
-        self.assertNotIn(TOKEN, cookie)
-        self.assertGreaterEqual(len(value), 40)
-        attributes = {part.strip().lower() for part in cookie.split(";")[1:]}
-        self.assertTrue({"httponly", "path=/", "samesite=strict"} <= attributes, attributes)
-        for url in self.URLS[:3]:
-            page = self.client.get(url)
-            self.assertEqual(page.status_code, 200, url)
-            self.assert_headers(page)
-            self.assertNotIn(TOKEN, page.text)
+    def test_npm_links_send_no_referrer(self):
+        # The session is in the address; a link out must not carry it as a Referer.
+        run = self.record(self.scan_with(0.9))
+        html = self.page(f"/runs/{run}")
+        links = re.findall(r"<a [^>]*>", html)
+        npm = [link for link in links if "https://www.npmjs.com/package/" in link]
+        self.assertTrue(npm)
+        for link in npm:
+            self.assertIn('rel="noreferrer noopener"', link)
 
-    def test_post_needs_session_csrf_and_origin(self):
-        self.login()
-        csrf, path = self.csrf(), str(self.project)
-        self.assertNotIn(TOKEN, csrf)
+    def test_post_needs_the_form_session_and_origin(self):
+        form, path = self.form_session(), str(self.project)
+        self.assertEqual(form, SESSION)
         refused = {
-            "no csrf": self.post(path),
-            "wrong csrf": self.post(path, csrf[:-1] + ("A" if csrf[-1] != "A" else "B")),
-            "no origin": self.post(path, csrf, origin=None),
-            "other port": self.post(path, csrf, origin=f"http://127.0.0.1:{PORT + 1}"),
-            "other host": self.post(path, csrf, origin=f"http://localhost:{PORT}"),
-            "null origin": self.post(path, csrf, origin="null"),
-            "https origin": self.post(path, csrf, origin=f"https://127.0.0.1:{PORT}"),
+            "no form session": self.post(path),
+            "wrong form session": self.post(path, form[:-1] + ("A" if form[-1] != "A" else "B")),
+            "empty form session": self.post(path, ""),
+            "no origin": self.post(path, form, origin=None),
+            "other port": self.post(path, form, origin=f"http://127.0.0.1:{PORT + 1}"),
+            "other host": self.post(path, form, origin=f"http://localhost:{PORT}"),
+            "null origin": self.post(path, form, origin="null"),
+            "https origin": self.post(path, form, origin=f"https://127.0.0.1:{PORT}"),
         }
         for label, response in refused.items():
             with self.subTest(label):
                 self.assertEqual(response.status_code, 403)
                 self.assert_headers(response)
+                self.assertNotIn("set-cookie", response.headers)
+        self.assertEqual(refused["wrong form session"].text, self.app.FORM_REFUSED)
         self.assertEqual(history.list_projects(), [])
-        self.client.cookies.clear()
-        self.assertEqual(self.post(path, csrf).status_code, 403)  # no session
+        # Without the prefix the request never reaches the form.
+        response = self.client.post("/projects", data={"path": path, "session": form},
+                                    headers={"origin": BASE})  # fmt: skip
+        self.assertEqual(response.status_code, 403)
         self.assertEqual(history.list_projects(), [])
         # GET never changes state: the form's route takes POST only.
-        self.login()
-        self.assertEqual(self.client.get("/projects").status_code, 405)
+        self.assertEqual(self.get("/projects").status_code, 405)
 
     def test_large_or_odd_bodies_are_refused(self):
-        self.login()
-        csrf = self.csrf()
-        big = self.post("C:/" + "a" * (self.app.MAX_BODY + 1), csrf)
+        form = self.form_session()
+        big = self.post("C:/" + "a" * (self.app.MAX_BODY + 1), form)
         self.assertEqual(big.status_code, 413)
         self.assert_headers(big)
         fields = "&".join(f"f{i}=1" for i in range(self.app.MAX_FIELDS + 1))
-        response = self.client.post("/projects", content=f"csrf={csrf}&{fields}",
+        response = self.client.post(S + "/projects", content=f"session={form}&{fields}",
                                     headers={"origin": BASE, "content-type":
                                              "application/x-www-form-urlencoded"})  # fmt: skip
         self.assertEqual(response.status_code, 400)
-        response = self.client.post("/projects", content=json.dumps({"csrf": csrf}),
+        response = self.client.post(S + "/projects", content=json.dumps({"session": form}),
                                     headers={"origin": BASE, "content-type": "application/json"})  # fmt: skip
         self.assertEqual(response.status_code, 415)
         self.assertEqual(history.list_projects(), [])
 
-    def test_server_settings_and_the_one_line_with_the_token(self):
+    def test_server_settings_and_the_one_line_with_the_session(self):
         from depbee.dashboard import app
 
         started = {}
@@ -304,8 +318,9 @@ class SecurityTests(DashboardFixture):
                           config.log_level, config.lifespan, config.ws),
                          (False, False, False, "warning", "off", "none"))  # fmt: skip
         first, second = out.getvalue().splitlines()
-        self.assertRegex(first, rf"\Ahttp://127\.0\.0\.1:{port}/login\?token=[A-Za-z0-9_-]{{43}}\Z")
-        self.assertNotIn("token", second)
+        self.assertRegex(first, rf"\Ahttp://127\.0\.0\.1:{port}/s/[A-Za-z0-9_-]{{43}}/\Z")
+        session = first.split("/")[4]
+        self.assertNotIn(session, second)
         code, err = None, io.StringIO()
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
             code = main(["dashboard", "--port", "70000"])
@@ -315,21 +330,19 @@ class SecurityTests(DashboardFixture):
     def test_an_unexpected_error_is_a_fixed_500_with_the_headers(self):
         from starlette.testclient import TestClient
 
-        client = TestClient(self.app.build_app(PORT, TOKEN), base_url=BASE,
+        client = TestClient(self.app.build_app(PORT, SESSION), base_url=BASE,
                             raise_server_exceptions=False)  # fmt: skip
         self.addCleanup(client.close)
-        self.assertEqual(client.get(f"/login?token={TOKEN}", follow_redirects=False).status_code,
-                         303)  # fmt: skip
         marker = "C:\\private\\folder\\history.sqlite3 synthetic-secret-0123456789"
         with mock.patch.object(history, "list_projects", side_effect=RuntimeError(marker)):
-            response = client.get("/")
+            response = client.get(S + "/")
         self.assertEqual(response.status_code, 500)
         self.assert_headers(response)
         self.assertEqual(
             response.text, "요청을 처리하지 못했습니다(이력 데이터베이스나 파일을 읽지 못함)."
         )
         exposed = response.text + "".join(f"{k}: {v}" for k, v in response.headers.items())
-        for secret in (marker, "private", "synthetic-secret", "RuntimeError", TOKEN):
+        for secret in (marker, "private", "synthetic-secret", "RuntimeError", SESSION):
             self.assertNotIn(secret, exposed)
 
 
@@ -341,7 +354,6 @@ class EscapeTests(DashboardFixture):
         # The project keeps its real path, so /projects/1 really reads and renders the lockfile.
         from markupsafe import escape
 
-        self.login()
         history.register_project(self.project)
         shown = []
         for index, text in enumerate(self.STRINGS):
@@ -360,7 +372,6 @@ class EscapeTests(DashboardFixture):
         self.check(html)
 
     def test_report_and_path_strings_stay_inert(self):
-        self.login()
         report = self.scan_with(
             0.9, known_malicious=KnownList((ADVISORY,)), rules=Rules((rule("hit"),))
         )
@@ -389,7 +400,6 @@ class EscapeTests(DashboardFixture):
         self.assertTrue(all(c.isprintable() or c in "\n" for c in html))
 
     def test_hostile_strings_are_shown_as_visible_escapes(self):
-        self.login()
         report = self.scan_with(0.9)
         report["results"][0]["package"] = "\u202eexe.js\udc80"
         html = self.page(f"/runs/{self.record(report)}")
@@ -408,8 +418,7 @@ class EscapeTests(DashboardFixture):
 
 class RegistrationTests(DashboardFixture):
     def register(self, path):
-        self.login()
-        return self.post(path, self.csrf())
+        return self.post(path, self.form_session())
 
     def assert_refused(self, path, message):
         response = self.register(path)
@@ -421,9 +430,9 @@ class RegistrationTests(DashboardFixture):
 
     def test_register_and_register_again(self):
         response = self.register(str(self.project))
-        self.assertEqual((response.status_code, response.headers["location"]), (303, "/projects/1"))
-        again = self.post(str(self.project) + os.sep, self.csrf())
-        self.assertEqual(again.headers["location"], "/projects/1")
+        self.assertEqual((response.status_code, response.headers["location"]), (303, S + "/projects/1"))
+        again = self.post(str(self.project) + os.sep, self.form_session())
+        self.assertEqual(again.headers["location"], S + "/projects/1")
         (project,) = history.list_projects()
         self.assertEqual(project["path"], str(self.project.resolve()))
         self.assertIn(str(self.project.resolve()), self.page("/"))

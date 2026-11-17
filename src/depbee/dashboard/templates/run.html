@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}depbee 실행 #{{ run.id }}{% endblock %}
 {% block main %}
-<p><a href="/projects/{{ project.id }}">{{ project.path }}</a></p>
+<p><a href="{{ base }}/projects/{{ project.id }}">{{ project.path }}</a></p>
 <h1>실행 #{{ run.id }}: {{ run.kind }}, {{ run.created_at }}</h1>
 {% if preview is not none %}
 <section class="preview">
