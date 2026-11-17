@@ -549,11 +549,19 @@ class ProcessTreeTests(unittest.TestCase):
     def test_timeout_kills_the_child_and_its_grandchild(self):
         for python in self.PYTHONS:
             with self.subTest(python=python):
-                began = time.monotonic()
-                with self.assertRaisesRegex(GuardError, "npm did not finish within 3 seconds"):
-                    git_input._run(self.parent(python, "sleep"), self.tmp, 100, timeout=3,
-                                   name="npm", tree=True)  # fmt: skip
-                self.assertLess(time.monotonic() - began, 15)
+                # A loaded machine may start the four processes (two with a venv wrapper) only
+                # after a short limit; such a run shows nothing, so a longer limit is tried. The
+                # last bound (15 + 12 s) stays under the grandchild's 30 s, so a grandchild that
+                # outlives the limit and then ends by itself still fails a check.
+                for timeout in (3, 10, 15):
+                    began = time.monotonic()
+                    message = f"npm did not finish within {timeout} seconds"
+                    with self.assertRaisesRegex(GuardError, message):
+                        git_input._run(self.parent(python, "sleep"), self.tmp, 100,
+                                       timeout=timeout, name="npm", tree=True)  # fmt: skip
+                    self.assertLess(time.monotonic() - began, timeout + 12)
+                    if self.beat.exists():
+                        break
                 self.assert_stopped()
 
     def test_a_grandchild_left_after_a_normal_exit_is_killed(self):
