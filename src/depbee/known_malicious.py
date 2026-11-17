@@ -49,6 +49,10 @@ SEMVER = re.compile(
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
     re.ASCII,
 )
+# As npm semver: a numeric identifier has at most 16 digits (MAX_SAFE_COMPONENT_LENGTH) and is at
+# most Number.MAX_SAFE_INTEGER, so int() never meets Python's digit limit (a ValueError).
+MAX_NUMBER_DIGITS = 16
+MAX_SAFE_INTEGER = 2**53 - 1
 _SHA256 = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _RECORD_FILE = re.compile(r"MAL-[^/]+\.json")
 # Below every version: OSV introduced "0".
@@ -58,16 +62,23 @@ _UPPER = {"fixed": "<", "last_affected": "<="}
 
 
 def version_key(version: str) -> tuple:
-    """SemVer 2.0 precedence key; build metadata is ignored. GuardError if not strict SemVer."""
+    """SemVer 2.0 precedence key; build metadata is ignored. GuardError if not strict SemVer or
+    a numeric identifier is longer than 16 digits or above 2**53 - 1."""
     match = SEMVER.fullmatch(version) if isinstance(version, str) else None
     if match is None:
         raise GuardError(f"Not a strict SemVer 2.0 version: {str(version)[:64]!r}")
+
+    def number(text: str) -> int:
+        if len(text) > MAX_NUMBER_DIGITS or int(text) > MAX_SAFE_INTEGER:
+            raise GuardError(f"Version number is too large: {str(version)[:64]!r}")
+        return int(text)
+
     pre = match[4]
     if pre is None:
         release = (1,)  # a release is above all of its prereleases
     else:
-        release = (0, tuple((0, int(i)) if i.isdigit() else (1, i) for i in pre.split(".")))
-    return int(match[1]), int(match[2]), int(match[3]), release
+        release = (0, tuple((0, number(i)) if i.isdigit() else (1, i) for i in pre.split(".")))
+    return number(match[1]), number(match[2]), number(match[3]), release
 
 
 def query_key(version: str) -> tuple:
@@ -224,7 +235,7 @@ def _record(raw: bytes, stem: str, parts: dict) -> tuple[dict | None, str | None
     versions and ranges are counted in parts."""
     try:
         value = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=_unique_object)
-    except (UnicodeError, json.JSONDecodeError, RecursionError, GuardError):
+    except (ValueError, RecursionError):  # also an integer past Python's digit limit
         return None, "record_not_json"
     if not isinstance(value, dict) or value.get("id") != stem:
         return None, "record_id_mismatch"
@@ -243,14 +254,24 @@ def _record(raw: bytes, stem: str, parts: dict) -> tuple[dict | None, str | None
         if not isinstance(name, str) or not name:
             parts["affected_name_invalid"] = parts.get("affected_name_invalid", 0) + 1
             continue
-        versions, intervals = names.setdefault(name, [[], []])
         listed = item.get("versions", [])
-        for version in listed if isinstance(listed, list) else [None]:
+        # A list must stay a list: an item whose versions are all unusable is left out, never
+        # turned into one without versions, whose unbounded ranges would then match.
+        if not isinstance(listed, list):
+            parts["versions_not_list"] = parts.get("versions_not_list", 0) + 1
+            continue
+        valid = []
+        for version in listed:
             try:
                 version_key(version)
-                versions.append(version)
+                valid.append(version)
             except GuardError:
                 parts["version_not_semver"] = parts.get("version_not_semver", 0) + 1
+        if listed and not valid:
+            parts["versions_all_invalid"] = parts.get("versions_all_invalid", 0) + 1
+            continue
+        versions, intervals = names.setdefault(name, [[], []])
+        versions.extend(valid)
         ranges = item.get("ranges", [])
         for found in ranges if isinstance(ranges, list) else [None]:
             usable, reason = _range(found)
@@ -467,7 +488,7 @@ def load(directory: Path) -> KnownMaliciousIndex:
         manifest, manifest_sha256 = read_json(manifest_path)
     except OSError as exc:
         raise GuardError(f"Known malicious index manifest cannot be read: {manifest_path}") from exc
-    except GuardError as exc:
+    except ValueError as exc:  # GuardError, or an integer past Python's digit limit
         raise GuardError(f"Known malicious index manifest is invalid: {exc}") from exc
     keys = {"format", "format_version", "index_sha256", *_COPIES}
     _header(manifest, manifest_path, MANIFEST_FORMAT, keys)
@@ -491,7 +512,7 @@ def load(directory: Path) -> KnownMaliciousIndex:
         return _last[1]
     try:
         body = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
-    except (UnicodeError, json.JSONDecodeError, RecursionError, GuardError) as exc:
+    except (ValueError, RecursionError) as exc:  # also an integer past Python's digit limit
         raise GuardError(f"Known malicious index {index_path}: invalid JSON ({exc})") from exc
     _require(isinstance(body, dict), index_path, "not a JSON object")
     _header(body, index_path, INDEX_FORMAT, {"format", "format_version", "counts", "packages",

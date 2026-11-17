@@ -525,5 +525,115 @@ class MatchTests(IndexDir, unittest.TestCase):
                 self.assertEqual(self.index.baseline_records(name, version), expected)
 
 
+# Past Python's default limit for converting a digit string to int (4300 digits).
+LONG = "9" * 5000
+
+
+def run_build_script(zipped, out, as_of=AS_OF):
+    env = {**os.environ, "PYTHONPATH": str(ROOT / "src"), "PYTHONIOENCODING": "utf-8"}
+    script = ROOT / "scripts" / "build_known_malicious_index.py"
+    return subprocess.run([sys.executable, str(script), str(zipped), str(out), "--as-of", as_of],
+                          capture_output=True, text=True, env=env, timeout=120)  # fmt: skip
+
+
+class MalformedRecordTests(unittest.TestCase):
+    """REV-KM01-R1 F1 and F3: unusable version lists and long numbers while building."""
+
+    def load(self, records, extra=()):
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        index, manifest, header = build_index(snapshot(records, extra), AS_OF)
+        (tmp / "index.json").write_bytes(index)
+        (tmp / "manifest.json").write_bytes(manifest)
+        with mock.patch.object(known_malicious, "_last", None):
+            return load(tmp), header["counts"]
+
+    def test_a_list_without_valid_versions_never_turns_on_unbounded_ranges(self):
+        records = [
+            record("MAL-EXAMPLE-9001", "example-invalid-list", ["1.0"],
+                   [semver(("introduced", "0"))]),
+            record("MAL-EXAMPLE-9002", "example-invalid-open", ["01.0.0", "v2.0.0"],
+                   [semver(("introduced", "1.0.0"))]),
+            record("MAL-EXAMPLE-9003", "example-versions-not-list", "1.0.0",
+                   [semver(("introduced", "0"))]),
+            record("MAL-EXAMPLE-9004", "example-partly-valid", ["1.0", "1.0.1"],
+                   [semver(("introduced", "0"))]),
+            record("MAL-EXAMPLE-9005", "example-empty-list", [], [semver(("introduced", "0"))]),
+        ]  # fmt: skip
+        index, counts = self.load(records)
+        for name in ("example-invalid-list", "example-invalid-open", "example-versions-not-list"):
+            for version in ("0.0.1", "1.0.0", "9.0.0"):
+                with self.subTest(name=name, version=version):
+                    self.assertEqual(index.match(name, version), [])
+        # One valid version left: still a record with a list (bounded ranges only).
+        self.assertEqual([m["match_kind"] for m in index.match("example-partly-valid", "1.0.1")],
+                         ["listed_version"])  # fmt: skip
+        self.assertEqual(index.match("example-partly-valid", "9.0.0"), [])
+        # An empty list lists nothing, as a record without versions.
+        self.assertEqual([m["affected"] for m in index.match("example-empty-list", "9.0.0")],
+                         [">=0"])  # fmt: skip
+        self.assertEqual(counts["skipped_parts"], {
+            "version_not_semver": 4, "versions_all_invalid": 2, "versions_not_list": 1})  # fmt: skip
+        self.assertEqual(counts["skipped_records"], {"nothing_to_match": 3})
+        self.assertEqual(counts["records"], 2)
+
+    def test_long_numbers_in_versions_and_bounds(self):
+        seventeen = "12345678901234567"
+        records = [
+            record("MAL-EXAMPLE-9101", "example-long-version", [f"{seventeen}.0.0", "1.0.0"]),
+            record("MAL-EXAMPLE-9102", "example-long-bound",
+                   ranges=[semver(("introduced", f"1.0.0-{seventeen}"))]),
+            record("MAL-EXAMPLE-9103", "example-huge-version", [f"{LONG}.0.0", "2.0.0"]),
+            record("MAL-EXAMPLE-9104", "example-unsafe", ["9007199254740992.0.0", "3.0.0"]),
+        ]  # fmt: skip
+        index, counts = self.load(records)
+        self.assertEqual(counts["skipped_parts"],
+                         {"version_not_semver": 3, "range_bound_not_semver": 1})  # fmt: skip
+        self.assertEqual(counts["skipped_records"], {"nothing_to_match": 1})
+        # As npm semver: at most 16 digits and Number.MAX_SAFE_INTEGER per numeric identifier.
+        for bad in (f"{seventeen}.0.0", f"1.0.0-{seventeen}", f"{LONG}.0.0", f"1.0.0-{LONG}",
+                    "9007199254740992.0.0", "1.0.0-alpha.9007199254740992"):  # fmt: skip
+            with self.subTest(version=bad[:40]):
+                with self.assertRaises(GuardError):
+                    version_key(bad)
+                with self.assertRaises(GuardError):
+                    index.match("example-long-version", bad)
+        version_key("9007199254740991.0.0")
+        version_key("1.0.0-9007199254740991")
+        self.assertEqual(index.match("example-long-version", "9007199254740991.0.0"), [])
+
+    def test_long_json_integers_in_a_record(self):
+        raw = json.dumps(record("MAL-EXAMPLE-9105", "example-x", ["1.0.0"]))
+        raw = raw[:-1] + ', "database_specific": {"n": ' + LONG + "}}"
+        _, counts = self.load([record("MAL-EXAMPLE-9106", "example-y", ["1.0.0"])],
+                              [("MAL-EXAMPLE-9105.json", raw)])  # fmt: skip
+        self.assertEqual(counts["skipped_records"], {"record_not_json": 1})
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        zipped = tmp / "all.zip"
+        zipped.write_bytes(snapshot([record("MAL-EXAMPLE-9103", "example-huge", [f"{LONG}.0.0"])],
+                                    [("MAL-EXAMPLE-9105.json", raw)]))  # fmt: skip
+        done = run_build_script(zipped, tmp / "out")
+        self.assertNotIn("Traceback", done.stderr)
+        self.assertEqual(done.returncode, 0, done.stderr[-300:])
+        counts = json.loads(done.stdout)["counts"]
+        self.assertEqual(counts["skipped_records"], {"record_not_json": 1, "nothing_to_match": 1})
+
+
+class LongIntegerLoadTests(IndexDir, unittest.TestCase):
+    """REV-KM01-R1 F3: long JSON integers in the index files are GuardError, not ValueError."""
+
+    def test_long_integers(self):
+        long = b'"format_version":' + LONG.encode()
+        manifest = self.manifest_bytes.replace(b'"format_version":1', long)
+        cases = {
+            "manifest": (self.index_bytes, manifest),
+            "index": (self.index_bytes.replace(b'"format_version":1', long), None),
+        }
+        for label, (index, manifest) in cases.items():
+            with self.subTest(label), mock.patch.object(known_malicious, "_last", None):
+                self.write(index, manifest)
+                with self.assertRaises(GuardError):
+                    load(self.dir)
+
+
 if __name__ == "__main__":
     unittest.main()
