@@ -659,10 +659,11 @@ class UpdateCheckTests(ScreenFixture):
         seen = {}
 
         def during(project, names, **options):
-            # Another request arrives while this preview runs in its worker thread.
+            # Another request arrives while this preview runs in its worker thread. Switch the
+            # fake first so a missing refusal fails at the assertions instead of recursing.
+            self.preview_files.side_effect = self.fake_preview
             seen["check"] = self.check("example")
             seen["page"] = self.get(f"/projects/{self.project_id}")
-            self.preview_files.side_effect = self.fake_preview
             return self.fake_preview(project, names, **options)
 
         self.preview_files.side_effect = during
