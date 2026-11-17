@@ -430,9 +430,9 @@ class MatchTests(IndexDir, unittest.TestCase):
                 self.assertEqual(self.index.match("example-open", version),
                                  [hit("MAL-EXAMPLE-0007", "affected_range", ">=1.2.2")])  # fmt: skip
 
-    # The range policy (known_malicious._match_ranges, decision pending): change this table with
-    # the function. Records with versions use those and bounded ranges; unbounded ranges only
-    # count for records without versions.
+    # The range policy (known_malicious._match_ranges, decided 2026-11-17; revisit with the fixed
+    # verdict table): change this table with the function. Records with versions use those and
+    # bounded ranges; unbounded ranges only count for records without versions.
     POLICY = [
         ("example-mixed", "1.19.1", ("MAL-EXAMPLE-0008", "listed_version")),
         ("example-mixed", "1.19.2", ("MAL-EXAMPLE-0008", "listed_version")),

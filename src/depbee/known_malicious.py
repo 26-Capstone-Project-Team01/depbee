@@ -10,7 +10,8 @@ Rules (docs/contracts.md 4, client-dev 2.3.1 recommended defaults):
 - Names match exactly, case included (no normalization).
 - Versions compare by SemVer 2.0 precedence (section 11), build metadata ignored.
 - The npm security placeholder 0.0.1-security never matches, whatever the record says.
-- Which ranges count when a record also lists versions: _match_ranges() (decision pending).
+- Which ranges count when a record also lists versions: _match_ranges() (decided 2026-11-17;
+  revisit with the fixed verdict table).
 - Baseline candidates (D-16) are excluded by listed versions and bounded ranges only.
 """
 
@@ -93,10 +94,11 @@ def _inside(key: tuple, interval: list) -> bool:
 
 
 def _match_ranges(versions: list, intervals: list) -> list:
-    """Range policy, the one place to change (client-dev 2.3.1 3, decision pending): a record
-    that lists versions matches by those and its bounded ranges only; unbounded ranges (all
-    versions, or "X and later") count only for records without versions. Alternatives: OSV's
-    union (return intervals) or the training rule (return [] if versions else intervals)."""
+    """Range policy, the one place to change (client-dev 2.3.1 3, decided 2026-11-17; revisit with
+    the fixed verdict table): a record that lists versions matches by those and its bounded
+    ranges only; unbounded ranges (all versions, or "X and later") count only for records without
+    versions. Alternatives: OSV's union (return intervals) or the training rule (return [] if
+    versions else intervals)."""
     return [i for i in intervals if i[1] is not None] if versions else intervals
 
 
