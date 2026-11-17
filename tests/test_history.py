@@ -304,6 +304,46 @@ class ApplyStoreTests(HistoryFixture):
         with self.assertRaises(ValueError):
             history.record("scan", self.project, self.report(), apply=apply)
 
+    def test_an_apply_added_later_to_its_update_preview_run(self):
+        # The dashboard records the preview first and its apply after the user confirmed.
+        self.assertIsNone(history.record_apply(1, PREVIEW, apply_document()))  # no database
+        project_id = history.register_project(self.project)
+        run_id = history.record("update_preview", self.project, self.report(), PREVIEW)
+        self.assertIsNone(history.get_run(run_id)["apply"])
+        apply = apply_document()
+        self.assertIsInstance(history.record_apply(run_id, PREVIEW, apply), int)
+        stored = history.get_run(run_id)["apply"]
+        self.assertEqual(stored["apply"], apply)
+        # The same columns as record() stores for the same preview and apply.
+        same = history.record("update_preview", self.project, self.report(), PREVIEW, apply=apply)
+        columns = [k for k in history.APPLY_COLUMNS if k not in ("id", "run_id", "created_at")]
+        self.assertEqual({k: stored[k] for k in columns},
+                         {k: history.get_run(same)["apply"][k] for k in columns})  # fmt: skip
+        self.assertEqual([a["run_id"] for a in history.list_applies(project_id)], [same, run_id])
+        before = self.db.read_bytes()
+        self.assertIsNone(history.record_apply(999, PREVIEW, apply))  # no such run
+        self.assertEqual(self.db.read_bytes(), before)
+        scan_run = history.record("scan", self.project, self.report())
+        before = self.db.read_bytes()
+        for other in (run_id, same, scan_run):  # already applied, or not an update preview
+            with self.subTest(run=other), self.assertRaises(ValueError):
+                history.record_apply(other, PREVIEW, apply_document("refused"))
+        self.assertEqual(self.db.read_bytes(), before)
+        self.assertEqual(len(history.list_applies(project_id)), 2)
+
+    def test_record_apply_upgrades_version_1_and_skips_without_a_home(self):
+        self.make_version_1()
+        run_id = history.record("update_preview", self.project, self.report(), PREVIEW)
+        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(2,)])  # record() upgraded it
+        sql(self.db, "DROP TABLE applies")
+        sql(self.db, "PRAGMA user_version = 1")
+        history.record_apply(run_id, PREVIEW, apply_document())
+        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(2,)])
+        self.assertEqual(history.get_run(run_id)["apply"]["outcome"], "applied")
+        os.environ.pop("DEPBEE_HISTORY_DB")
+        with mock.patch("pathlib.Path.home", side_effect=RuntimeError("no home")):
+            self.assertIsNone(history.record_apply(run_id, PREVIEW, apply_document()))
+
     def test_version_1_is_read_as_is_and_upgraded_by_the_next_write(self):
         self.make_version_1()
         before = self.db.read_bytes()

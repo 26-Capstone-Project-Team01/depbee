@@ -178,6 +178,23 @@ class GateTests(ApplyFixture):
         self.assert_unchanged()
 
 
+class PreviewFilesTests(ApplyFixture):
+    def test_preview_files_returns_the_preview_and_the_new_bytes_for_a_later_apply(self):
+        self.verdict([PASS], 0)
+        result, new_package, new_lock = service.preview_files(self.upd, ["example"],
+                                                              model_dir=self.root)  # fmt: skip
+        self.assertEqual(list(result), ["preview", "report"])
+        self.assertEqual(result["preview"], self.preview(["example"])["preview"])
+        self.assertIn(PREVIEW_NOTICE, result["preview"]["notices"])
+        self.assertEqual((new_package, new_lock), (self.original["package.json"],
+                                                   self.head.read_bytes()))  # fmt: skip
+        self.assertEqual(sha(new_lock), result["preview"]["new_package_lock_sha256"])
+        self.assertEqual(self.project_state(), {k: sha(v) for k, v in self.original.items()})
+        self.assertFalse(list(self.root.glob("depbee_preview_*")))  # bytes only, no files left
+        apply = apply_preview(self.upd, result, new_package, new_lock, mode="lockfile")
+        self.assert_applied(apply)
+
+
 class RecheckTests(ApplyFixture):
     def setUp(self):
         super().setUp()

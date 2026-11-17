@@ -251,6 +251,26 @@ def preview_update(
     return result
 
 
+def preview_files(
+    project: Path,
+    packages: list[str] | None = None,
+    *,
+    model_dir: Path | None = None,
+    progress: Callable[[int, int, dict], None] | None = None,
+    cache_dir: Path | None = None,
+    no_cache: bool = False,
+) -> tuple[dict, bytes, bytes]:
+    """preview_update()'s {preview, report} and the new package.json and lockfile bytes, for a
+    caller that keeps them in memory and applies them later with apply_preview() (the
+    dashboard). Same arguments, preview, report and errors as preview_update(); the bytes are
+    never written to a file here.
+    """
+    return _preview(
+        project, packages, model_dir=model_dir, progress=progress, cache_dir=cache_dir,
+        no_cache=no_cache,
+    )  # fmt: skip
+
+
 def _preview(
     project: Path, packages: list[str] | None, **scan_options
 ) -> tuple[dict, bytes, bytes]:
