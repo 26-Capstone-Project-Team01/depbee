@@ -550,9 +550,10 @@ class ProcessTreeTests(unittest.TestCase):
         for python in self.PYTHONS:
             with self.subTest(python=python):
                 # A loaded machine may start the four processes (two with a venv wrapper) only
-                # after a short limit; such a run shows nothing, so a longer limit is tried. Each
-                # stays under the grandchild's 30 s so it still beats when the limit kills it.
-                for timeout in (3, 10, 25):
+                # after a short limit; such a run shows nothing, so a longer limit is tried. The
+                # last bound (15 + 12 s) stays under the grandchild's 30 s, so a grandchild that
+                # outlives the limit and then ends by itself still fails a check.
+                for timeout in (3, 10, 15):
                     began = time.monotonic()
                     message = f"npm did not finish within {timeout} seconds"
                     with self.assertRaisesRegex(GuardError, message):
