@@ -52,11 +52,13 @@ class Fixture(unittest.TestCase):
             here = mock.patch("depbee.analysis.bounded.run", side_effect=lambda f, args: f(*args))
             here.start()
             self.addCleanup(here.stop)
-        # A developer's DEPBEE_MODEL_DIR must not change service and CLI results.
+        # A developer's DEPBEE_MODEL_DIR or DEPBEE_KNOWN_MALICIOUS_DIR must not change service and
+        # CLI results.
         env = mock.patch.dict(os.environ)
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("DEPBEE_MODEL_DIR", None)
+        os.environ.pop("DEPBEE_KNOWN_MALICIOUS_DIR", None)
         # The local history (depbee.history) stays in this run; the file is not created.
         os.environ["DEPBEE_HISTORY_DB"] = str(self.root / "history.sqlite3")
         self.project = self.root / "project"

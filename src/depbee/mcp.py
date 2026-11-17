@@ -99,12 +99,17 @@ SCAN_DESCRIPTION = (
 )
 
 
-def check_package(package: str, *, model_dir: Path | None = None) -> dict:
+def check_package(
+    package: str, *, model_dir: Path | None = None, known_malicious_dir: Path | None = None
+) -> dict:
     """`depbee check NAME@VERSION --format json` as a tool response."""
     return _respond(
         lambda progress: service.check_package(
-            *_split_package(package), model_dir=model_dir, progress=progress
-        )
+            *_split_package(package),
+            model_dir=model_dir,
+            progress=progress,
+            known_malicious_dir=known_malicious_dir,
+        )  # fmt: skip
     )
 
 
@@ -114,6 +119,7 @@ def scan_lockfile(
     base_ref: str | None = None,
     *,
     model_dir: Path | None = None,
+    known_malicious_dir: Path | None = None,
 ) -> dict:
     """`depbee scan PROJECT --extract --format json` (with --base-lock or --base-ref)."""
 
@@ -126,7 +132,7 @@ def scan_lockfile(
             _require(base, stat.S_ISREG, "base_lock", "a file")
         return service.scan_project(
             directory, base, base_ref=base_ref, extract=True, model_dir=model_dir,
-            progress=progress,
+            progress=progress, known_malicious_dir=known_malicious_dir,
         )  # fmt: skip
 
     return _respond(call)
@@ -300,8 +306,9 @@ def _package_strings(value: object, path: str = "", inside: bool = False, names:
             yield from _package_strings(item, f"{path}/{index}", inside)
 
 
-def build_server(model_dir: Path | None = None):
-    """The MCPServer with the two tools; model_dir as in the CLI (else DEPBEE_MODEL_DIR)."""
+def build_server(model_dir: Path | None = None, known_malicious_dir: Path | None = None):
+    """The MCPServer with the two tools; model_dir and known_malicious_dir as in the CLI (else
+    DEPBEE_MODEL_DIR and DEPBEE_KNOWN_MALICIOUS_DIR, read on each call). Not tool inputs."""
     try:
         from mcp.server import MCPServer
         from mcp.server.mcpserver.exceptions import ToolError
@@ -326,15 +333,18 @@ def build_server(model_dir: Path | None = None):
 
     @server.tool(name="check_package", description=CHECK_DESCRIPTION, annotations=hints)
     def check_tool(package: str) -> dict:
-        return result(check_package(package, model_dir=model_dir))
+        return result(
+            check_package(package, model_dir=model_dir, known_malicious_dir=known_malicious_dir)
+        )
 
     @server.tool(name="scan_lockfile", description=SCAN_DESCRIPTION, annotations=hints)
     def scan_tool(project: str, base_lock: str | None = None, base_ref: str | None = None) -> dict:
-        return result(scan_lockfile(project, base_lock, base_ref, model_dir=model_dir))
+        return result(scan_lockfile(project, base_lock, base_ref, model_dir=model_dir,
+                                    known_malicious_dir=known_malicious_dir))  # fmt: skip
 
     return server
 
 
-def serve(model_dir: Path | None = None) -> None:
+def serve(model_dir: Path | None = None, known_malicious_dir: Path | None = None) -> None:
     """Serve the tools over stdio until the client closes it."""
-    build_server(model_dir).run("stdio")
+    build_server(model_dir, known_malicious_dir).run("stdio")

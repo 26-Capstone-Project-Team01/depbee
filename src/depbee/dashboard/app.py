@@ -185,13 +185,15 @@ class Guard:
 
 def build_app(
     port: int, session: str, *, model_dir: Path | None = None, cache_dir: Path | None = None,
-    no_cache: bool = False,
+    no_cache: bool = False, known_malicious_dir: Path | None = None,
 ):  # fmt: skip
     """The guarded ASGI app for 127.0.0.1:port; session is the value in the address printed at
     start (/s/<session>/), which every link, redirect and form carries. model_dir, cache_dir,
-    no_cache: for update previews, as in depbee update."""
+    no_cache, known_malicious_dir: for update previews, as in depbee update."""
     base = f"/s/{session}"
     scan_options = {"model_dir": model_dir, "cache_dir": cache_dir, "no_cache": no_cache}
+    if known_malicious_dir is not None:  # else the options stay as before (the service's default)
+        scan_options["known_malicious_dir"] = known_malicious_dir
 
     def page(request: Request, name: str, status: int = 200, **context) -> Response:
         html = ENV.get_template(name).render(
@@ -619,19 +621,21 @@ def _models() -> list[dict]:
 
 def serve(
     port: int, *, model_dir: Path | None = None, cache_dir: Path | None = None,
-    no_cache: bool = False,
+    no_cache: bool = False, known_malicious_dir: Path | None = None,
 ) -> None:  # fmt: skip
     """Bind 127.0.0.1:port (0 picks a free one), print the session address once and serve until
     Ctrl+C. The session is in that line only: no access log, and errors never quote requests."""
     if not 0 <= port <= 65535:
         raise GuardError("--port must be between 0 and 65535")
+    # Only when given, so that build_app is called as before without an index.
+    known = {"known_malicious_dir": known_malicious_dir} if known_malicious_dir else {}
     sock = socket.create_server((HOST, port))
     try:
         actual = sock.getsockname()[1]
         session = secrets.token_urlsafe(32)
         config = uvicorn.Config(
             build_app(actual, session, model_dir=model_dir, cache_dir=cache_dir,
-                      no_cache=no_cache), host=HOST, port=actual, access_log=False,
+                      no_cache=no_cache, **known), host=HOST, port=actual, access_log=False,
             server_header=False, proxy_headers=False, log_level="warning", lifespan="off",
             ws="none",
         )  # fmt: skip

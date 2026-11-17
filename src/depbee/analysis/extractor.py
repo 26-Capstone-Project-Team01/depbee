@@ -229,6 +229,9 @@ class ExtractorAnalyzer:
     written. After ``analyze()``, ``measurements`` maps each analyzed change_id to (elapsed seconds
     on the monotonic clock for metadata, cache and extraction, whether the cache supplied the
     features).
+    ``known_malicious``, if given, is the run's known malicious index (``known_malicious.load``):
+    baseline candidates it lists or has in a bounded range are skipped (D-16), and the evidence
+    says so. The cache key needs nothing more: it already holds the chosen baseline.
     """
 
     def __init__(
@@ -239,6 +242,7 @@ class ExtractorAnalyzer:
         *,
         cache_dir: Path | None = None,
         cache_model=None,
+        known_malicious=None,
     ) -> None:
         self.backend = backend or FeatureExtractorBackend()
         self.local_sources = dict(local_sources or {})
@@ -248,6 +252,7 @@ class ExtractorAnalyzer:
         )
         self.cache_dir = cache_dir if verified else None
         self.cache_model = cache_model
+        self.known_malicious = known_malicious
         self.measurements: dict[str, tuple[float, bool]] = {}
         self._packuments: dict[str, dict] = {}
 
@@ -344,12 +349,22 @@ class ExtractorAnalyzer:
             published = _integrity_tokens(_dist(packument, name, new).get("integrity"))
             if not published & _integrity_tokens(change["after"]["integrity"]):
                 raise GuardError("Lockfile integrity does not match the registry integrity")
-        baseline = select_baseline(packument, new)
+        skipped: list[tuple[str, list[str]]] = []
+
+        def known(version: str) -> bool:
+            records = self.known_malicious.baseline_records(name, version)
+            if records:
+                skipped.append((version, records))
+            return bool(records)
+
+        baseline = select_baseline(packument, new, known if self.known_malicious else None)
         if baseline is None:
+            excluded = "".join(f"; {v} skipped as known malicious ({', '.join(ids)})"
+                               for v, ids in skipped)  # fmt: skip
             return {
                 "status": "unsupported",
                 "reason": "no_baseline",
-                "error": f"No earlier stable version of {name} to compare {new} with",
+                "error": f"No earlier stable version of {name} to compare {new} with{excluded}",
             }, False
         _dist(packument, name, baseline.version)
         # Local copies are never cached: the key cannot bind files outside the registry.
@@ -370,7 +385,7 @@ class ExtractorAnalyzer:
             "baseline_version": baseline.version,
             "features": features,
             "evidence": self._evidence(
-                change, baseline, local, old_json, new_json, features, package_input
+                change, baseline, local, old_json, new_json, features, package_input, skipped
             ),
         }
         # The parent parsed the metadata, read the cache, built the evidence and checks the
@@ -392,7 +407,7 @@ class ExtractorAnalyzer:
         return True
 
     def _evidence(
-        self, change, baseline, local, old_json, new_json, features, package_input
+        self, change, baseline, local, old_json, new_json, features, package_input, skipped=()
     ) -> list[str]:
         new = change["after"]["version"]
         if baseline.level == "L1":
@@ -400,6 +415,10 @@ class ExtractorAnalyzer:
         else:
             line = "이전 release line의 최신 stable"
         evidence = [f"비교: {baseline.version} → {new} ({line})"]
+        for version, records in skipped:  # D-16
+            evidence.append(
+                _short(f"비교 기준 후보에서 뺌: {version} (기지 악성 기록 {', '.join(records)})")
+            )
         if package_input:
             evidence.append("lockfile 없이 registry 정보로 검사")
         elif change["before"] is None:

@@ -8,12 +8,15 @@ compares the installed version with that predecessor instead and keeps the lockf
 only as context.
 
 Differences from the training rule, both because they need data that inference does not have:
-- Candidates are not checked against OSV MAL-* entries or the training archive. Malicious
-  versions are normally unpublished, so they are already absent from ``versions``.
+- Candidates are checked against OSV MAL-* records only when a known malicious index is
+  connected (``exclude``, D-16), and then only by listed versions and bounded ranges; never
+  against the training archive. Malicious versions are normally unpublished, so they are
+  usually absent from ``versions`` anyway.
 - Candidates published within 24 hours before the new version are not payload-verified.
 """
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -62,8 +65,14 @@ def _timestamp(value: str) -> datetime:
     return stamp
 
 
-def select_baseline(packument: dict, new_version: str) -> Baseline | None:
-    """Return the stable predecessor of a stable ``new_version``, or None if there is none."""
+def select_baseline(
+    packument: dict, new_version: str, exclude: Callable[[str], bool] | None = None
+) -> Baseline | None:
+    """Return the stable predecessor of a stable ``new_version``, or None if there is none.
+
+    exclude: called with a candidate version in the order the rule would pick them, until one is
+    not excluded; an excluded candidate is skipped (D-16, known malicious versions).
+    """
     new = _stable_core(new_version)
     if new is None:
         raise GuardError(f"Baseline rule only covers stable versions: {new_version}")
@@ -84,7 +93,12 @@ def select_baseline(packument: dict, new_version: str) -> Baseline | None:
         candidates.append((core, version))
 
     same_line = [c for c in candidates if release_line(c[0]) == release_line(new)]
+    excluded = set()
     for level, pool in (("L1", same_line), ("L2", candidates)):
-        if pool:
-            return Baseline(max(pool)[1], level)
+        for _, version in sorted(pool, reverse=True):
+            if version in excluded:
+                continue
+            if exclude is None or not exclude(version):
+                return Baseline(version, level)
+            excluded.add(version)
     return None

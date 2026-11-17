@@ -140,6 +140,14 @@ def _cache_arguments(cmd: argparse.ArgumentParser) -> None:
     cache.add_argument("--no-cache", action="store_true", help="Neither read nor write the cache")
 
 
+def _known_malicious_argument(cmd: argparse.ArgumentParser) -> None:
+    cmd.add_argument(
+        "--known-malicious-dir",
+        type=Path,
+        help="Trusted manifest.json + index.json of a known malicious list",
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Analyze npm updates without installing packages")
     parser.add_argument("--version", action="version", version=__version__)
@@ -183,6 +191,7 @@ def _parser() -> argparse.ArgumentParser:
                 "--local-root", type=Path, help="Directory that every --local-source must be in"
             )
             cmd.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
+            _known_malicious_argument(cmd)
             cmd.add_argument("--format", choices=FORMATS, default="text")
             _cache_arguments(cmd)
     check = commands.add_parser(
@@ -197,6 +206,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     check.add_argument("--output", type=Path, help="Write a NEW JSON file (never overwrite inputs)")
     check.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
+    _known_malicious_argument(check)
     check.add_argument("--format", choices=FORMATS, default="text")
     _cache_arguments(check)
     update = commands.add_parser(
@@ -218,6 +228,7 @@ def _parser() -> argparse.ArgumentParser:
         "--output", type=Path, help="Write a NEW JSON file (never overwrite inputs)"
     )
     update.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
+    _known_malicious_argument(update)
     update.add_argument("--format", choices=FORMATS, default="text")
     _cache_arguments(update)
     update.add_argument(
@@ -242,6 +253,7 @@ def _parser() -> argparse.ArgumentParser:
         "(needs .[mcp] and, to analyze, .[extract])",
     )
     serve.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
+    _known_malicious_argument(serve)
     dashboard = commands.add_parser(
         "dashboard",
         help="Serve the local dashboard on 127.0.0.1: registered projects, their dependencies "
@@ -252,6 +264,7 @@ def _parser() -> argparse.ArgumentParser:
         "--port", type=int, default=0, help="Port on 127.0.0.1 (default 0: a free port)"
     )
     dashboard.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
+    _known_malicious_argument(dashboard)
     _cache_arguments(dashboard)
     return parser
 
@@ -836,13 +849,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "mcp":
             from .mcp import serve
 
-            serve(args.model_dir)
+            serve(args.model_dir, args.known_malicious_dir)
             return 0
         if args.command == "dashboard":
             from .dashboard import serve as dashboard
 
             dashboard(args.port, model_dir=args.model_dir, cache_dir=args.cache_dir,
-                      no_cache=args.no_cache)  # fmt: skip
+                      no_cache=args.no_cache,
+                      known_malicious_dir=args.known_malicious_dir)  # fmt: skip
             return 0
         # Refuse a taken --output before any download or extraction; _emit's "x" mode still
         # guards against a file created meanwhile. Same error text as that open().
@@ -861,7 +875,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.confirm_warnings and args.apply is None:
                 raise GuardError(f"{CONFIRM_OPTION} needs --apply")
             options = {"model_dir": args.model_dir, "progress": progress,
-                       "cache_dir": args.cache_dir, "no_cache": args.no_cache}  # fmt: skip
+                       "cache_dir": args.cache_dir, "no_cache": args.no_cache,
+                       "known_malicious_dir": args.known_malicious_dir}  # fmt: skip
             if args.apply is None:
                 result = preview_update(args.project, args.packages, **options)
             else:
@@ -880,6 +895,7 @@ def main(argv: list[str] | None = None) -> int:
                 progress=progress,
                 cache_dir=args.cache_dir,
                 no_cache=args.no_cache,
+                known_malicious_dir=args.known_malicious_dir,
             )
             _emit(report, args)
             return report["exit_code"]
@@ -895,6 +911,7 @@ def main(argv: list[str] | None = None) -> int:
             progress=progress,
             cache_dir=args.cache_dir,
             no_cache=args.no_cache,
+            known_malicious_dir=args.known_malicious_dir,
         )
         _emit(report, args)
         _record("scan", args, report)
