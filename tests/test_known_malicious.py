@@ -618,6 +618,37 @@ class MalformedRecordTests(unittest.TestCase):
         self.assertEqual(counts["skipped_records"], {"record_not_json": 1, "nothing_to_match": 1})
 
 
+class MemoRaceTests(IndexDir, unittest.TestCase):
+    """REV-KM01-R1 F2: the checked index A is returned even if another call replaces the memo
+    with index B right after A's key was compared (made deterministic with a key whose
+    comparison does the replacement)."""
+
+    def test_the_compared_entry_is_the_returned_one(self):
+        other = self.tmp / "other"
+        other.mkdir()
+        index_b, manifest_b, _ = build_index(snapshot(RECORDS[:3]), AS_OF)
+        (other / "index.json").write_bytes(index_b)
+        (other / "manifest.json").write_bytes(manifest_b)
+        first = load(self.dir)
+        key_a = known_malicious._last[0]
+        second = load(other)
+        key_b = known_malicious._last[0]
+        self.assertIsNot(first, second)
+
+        class Replaced(tuple):
+            """key_a, but comparing it stores B as another thread's load() would."""
+
+            def __eq__(self, other):
+                known_malicious._last = (key_b, second)
+                return tuple(self) == other
+
+            __hash__ = tuple.__hash__
+
+        known_malicious._last = (Replaced(key_a), first)
+        self.assertIs(load(self.dir), first)
+        self.assertIs(known_malicious._last[1], second)  # the replacement did happen
+
+
 class LongIntegerLoadTests(IndexDir, unittest.TestCase):
     """REV-KM01-R1 F3: long JSON integers in the index files are GuardError, not ValueError."""
 

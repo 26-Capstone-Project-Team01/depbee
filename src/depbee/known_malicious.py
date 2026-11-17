@@ -508,8 +508,10 @@ def load(directory: Path) -> KnownMaliciousIndex:
                manifest_sha256, actual)  # fmt: skip
     except OSError as exc:
         raise GuardError(f"Known malicious index cannot be read: {directory}") from exc
-    if _last is not None and _last[0] == key:
-        return _last[1]
+    # Read the memo once: another thread may replace it between the comparison and the return.
+    last = _last
+    if last is not None and last[0] == key:
+        return last[1]
     try:
         body = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
     except (ValueError, RecursionError) as exc:  # also an integer past Python's digit limit
