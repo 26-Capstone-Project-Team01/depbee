@@ -19,19 +19,22 @@ from pathlib import Path
 from unittest import mock
 
 import test_mcp
+from test_apply import ApplyFixture, sha
 from test_detectors import ADVISORY, KnownList, Rules, rule
 from test_markdown import HOSTILE
 from test_output_formats import EXAMPLES, FormatFixture, older
 from test_workflow import Fixture, package
 
-from depbee import history
+from depbee import history, service
 from depbee.cli import SAFETY_NOTE, _clean, main
+from depbee.contracts import GuardError
 
 WEB = all(importlib.util.find_spec(name) for name in ("starlette", "jinja2", "uvicorn", "httpx2"))
 NO_WEB = "web extra ([web] and httpx2) not installed; the dashboard is not tested here"
 PORT = 48213
 BASE = f"http://127.0.0.1:{PORT}"
-TOKEN = "synthetic-login-token-for-tests-only-0123456789"
+SESSION = "synthetic-session-value-for-tests-only-0123456789"
+S = f"/s/{SESSION}"  # every page, form and link is under this prefix
 WEB_MODULES = ("starlette", "jinja2", "uvicorn", "markupsafe")
 PREVIEW = {
     "targets": ["example"], "npm_version": "11.6.1", "package_json_sha256": "0" * 64,
@@ -50,38 +53,39 @@ class DashboardFixture(FormatFixture):
         from depbee.dashboard import app
 
         self.app = app
-        self.client = TestClient(app.build_app(PORT, TOKEN), base_url=BASE)
+        self.client = TestClient(app.build_app(PORT, SESSION), base_url=BASE)
         self.addCleanup(self.client.close)
         self.db = Path(os.environ["DEPBEE_HISTORY_DB"])
 
-    def login(self):
-        response = self.client.get(f"/login?token={TOKEN}", follow_redirects=False)
-        self.assertEqual(response.status_code, 303)
-        return response
+    def get(self, url, **kwargs):
+        return self.client.get(S + url, **kwargs)
 
     def page(self, url):
-        response = self.client.get(url)
+        response = self.get(url)
         self.assertEqual(response.status_code, 200, url)
-        self.assertNotIn(TOKEN, response.text)
+        self.assertNotIn("set-cookie", response.headers)
+        # Every link and form of the dashboard keeps the session prefix.
+        for target in re.findall(r'(?:href|action)="([^"]*)"', response.text):
+            if not target.startswith("https://www.npmjs.com/package/"):
+                self.assertTrue(target.startswith(S + "/"), target)
         return response.text
 
     def record(self, report, kind="scan", preview=None):
         history.register_project(self.project)
         return history.record(kind, self.project, report, preview)
 
-    def csrf(self):
-        return re.search(r'name="csrf" value="([^"]+)"', self.page("/")).group(1)
+    def form_session(self):
+        return re.search(r'name="session" value="([^"]+)"', self.page("/")).group(1)
 
-    def post(self, path, csrf=None, origin=BASE, **extra):
-        fields = {"path": path} if csrf is None else {"path": path, "csrf": csrf}
+    def post(self, path, session=None, origin=BASE, **extra):
+        fields = {"path": path} if session is None else {"path": path, "session": session}
         headers = {} if origin is None else {"origin": origin}
-        return self.client.post("/projects", data=fields, headers=headers,
+        return self.client.post(S + "/projects", data=fields, headers=headers,
                                 follow_redirects=False, **extra)  # fmt: skip
 
 
 class PageTests(DashboardFixture):
     def test_every_page_of_the_example_reports(self):
-        self.login()
         for path in sorted(EXAMPLES.glob("*.json")):
             with self.subTest(path.name):
                 report = json.loads(path.read_text("utf-8"))
@@ -99,10 +103,9 @@ class PageTests(DashboardFixture):
         self.assertIn("example-model-001", model)
         self.assertIn("학습 데이터 버전과 공격 유형별 탐지율은", model)
         self.assertIn("0123456789abcdef" * 4, model)  # provenance model_sha256, as stored
-        self.assertIn("text/css", self.client.get("/static/style.css").headers["content-type"])
+        self.assertIn("text/css", self.get("/static/style.css").headers["content-type"])
 
     def test_values_are_the_stored_ones_and_known_malicious_is_emphasized(self):
-        self.login()
         report = json.loads((EXAMPLES / "03-known-malicious-low-ml.json").read_text("utf-8"))
         text = self.page(f"/runs/{self.record(report)}")
         self.assertIn("<strong>경고: 기지 악성 기록 일치 1개.</strong>", text)
@@ -114,7 +117,6 @@ class PageTests(DashboardFixture):
         self.assertIn('<rect class="normal" width="100" height="8"/>', text)
 
     def test_order_null_scores_and_unfinished_items(self):
-        self.login()
         report = self.cases()["mixed"]
         text = self.page(f"/runs/{self.record(report)}")
         heads = re.findall(r"<h3>\[([^\]]+)\] ([^@<]+)@", text)
@@ -127,7 +129,6 @@ class PageTests(DashboardFixture):
         self.assertIn("<dd>없음(미실행)</dd>", text)  # a null score is never 0 or passed
 
     def test_update_preview_run(self):
-        self.login()
         run = self.record(self.scan_with(0.1), "update_preview", PREVIEW)
         text = self.page(f"/runs/{run}")
         self.assertIn("<h2>업데이트 미리보기</h2>", text)
@@ -137,7 +138,6 @@ class PageTests(DashboardFixture):
         self.assertIn("업데이트 미리보기", self.page("/"))
 
     def test_older_report_and_rule_failures(self):
-        self.login()
         text = self.page(f"/runs/{self.record(older(self.scan_with(0.9)))}")
         for line in ("기지 악성 목록: 확인 안 됨", "규칙: 확인 안 됨", "<li>기지 악성: 확인 안 됨</li>",
                      "<dd>0.900 (기준 이상, 참고값)</dd>"):  # fmt: skip
@@ -150,7 +150,6 @@ class PageTests(DashboardFixture):
         self.assertIn("<li>규칙: 적중, 실패 1개<ul>", text)
 
     def test_project_without_folder_or_lockfile(self):
-        self.login()
         history.register_project(self.project)
         self.head.unlink()
         self.assertIn("package-lock.json이 없습니다.", self.page("/projects/1"))
@@ -162,7 +161,6 @@ class PageTests(DashboardFixture):
         self.assertIn("프로젝트 폴더를 찾을 수 없습니다.", self.page("/projects/1"))
 
     def test_dependencies_and_unknown_ids(self):
-        self.login()
         self.new["packages"][""] = {"dependencies": {"example": "^1.0.0"}}
         self.new["packages"]["node_modules/example/node_modules/inner"] = package("2.0.0")
         self.save_locks()
@@ -172,14 +170,15 @@ class PageTests(DashboardFixture):
         self.assertIn("<td>inner</td><td>2.0.0</td><td>node_modules/example/node_modules/inner</td>",
                       text)  # fmt: skip
         for url in ("/projects/2", "/runs/1", f"/runs/{2**70}"):
-            self.assertEqual(self.client.get(url).status_code, 404, url)
+            self.assertEqual(self.get(url).status_code, 404, url)
 
     def test_resources_have_no_external_urls(self):
         package_dir = Path(self.app.__file__).parent
         files = [*package_dir.glob("templates/*.html"), *package_dir.glob("static/*")]
         self.assertEqual(sorted(p.name for p in files), [
-            "base.html", "counts.html", "model.html", "project.html", "projects.html", "run.html",
-            "style.css"])  # fmt: skip
+            "applied.html", "apply_lines.html", "base.html", "counts.html", "error.html",
+            "model.html", "preview.html", "project.html", "projects.html", "report.html",
+            "run.html", "style.css"])  # fmt: skip
         for path in files:
             self.assertIsNone(re.search(r"https?:|//", path.read_text("utf-8")), path.name)
         self.assertNotIn("<script", "".join(p.read_text("utf-8") for p in files))
@@ -200,10 +199,9 @@ class SecurityTests(DashboardFixture):
         self.assertNotIn("server", headers)
 
     def test_host_must_be_this_address_and_port(self):
-        self.login()
         for host in (f"127.0.0.1:{PORT + 1}", "127.0.0.1", f"localhost:{PORT}",
                      f"evil.test:{PORT}", ""):  # fmt: skip
-            for url in ("/", f"/login?token={TOKEN}"):
+            for url in (S + "/", S + "/static/style.css", "/"):
                 with self.subTest(host=host, url=url):
                     response = self.client.get(url, headers={"host": host},
                                                follow_redirects=False)  # fmt: skip
@@ -211,77 +209,96 @@ class SecurityTests(DashboardFixture):
                     self.assert_headers(response)
                     self.assertNotIn("set-cookie", response.headers)
 
-    def test_every_request_needs_a_session(self):
+    def test_every_request_needs_the_session_prefix(self):
+        wrong = SESSION[:-1] + ("A" if SESSION[-1] != "A" else "B")
+        urls = [*self.URLS, f"/login?token={SESSION}", f"/s/{wrong}/", f"/s/{SESSION}",
+                f"/s/{SESSION[:-1]}/", f"/s/{SESSION}x/", f"/s//{SESSION}/", f"/x/{SESSION}/",
+                f"/S/{SESSION}/", "/s/", "/s", f"/s/{wrong}/static/style.css",
+                f"/static/{SESSION}/style.css", f"/{SESSION}/", "/s/%C3%A9/"]  # fmt: skip
+        for url in urls:
+            with self.subTest(url=url):
+                response = self.client.get(url, follow_redirects=False)
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.text, self.app.SESSION_REFUSED)  # fixed, no path
+                self.assert_headers(response)
+                self.assertNotIn("set-cookie", response.headers)
+        # A cookie, even holding the session, is not a credential: the address is.
+        self.client.cookies.set(f"depbee_session_{PORT}", SESSION)
+        self.client.cookies.set("session", SESSION)
+        for url in ("/", "/model"):
+            self.assertEqual(self.client.get(url).status_code, 403, url)
+        self.client.cookies.clear()
+        self.assertEqual(self.client.get(S + "/", headers={"cookie": "x=1"}).status_code, 200)
+
+    def test_the_session_prefix_opens_every_page_without_cookies(self):
+        self.record(self.scan_with(0.1))
         for url in self.URLS:
-            response = self.client.get(url)
-            self.assertEqual(response.status_code, 403, url)
+            response = self.get(url)
+            self.assertEqual(response.status_code, 200, url)
             self.assert_headers(response)
-        wrong = self.client.get("/login?token=" + TOKEN[:-1] + "X", follow_redirects=False)
-        self.assertEqual(wrong.status_code, 403)
-        self.assertNotIn("set-cookie", wrong.headers)
-        self.assertEqual(self.client.get("/login", follow_redirects=False).status_code, 403)
-        self.client.cookies.set(self.app.cookie_name(PORT), TOKEN)  # the token is not a session
-        self.assertEqual(self.client.get("/").status_code, 403)
+            self.assertNotIn("set-cookie", response.headers)
+            self.assertEqual(len(self.client.cookies), 0)
+        html = self.page("/")
+        self.assertIn(f'<link rel="stylesheet" href="{S}/static/style.css">', html)
+        self.assertIn(f'<a href="{S}/projects/1">', html)
+        self.assertIn(f'<form method="post" action="{S}/projects">', html)
+        self.assertIn(f'<input type="hidden" name="session" value="{SESSION}">', html)
+        self.assertEqual(self.get("/login").status_code, 404)  # no login step any more
 
-    def test_login_sets_a_strict_http_only_session_and_drops_the_token(self):
-        response = self.login()
-        self.assert_headers(response)
-        self.assertEqual(response.headers["location"], "/")
-        cookie = response.headers["set-cookie"]
-        name, value = cookie.split(";")[0].split("=", 1)
-        self.assertEqual(name, f"depbee_session_{PORT}")
-        self.assertNotIn(TOKEN, cookie)
-        self.assertGreaterEqual(len(value), 40)
-        attributes = {part.strip().lower() for part in cookie.split(";")[1:]}
-        self.assertTrue({"httponly", "path=/", "samesite=strict"} <= attributes, attributes)
-        for url in self.URLS[:3]:
-            page = self.client.get(url)
-            self.assertEqual(page.status_code, 200, url)
-            self.assert_headers(page)
-            self.assertNotIn(TOKEN, page.text)
+    def test_npm_links_send_no_referrer(self):
+        # The session is in the address; a link out must not carry it as a Referer.
+        run = self.record(self.scan_with(0.9))
+        html = self.page(f"/runs/{run}")
+        links = re.findall(r"<a [^>]*>", html)
+        npm = [link for link in links if "https://www.npmjs.com/package/" in link]
+        self.assertTrue(npm)
+        for link in npm:
+            self.assertIn('rel="noreferrer noopener"', link)
 
-    def test_post_needs_session_csrf_and_origin(self):
-        self.login()
-        csrf, path = self.csrf(), str(self.project)
-        self.assertNotIn(TOKEN, csrf)
+    def test_post_needs_the_form_session_and_origin(self):
+        form, path = self.form_session(), str(self.project)
+        self.assertEqual(form, SESSION)
         refused = {
-            "no csrf": self.post(path),
-            "wrong csrf": self.post(path, csrf[:-1] + ("A" if csrf[-1] != "A" else "B")),
-            "no origin": self.post(path, csrf, origin=None),
-            "other port": self.post(path, csrf, origin=f"http://127.0.0.1:{PORT + 1}"),
-            "other host": self.post(path, csrf, origin=f"http://localhost:{PORT}"),
-            "null origin": self.post(path, csrf, origin="null"),
-            "https origin": self.post(path, csrf, origin=f"https://127.0.0.1:{PORT}"),
+            "no form session": self.post(path),
+            "wrong form session": self.post(path, form[:-1] + ("A" if form[-1] != "A" else "B")),
+            "empty form session": self.post(path, ""),
+            "no origin": self.post(path, form, origin=None),
+            "other port": self.post(path, form, origin=f"http://127.0.0.1:{PORT + 1}"),
+            "other host": self.post(path, form, origin=f"http://localhost:{PORT}"),
+            "null origin": self.post(path, form, origin="null"),
+            "https origin": self.post(path, form, origin=f"https://127.0.0.1:{PORT}"),
         }
         for label, response in refused.items():
             with self.subTest(label):
                 self.assertEqual(response.status_code, 403)
                 self.assert_headers(response)
+                self.assertNotIn("set-cookie", response.headers)
+        self.assertEqual(refused["wrong form session"].text, self.app.FORM_REFUSED)
         self.assertEqual(history.list_projects(), [])
-        self.client.cookies.clear()
-        self.assertEqual(self.post(path, csrf).status_code, 403)  # no session
+        # Without the prefix the request never reaches the form.
+        response = self.client.post("/projects", data={"path": path, "session": form},
+                                    headers={"origin": BASE})  # fmt: skip
+        self.assertEqual(response.status_code, 403)
         self.assertEqual(history.list_projects(), [])
         # GET never changes state: the form's route takes POST only.
-        self.login()
-        self.assertEqual(self.client.get("/projects").status_code, 405)
+        self.assertEqual(self.get("/projects").status_code, 405)
 
     def test_large_or_odd_bodies_are_refused(self):
-        self.login()
-        csrf = self.csrf()
-        big = self.post("C:/" + "a" * (self.app.MAX_BODY + 1), csrf)
+        form = self.form_session()
+        big = self.post("C:/" + "a" * (self.app.MAX_BODY + 1), form)
         self.assertEqual(big.status_code, 413)
         self.assert_headers(big)
         fields = "&".join(f"f{i}=1" for i in range(self.app.MAX_FIELDS + 1))
-        response = self.client.post("/projects", content=f"csrf={csrf}&{fields}",
+        response = self.client.post(S + "/projects", content=f"session={form}&{fields}",
                                     headers={"origin": BASE, "content-type":
                                              "application/x-www-form-urlencoded"})  # fmt: skip
         self.assertEqual(response.status_code, 400)
-        response = self.client.post("/projects", content=json.dumps({"csrf": csrf}),
+        response = self.client.post(S + "/projects", content=json.dumps({"session": form}),
                                     headers={"origin": BASE, "content-type": "application/json"})  # fmt: skip
         self.assertEqual(response.status_code, 415)
         self.assertEqual(history.list_projects(), [])
 
-    def test_server_settings_and_the_one_line_with_the_token(self):
+    def test_server_settings_and_the_one_line_with_the_session(self):
         from depbee.dashboard import app
 
         started = {}
@@ -304,8 +321,9 @@ class SecurityTests(DashboardFixture):
                           config.log_level, config.lifespan, config.ws),
                          (False, False, False, "warning", "off", "none"))  # fmt: skip
         first, second = out.getvalue().splitlines()
-        self.assertRegex(first, rf"\Ahttp://127\.0\.0\.1:{port}/login\?token=[A-Za-z0-9_-]{{43}}\Z")
-        self.assertNotIn("token", second)
+        self.assertRegex(first, rf"\Ahttp://127\.0\.0\.1:{port}/s/[A-Za-z0-9_-]{{43}}/\Z")
+        session = first.split("/")[4]
+        self.assertNotIn(session, second)
         code, err = None, io.StringIO()
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
             code = main(["dashboard", "--port", "70000"])
@@ -315,21 +333,19 @@ class SecurityTests(DashboardFixture):
     def test_an_unexpected_error_is_a_fixed_500_with_the_headers(self):
         from starlette.testclient import TestClient
 
-        client = TestClient(self.app.build_app(PORT, TOKEN), base_url=BASE,
+        client = TestClient(self.app.build_app(PORT, SESSION), base_url=BASE,
                             raise_server_exceptions=False)  # fmt: skip
         self.addCleanup(client.close)
-        self.assertEqual(client.get(f"/login?token={TOKEN}", follow_redirects=False).status_code,
-                         303)  # fmt: skip
         marker = "C:\\private\\folder\\history.sqlite3 synthetic-secret-0123456789"
         with mock.patch.object(history, "list_projects", side_effect=RuntimeError(marker)):
-            response = client.get("/")
+            response = client.get(S + "/")
         self.assertEqual(response.status_code, 500)
         self.assert_headers(response)
         self.assertEqual(
             response.text, "요청을 처리하지 못했습니다(이력 데이터베이스나 파일을 읽지 못함)."
         )
         exposed = response.text + "".join(f"{k}: {v}" for k, v in response.headers.items())
-        for secret in (marker, "private", "synthetic-secret", "RuntimeError", TOKEN):
+        for secret in (marker, "private", "synthetic-secret", "RuntimeError", SESSION):
             self.assertNotIn(secret, exposed)
 
 
@@ -341,7 +357,6 @@ class EscapeTests(DashboardFixture):
         # The project keeps its real path, so /projects/1 really reads and renders the lockfile.
         from markupsafe import escape
 
-        self.login()
         history.register_project(self.project)
         shown = []
         for index, text in enumerate(self.STRINGS):
@@ -360,7 +375,6 @@ class EscapeTests(DashboardFixture):
         self.check(html)
 
     def test_report_and_path_strings_stay_inert(self):
-        self.login()
         report = self.scan_with(
             0.9, known_malicious=KnownList((ADVISORY,)), rules=Rules((rule("hit"),))
         )
@@ -389,7 +403,6 @@ class EscapeTests(DashboardFixture):
         self.assertTrue(all(c.isprintable() or c in "\n" for c in html))
 
     def test_hostile_strings_are_shown_as_visible_escapes(self):
-        self.login()
         report = self.scan_with(0.9)
         report["results"][0]["package"] = "\u202eexe.js\udc80"
         html = self.page(f"/runs/{self.record(report)}")
@@ -408,8 +421,7 @@ class EscapeTests(DashboardFixture):
 
 class RegistrationTests(DashboardFixture):
     def register(self, path):
-        self.login()
-        return self.post(path, self.csrf())
+        return self.post(path, self.form_session())
 
     def assert_refused(self, path, message):
         response = self.register(path)
@@ -421,9 +433,11 @@ class RegistrationTests(DashboardFixture):
 
     def test_register_and_register_again(self):
         response = self.register(str(self.project))
-        self.assertEqual((response.status_code, response.headers["location"]), (303, "/projects/1"))
-        again = self.post(str(self.project) + os.sep, self.csrf())
-        self.assertEqual(again.headers["location"], "/projects/1")
+        self.assertEqual(
+            (response.status_code, response.headers["location"]), (303, S + "/projects/1")
+        )
+        again = self.post(str(self.project) + os.sep, self.form_session())
+        self.assertEqual(again.headers["location"], S + "/projects/1")
         (project,) = history.list_projects()
         self.assertEqual(project["path"], str(self.project.resolve()))
         self.assertIn(str(self.project.resolve()), self.page("/"))
@@ -469,6 +483,481 @@ class RegistrationTests(DashboardFixture):
         self.assertEqual(response.status_code, 400)
         self.assertIn(self.app.REGISTER_ERRORS["link"], response.text)
         self.assertEqual(history.list_projects(), [])
+
+
+def applied_document(outcome="applied", reason=None, mode="lockfile", **extra):
+    """A synthetic apply document in the shape service.apply_preview returns."""
+    files = [{"path": "package-lock.json", "sha256": "1" * 64, "new_sha256": "2" * 64}]
+    document = {
+        "mode": mode, "outcome": outcome, "reason": reason, "error": None, "blocked": [],
+        "confirmation_required": [], "confirmed": True,
+        "files": files if outcome in ("applied", "failed") else [],
+        "backup": BACKUP if outcome in ("applied", "failed") else None,
+        "npm_version": None, "npm_ci_exit_code": None, "notices": [],
+    }  # fmt: skip
+    return {**document, **extra}
+
+
+BACKUP = "C:/synthetic/backups/20261117T000000Z-0123abcd"
+
+
+class ScreenFixture(DashboardFixture):
+    """Update check and apply screens with service.preview_files and apply_preview replaced."""
+
+    def setUp(self):
+        super().setUp()
+        self.project_id = history.register_project(self.project)
+        self.report = self.scan_with(0.1)  # not flagged; known malicious list not connected
+        self.npmrc, self.targets = False, None
+        self.previewed, self.applied = [], []
+        self.document = applied_document()
+        self.preview_files = self.patch_service("preview_files", self.fake_preview)
+        self.apply_preview = self.patch_service("apply_preview", self.fake_apply)
+
+    def patch_service(self, name, function):
+        patcher = mock.patch.object(service, name, side_effect=function)
+        self.addCleanup(patcher.stop)
+        return patcher.start()
+
+    def fake_preview(self, project, names, **options):
+        self.previewed.append((project, names, options))
+        preview = {**PREVIEW, "targets": self.targets or names or None,
+                   "changed_count": len(self.report["results"]),
+                   "project_npmrc_ignored": self.npmrc}  # fmt: skip
+        return {"preview": preview, "report": self.report}, b"new package.json", b"new lockfile"
+
+    def fake_apply(self, project, result, new_package, new_lock, *, mode, confirm=False):
+        self.applied.append({"project": project, "result": result, "new_package": new_package,
+                             "new_lock": new_lock, "mode": mode, "confirm": confirm})  # fmt: skip
+        _, required = service.update_gate(result["report"])
+        return {**self.document, "mode": mode, "confirmed": confirm,
+                "confirmation_required": required}  # fmt: skip
+
+    def check(self, packages="", session=SESSION, origin=BASE, project_id=None):
+        url = f"{S}/projects/{project_id or self.project_id}/previews"
+        headers = {} if origin is None else {"origin": origin}
+        return self.client.post(url, data={"session": session, "packages": packages},
+                                headers=headers, follow_redirects=False)  # fmt: skip
+
+    def preview_id(self, packages=""):
+        response = self.check(packages)
+        self.assertEqual(response.status_code, 303, response.text)
+        location = response.headers["location"]
+        self.assertTrue(location.startswith(f"{S}/previews/"), location)
+        return location.rsplit("/", 1)[1]
+
+    def apply(self, preview_id, mode="lockfile", confirm=True, session=SESSION, origin=BASE):
+        data = {"session": session, "mode": mode, **({"confirm": "yes"} if confirm else {})}
+        headers = {} if origin is None else {"origin": origin}
+        return self.client.post(f"{S}/previews/{preview_id}/apply", data=data, headers=headers,
+                                follow_redirects=False)  # fmt: skip
+
+    def assert_form(self, html, present):
+        (self.assertIn if present else self.assertNotIn)(
+            '<button type="submit">반영</button>', html
+        )
+
+
+class UpdateCheckTests(ScreenFixture):
+    def test_a_check_is_recorded_kept_in_memory_and_shown(self):
+        from starlette.testclient import TestClient
+
+        client = TestClient(self.app.build_app(PORT, SESSION, model_dir=Path("m"),
+                                               cache_dir=Path("c")), base_url=BASE)  # fmt: skip
+        self.addCleanup(client.close)
+        self.client = client
+        project_page = self.page(f"/projects/{self.project_id}")
+        self.assertIn(f'action="{S}/projects/{self.project_id}/previews"', project_page)
+        preview_id = self.preview_id("example  other\tthird")
+        ((project, names, options),) = self.previewed
+        self.assertEqual(project, Path(str(self.project.resolve())))  # the registered path
+        self.assertEqual(names, ["example", "other", "third"])
+        self.assertEqual(options, {"model_dir": Path("m"), "cache_dir": Path("c"),
+                                   "no_cache": False})  # fmt: skip
+        (run,) = history.list_runs(self.project_id)
+        stored = history.get_run(run["id"])
+        self.assertEqual((stored["kind"], stored["report"]), ("update_preview", self.report))
+        self.assertEqual(stored["preview"]["targets"], ["example", "other", "third"])
+        html = self.page(f"/previews/{preview_id}")
+        self.assertIn("<li>대상: example, other, third</li>", html)
+        self.assertIn(f'<a href="{S}/runs/{run["id"]}">실행 #{run["id"]}</a>', html)
+        self.assertIn("검사 결과: ", html)  # the report, rendered as on the run page
+        self.assertIn("대시보드 프로세스 메모리에만 있습니다", html)
+        self.assertNotIn(self.app.PREVIEW_NOT_RECORDED, html)
+        self.preview_id()
+        self.assertEqual(self.previewed[1][1], [])  # an empty field previews everything
+        self.assertEqual(self.apply_preview.call_count, 0)
+
+    def test_dashboard_options_reach_the_app(self):
+        class Server:
+            def __init__(self, config):
+                pass
+
+            def run(self, sockets):
+                pass
+
+        with mock.patch.object(self.app.uvicorn, "Server", Server),                 mock.patch.object(self.app, "build_app", wraps=self.app.build_app) as built,                 contextlib.redirect_stdout(io.StringIO()):  # fmt: skip
+            self.assertEqual(main(["dashboard", "--model-dir", "m", "--no-cache"]), 0)
+            self.assertEqual(main(["dashboard", "--cache-dir", "c"]), 0)
+        self.assertEqual([call.kwargs for call in built.call_args_list], [
+            {"model_dir": Path("m"), "cache_dir": None, "no_cache": True},
+            {"model_dir": None, "cache_dir": Path("c"), "no_cache": False}])  # fmt: skip
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            main(["dashboard", "--cache-dir", "c", "--no-cache"])
+
+    def test_errors_show_a_page_and_record_nothing(self):
+        extract = 'Install analyzer dependencies: python -m pip install -e ".[extract]"'
+        node = "node.exe not found on PATH (the current directory is not used)"
+        hostile = '<script>alert(1)</script> "quoted" \u202e'
+        secret = "C:\\private\\folder synthetic-secret-0123456789"
+        cases = [
+            (GuardError(extract), 400, extract.replace('"', "&#34;")),
+            (GuardError(node), 400, node),
+            (GuardError(hostile), 400, "&lt;script&gt;alert(1)&lt;/script&gt; &#34;quoted&#34; \\u202e"),
+            (ValueError(secret), 400, self.app.PREVIEW_FAILED),
+            (OSError(secret), 400, self.app.PREVIEW_FAILED),
+            (RecursionError(secret), 400, self.app.PREVIEW_FAILED),
+        ]  # fmt: skip
+        for error, status, shown in cases:
+            with self.subTest(error=type(error).__name__, text=str(error)[:20]):
+                self.preview_files.side_effect = error
+                response = self.check("example")
+                self.assertEqual(response.status_code, status)
+                self.assertIn(shown, response.text)
+                self.assertIn("이력에 기록하지 않았습니다.", response.text)
+                for hidden in ("private", "synthetic-secret", "<script>", "\u202e"):
+                    self.assertNotIn(hidden, response.text)
+        self.assertEqual(history.list_runs(self.project_id), [])
+
+    def test_missing_or_unknown_projects_run_nothing(self):
+        self.assertEqual(self.check(project_id=99).status_code, 404)
+        self.assertEqual(self.check(project_id=2**70).status_code, 404)
+        self.head.unlink()
+        self.project.rmdir()
+        response = self.check()
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(self.app.PROJECT_MISSING, response.text)
+        self.assertIn("업데이트를 확인할 수 없습니다", self.page(f"/projects/{self.project_id}"))
+        self.assertEqual(self.preview_files.call_count, 0)
+
+    def test_form_session_origin_and_limits(self):
+        for response in (self.check(session="wrong"), self.check(origin=None),
+                         self.check(origin=f"http://127.0.0.1:{PORT + 1}")):  # fmt: skip
+            self.assertEqual(response.status_code, 403)
+        too_long = self.check("a" * (self.app.MAX_TARGETS + 1))
+        self.assertEqual(too_long.status_code, 400)
+        self.assertIn(self.app.TARGETS_TOO_LONG, too_long.text)
+        url = f"{S}/projects/{self.project_id}/previews"
+        two = self.client.post(url, content=f"session={SESSION}&packages=a&packages=b",
+                               headers={"origin": BASE, "content-type":
+                                        "application/x-www-form-urlencoded"})  # fmt: skip
+        self.assertEqual(two.status_code, 400)
+        self.assertEqual(self.get(f"/projects/{self.project_id}/previews").status_code, 405)
+        self.assertEqual(self.preview_files.call_count, 0)
+
+    def test_one_change_at_a_time_while_pages_stay_open(self):
+        seen = {}
+
+        def during(project, names, **options):
+            # Another request arrives while this preview runs in its worker thread. Switch the
+            # fake first so a missing refusal fails at the assertions instead of recursing.
+            self.preview_files.side_effect = self.fake_preview
+            seen["check"] = self.check("example")
+            seen["page"] = self.get(f"/projects/{self.project_id}")
+            return self.fake_preview(project, names, **options)
+
+        self.preview_files.side_effect = during
+        preview_id = self.preview_id()
+        self.assertEqual(seen["check"].status_code, 409)
+        self.assertEqual(seen["check"].text, self.app.BUSY)
+        self.assertEqual(seen["page"].status_code, 200)
+        self.assertEqual(len(self.previewed), 1)
+        self.apply_preview.side_effect = lambda *a, **k: (
+            seen.setdefault("apply", self.check("example")),
+            self.fake_apply(*a, **k),
+        )[1]
+        self.assertEqual(self.apply(preview_id).status_code, 200)
+        self.assertEqual(seen["apply"].status_code, 409)
+        self.assertEqual(self.check().status_code, 303)  # free again
+
+    def test_only_the_newest_previews_are_kept(self):
+        ids = [self.preview_id() for _ in range(self.app.KEPT_PREVIEWS + 1)]
+        gone = self.get(f"/previews/{ids[0]}")
+        self.assertEqual((gone.status_code, gone.text), (404, self.app.PREVIEW_GONE))
+        for preview_id in ids[1:]:
+            self.page(f"/previews/{preview_id}")
+        self.assertEqual(self.apply(ids[0]).status_code, 404)
+        self.assertEqual(self.get("/previews/unknown").status_code, 404)
+
+    def test_a_failed_record_keeps_the_preview(self):
+        with mock.patch.object(history, "record", side_effect=sqlite3.OperationalError("x")):
+            preview_id = self.preview_id()
+        html = self.page(f"/previews/{preview_id}")
+        self.assertIn(self.app.PREVIEW_NOT_RECORDED, html)
+        self.assertNotIn(f"{S}/runs/", html)
+        response = self.apply(preview_id)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(self.app.PREVIEW_NOT_RECORDED, response.text)
+        self.assertEqual(history.list_applies(self.project_id), [])
+
+
+class GateDisplayTests(ScreenFixture):
+    def test_a_known_malicious_match_has_no_apply_form(self):
+        self.report = self.scan_with(0.1, known_malicious=KnownList((ADVISORY,)))
+        html = self.page(f"/previews/{self.preview_id()}")
+        self.assert_form(html, False)
+        self.assertIn("반영할 수 없습니다: 기지 악성 기록 일치(예외 없이 거부)", html)
+        self.assertIn("기지 악성 기록 일치로 거부한 항목 1개:", html)
+        self.assertIn("<li>[위험] example@1.1.0 (node_modules/example): 기지 악성 기록 일치", html)
+
+    def test_items_to_confirm_with_their_causes(self):
+        self.report = self.scan_with(0.9)
+        html = self.page(f"/previews/{self.preview_id()}")
+        self.assert_form(html, True)
+        self.assertIn("<strong>확인이 필요한 항목 1개:</strong>", html)
+        self.assertIn("<li>[위험] example@1.1.0 (node_modules/example): ML 위험 점수 기준 이상; "
+                      "기지 악성 목록 미확인; ML 위험 점수 0.900</li>", html)  # fmt: skip
+        self.assertIn('name="confirm" value="yes" required> <label for="confirm">위 1개 항목을 '
+                      "검토했고 진행합니다.</label>", html)  # fmt: skip
+        self.assertIn('value="lockfile" checked>', html)
+        self.assertIn('value="install">', html)
+        self.assertNotIn(self.app.NPMRC_NO_INSTALL, html)
+
+    def test_passing_items_need_no_confirmation(self):
+        self.report = self.scan_with(0.1, known_malicious=KnownList())
+        html = self.page(f"/previews/{self.preview_id()}")
+        self.assert_form(html, True)
+        self.assertNotIn('name="confirm"', html)
+        self.assertNotIn("확인이 필요한 항목", html)
+
+    def test_no_change_has_no_apply_form(self):
+        self.report = {**self.scan_with(0.1), "results": []}
+        html = self.page(f"/previews/{self.preview_id()}")
+        self.assert_form(html, False)
+        self.assertIn("lockfile에서 바뀐 항목이 없어 반영할 것이 없습니다.", html)
+
+    def test_a_project_npmrc_disables_install(self):
+        self.npmrc = True
+        html = self.page(f"/previews/{self.preview_id()}")
+        self.assert_form(html, True)
+        self.assertIn('value="install" disabled>', html)
+        self.assertIn(self.app.NPMRC_NO_INSTALL, html)
+
+
+class ApplyScreenTests(ScreenFixture):
+    def test_without_the_confirmation_nothing_runs_and_the_preview_stays(self):
+        preview_id = self.preview_id()
+        response = self.apply(preview_id, confirm=False)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(self.app.CONFIRM_NEEDED, response.text)
+        self.assert_form(response.text, True)
+        for mode in ("", "both", "LOCKFILE"):
+            with self.subTest(mode=mode):
+                response = self.apply(preview_id, mode=mode)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(self.app.CHOOSE_MODE, response.text)
+        self.assertEqual(self.apply(preview_id, session="wrong").status_code, 403)
+        self.assertEqual(self.apply(preview_id, origin=None).status_code, 403)
+        self.assertEqual(self.apply_preview.call_count, 0)
+        self.page(f"/previews/{preview_id}")  # still there
+        self.assertEqual(self.apply(preview_id).status_code, 200)
+        self.assertEqual(self.apply_preview.call_count, 1)
+
+    def test_install_after_a_project_npmrc_is_refused_before_the_service(self):
+        self.npmrc = True
+        preview_id = self.preview_id()
+        response = self.apply(preview_id, mode="install")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(self.app.NPMRC_NO_INSTALL, response.text)
+        self.assertEqual(self.apply_preview.call_count, 0)
+        self.assertEqual(self.apply(preview_id, mode="lockfile").status_code, 200)
+
+    def test_an_apply_uses_the_registered_path_once_and_is_recorded(self):
+        preview_id = self.preview_id("example")
+        (run,) = history.list_runs(self.project_id)
+        self.document = applied_document(mode="install", npm_version="11.6.1", npm_ci_exit_code=0,
+                                          notices=[service.SCRIPTS_NOTICE,
+                                                   service.RESTORE_NOTICE])  # fmt: skip
+        response = self.apply(preview_id, mode="install")
+        self.assertEqual(response.status_code, 200)
+        (call,) = self.applied
+        self.assertEqual(call["project"], Path(str(self.project.resolve())))
+        self.assertEqual((call["mode"], call["confirm"]), ("install", True))
+        self.assertEqual((call["new_package"], call["new_lock"]),
+                         (b"new package.json", b"new lockfile"))  # fmt: skip
+        self.assertEqual(call["result"]["report"], self.report)
+        html = response.text
+        self.assertIn("<h1>업데이트 반영: 반영함</h1>", html)
+        self.assertIn(f"원본 백업: {BACKUP}", html)
+        self.assertIn("npm 11.6.1, npm ci 종료 코드 0", html)
+        self.assertIn(service.SCRIPTS_NOTICE, html)
+        self.assertIn(service.RESTORE_NOTICE, html)
+        self.assertIn("확인이 필요한 항목 1개(대시보드에서 확인함):", html)
+        self.assertNotIn("--confirm-warnings", html)
+        self.assertIn(f'<a href="{S}/runs/{run["id"]}">실행 #{run["id"]}</a>에 반영 기록', html)
+        # The preview is gone: a reload or a resent form applies nothing again.
+        self.assertEqual(self.get(f"/previews/{preview_id}").status_code, 404)
+        again = self.apply(preview_id, mode="install")
+        self.assertEqual((again.status_code, again.text), (404, self.app.PREVIEW_GONE))
+        self.assertEqual(self.apply_preview.call_count, 1)
+        (stored,) = history.list_applies(self.project_id)
+        self.assertEqual((stored["run_id"], stored["outcome"], stored["backup"]),
+                         (run["id"], "applied", BACKUP))  # fmt: skip
+        self.assertEqual(stored["apply"]["confirmation_required"][0]["causes"],
+                         ["known_malicious_unchecked"])  # fmt: skip
+        run_page = self.page(f"/runs/{run['id']}")
+        self.assertIn("<h2>업데이트 반영: 반영함</h2>", run_page)
+        self.assertIn("확인이 필요한 항목 1개(확인함):", run_page)
+        project_page = self.page(f"/projects/{self.project_id}")
+        self.assertIn("<td>설치까지(npm ci --ignore-scripts)</td>\n<td>반영함</td>\n<td>-</td>\n"
+                      f"<td>예</td>\n<td>{BACKUP}</td>\n<td>0</td>", project_page)  # fmt: skip
+        self.assertIn(f'<a href="{S}/runs/{run["id"]}">#{run["id"]}</a>', project_page)
+
+    def test_a_failed_apply_record_still_shows_the_result_and_backup(self):
+        preview_id = self.preview_id()
+        with mock.patch.object(history, "record_apply", side_effect=sqlite3.OperationalError("x")):
+            response = self.apply(preview_id)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("업데이트 반영: 반영함", response.text)
+        self.assertIn(f"원본 백업: {BACKUP}", response.text)
+        self.assertIn(self.app.APPLY_NOT_RECORDED, response.text)
+        self.assertEqual(history.list_applies(self.project_id), [])
+
+    def test_refused_and_failed_results_are_shown_and_need_a_new_check(self):
+        cases = [
+            (applied_document("refused", "project_changed", notices=[service.UNCHANGED_NOTICE]),
+             ["업데이트 반영: 반영하지 않음", "이유: 미리보기 뒤 package.json 또는 package-lock.json이 바뀜",
+              service.UNCHANGED_NOTICE]),
+            (applied_document("refused", "confirmation_required"),
+             ["이유: 확인이 필요한 항목이 있는데 확인하지 않음", self.app.RETRY_HERE]),
+            (applied_document("failed", "install_failed", mode="install",
+                              error="npm ci failed with exit code 1", npm_version="11.6.1",
+                              npm_ci_exit_code=1),
+             ["업데이트 반영: 실패", "이유: npm ci 실패", "오류: npm ci failed with exit code 1",
+              f"원본 백업: {BACKUP}", "npm 11.6.1, npm ci 종료 코드 1"]),
+        ]  # fmt: skip
+        for document, lines in cases:
+            with self.subTest(reason=document["reason"]):
+                self.document = document
+                preview_id = self.preview_id()
+                response = self.apply(preview_id, mode=document["mode"])
+                self.assertEqual(response.status_code, 200)
+                for line in lines:
+                    self.assertIn(line, response.text)
+                self.assertNotIn("--confirm-warnings", response.text)
+                self.assertEqual(self.apply(preview_id).status_code, 404)
+        reasons = [a["reason"] for a in history.list_applies(self.project_id)]
+        self.assertEqual(reasons, ["install_failed", "confirmation_required", "project_changed"])
+
+    def test_an_unexpected_service_error_is_a_fixed_page(self):
+        preview_id = self.preview_id()
+        self.apply_preview.side_effect = OSError("C:\\private synthetic-secret-0123456789")
+        response = self.apply(preview_id)
+        self.assertEqual(response.status_code, 500)
+        self.assertIn(self.app.APPLY_FAILED, response.text)
+        self.assertNotIn("synthetic-secret", response.text)
+        self.assertEqual(self.get(f"/previews/{preview_id}").status_code, 404)
+
+    def test_a_missing_project_folder_runs_nothing_and_keeps_the_preview(self):
+        preview_id = self.preview_id()
+        self.head.unlink()
+        self.project.rmdir()
+        response = self.apply(preview_id)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(self.app.PROJECT_MISSING, response.text)
+        self.assertEqual(self.apply_preview.call_count, 0)
+        self.page(f"/previews/{preview_id}")
+
+    def test_cli_applies_are_shown_with_neutral_wording(self):
+        document = applied_document(confirmation_required=[
+            {"location": "node_modules/example", "package": "example", "before_version": "1.0.0",
+             "after_version": "1.1.0", "status": "not_flagged", "reason": None, "score": 0.1,
+             "known_malicious_status": "not_run", "ml_status": "not_hit",
+             "causes": ["known_malicious_unchecked"]}])  # fmt: skip
+        run_id = history.record("update_preview", self.project, self.report, PREVIEW,
+                                apply=document)  # fmt: skip
+        run_page = self.page(f"/runs/{run_id}")
+        self.assertIn("<h2>업데이트 반영: 반영함</h2>", run_page)
+        self.assertIn("확인이 필요한 항목 1개(확인함):", run_page)
+        self.assertNotIn("--confirm-warnings", run_page)
+        self.assertIn(f"<td>{BACKUP}</td>", self.page(f"/projects/{self.project_id}"))
+        scan_page = self.page(f"/runs/{history.record('scan', self.project, self.report)}")
+        self.assertNotIn("업데이트 반영", scan_page)
+
+
+class UpdateEscapeTests(ScreenFixture):
+    STRINGS = EscapeTests.STRINGS
+    check_html = EscapeTests.check
+
+    def test_gate_lists_errors_backups_and_targets_stay_inert(self):
+        from markupsafe import escape
+
+        for text in self.STRINGS:
+            with self.subTest(text=text):
+                self.report = self.scan_with(0.9)
+                for key in ("package", "location"):
+                    self.report["results"][0][key] = text
+                self.targets = [text]
+                self.document = applied_document("failed", "write_failed", error=text,
+                                                 backup=text)  # fmt: skip
+                preview_id = self.preview_id()
+                self.check_html(self.page(f"/previews/{preview_id}"))
+                response = self.apply(preview_id)
+                self.assertEqual(response.status_code, 200)
+                self.check_html(response.text)
+                self.assertIn(f"원본 백업: {escape(_clean(text))}", response.text)
+                self.check_html(self.page(f"/projects/{self.project_id}"))
+                self.preview_files.side_effect = GuardError(f"{text} is not a dependency")
+                response = self.check()  # the name is in the service's message
+                self.assertEqual(response.status_code, 400)
+                self.check_html(response.text)
+                self.assertIn(escape(_clean(f"{text} is not a dependency")), response.text)
+                self.preview_files.side_effect = self.fake_preview
+        known = self.scan_with(0.1, known_malicious=KnownList((ADVISORY,)))
+        known["results"][0]["package"] = self.STRINGS[-1]
+        self.report = known
+        self.check_html(self.page(f"/previews/{self.preview_id()}"))
+
+
+@unittest.skipUnless(WEB, NO_WEB)
+class EndToEndTests(ApplyFixture):
+    """The real service with the fake npm of test_apply: check, confirm and apply a lockfile."""
+
+    def test_check_and_apply_through_the_dashboard(self):
+        from starlette.testclient import TestClient
+
+        from depbee.dashboard import app
+
+        client = TestClient(app.build_app(PORT, SESSION, model_dir=self.root), base_url=BASE)
+        self.addCleanup(client.close)
+        project_id = history.register_project(self.upd)
+        response = client.post(f"{S}/projects/{project_id}/previews",
+                               data={"session": SESSION, "packages": "example"},
+                               headers={"origin": BASE}, follow_redirects=False)  # fmt: skip
+        self.assertEqual(response.status_code, 303, response.text)
+        self.assert_unchanged()  # the preview changed nothing
+        page = client.get(response.headers["location"])
+        self.assertIn("확인이 필요한 항목 1개", page.text)  # FakePredictor flags it
+        action = re.search(r'<form method="post" action="([^"]+/apply)">', page.text).group(1)
+        applied = client.post(action, data={"session": SESSION, "mode": "lockfile",
+                                            "confirm": "yes"}, headers={"origin": BASE})  # fmt: skip
+        self.assertEqual(applied.status_code, 200)
+        self.assertIn("업데이트 반영: 반영함", applied.text)
+        backup = self.assert_applied({"outcome": "applied",
+                                      "backup": str(next(self.backups.iterdir()))})  # fmt: skip
+        self.assertEqual((backup / "package-lock.json").read_bytes(),
+                         self.original["package-lock.json"])  # fmt: skip
+        self.assertIn(f"원본 백업: {backup}", applied.text)
+        (run,) = history.list_runs(project_id)
+        (stored,) = history.list_applies(project_id)
+        self.assertEqual((stored["run_id"], stored["outcome"], stored["confirmed"],
+                          stored["backup"]), (run["id"], "applied", True, str(backup)))  # fmt: skip
+        self.assertEqual(stored["new_package_lock_sha256"], sha(self.head.read_bytes()))
+        self.assertEqual(self.ci_calls, [])  # lockfile only: no npm ci
+        again = client.post(action, data={"session": SESSION, "mode": "lockfile",
+                                          "confirm": "yes"}, headers={"origin": BASE})  # fmt: skip
+        self.assertEqual(again.status_code, 404)
+        self.assertEqual(len(list(self.backups.iterdir())), 1)
 
 
 class WithoutWebTests(Fixture):

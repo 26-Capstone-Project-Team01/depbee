@@ -3,7 +3,8 @@
 Standard library only. Reports are stored as given: verdicts, reasons and exit codes are never
 recomputed, and nothing here detects anything. The CLI records through record(), which never
 creates the database; only register_project() does. The dashboard uses the same API. An update
-apply (service.apply_update) is stored next to its update_preview run, never the new lockfile.
+apply (service.apply_update) is stored next to its update_preview run, or added to that run
+later with record_apply() (the dashboard); never the new lockfile.
 """
 
 import contextlib
@@ -291,22 +292,63 @@ def record(
                 ],
             )
             if apply is not None:
-                new = {f["path"]: f["new_sha256"] for f in apply.get("files") or []}
-                values = (
-                    run_id, _now(), _text(apply.get("mode")), _text(apply.get("outcome")),
-                    _text(apply.get("reason")), bool(apply.get("confirmed")),
-                    _text(preview.get("package_json_sha256")),
-                    _text(preview.get("package_lock_sha256")),
-                    _text(new.get("package.json")), _text(new.get("package-lock.json")),
-                    _text(apply.get("backup")), _text(apply.get("npm_version")),
-                    apply.get("npm_ci_exit_code"), _json(apply),
-                )  # fmt: skip
-                connection.execute(
-                    f"INSERT INTO applies ({', '.join(APPLY_COLUMNS[1:])}, apply) "
-                    f"VALUES ({', '.join('?' * len(APPLY_COLUMNS))})",
-                    values,
-                )
+                _insert_apply(connection, run_id, preview, apply)
         return run_id
+
+
+def _insert_apply(connection, run_id: int, preview: dict, apply: dict) -> int:
+    """One applies row inside the caller's write transaction: the original hashes from the
+    preview, the new ones of the files the apply replaced, and the whole apply document."""
+    new = {f["path"]: f["new_sha256"] for f in apply.get("files") or []}
+    values = (
+        run_id, _now(), _text(apply.get("mode")), _text(apply.get("outcome")),
+        _text(apply.get("reason")), bool(apply.get("confirmed")),
+        _text(preview.get("package_json_sha256")), _text(preview.get("package_lock_sha256")),
+        _text(new.get("package.json")), _text(new.get("package-lock.json")),
+        _text(apply.get("backup")), _text(apply.get("npm_version")),
+        apply.get("npm_ci_exit_code"), _json(apply),
+    )  # fmt: skip
+    return connection.execute(
+        f"INSERT INTO applies ({', '.join(APPLY_COLUMNS[1:])}, apply) "
+        f"VALUES ({', '.join('?' * len(APPLY_COLUMNS))})",
+        values,
+    ).lastrowid
+
+
+def record_apply(run_id: int, preview: dict, apply: dict) -> int | None:
+    """Add an apply (service.apply_preview) to an update_preview run recorded earlier and return
+    its applies id: the dashboard applies a preview after recording it. Same columns as
+    record()'s apply, in one BEGIN IMMEDIATE transaction that also upgrades a version 1 file.
+
+    Returns None without touching anything if there is no home directory, no database file or
+    no such run. Raises ValueError for a run that is not an update_preview or already has an
+    apply (one apply per preview, applies.run_id UNIQUE), and sqlite3.Error, HistoryError or
+    OSError if the database cannot be read or written.
+    """
+    try:
+        path = db_path()
+    except RuntimeError:  # no home directory: no history, as in record()
+        return None
+    if not path.exists():
+        return None
+    with _connect(path, create=False) as connection:
+        _check(connection)
+        with _write(connection):
+            version = _check(connection)
+            row = connection.execute("SELECT kind FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if row is None:
+                return None
+            if row[0] != "update_preview":
+                raise ValueError("An apply is recorded with its update preview")
+            if (
+                version >= 2
+                and connection.execute(
+                    "SELECT 1 FROM applies WHERE run_id = ?", (run_id,)
+                ).fetchone()
+            ):
+                raise ValueError("This update preview already has an apply")
+            _upgrade(connection, version)
+            return _insert_apply(connection, run_id, preview, apply)
 
 
 def _read(query: str, parameters: tuple = (), since: int = 1) -> list[sqlite3.Row]:

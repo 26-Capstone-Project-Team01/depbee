@@ -4,18 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}depbee{% endblock %}</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="{{ base }}/static/style.css">
 </head>
 <body>
 <header>
-<nav><a class="brand" href="/">depbee</a> <a href="/">프로젝트</a> <a href="/model">모델 정보</a></nav>
+<nav><a class="brand" href="{{ base }}/">depbee</a> <a href="{{ base }}/">프로젝트</a> <a href="{{ base }}/model">모델 정보</a></nav>
 <p class="note">{{ safety_note }}</p>
 </header>
 <main>
 {% block main %}{% endblock %}
 </main>
 <footer>
-<p class="note">{{ safety_note }} 이 화면은 저장된 기록을 보여 줄 뿐 검사를 실행하지 않습니다.</p>
+<p class="note">{{ safety_note }} 이 화면은 이 PC의 127.0.0.1에서만 열립니다. 주소에 이번 실행의 세션 값이 들어 있으니 다른 사람에게 보이지 않게 합니다.</p>
 </footer>
 </body>
 </html>

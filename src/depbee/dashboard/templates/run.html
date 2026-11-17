@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}depbee 실행 #{{ run.id }}{% endblock %}
 {% block main %}
-<p><a href="/projects/{{ project.id }}">{{ project.path }}</a></p>
+<p><a href="{{ base }}/projects/{{ project.id }}">{{ project.path }}</a></p>
 <h1>실행 #{{ run.id }}: {{ run.kind }}, {{ run.created_at }}</h1>
 {% if preview is not none %}
 <section class="preview">
@@ -12,52 +12,11 @@
 </ul>
 </section>
 {% endif %}
-<h2>검사 결과: {{ overall }}</h2>
-<ul>
-<li>{{ summary }}</li>
-{% for emphasized, rest in notices %}<li class="warning"><strong>{{ emphasized }}</strong> {{ rest }}</li>
-{% endfor %}
-{% if model_id %}<li>모델: {{ model_id }}, 판정 기준 점수 {{ threshold }}</li>{% endif %}
-{% for line in setup %}<li>{{ line }}</li>
-{% endfor %}
-<li>범위: {% if package_input %}lockfile 없이 registry 정보로 이 버전 하나만{% else %}lockfile에서 바뀐 의존성만{% endif %} 검사했습니다. 프로젝트 전체의 안전성 평가가 아닙니다.</li>
-</ul>
-{% for row in results %}
-<section class="result {{ row.status }}{% if row.known_hit %} known{% endif %}">
-<h3>[{{ row.label }}] {{ row.package }}@{{ row.version }}</h3>
-<dl>
-<dt>위치</dt><dd>{{ row.location }}</dd>
-{% if row.score is not none %}<dt>ML 위험 점수</dt><dd>{{ row.score }}</dd>{% endif %}
-{% if row.compared is not none %}<dt>비교 버전</dt><dd>{{ row.compared }}</dd>{% endif %}
-{% if row.reason is not none %}<dt>이유</dt><dd>{{ row.reason }}</dd>{% endif %}
-{% if row.alternative is not none %}<dt>대안(안전 보증 아님)</dt><dd>{{ row.alternative[0] }} ({{ row.alternative[1] }})</dd>{% endif %}
-{% if row.detail is not none %}<dt>상세</dt><dd>{{ row.detail }}</dd>{% endif %}
-{% if row.npm is not none %}<dt>npm 페이지</dt><dd><a href="{{ row.npm }}" rel="noreferrer noopener">{{ row.npm }}</a></dd>{% endif %}
-</dl>
-{% if row.detectors %}
-<h4>탐지기</h4>
-<ul>
-{% for line, subs in row.detectors %}<li>{{ line }}{% if subs %}<ul>{% for sub in subs %}<li>{{ sub }}</li>{% endfor %}</ul>{% endif %}</li>
-{% endfor %}
-</ul>
-{% endif %}
-{% if row.evidence %}
-<h4>추출된 사실</h4>
-<ul>
-{% for evidence in row.evidence %}<li>{{ evidence }}</li>
-{% endfor %}
-</ul>
-{% endif %}
-{% if row.explanation or row.rest %}
-<h4>모델 설명: ML 위험 점수에 크게 작용한 특징(기여도 + 위험 쪽, - 정상 쪽)</h4>
-<table class="bars">
-{% for item in row.explanation %}
-<tr><td>{{ item.feature }} = {{ item.value }}</td><td>{{ item.contribution }}</td>
-<td><svg class="bar" viewBox="0 0 100 8" width="120" height="10" aria-hidden="true"><rect class="{{ 'risk' if item.risk else 'normal' }}" width="{{ item.width }}" height="8"/></svg></td></tr>
-{% endfor %}
-</table>
-{% if row.rest %}<p>{{ row.rest }}</p>{% endif %}
-{% endif %}
+{% include "report.html" %}
+{% if apply is not none %}
+<section class="apply">
+<h2>업데이트 반영: {{ apply.outcome }}</h2>
+{% include "apply_lines.html" %}
 </section>
-{% endfor %}
+{% endif %}
 {% endblock %}
