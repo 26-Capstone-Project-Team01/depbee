@@ -7,10 +7,11 @@
 프로젝트 폴더 + 기준 lockfile(파일, 또는 inputs/git.py로 읽은 Git 커밋의 파일)
         ↓ inputs/npm.py
 분석 요청 JSON (변경 버전 쌍 + 파일 해시)
-        ↓ analysis/extractor.py (--extract): 직전 stable 선정(baseline.py) + feature-extractor
+        ↓ analysis/extractor.py (--extract): 직전 stable 선정(baseline.py, 색인이 있으면 기지 악성 후보 제외) + feature-extractor
         ↓ 또는 analysis/artifact.py (--analysis): 미리 만든 분석 JSON
 특징 + 근거 + 분석 상태 (artifact.validate로 같은 검사)
         ↓ inference/lightgbm.py + model.txt/manifest.json
+        ↓ known_malicious.py + index.json/manifest.json (선택): 이름·버전 대조
 판정 보고서 → CLI / JSON / 종료 코드 → 향후 CI 정책·UI
 ```
 
@@ -21,6 +22,8 @@
 `preview_update()`(`depbee update [이름...]`)는 `inputs/npm_cli.py`로 프로젝트의 `package.json`·`package-lock.json`만 임시 폴더에 복사해 `npm update --package-lock-only --ignore-scripts`(node와 npm-cli.js 직접 실행, 셸 없음, 사용자 설정의 무동작 경로를 막는 `--dry-run=false`·`--package-lock=true` 고정)로 새 lockfile을 계산하고, 원본 lockfile 바이트를 기준으로 `scan_project(extract=True)`를 부른다. npm의 `--version`과 `update` 모두에 `--prefix=<임시 폴더>`·`--workspaces=false`(상위 workspace 루트 탐색 차단)와 없는 파일을 가리키는 `--git`(Git 실행 차단)을 고정하고, `overrides`와 lockfile 항목의 의존성 값도 registry 범위만 받는다. npm 실행은 `inputs/git.py`의 `_run(tree=True)`로 하위 프로세스까지 묶어(Windows는 `KILL_ON_JOB_CLOSE`를 설정한 Job Object, POSIX는 프로세스 그룹) 시간 초과·출력 상한과 정상 종료 뒤 모두 종료하고 끝난 것을 확인한다. 판정은 그대로 `pipeline.scan()`이 하고, 미리보기 메타데이터는 보고서 밖 `preview`에 둔다. 프로젝트 파일은 읽기만 한다.
 
 `apply_update()`(`depbee update --apply lockfile|install`)는 같은 미리보기(`_preview()`, 새 `package.json`·lockfile 바이트는 임시 폴더에서 메모리로만 나옴)를 거친 뒤 `apply_preview()`로 반영한다. 게이트는 `update_gate()`가 `report.results[]`의 항목별 필드만 읽어 정하고(기지 악성 일치는 거부, ML 기준 이상·보류·기지 악성 미확인은 한 번의 확인), 판정을 새로 만들지 않는다. 반영 직전에 `npm_cli.read_project()`와 원본·새 lockfile 해시, 새 파일의 같은 내용 검사(`npm_cli.check_files()`)를 다시 확인하고, 이력 파일 옆 `backups/`에 원본을 백업한 뒤 프로젝트 안 임시 파일과 `os.replace`로 바꾼다. 설치는 새 lockfile의 `integrity`(`npm_cli.missing_integrity()`)와 `npm ci`용 임시 폴더가 프로젝트 밖인지를 백업 전에 확인한 뒤, `npm_cli.clean_install()`이 프로젝트에서 `npm ci --ignore-scripts`를 미리보기와 같은 실행 규칙(같은 `_run(tree=True)`, 환경 정리, `--prefix`·`--workspaces=false`·없는 `--git`, 여기에 없는 `--globalconfig`와 `--package-lock-only=false`·`--dry-run=false`)으로 실행한다. 자동으로 되돌리지 않는다. 대시보드가 미리보기 결과를 들고 있다가 반영할 수 있도록 `preview_files()`는 미리보기와 새 파일 바이트를 메모리로 돌려주고 `apply_preview()`는 그것을 받는다. 규칙은 [연결 규약](contracts.md) 5.1절.
+
+`known_malicious.py`는 기지 악성 탐지기(KM-01)다. `build_index()`가 OSV npm `all.zip`을 메모리에서 읽어 `MAL-` 기록만 담은 색인(`index.json`, `manifest.json`)을 결정적인 바이트로 만들고(`scripts/build_known_malicious_index.py`는 인자와 파일 쓰기만 하는 껍데기), `load()`가 크기·중복 키·형식·자료형·SHA-256·사본을 확인해 `contracts.KnownMaliciousDetector`인 `KnownMaliciousIndex`를 돌려준다(문제가 있으면 `GuardError`). SemVer 2.0 우선순위 비교와 OSV SEMVER 범위 평가는 표준 라이브러리로 이 모듈 안에 있고, 버전 목록과 상한 없는 범위를 함께 적은 기록의 범위 정책은 `_match_ranges()` 한 곳에 있다. 서비스는 `_predictor()` 옆의 `_known_malicious()`(`--known-malicious-dir` → `DEPBEE_KNOWN_MALICIOUS_DIR` → 없음)로 색인을 한 번 읽어 `pipeline.scan(known_malicious=...)`와 `ExtractorAnalyzer(known_malicious=...)`에 같은 객체를 넘기고, 색인이 없으면 두 호출에 키워드를 넘기지 않는다. 분석기는 `select_baseline()`의 선택 콜백으로 색인의 `baseline_records()`(명시 버전과 상한 있는 범위)에 든 후보를 건너뛴다(D-16). 판정은 그대로 `pipeline.scan()`의 D-2·D-7 분기가 한다. 규칙과 형식은 [연결 규약](contracts.md) 4절.
 
 `history.py`는 로컬 이력 저장소(표준 라이브러리 `sqlite3`)다. 서비스 함수와 `pipeline.scan()` 밖에 두어, `cli.main`의 `scan`·`update` 분기가 보고서를 출력한 뒤에만 `record()`를 부른다(그래서 `preview_update()` 안의 임시 폴더 스캔, MCP 도구, `check`, `plan`, 오류 실행은 기록되지 않는다). 대시보드도 같은 등록·조회 API를 쓴다. 보고서 값을 그대로 저장하고 판정을 다시 계산하지 않는다. `update --apply`의 반영 기록은 같은 `record()` 호출로 미리보기 실행과 함께 `applies` 표(`user_version` 2)에 들어가고, 버전 1 파일은 그 쓰기에서 올린다. 대시보드는 미리보기 실행을 먼저 `record()`로 남기고 반영 결과를 `record_apply()`로 그 실행에 더한다(같은 열 값, `_insert_apply`). 형식과 규칙은 [연결 규약](contracts.md) 6절.
 

@@ -16,7 +16,7 @@ inputs:
   max-changes:
     description: Fail without scanning when more lockfile entries than this changed.
     default: '20'
-  # The next three are required (the input check step fails without them). Not marked
+  # The next five are required (the input check step fails without them). Not marked
   # `required: true`: GitHub does not enforce it, and the self-test below the report input skips them.
   model-version:
     description: Required. Tag of the depbee Release that holds model.txt and manifest.json.
@@ -24,6 +24,12 @@ inputs:
     description: Required. Expected SHA-256 of model.txt (64 lowercase hex digits).
   manifest-sha256:
     description: Required. Expected SHA-256 of manifest.json (64 lowercase hex digits).
+  known-malicious-version:
+    description: >-
+      Required. Tag of the depbee Release that holds known-malicious-index.json and
+      known-malicious-manifest.json (may differ from model-version).
+  known-malicious-sha256:
+    description: Required. Expected SHA-256 of known-malicious-index.json (64 lowercase hex digits).
   report:
     description: >-
       Self-test only (depbee CI). Path of an existing report.json to judge instead of scanning;
@@ -46,6 +52,8 @@ runs:
         MODEL_VERSION: ${{ inputs.model-version }}
         MODEL_SHA256: ${{ inputs.model-sha256 }}
         MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
+        KNOWN_MALICIOUS_VERSION: ${{ inputs.known-malicious-version }}
+        KNOWN_MALICIOUS_SHA256: ${{ inputs.known-malicious-sha256 }}
         REPORT: ${{ inputs.report }}
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
       # -I: files in the checked-out pull request must not shadow Python imports.
@@ -83,6 +91,25 @@ runs:
         done
         python -I "$GITHUB_ACTION_PATH/src/depbee/actions.py" verify \
           "$OUT/model/model.txt" "$MODEL_SHA256" "$OUT/model/manifest.json" "$MANIFEST_SHA256"
+
+    # No hash input for the manifest: depbee checks it against the verified index.
+    - if: inputs.report == ''
+      name: Download and verify the known malicious index
+      shell: bash
+      env:
+        KNOWN_MALICIOUS_VERSION: ${{ inputs.known-malicious-version }}
+        KNOWN_MALICIOUS_SHA256: ${{ inputs.known-malicious-sha256 }}
+        OUT: ${{ steps.setup.outputs.out }}
+      run: |
+        mkdir "$OUT/known-malicious"
+        base="https://github.com/26-Capstone-Project-Team01/depbee/releases/download/$KNOWN_MALICIOUS_VERSION"
+        for name in index manifest; do
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            --max-filesize 134217728 --max-time 300 --output "$OUT/known-malicious/$name.json" \
+            "$base/known-malicious-$name.json"
+        done
+        python -I "$GITHUB_ACTION_PATH/src/depbee/actions.py" verify \
+          "$OUT/known-malicious/index.json" "$KNOWN_MALICIOUS_SHA256"
 
     - if: inputs.report == ''
       name: Count changed lockfile entries
@@ -126,7 +153,8 @@ runs:
         project=$(dirname -- "$LOCKFILE")
         test -n "$project"
         if depbee scan "$project" --base-ref "$BASE_SHA" --extract \
-          --model-dir "$OUT/model" --cache-dir "$CACHE" \
+          --model-dir "$OUT/model" --known-malicious-dir "$OUT/known-malicious" \
+          --cache-dir "$CACHE" \
           --format markdown --output "$OUT/report.json" > "$OUT/summary.md"; then
           code=0
         else

@@ -240,6 +240,8 @@ class InputsTest(unittest.TestCase):
             "MODEL_VERSION": "model-d04-e00",
             "MODEL_SHA256": "a" * 64,
             "MANIFEST_SHA256": "b" * 64,
+            "KNOWN_MALICIOUS_VERSION": "known-malicious-2026-10-06",
+            "KNOWN_MALICIOUS_SHA256": "d" * 64,
             "REPORT": "",
             "BASE_SHA": "c" * 40,
         }
@@ -258,6 +260,8 @@ class InputsTest(unittest.TestCase):
             "MODEL_VERSION": ["", "../x", "a/b", "v1?x", "-x"],
             "MODEL_SHA256": ["", "A" * 64, "a" * 63, "g" * 64],
             "MANIFEST_SHA256": [""],
+            "KNOWN_MALICIOUS_VERSION": ["", "../x", "a/b", "v1?x", "-x"],
+            "KNOWN_MALICIOUS_SHA256": ["", "A" * 64, "a" * 63, "g" * 64],
             "BASE_SHA": ["", "HEAD", "c" * 39],
             "REPORT": ["missing.json"],
         }  # fmt: skip
@@ -266,6 +270,16 @@ class InputsTest(unittest.TestCase):
                 with self.subTest(name=name, value=value):
                     with self.assertRaises(actions.ActionError):
                         actions.check_inputs(self.env | {name: value}, self.tmp)
+        for name in ("KNOWN_MALICIOUS_VERSION", "KNOWN_MALICIOUS_SHA256"):
+            missing = {key: value for key, value in self.env.items() if key != name}
+            with self.subTest(missing=name), self.assertRaisesRegex(actions.ActionError, "known"):
+                actions.check_inputs(missing, self.tmp)
+
+    def test_report_mode_does_not_check_the_index_inputs(self):
+        # The self-test (ci.yml, uses: ./) gives only lockfile and report.
+        report_mode = {"LOCKFILE": "app/package-lock.json", "REPORT": "report.json",
+                       "KNOWN_MALICIOUS_VERSION": "../x", "KNOWN_MALICIOUS_SHA256": "x"}  # fmt: skip
+        actions.check_inputs(report_mode, self.tmp)
 
     def test_paths_are_checked_as_the_shell_reads_them(self):
         # Review F1: Linux dirname keeps "\" in a name and reads "-..." as an option, so such
@@ -328,6 +342,23 @@ class InputsTest(unittest.TestCase):
             self.assertEqual(actions.main(["verify", str(model), digest]), 0)
         self.assertIn("::error::depbee action: SHA-256 mismatch for model.txt", out.getvalue())
 
+    def test_verify_several_pairs(self):
+        files = {}
+        for name in ("model.txt", "manifest.json", "index.json"):
+            path = self.tmp / name
+            path.write_bytes(name.encode())
+            files[path] = hashlib.sha256(name.encode()).hexdigest()
+        actions.verify(list(files.items()))
+        index = self.tmp / "index.json"
+        with self.assertRaisesRegex(actions.ActionError, "index.json"):
+            actions.verify([*files.items(), (index, "0" * 64)][1:])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            args = [str(part) for pair in files.items() for part in pair]
+            self.assertEqual(actions.main(["verify", *args]), 0)
+            self.assertEqual(actions.main(["verify", *args[:-1], "0" * 64]), 1)
+        self.assertIn("SHA-256 mismatch for index.json", out.getvalue())
+
     def test_count_changes(self):
         plan = self.tmp / "plan.json"
         plan.write_text(json.dumps({"changes": [{}, {}, {}]}), encoding="utf-8")
@@ -337,6 +368,58 @@ class InputsTest(unittest.TestCase):
         plan.write_text("{}", encoding="utf-8")
         with self.assertRaises(actions.ActionError):
             actions.count_changes(plan, 3)
+
+
+class ActionFileTest(unittest.TestCase):
+    """action.yml read as text (no YAML parser in the dev extra): the index steps and arguments."""
+
+    def setUp(self):
+        path = Path(__file__).resolve().parents[1] / "action.yml"
+        self.text = path.read_text(encoding="utf-8")
+
+    def step(self, name):
+        """The text of the step with this name, up to the next step."""
+        start = self.text.rindex("\n    - ", 0, self.text.index(f"name: {name}\n")) + 1
+        end = self.text.find("\n    - ", start)
+        return self.text[start : end if end != -1 else None]
+
+    def test_index_inputs_and_steps(self):
+        self.assertIn("  known-malicious-version:\n    description: >-\n      Required.", self.text)
+        self.assertIn("  known-malicious-sha256:\n    description: Required.", self.text)
+        names = ["Check depbee inputs", "Install depbee", "Download and verify the model",
+                 "Download and verify the known malicious index", "Count changed lockfile entries",
+                 "Scan with depbee", "Decide from the report"]  # fmt: skip
+        positions = [self.text.index(f"name: {name}\n") for name in names]
+        self.assertEqual(positions, sorted(positions))
+        setup = self.step("Check depbee inputs")
+        self.assertIn("KNOWN_MALICIOUS_VERSION: ${{ inputs.known-malicious-version }}", setup)
+        self.assertIn("KNOWN_MALICIOUS_SHA256: ${{ inputs.known-malicious-sha256 }}", setup)
+        model = self.step("Download and verify the model")
+        index = self.step("Download and verify the known malicious index")
+        self.assertTrue(index.startswith("    - if: inputs.report == ''\n"), index[:40])
+        curl = (
+            "curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https'"
+        )
+        self.assertIn(curl, model)
+        self.assertIn(curl, index)
+        self.assertIn("--max-time 300", index)
+        self.assertIn(
+            'base="https://github.com/26-Capstone-Project-Team01/depbee/releases/download/'
+            '$KNOWN_MALICIOUS_VERSION"',
+            index,
+        )
+        self.assertIn("for name in index manifest; do", index)
+        self.assertIn('--output "$OUT/known-malicious/$name.json"', index)
+        self.assertIn('"$base/known-malicious-$name.json"', index)
+        verify = 'verify \\\n          "$OUT/known-malicious/index.json" "$KNOWN_MALICIOUS_SHA256"'
+        self.assertIn(verify, index)
+        scan = self.step("Scan with depbee")
+        self.assertIn('--model-dir "$OUT/model" --known-malicious-dir "$OUT/known-malicious"', scan)
+        # The feature cache holds no detector results: its keys stay without the index.
+        keys = [line for line in self.text.splitlines() if "key:" in line or "keys:" in line]
+        self.assertEqual(len(keys), 3)
+        for line in keys:
+            self.assertNotIn("known-malicious", line)
 
 
 if __name__ == "__main__":

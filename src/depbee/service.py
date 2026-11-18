@@ -27,6 +27,7 @@ from .inputs.npm import (
     check_package_spec,
     read_dependencies,
 )
+from .known_malicious import KnownMaliciousIndex, load
 from .pipeline import scan
 
 NPMRC_NOTICE = "프로젝트 .npmrc는 복사하지 않았습니다. 사용자·전역 npm 설정은 적용될 수 있습니다."
@@ -103,6 +104,7 @@ def scan_project(
     progress: Callable[[int, int, dict], None] | None = None,
     cache_dir: Path | None = None,
     no_cache: bool = False,
+    known_malicious_dir: Path | None = None,
 ) -> dict:
     """Build the request, pick the analyzer and model, and return the pipeline.scan() report.
 
@@ -111,6 +113,11 @@ def scan_project(
     local_sources: NAME@VERSION=DIR specs under local_root (extract only).
     model_dir: trusted model directory. If None, DEPBEE_MODEL_DIR is read on each call; empty or
     unset means no model. A bad path is an error and never falls back to another model.
+    known_malicious_dir: trusted known malicious index folder (known_malicious.load), read right
+    after the model. If None, DEPBEE_KNOWN_MALICIOUS_DIR is read on each call; empty or unset
+    means no index (detectors.known_malicious null, as before). A bad index is an error, never
+    "no index". The same index is matched against the changes and, with extract, keeps known
+    malicious versions out of the baseline candidates (D-16).
     progress: called per extracted package; the caller decides how to show it.
     cache_dir, no_cache: the extracted-feature cache (default ~/.cache/depbee); see _cache_dir().
     With extract=True the report also has elapsed_seconds (in total and per result) and cache_hit.
@@ -127,15 +134,16 @@ def scan_project(
     request = plan_project(project, base_lock, base_ref=base_ref)
     sources = _local_sources(local_sources or [], extract, local_root)
     predictor = _predictor(model_dir)
+    detectors = _detectors(known_malicious_dir)
     if not extract:
         analyzer = ArtifactAnalyzer(analysis) if analysis else None
-        return scan(request, analyzer, predictor)
+        return scan(request, analyzer, predictor, **detectors)
     from .analysis.extractor import ExtractorAnalyzer
 
     analyzer = ExtractorAnalyzer(
-        sources, progress=progress, **_cache_options(predictor, cache_dir, no_cache)
+        sources, progress=progress, **_cache_options(predictor, cache_dir, no_cache), **detectors
     )
-    return _timed(scan(request, analyzer, predictor), analyzer, started)
+    return _timed(scan(request, analyzer, predictor, **detectors), analyzer, started)
 
 
 def _predictor(model_dir: Path | None) -> LightGBMPredictor | None:
@@ -144,6 +152,23 @@ def _predictor(model_dir: Path | None) -> LightGBMPredictor | None:
     if model_dir is None and env_model:
         model_dir = Path(env_model)
     return LightGBMPredictor(model_dir) if model_dir else None
+
+
+def _known_malicious(directory: Path | None) -> KnownMaliciousIndex | None:
+    """directory, else DEPBEE_KNOWN_MALICIOUS_DIR read on this call; empty or unset means none.
+    Never read from the project being checked."""
+    env_dir = os.environ.get("DEPBEE_KNOWN_MALICIOUS_DIR")
+    if directory is None and env_dir:
+        directory = Path(env_dir)
+    return load(directory) if directory else None
+
+
+def _detectors(known_malicious_dir: Path | None) -> dict:
+    """The known_malicious keyword for scan() and ExtractorAnalyzer, only when an index is
+    connected: without one both are called exactly as before (a caller's own detector, as in
+    tests, is not replaced by None)."""
+    index = _known_malicious(known_malicious_dir)
+    return {"known_malicious": index} if index is not None else {}
 
 
 def _cache_options(predictor, cache_dir: Path | None, no_cache: bool) -> dict:
@@ -183,6 +208,7 @@ def check_package(
     progress: Callable[[int, int, dict], None] | None = None,
     cache_dir: Path | None = None,
     no_cache: bool = False,
+    known_malicious_dir: Path | None = None,
 ) -> dict:
     """Check one npm registry version without a lockfile and return the pipeline.scan() report.
 
@@ -190,8 +216,8 @@ def check_package(
     network access. The version is compared with its stable predecessor, as in scan --extract.
     The registry metadata is fetched once and used for both the request and the analysis; the
     downloaded tarballs are checked against its dist.integrity (analysis.registry).
-    model_dir, progress, cache_dir, no_cache: as in scan_project(). The model is loaded before
-    the registry is read. The report has the elapsed_seconds and cache_hit of scan --extract.
+    model_dir, progress, cache_dir, no_cache, known_malicious_dir: as in scan_project(). The
+    model and then the index are loaded before the registry is read. The report has the elapsed_seconds and cache_hit of scan --extract.
 
     Raises GuardError, OSError or ValueError for an invalid name or version, unreadable or
     invalid registry metadata, or a bad model; the caller maps them to its error output.
@@ -201,8 +227,9 @@ def check_package(
     from .analysis.extractor import ExtractorAnalyzer
 
     predictor = _predictor(model_dir)
+    detectors = _detectors(known_malicious_dir)
     analyzer = ExtractorAnalyzer(
-        progress=progress, **_cache_options(predictor, cache_dir, no_cache)
+        progress=progress, **_cache_options(predictor, cache_dir, no_cache), **detectors
     )
     # The metadata read and the analysis of the one change share its time budget.
     with bounded.budget():
@@ -214,7 +241,7 @@ def check_package(
         fetched = elapsed_since(fetch_started)
         request = build_package_request(name, version, packument)
         # The one change's metadata was read before analyze(); count it in that result's time.
-        report = scan(request, analyzer, predictor)
+        report = scan(request, analyzer, predictor, **detectors)
     return _timed(report, analyzer, started, {request["changes"][0]["change_id"]: fetched})
 
 
@@ -226,6 +253,7 @@ def preview_update(
     progress: Callable[[int, int, dict], None] | None = None,
     cache_dir: Path | None = None,
     no_cache: bool = False,
+    known_malicious_dir: Path | None = None,
 ) -> dict:
     """Preview npm update in a temporary copy and check the lockfile it would write.
 
@@ -237,7 +265,8 @@ def preview_update(
     {preview: {targets, npm_version, package_json_sha256, package_lock_sha256,
     new_package_lock_sha256, package_json_changed, changed_count, project_npmrc_ignored,
     notices}, report}. targets is null for everything.
-    model_dir, progress, cache_dir, no_cache: as in scan_project().
+    model_dir, progress, cache_dir, no_cache, known_malicious_dir: as in scan_project() (the model
+    and the index are read after npm, as the scan of the new lockfile reads them).
 
     Raises GuardError, OSError or ValueError for unsupported projects, invalid names, npm
     failures and the errors of scan_project(); the caller maps them to its error output. Errors
@@ -246,7 +275,7 @@ def preview_update(
     """
     result, _, _ = _preview(
         project, packages, model_dir=model_dir, progress=progress, cache_dir=cache_dir,
-        no_cache=no_cache,
+        no_cache=no_cache, known_malicious_dir=known_malicious_dir,
     )  # fmt: skip
     return result
 
@@ -259,6 +288,7 @@ def preview_files(
     progress: Callable[[int, int, dict], None] | None = None,
     cache_dir: Path | None = None,
     no_cache: bool = False,
+    known_malicious_dir: Path | None = None,
 ) -> tuple[dict, bytes, bytes]:
     """preview_update()'s {preview, report} and the new package.json and lockfile bytes, for a
     caller that keeps them in memory and applies them later with apply_preview() (the
@@ -267,7 +297,7 @@ def preview_files(
     """
     return _preview(
         project, packages, model_dir=model_dir, progress=progress, cache_dir=cache_dir,
-        no_cache=no_cache,
+        no_cache=no_cache, known_malicious_dir=known_malicious_dir,
     )  # fmt: skip
 
 
@@ -336,6 +366,7 @@ def apply_update(
     progress: Callable[[int, int, dict], None] | None = None,
     cache_dir: Path | None = None,
     no_cache: bool = False,
+    known_malicious_dir: Path | None = None,
 ) -> dict:
     """Preview, check and apply npm update in one call: {preview, report, apply}.
 
@@ -349,7 +380,7 @@ def apply_update(
         raise GuardError(f"Unknown apply mode: {mode!r}")
     result, new_package, new_lock = _preview(
         project, packages, model_dir=model_dir, progress=progress, cache_dir=cache_dir,
-        no_cache=no_cache,
+        no_cache=no_cache, known_malicious_dir=known_malicious_dir,
     )  # fmt: skip
     preview = result["preview"]
     preview["notices"] = [notice for notice in preview["notices"] if notice != PREVIEW_NOTICE]
