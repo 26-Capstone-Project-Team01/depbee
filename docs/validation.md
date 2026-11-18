@@ -1,6 +1,6 @@
 # 검증 기록
 
-## 2026-11-19: 실제 registry 검증과 소요 시간(VAL-01)
+## 2026-11-18: 실제 registry 검증과 소요 시간(VAL-01)
 
 - 목적: 정상 패키지로 실제 npm registry 메타데이터·tarball을 받아 `scan --extract`와 `check`를 실행하고, 바뀐 패키지 1·5·20개의 첫 실행과 캐시 재실행 시간을 재며, D04-E00 학습 CSV와 feature·점수가 같은지 다시 본다. 코드·테스트는 바꾸지 않았다(base `e0010c0`, depbee 0.1.0).
 - 측정 환경: 이 PC(Windows 11 Home 10.0.26200, Intel Core Ultra 7 155H 16코어·22스레드, RAM 31.6 GB, NVMe SSD, 실시간 백신 켜짐), Python 3.13.5, LightGBM 4.7.0, numpy 2.5.4, feature-extractor 고정 커밋 `c24761d`(Git 설치). 모든 보고서의 `provenance.feature_extractor.commit`이 이 커밋이었고 캐시가 쓰였다(warm 실행의 `cache_hit`가 모두 true). 모델 D04-E00(`model_sha256` `4e3bb5a8...`, 실제 해시와 같음). 네트워크는 Wi-Fi(어댑터 링크 288 Mbps)이고 실제 회선 대역폭과 종류는 모른다. 임시 폴더·HOME·캐시는 작업 폴더 아래로 돌렸다. npm은 실행하지 않았다.
