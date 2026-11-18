@@ -56,8 +56,9 @@ SEMVER = re.compile(
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
     re.ASCII,
 )
-# As npm semver: a numeric identifier has at most 16 digits (MAX_SAFE_COMPONENT_LENGTH) and is at
-# most Number.MAX_SAFE_INTEGER, so int() never meets Python's digit limit (a ValueError).
+# As npm semver (classes/semver.js): major, minor and patch are at most Number.MAX_SAFE_INTEGER;
+# checking 16 digits first keeps int() off Python's digit limit (a ValueError). Numeric prerelease
+# identifiers have no limit and are compared without int() (version_key).
 MAX_NUMBER_DIGITS = 16
 MAX_SAFE_INTEGER = 2**53 - 1
 _SHA256 = re.compile(r"[0-9a-f]{64}", re.ASCII)
@@ -70,7 +71,7 @@ _UPPER = {"fixed": "<", "last_affected": "<="}
 
 def version_key(version: str) -> tuple:
     """SemVer 2.0 precedence key; build metadata is ignored. GuardError if not strict SemVer or
-    a numeric identifier is longer than 16 digits or above 2**53 - 1."""
+    major, minor or patch is above 2**53 - 1."""
     match = SEMVER.fullmatch(version) if isinstance(version, str) else None
     if match is None:
         raise GuardError(f"Not a strict SemVer 2.0 version: {str(version)[:64]!r}")
@@ -84,7 +85,8 @@ def version_key(version: str) -> tuple:
     if pre is None:
         release = (1,)  # a release is above all of its prereleases
     else:
-        release = (0, tuple((0, number(i)) if i.isdigit() else (1, i) for i in pre.split(".")))
+        # Numbers (no leading zeros) by digit count, then text: numeric order. Below any word.
+        release = (0, tuple((0, len(i), i) if i.isdigit() else (1, i) for i in pre.split(".")))
     return number(match[1]), number(match[2]), number(match[3]), release
 
 

@@ -587,20 +587,22 @@ class MalformedRecordTests(unittest.TestCase):
             record("MAL-EXAMPLE-9104", "example-unsafe", ["9007199254740992.0.0", "3.0.0"]),
         ]  # fmt: skip
         index, counts = self.load(records)
-        self.assertEqual(counts["skipped_parts"],
-                         {"version_not_semver": 3, "range_bound_not_semver": 1})  # fmt: skip
-        self.assertEqual(counts["skipped_records"], {"nothing_to_match": 1})
-        # As npm semver: at most 16 digits and Number.MAX_SAFE_INTEGER per numeric identifier.
-        for bad in (f"{seventeen}.0.0", f"1.0.0-{seventeen}", f"{LONG}.0.0", f"1.0.0-{LONG}",
-                    "9007199254740992.0.0", "1.0.0-alpha.9007199254740992"):  # fmt: skip
+        # Only major, minor and patch are limited: the long prerelease bound stays (R2-1).
+        self.assertEqual(counts["skipped_parts"], {"version_not_semver": 3})
+        self.assertEqual(counts["skipped_records"], {})
+        self.assertEqual(counts["records"], 4)
+        # As npm semver: at most 16 digits and Number.MAX_SAFE_INTEGER for major, minor, patch.
+        for bad in (f"{seventeen}.0.0", f"{LONG}.0.0", "9007199254740992.0.0",
+                    f"1.{seventeen}.0", f"1.0.{LONG}"):  # fmt: skip
             with self.subTest(version=bad[:40]):
                 with self.assertRaises(GuardError):
                     version_key(bad)
                 with self.assertRaises(GuardError):
                     index.match("example-long-version", bad)
         version_key("9007199254740991.0.0")
-        version_key("1.0.0-9007199254740991")
         self.assertEqual(index.match("example-long-version", "9007199254740991.0.0"), [])
+        self.assertEqual(index.match("example-long-bound", f"1.0.0-{LONG}")[0]["advisory_id"],
+                         "MAL-EXAMPLE-9102")  # fmt: skip
 
     def test_long_json_integers_in_a_record(self):
         raw = json.dumps(record("MAL-EXAMPLE-9105", "example-x", ["1.0.0"]))
@@ -617,6 +619,65 @@ class MalformedRecordTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr[-300:])
         counts = json.loads(done.stdout)["counts"]
         self.assertEqual(counts["skipped_records"], {"record_not_json": 1, "nothing_to_match": 1})
+
+
+SEVENTEEN = "12345678901234567"
+
+
+class LargePrereleaseTests(unittest.TestCase):
+    """REV-KM01-R2 R2-1: as npm semver, a numeric prerelease identifier has no size limit (only
+    major, minor and patch do) and compares by value, without int()."""
+
+    load = MalformedRecordTests.load
+
+    def test_order_and_limits(self):
+        ordered = ["1.0.0-0", "1.0.0-9", "1.0.0-10", "1.0.0-9007199254740991",
+                   "1.0.0-9007199254740992", f"1.0.0-{SEVENTEEN}", "1.0.0-12345678901234568",
+                   f"1.0.0-{LONG}", f"1.0.0-1{LONG}", "1.0.0-alpha", "1.0.0-alpha.9",
+                   f"1.0.0-alpha.{LONG}", "1.0.0-alpha.beta", "1.0.0"]  # fmt: skip
+        keys = [version_key(v) for v in ordered]
+        self.assertEqual(keys, sorted(keys))
+        self.assertEqual(len(set(keys)), len(keys))
+        self.assertEqual(version_key(f"1.0.0-{SEVENTEEN}+b"), version_key(f"1.0.0-{SEVENTEEN}"))
+        for bad in (f"{SEVENTEEN}.0.0", "9007199254740992.0.0", f"1.{SEVENTEEN}.0",
+                    f"1.0.{LONG}", f"1.0.0-0{SEVENTEEN}"):  # fmt: skip
+            with self.subTest(version=bad[:40]), self.assertRaises(GuardError):
+                version_key(bad)
+
+    def test_matches(self):
+        records = [
+            record("MAL-EXAMPLE-9201", "example-large-pre", ranges=[semver(("introduced", "0"))]),
+            record("MAL-EXAMPLE-9202", "example-large-listed",
+                   [f"1.0.0-{SEVENTEEN}", f"1.0.0-{LONG}"]),
+            record("MAL-EXAMPLE-9203", "example-large-range", ranges=[semver(
+                ("introduced", "1.0.0-9007199254740992"), ("fixed", "1.0.0-12345678901234568"))]),
+        ]  # fmt: skip
+        index, counts = self.load(records)
+        self.assertEqual((counts["records"], counts["skipped_parts"]), (3, {}))
+
+        def kinds(name, version):
+            return [(m["advisory_id"], m["match_kind"]) for m in index.match(name, version)]
+
+        for version in ("1.0.0-9007199254740992", f"1.0.0-{SEVENTEEN}", f"1.0.0-{LONG}"):
+            with self.subTest(version=version[:40]):
+                self.assertEqual(kinds("example-large-pre", version),
+                                 [("MAL-EXAMPLE-9201", "affected_range")])  # fmt: skip
+        listed = [("MAL-EXAMPLE-9202", "listed_version")]
+        cases = {f"1.0.0-{SEVENTEEN}": listed, f"1.0.0-{SEVENTEEN}+b": listed,
+                 f"1.0.0-{LONG}": listed, "1.0.0-12345678901234568": [],
+                 f"1.0.0-1{LONG}": [], "1.0.0": []}  # fmt: skip
+        for version, expected in cases.items():
+            with self.subTest(version=version[:40]):
+                self.assertEqual(kinds("example-large-listed", version), expected)
+                self.assertEqual(index.baseline_records("example-large-listed", version),
+                                 [m[0] for m in expected])  # fmt: skip
+        inside = [("MAL-EXAMPLE-9203", "affected_range")]
+        cases = {"1.0.0-9007199254740991": [], "1.0.0-9007199254740992": inside,
+                 f"1.0.0-{SEVENTEEN}": inside, "1.0.0-12345678901234568": [],
+                 f"1.0.0-{LONG}": [], "1.0.0-alpha": []}  # fmt: skip
+        for version, expected in cases.items():
+            with self.subTest(version=version[:40]):
+                self.assertEqual(kinds("example-large-range", version), expected)
 
 
 class MemoRaceTests(IndexDir, unittest.TestCase):
