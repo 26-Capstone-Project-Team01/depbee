@@ -1,5 +1,30 @@
 # 검증 기록
 
+## 2026-11-19: 실제 registry 검증과 소요 시간(VAL-01)
+
+- 목적: 정상 패키지로 실제 npm registry 메타데이터·tarball을 받아 `scan --extract`와 `check`를 실행하고, 바뀐 패키지 1·5·20개의 첫 실행과 캐시 재실행 시간을 재며, D04-E00 학습 CSV와 feature·점수가 같은지 다시 본다. 코드·테스트는 바꾸지 않았다(base `e0010c0`, depbee 0.1.0).
+- 측정 환경: 이 PC(Windows 11 Home 10.0.26200, Intel Core Ultra 7 155H 16코어·22스레드, RAM 31.6 GB, NVMe SSD, 실시간 백신 켜짐), Python 3.13.5, LightGBM 4.7.0, numpy 2.5.4, feature-extractor 고정 커밋 `c24761d`(Git 설치). 모든 보고서의 `provenance.feature_extractor.commit`이 이 커밋이었고 캐시가 쓰였다(warm 실행의 `cache_hit`가 모두 true). 모델 D04-E00(`model_sha256` `4e3bb5a8...`, 실제 해시와 같음). 네트워크는 Wi-Fi(어댑터 링크 288 Mbps)이고 실제 회선 대역폭과 종류는 모른다. 임시 폴더·HOME·캐시는 작업 폴더 아래로 돌렸다. npm은 실행하지 않았다.
+- 표본: D04-E00 분할의 Test 정상 쌍(`benign` 400, `hard_benign` 60)을 (패키지, 이전, 새 버전) 순으로 정렬한 뒤 `random.Random(20261118)`로 섞어 차례로 보고, 정상 14·어려운 정상 6을 채울 때까지 골랐다. 제외 규칙은 새 버전 prerelease, registry가 이전·새 버전을 제공하지 않음, 같은 패키지 이름 중복, 기지 악성 색인(OSV npm MAL, 기준 시점 2026-10-06T14:00:47Z, `a59a627f...`) `match()`가 이전·새 버전 중 하나라도 적중이었다. 앞에서 44쌍을 보았고 제외는 0건, 정상 할당이 찬 뒤 넘긴 정상 쌍이 24건이었다. N=5는 앞 5개, N=1은 앞 1개(`@vikejs/express` 0.1.0 → 0.2.0)다. 20개에는 큰 tarball을 가진 `onnxruntime-node` 1.17.0 → 1.17.3과 `puppeteer` 18.1.0 → 18.2.0이 들어 있다.
+- 합성 lockfile: N마다 `package.json`과 `package-lock.json`(lockfileVersion 3, `node_modules/<이름>`에 새 버전, registry `resolved`, registry 메타데이터의 `dist.integrity`)을 만들고, 같은 꼴로 이전 버전의 기준 lockfile을 만들었다.
+- 순서: N=1·5·20마다 새 캐시 폴더로 cold → 같은 캐시로 warm → `--no-cache`를 실행하고, 이 순서를 새 캐시 폴더로 한 번 더 반복했다(r1, r2). 모두 `--format json --output`으로 보고서를 남겼다. 벽시계는 프로세스 시작부터 끝까지(Python 시작과 import 포함), 보고서 시간은 최상위 `elapsed_seconds`다.
+
+| N | 반복 | cold 벽시계 / 보고서 | warm 벽시계 / 보고서 | `--no-cache` 벽시계 / 보고서 | 추출 수 (cold / warm / no-cache) | warm `cache_hit` |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | r1 | 3.31 / 2.92초 | 1.04 / 0.84초 | 1.71 / 1.50초 | 1 / 0 / 1 | 1/1 |
+| 1 | r2 | 1.54 / 1.35초 | 0.99 / 0.80초 | 1.42 / 1.23초 | 1 / 0 / 1 | 1/1 |
+| 5 | r1 | 8.35 / 8.09초 | 2.26 / 2.06초 | 4.67 / 4.42초 | 5 / 0 / 5 | 5/5 |
+| 5 | r2 | 5.29 / 5.05초 | 2.44 / 2.26초 | 4.93 / 4.68초 | 5 / 0 / 5 | 5/5 |
+| 20 | r1 | 44.23 / 44.03초 | 8.08 / 7.83초 | 32.84 / 32.57초 | 20 / 0 / 20 | 20/20 |
+| 20 | r2 | 35.84 / 35.62초 | 8.33 / 8.05초 | 35.01 / 34.70초 | 20 / 0 / 20 | 20/20 |
+
+- 모든 실행(위 18회, 아래 `check` 3회, 색인 연결 2회와 보충 warm 6회)의 종료 코드는 0이고 모든 항목이 `not_flagged`였다. 추출 실패·보류(`incomplete`) 항목은 없었다. 같은 패키지는 모든 보고서(색인 유무, cold·warm·`--no-cache`, `check` 포함)에서 판정·점수·비교 기준·feature가 같았다.
+- 항목별 `elapsed_seconds`(N=20): cold 중앙값 r1 1.55초·r2 0.96초, warm 중앙값 0.30·0.31초(최대 0.95초), `--no-cache` 중앙값 0.86·0.98초. 가장 오래 걸린 항목은 `onnxruntime-node`로 추출 때마다 11.5~11.9초였고, 나머지는 cold에서 0.69~2.92초였다. 변경 하나의 시간 예산 300초에 가까운 항목은 없었다. r1 cold가 r2 cold보다 느린 항목이 여러 개 있었으나 원인은 확인하지 않았다.
+- `check @vikejs/express@0.2.0`(새 캐시 폴더): cold 1.48 / 1.28초, warm 0.96 / 0.77초(`cache_hit` true), `--no-cache` 1.48 / 1.30초(벽시계 / 보고서).
+- 기지 악성 색인 연결(N=20, `--known-malicious-dir`, 새 캐시 폴더, 한 번): cold 39.03 / 37.46초, warm 13.69 / 12.16초. warm만 같은 캐시로 세 번 더(색인 없는 warm과 번갈아) 재면 색인 있음 9.23~10.92초, 없음 7.97~9.08초(벽시계)라 첫 13.69초는 그중 큰 값이었다. 벽시계와 보고서 시간의 차이는 색인 있음 1.4~1.6초, 없음 0.2~0.3초였고, 같은 프로세스에서 색인만 다시 읽으면 0.53초였다(보고서 시간이 서비스 호출부터 재므로 그 전의 색인 읽기는 들지 않는다). 보고서 시간 중 항목 시간 밖 부분도 색인 있음 1.4~1.6초, 없음 0.6~0.7초로 더 길었다(원인은 확인하지 않았다). 20개 모두 기지 악성 칸 `not_hit`이고, D-16으로 비교 기준이 바뀐 항목은 없었다(근거에 "비교 기준 후보에서 뺌" 없음). 색인 유무에 따라 `compared_version`, feature, 점수, 판정이 달라진 항목도 없었다.
+- D04-E00 일치 재검사(정상 쌍만): N=20 cold 보고서 셋(색인 없음 r1·r2, 색인 있음)의 20개 항목 모두 `compared_version`이 학습 CSV의 이전 버전과 같았고, 29개 feature가 Test CSV 값과 같았다(2026-10-05 검사와 같은 규칙: bool·문자열·결측은 정확히, 숫자는 상대 1e-6·절대 1e-9). 보고서 점수와 CSV feature로 계산한 점수도 모두 같았다(절대 1e-9). 악성 쌍의 일치 검사는 이번에 다시 하지 않았다.
+- 해석의 한계: 시간은 이 PC, 이 네트워크, 측정 시각의 registry·CDN 상태에 따른 값이다. 표본은 정상 20쌍이고 반복은 두 번(색인 warm은 네 번)이라 분포를 대표하지 못한다. 벽시계에는 Python 시작과 LightGBM 등의 import가 매번 들어 있다. 표본을 고를 때 같은 패키지의 메타데이터를 미리 받았으므로 첫 cold도 registry를 처음 만난 상태는 아니다. warm도 메타데이터는 매번 받으므로 네트워크 시간이 남는다.
+- 확인하지 않은 것: 악성 패키지(이번 범위 밖), 크기·파일 수 상한에 가까운 실제 패키지와 시간 예산 초과, 느린 네트워크, Linux·macOS, 다른 PC, `update`·MCP·대시보드 경로의 실제 registry 실행, D-16이 실제로 비교 기준을 바꾸는 경우(이 표본에는 없었다).
+
 ## 2026-11-17: 기지 악성 탐지기(KM-01)
 
 - 구현: OSV npm `all.zip`에서 `MAL-` 기록만 담은 색인 폴더(`index.json`, `manifest.json`)를 만드는 `scripts/build_known_malicious_index.py`와 `depbee.known_malicious`(표준 라이브러리 SemVer 2.0 비교, 정렬한 OSV SEMVER 범위, 범위 정책 함수, `0.0.1-security` 질의 제외, 로더 검사), service의 `--known-malicious-dir`·`DEPBEE_KNOWN_MALICIOUS_DIR` 연결(scan·check·update·mcp·dashboard), 비교 기준 후보 제외(D-16), GitHub Action의 색인 입력 두 개와 다운로드·sha256 확인 단계. 규칙은 [연결 규약](contracts.md) 4절.
