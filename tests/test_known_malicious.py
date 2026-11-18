@@ -39,7 +39,7 @@ def record(advisory, name, versions=None, ranges=None, ecosystem="npm", **extra)
     return {"id": advisory, "affected": [affected], **extra}
 
 
-def snapshot(records, extra=()):
+def snapshot(records, extra=(), method=zipfile.ZIP_DEFLATED):
     """An all.zip-shaped zip: one <id>.json per record, plus (file name, bytes) extras."""
     buffer = io.BytesIO()
     entries = [(f"{value['id']}.json", json.dumps(value)) for value in records] + list(extra)
@@ -47,7 +47,7 @@ def snapshot(records, extra=()):
         for name, data in entries:
             # A fixed time: the same entries give the same zip bytes (and snapshot_sha256).
             info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_DEFLATED
+            info.compress_type = method
             archive.writestr(info, data)
     return buffer.getvalue()
 
@@ -769,6 +769,28 @@ class ZipBoundaryTests(unittest.TestCase):
         self.assertNotIn("Traceback", done.stderr)
         self.assertIn("encrypted", done.stderr)
         self.assertFalse((tmp / "out").exists())
+
+    def test_damaged_lzma_and_bzip2_entries(self):
+        """REV-KM01-R2 R2-2: lzma.LZMAError (bz2 gives OSError) is GuardError too."""
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for method, damage in ((zipfile.ZIP_LZMA, 4), (zipfile.ZIP_BZIP2, 0)):
+            try:
+                damaged = bytearray(snapshot(RECORDS[:1], method=method))
+            except RuntimeError:  # this Python was built without lzma or bz2
+                continue
+            first = damaged.find(b"PK\x03\x04")
+            name_length, extra_length = struct.unpack_from("<2H", damaged, first + 26)
+            # LZMA: the first property byte after a 4-byte header; bzip2: the stream signature.
+            damaged[first + 30 + name_length + extra_length + damage] = 0xFF
+            zipped = tmp / f"all-{method}.zip"
+            zipped.write_bytes(damaged)
+            with self.subTest(method=method):
+                with self.assertRaises(GuardError):
+                    build_index(bytes(damaged), AS_OF)
+                done = run_build_script(zipped, tmp / f"out-{method}")
+                self.assertNotEqual(done.returncode, 0)
+                self.assertNotIn("Traceback", done.stderr)
+                self.assertFalse((tmp / f"out-{method}").exists())
 
     def test_zip64_trailer_is_read_as_zipfile_reads_it(self):
         plain = json.loads(build_index(self.zipped, AS_OF)[0])

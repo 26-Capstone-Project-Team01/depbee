@@ -322,11 +322,17 @@ def _central_directory(data: bytes) -> tuple[int, int]:
     return size, entries
 
 
+try:
+    from lzma import LZMAError as _LZMA_ERROR
+except ImportError:  # without lzma, zipfile refuses LZMA entries with RuntimeError
+    _LZMA_ERROR = RuntimeError
+
 # What zipfile raises for an archive it cannot read: a bad or unsupported structure, method or
-# version (NotImplementedError), an encrypted entry (RuntimeError), a damaged stream.
+# version (NotImplementedError), an encrypted entry (RuntimeError), a damaged stream (zlib.error,
+# LZMAError; bz2 gives OSError).
 _ZIP_ERRORS = (
     zipfile.BadZipFile, OSError, ValueError, NotImplementedError, RuntimeError, EOFError,
-    zlib.error, struct.error,
+    zlib.error, struct.error, _LZMA_ERROR,
 )  # fmt: skip
 
 
