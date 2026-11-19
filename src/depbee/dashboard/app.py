@@ -117,6 +117,7 @@ PREVIEW_NOT_RECORDED = (
 APPLY_NOT_RECORDED = (
     "반영 기록을 로컬 이력에 남기지 못했습니다. 위 결과와 백업 위치는 실제로 일어난 일입니다."
 )
+STOPPED = "대시보드를 종료했습니다. 위 주소는 더 이상 열리지 않습니다."
 # _apply_lines wording without the CLI option: a dashboard apply, and a stored one (CLI or here).
 DASHBOARD_REASONS = {
     **APPLY_REASON_LABELS,
@@ -675,7 +676,8 @@ def serve(
     no_cache: bool = False, known_malicious_dir: Path | None = None,
 ) -> None:  # fmt: skip
     """Bind 127.0.0.1:port (0 picks a free one), print the session address once and serve until
-    Ctrl+C. The session is in that line only: no access log, and errors never quote requests."""
+    Ctrl+C, which ends with one line and no traceback. The session is in the address line only:
+    no access log, and errors never quote requests."""
     if not 0 <= port <= 65535:
         raise GuardError("--port must be between 0 and 65535")
     # Only when given, so that build_app is called as before without an index.
@@ -692,6 +694,10 @@ def serve(
         )  # fmt: skip
         print(f"http://{HOST}:{actual}/s/{session}/", flush=True)
         print("이 주소를 브라우저에서 여세요. 종료하려면 Ctrl+C를 누르세요.", flush=True)
-        uvicorn.Server(config).run(sockets=[sock])
+        try:
+            uvicorn.Server(config).run(sockets=[sock])
+        except KeyboardInterrupt:
+            # After its graceful shutdown uvicorn re-raises the captured Ctrl+C (capture_signals).
+            print(STOPPED, flush=True)
     finally:
         sock.close()
