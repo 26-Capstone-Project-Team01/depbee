@@ -50,7 +50,7 @@ jobs:
 
 | 입력 | 기본값 | 내용 |
 |---|---|---|
-| `lockfile` | `package-lock.json` | 검사할 `package-lock.json`의 저장소 루트 기준 경로. 이름이 `package-lock.json`이어야 하고 workspace 안의 파일이어야 한다. 구분자는 `/`만 받고(`\`는 거부), `-`로 시작하는 경로 구성 요소도 받지 않는다. 제어 문자(줄바꿈, 탭 등 U+0000~U+001F와 DEL)가 든 경로도 받지 않는다. |
+| `lockfile` | `package-lock.json` | 검사할 `package-lock.json`의 저장소 루트 기준 경로. 이름이 `package-lock.json`이어야 하고 workspace 안의 파일이어야 한다. 심볼릭 링크나 Windows junction을 거치면 그 실제 대상까지 workspace 안이어야 한다(밖을 가리키면 입력 오류). 구분자는 `/`만 받고(`\`는 거부), `-`로 시작하는 경로 구성 요소도 받지 않는다. 제어 문자(줄바꿈, 탭 등 U+0000~U+001F와 DEL)가 든 경로도 받지 않는다. |
 | `fail-on` | 빈 값 | 실패로 더할 조건. `ml-hit`(ML 위험 점수 기준 이상), `incomplete`(보류). 쉼표나 공백으로 구분한다. 그 밖의 값은 입력 오류다. |
 | `max-changes` | `20` | 바뀐 lockfile 항목이 이보다 많으면 검사하지 않고 실패한다. 양의 정수. |
 | `model-version` | 없음(필수) | `model.txt`·`manifest.json`이 첨부된 depbee Release의 태그. |
@@ -58,7 +58,9 @@ jobs:
 | `manifest-sha256` | 없음(필수) | `manifest.json`의 기대 sha256(소문자 16진수 64자). |
 | `known-malicious-version` | 없음(필수) | 기지 악성 색인 `known-malicious-index.json`·`known-malicious-manifest.json`이 첨부된 depbee Release의 태그. 색인은 모델보다 자주 갱신하므로 `model-version`과 다른 태그여도 된다. 형식은 `model-version`과 같다. |
 | `known-malicious-sha256` | 없음(필수) | `known-malicious-index.json`(색인 본문 `index.json`)의 기대 sha256(소문자 16진수 64자). 보고서의 `detectors.known_malicious.list_sha256`과 같은 값이다. |
-| `report` | 빈 값 | depbee 자체 CI의 자기 검사 전용. 비워 둔다. |
+| `report` | 빈 값 | depbee 자체 CI의 자기 검사 전용. 일반 workflow에서는 비워 둔다. 값이 있으면 설치·scan 없이 그 보고서로만 판정한다. 경로 규칙은 `lockfile`과 같다(링크의 실제 대상까지 workspace 안). |
+
+`lockfile`·`report`의 경로 검사는 첫 단계(`actions.py inputs`)에서 한 번만 한다. 그 뒤 단계가 같은 경로를 다시 열 때까지 workspace의 파일이나 링크가 바뀌는 경우(검사와 사용 사이)는 막지 않는다.
 
 모델 세 입력과 색인 두 입력은 `required: true`를 달지 않았다. GitHub는 composite action 입력의 `required`를 강제하지 않으므로, 첫 단계(`actions.py inputs`)가 값을 직접 검사해 없거나 형식이 틀리면 실패한다(`report` 자기 검사 모드에서는 검사하지 않음).
 색인 입력을 모델처럼 필수로 둔 이유: 이 action의 기본 실패 조건은 기지 악성 일치뿐이라 색인 없이 돈 실행은 절대 실패하지 않는다(client-dev-handoff 2.3절 1번, 검사하지 못한 것을 통과로 두지 않음). `known-malicious-manifest.json`의 sha256은 따로 받지 않는다. depbee가 색인을 열 때 manifest의 `index_sha256`을 확인한 본문의 해시와, manifest의 `source`·`list_as_of`·`snapshot_sha256`을 본문 머리와 대조해 다르면 오류(보고서 없음)로 끝나기 때문이다.
@@ -131,6 +133,7 @@ CLI 종료 코드 0/1/2의 의미는 그대로다.
 - CODEOWNERS에 `.github/workflows/`를 넣고 브랜치 보호(또는 ruleset)에서 code owner 리뷰를 필수로 한다. workflow 변경은 지정한 리뷰어의 승인이 있어야 병합된다.
 - 이 job을 필수 검사로 지정한다. 실패하거나 실행되지 않은 검사는 병합을 막는다.
 - 대상 저장소의 모델·색인 sha256 입력도 workflow 파일에 있으므로 같은 보호를 받는다.
+- workflow 파일을 바꿀 수 있는 사람은 `report` 입력을 채우거나 이 단계를 바꿔 scan을 건너뛸 수 있다. 입력 검사는 이를 막지 못하므로, 이 job을 필수 검사로 쓸 때는 workflow 파일 변경을 위와 같이 리뷰한다.
 
 ### 공개 전 제한과 미검증
 
@@ -145,12 +148,13 @@ CLI 종료 코드 0/1/2의 의미는 그대로다.
 
 - 판정 모듈을 직접 호출해 종료 코드를 확인한다(`docs/examples/result-contract/`의 예시 보고서). 실패를 기대하는 경우도 `continue-on-error` 없이 `if`로 종료 코드를 본다. 기지 악성 일치는 실패, ML 기준 이상·보류는 기본 성공이고 `fail-on`으로 실패, 보고서 없음·알 수 없는 `fail-on`·sha256 불일치는 실패다.
 - `uses: ./`를 `report` 입력(보류 예시 보고서)으로 실행해 입력 검사, summary, artifact, 경고 주석의 배선을 확인한다. `report`가 있으면 설치·모델·색인 다운로드·변경 수·캐시·scan 단계는 건너뛰고 모델·색인 입력도 검사하지 않는다.
-- 판정 모듈의 단위 테스트는 `tests/test_actions.py`이다(적대적 패키지 이름 이스케이프, lockfile 줄 찾기, 색인 입력 검사, `verify` 여러 쌍, `action.yml` 단계 순서·인자를 텍스트로 확인 포함).
+- 판정 모듈의 단위 테스트는 `tests/test_actions.py`이다(적대적 패키지 이름 이스케이프, lockfile 줄 찾기, 색인 입력 검사, 경로 입력의 링크 workspace 경계(심볼릭 링크는 POSIX, junction은 Windows에서 돎), `verify` 여러 쌍, `action.yml` 단계 순서·인자를 텍스트로 확인 포함).
 
 ## CI 신뢰 경계
 
 - PR이 수정할 수 있는 모델·특징 JSON을 판정 근거로 신뢰하지 않는다. 모델과 기지 악성 색인은 workflow의 sha256과 비교한 Release 파일만 쓴다.
 - 도구/정책/모델은 보호된 참조에서 로딩한다. 대상 package.json의 script를 실행하지 않는다.
+- action의 `lockfile`·`report` 경로는 링크의 실제 대상까지 workspace 안이어야 한다. 검사는 입력 검사 단계 한 번이며 검사와 사용 사이의 변경은 막지 않는다. `report`는 자기 검사 전용이라 일반 workflow에서는 비워 두고, workflow 파일 변경은 리뷰로 보호한다(위 "workflow 변경 보호").
 - `pull_request_target`으로 외부 PR 코드를 실행하지 않는다. 토큰·secrets를 분석기에 넘기지 않는다.
 - 모델 실패를 무시하는 `continue-on-error`, `|| true`를 보안 게이트에 사용하지 않는다.
 - 수동 승인은 특정 버전·파일 해시·분석 요청에 묶는다. 패키지 영구 허용은 별도 논의한다.

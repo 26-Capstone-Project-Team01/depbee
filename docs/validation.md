@@ -1,5 +1,12 @@
 # 검증 기록
 
+## 2026-11-19: Action 경로 입력의 링크 workspace 경계(SVC-06-F3)
+
+- 구현: `actions.py inputs`의 `lockfile`·`report` 검사는 절대 경로와 `..`를 문자열로만 거부해, workspace 안의 심볼릭 링크나 Windows junction이 밖의 파일(또는 밖의 폴더를 거친 파일)을 가리켜도 통과했다(REV-SVC06-R1 F3). 이제 기존 검사 뒤에 파일과 workspace의 실제 경로(`Path.resolve()`)를 경로 구성 요소 단위로 비교해(`is_relative_to`, `/ws`와 `/ws2`를 구분하고 Windows 경로는 대소문자를 무시) 밖이면 입력 오류로 실패한다. workspace 안을 가리키는 링크는 허용한다. 검사는 입력 검사 단계 한 번이며 검사와 사용 사이의 변경은 막지 않는다. `report` 입력은 자기 검사 전용으로 유지했다.
+- 단위 테스트(합성 파일만): `tests/test_actions.py` 25개에서 28개, 전체 481개에서 484개. 밖 파일 링크·밖 폴더 링크를 거친 lockfile·밖 report 링크 거부, 안쪽 링크와 링크로 가리킨 workspace 허용, 한글·공백 폴더의 링크 없는 경로 통과, Windows junction. 심볼릭 링크 테스트는 권한이 없는 Windows에서 건너뛰어 skip이 1개 늘었다(`.[dev,ml]` 60개, 모든 extra 3개). WSL Ubuntu 24.04(Python 3.12)에서는 링크 테스트가 돌아 통과했고, 수정 전 코드에서는 거부 3가지가 실패했다. junction 테스트는 이 Windows에서 돌고 수정 전 코드에서 실패한다.
+- 수동 확인(`python -I src/depbee/actions.py inputs`, workspace를 현재 폴더로): 밖을 가리키는 파일 링크·폴더 링크·junction·report 링크는 종료 코드 1과 `must be inside the workspace; links must not point outside`, 안쪽 링크와 일반 경로는 종료 코드 0이었다.
+- 확인하지 못한 것: GitHub runner에서의 실행, 하드 링크(링크가 아니라 같은 파일이라 이 검사로 구분하지 않음).
+
 ## 2026-11-19: MCP 응답의 기지 악성 색인 미연결 안내(MCP-KM-01)
 
 - 구현: 색인 없이 띄운 `depbee mcp`의 성공 응답(`report.detectors.known_malicious`가 null, `detectors`가 없어도 같음)에 기지 악성 기록과 대조하지 않았으므로 통과도 알려진 악성 버전이 아니라는 확인이 아니라는 고정 안내를 강조 문구 뒤, 항상 넣는 문구 앞에 하나 넣고, 서버 지침(`instructions`)에 같은 뜻의 영어 문장을 더했다. 문구와 조건은 [연결 규약](contracts.md) 4절 끝. 판정·종료 코드·보고서·오류 응답·CLI·대시보드 출력은 바꾸지 않았다.
