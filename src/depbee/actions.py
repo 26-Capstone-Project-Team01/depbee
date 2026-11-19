@@ -84,6 +84,13 @@ def _relative_file(value: str, what: str, workspace: Path) -> Path:
     full = workspace / path
     if not full.is_file():
         raise ActionError(f"{what} not found in the workspace: {value!r}")
+    # resolve() follows symbolic links and Windows junctions; is_relative_to compares whole
+    # components (not /ws against /ws2) and ignores case for Windows paths.
+    # shortcut: checked once at this step, not again when a later step reopens the path.
+    if not full.resolve().is_relative_to(workspace.resolve()):
+        raise ActionError(
+            f"{what} must be inside the workspace; links must not point outside: {value!r}"
+        )
     return full
 
 
