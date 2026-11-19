@@ -1,5 +1,11 @@
 # 검증 기록
 
+## 2026-11-19: 대시보드 검사만 버튼(SVC-07-SCAN)
+
+- 구현: 프로젝트 화면의 "검사만" 버튼(`POST /s/<세션>/projects/<id>/scans`)이 등록 경로에서 `service.scan_project`를 Git HEAD 기준(CLI `scan`의 기본), `extract=True`, 대시보드의 모델·캐시·기지 악성 색인 옵션으로 부르고, 성공하면 CLI와 같은 값(`base_ref` 없음, `base_lock` false)으로 scan 실행을 기록한 뒤 실행 상세로 보낸다. 기록하지 못하면 보고서를 그 자리에서 보이고 한 줄로 알린다. 업데이트 확인·반영과 같은 잠금을 써 실행 중이면 409다. 판정·점수 로직은 대시보드에 없다. 규칙은 [연결 규약](contracts.md) 7절.
+- 단위 테스트(Starlette TestClient, 가짜 `scan_project`, 합성 자료만): 전체 484개에서 490개. 서비스 인자와 기록 인자, 303 위치, 기록 실패·None일 때 보고서 표시, `GuardError` 문구 이스케이프와 그 밖 예외의 고정 문구, 없는·찾을 수 없는 프로젝트, 폼 세션·Origin 403, 검사·업데이트 확인·반영이 서로 409로 막히는지. `.[dev,ml]`만 있는 환경은 대시보드 테스트가 skip되어 skip 66개, 모든 extra를 설치한 환경은 skip 3개로 전과 같다.
+- 확인하지 못한 것: 실제 Git 저장소·registry·`extract`를 거친 끝단 실행과 브라우저 화면.
+
 ## 2026-11-19: Action 경로 입력의 링크 workspace 경계(SVC-06-F3)
 
 - 구현: `actions.py inputs`의 `lockfile`·`report` 검사는 절대 경로와 `..`를 문자열로만 거부해, workspace 안의 심볼릭 링크나 Windows junction이 밖의 파일(또는 밖의 폴더를 거친 파일)을 가리켜도 통과했다(REV-SVC06-R1 F3). 이제 기존 검사 뒤에 파일과 workspace의 실제 경로(`Path.resolve()`)를 경로 구성 요소 단위로 비교해(`is_relative_to`, `/ws`와 `/ws2`를 구분하고 Windows 경로는 대소문자를 무시) 밖이면 입력 오류로 실패한다. workspace 안을 가리키는 링크는 허용한다. 검사는 입력 검사 단계 한 번이며 검사와 사용 사이의 변경은 막지 않는다. `report` 입력은 자기 검사 전용으로 유지했다.
