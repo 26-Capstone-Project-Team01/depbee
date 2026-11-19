@@ -330,6 +330,52 @@ class SecurityTests(DashboardFixture):
         self.assertEqual(code, 2)
         self.assertIn("--port must be between 0 and 65535", err.getvalue())
 
+    def fake_server(self, error):
+        """A uvicorn.Server whose run() raises error; the sockets it got are kept in .bound."""
+
+        class Server:
+            bound = []
+
+            def __init__(self, config):
+                pass
+
+            def run(self, sockets):
+                Server.bound.extend(sockets)
+                raise error
+
+        return Server
+
+    def test_ctrl_c_ends_the_dashboard_with_one_line_and_exit_code_0(self):
+        from depbee.dashboard import app
+
+        # uvicorn's run() ends with KeyboardInterrupt after a graceful Ctrl+C shutdown.
+        Server = self.fake_server(KeyboardInterrupt())
+        out = io.StringIO()
+        with mock.patch.object(app.uvicorn, "Server", Server), contextlib.redirect_stdout(out):
+            try:  # without the catch, KeyboardInterrupt would stop unittest itself
+                app.serve(0)
+                code = main(["dashboard", "--port", "0"])
+            except KeyboardInterrupt:
+                self.fail("Ctrl+C reached the caller of the dashboard")
+        self.assertEqual(code, 0)
+        lines = out.getvalue().splitlines()
+        stopped = "대시보드를 종료했습니다. 위 주소는 더 이상 열리지 않습니다."
+        self.assertEqual((len(lines), lines[2], lines[5]), (6, stopped, stopped))
+        self.assertEqual(len(Server.bound), 2)
+        self.assertTrue(all(sock.fileno() == -1 for sock in Server.bound))  # closed
+
+    def test_other_server_errors_still_raise(self):
+        from depbee.dashboard import app
+
+        Server = self.fake_server(OSError("synthetic server error"))
+        out = io.StringIO()
+        with mock.patch.object(app.uvicorn, "Server", Server), contextlib.redirect_stdout(out):
+            with self.assertRaisesRegex(OSError, "synthetic server error"):
+                app.serve(0)
+        self.assertEqual(len(out.getvalue().splitlines()), 2)  # the start lines only
+        (sock,) = Server.bound
+        self.assertEqual(sock.fileno(), -1)
+
     def test_an_unexpected_error_is_a_fixed_500_with_the_headers(self):
         from starlette.testclient import TestClient
 
@@ -440,7 +486,12 @@ class RegistrationTests(DashboardFixture):
         self.assertEqual(again.headers["location"], S + "/projects/1")
         (project,) = history.list_projects()
         self.assertEqual(project["path"], str(self.project.resolve()))
-        self.assertIn(str(self.project.resolve()), self.page("/"))
+        projects = self.page("/")
+        self.assertIn(str(self.project.resolve()), projects)
+        # Both lines name the dashboard's buttons as well as the CLI.
+        self.assertIn('등록한 뒤 프로젝트 화면의 "검사만"이나 "업데이트 확인"으로', projects)
+        self.assertIn('기록된 실행이 없습니다. 프로젝트 화면의 "검사만"이나 "업데이트', projects)
+        self.assertIn("CLI로 실행한 depbee scan·depbee update 검사도 기록됩니다.", projects)
 
     def test_refused_paths(self):
         cases = [

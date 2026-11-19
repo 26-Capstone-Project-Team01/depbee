@@ -15,7 +15,7 @@
 <h3>추이(최근 {{ project.runs|length }}개 실행, 최근순)</h3>
 {% with runs = project.runs %}{% include "counts.html" %}{% endwith %}
 {% else %}
-<p>기록된 실행이 없습니다. 이 폴더에서 depbee scan이나 depbee update를 실행하면 기록됩니다.</p>
+<p>기록된 실행이 없습니다. 프로젝트 화면의 "검사만"이나 "업데이트 확인"으로 검사하거나, 이 폴더에서 CLI로 depbee scan이나 depbee update를 실행하면 기록됩니다.</p>
 {% endif %}
 </section>
 {% endfor %}
@@ -28,6 +28,6 @@
 <input id="path" name="path" type="text" maxlength="1024" required>
 <button type="submit">등록</button>
 </form>
-<p class="note">등록만 합니다. 검사는 이 폴더에서 depbee scan이나 depbee update로 실행하면 기록됩니다.</p>
+<p class="note">등록만 하고 검사는 하지 않습니다. 등록한 뒤 프로젝트 화면의 "검사만"이나 "업데이트 확인"으로 검사할 수 있습니다. 이 폴더에서 CLI로 실행한 depbee scan·depbee update 검사도 기록됩니다.</p>
 </section>
 {% endblock %}
