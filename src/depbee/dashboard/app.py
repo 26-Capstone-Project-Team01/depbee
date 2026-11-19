@@ -89,13 +89,19 @@ SESSION_REFUSED = (
     "세션 주소가 맞지 않습니다. depbee dashboard가 이번 실행에서 출력한 주소로 여세요."
 )
 FORM_REFUSED = "폼의 세션 값이 맞지 않습니다. 화면을 새로 열고 다시 시도하세요."
-BUSY = "다른 업데이트 확인이나 반영이 실행 중입니다. 끝난 뒤 다시 시도하세요."
+BUSY = "다른 검사, 업데이트 확인이나 반영이 실행 중입니다. 끝난 뒤 다시 시도하세요."
 PREVIEW_GONE = (
     "이 업데이트 미리보기가 없습니다(이미 반영을 시도했거나, 오래되어 지워졌거나, 대시보드를 다시 "
     "시작함). 프로젝트 화면에서 업데이트 확인을 다시 실행하세요."
 )
 PROJECT_MISSING = "등록한 프로젝트 폴더를 찾을 수 없습니다."
 PREVIEW_FAILED = "업데이트 확인을 끝내지 못했습니다(파일이나 데이터를 읽거나 쓰지 못함)."
+SCAN_TITLE = "검사 오류"  # error.html's heading for a scan (default: the update one)
+SCAN_FAILED = "검사를 끝내지 못했습니다(파일이나 데이터를 읽거나 쓰지 못함)."
+SCAN_NOT_RECORDED = (
+    "이 검사를 로컬 이력에 기록하지 못했습니다(이력 파일이 없거나 쓰지 못함). 검사 결과는 아래와 "
+    "같습니다."
+)
 APPLY_FAILED = "반영 중 예기치 않은 오류가 났습니다. 프로젝트 파일과 백업 폴더를 직접 확인하세요."
 TARGETS_TOO_LONG = f"대상 이름이 너무 깁니다({MAX_TARGETS}자 이하)."
 CHOOSE_MODE = "반영 방식(lockfile 반영 또는 설치까지)을 하나 고르세요."
@@ -320,6 +326,33 @@ def build_app(
             previews.popitem(last=False)
         return RedirectResponse(f"{base}/previews/{preview_id}", 303)
 
+    async def scan(request: Request) -> Response:
+        """Scan a registered project's uncommitted lockfile change against Git HEAD, as depbee
+        scan --extract does by default (POST from its page); the same one-at-a-time lock."""
+        form = await read_form(request)
+        if isinstance(form, Response):
+            return form
+        found = _project(request.path_params["project_id"])
+        if found is None:
+            return _text(404, "등록된 프로젝트가 아닙니다.")
+        if not _found(found["path"]):  # the registered path, checked as at registration
+            return page(request, "error.html", 400, project=found, message=PROJECT_MISSING,
+                        title=SCAN_TITLE)  # fmt: skip
+        if not busy.acquire(blocking=False):
+            return _text(409, BUSY)
+        try:
+            outcome = await run_in_threadpool(_run_scan, Path(found["path"]), scan_options)
+        finally:
+            busy.release()
+        if isinstance(outcome, str):
+            return page(request, "error.html", 400, project=found, message=outcome,
+                        title=SCAN_TITLE)  # fmt: skip
+        report, run_id = outcome
+        if run_id is None:  # the result is not hidden when it could not be recorded
+            return page(request, "scanned.html", project=found, not_recorded=SCAN_NOT_RECORDED,
+                        **_report(report))  # fmt: skip
+        return RedirectResponse(f"{base}/runs/{run_id}", 303)
+
     def show_preview(request: Request) -> Response:
         preview_id = request.path_params["preview_id"]
         kept = previews.get(preview_id)
@@ -386,6 +419,7 @@ def build_app(
             Route("/projects", register, methods=["POST"]),
             Route("/projects/{project_id:int}", project),
             Route("/projects/{project_id:int}/previews", check_update, methods=["POST"]),
+            Route("/projects/{project_id:int}/scans", scan, methods=["POST"]),
             Route("/previews/{preview_id}", show_preview),
             Route("/previews/{preview_id}/apply", apply, methods=["POST"]),
             Route("/runs/{run_id:int}", run),
@@ -488,6 +522,23 @@ def _run_preview(project: Path, names: list[str], options: dict) -> tuple | str:
     except Exception:  # the preview stays usable; the page says it was not recorded
         run_id = None
     return result, new_package, new_lock, run_id
+
+
+def _run_scan(project: Path, options: dict) -> tuple | str:
+    """(report, run id or None) of service.scan_project with extraction against Git HEAD,
+    recorded as depbee scan records it without base options; or the error page's message
+    (a GuardError's own, else fixed). Runs in a worker thread."""
+    try:
+        report = service.scan_project(project, None, base_ref=None, extract=True, **options)
+    except GuardError as exc:
+        return str(exc)
+    except (OSError, ValueError, RecursionError):
+        return SCAN_FAILED
+    try:
+        run_id = history.record("scan", project, report, None, base_ref=None, base_lock=False)
+    except Exception:  # the report is still shown; the page says it was not recorded
+        run_id = None
+    return report, run_id
 
 
 def _run_apply(project: Path, kept: dict, mode: str, confirmed: bool) -> tuple | str:

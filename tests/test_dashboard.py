@@ -178,7 +178,7 @@ class PageTests(DashboardFixture):
         self.assertEqual(sorted(p.name for p in files), [
             "applied.html", "apply_lines.html", "base.html", "counts.html", "error.html",
             "model.html", "preview.html", "project.html", "projects.html", "report.html",
-            "run.html", "style.css"])  # fmt: skip
+            "run.html", "scanned.html", "style.css"])  # fmt: skip
         for path in files:
             self.assertIsNone(re.search(r"https?:|//", path.read_text("utf-8")), path.name)
         self.assertNotIn("<script", "".join(p.read_text("utf-8") for p in files))
@@ -699,6 +699,146 @@ class UpdateCheckTests(ScreenFixture):
         self.assertEqual(response.status_code, 200)
         self.assertIn(self.app.PREVIEW_NOT_RECORDED, response.text)
         self.assertEqual(history.list_applies(self.project_id), [])
+
+
+class ScanScreenTests(ScreenFixture):
+    """The project page's scan-only button with service.scan_project replaced."""
+
+    def setUp(self):
+        super().setUp()
+        self.scanned = []
+        self.scan_project = self.patch_service("scan_project", self.fake_scan)
+
+    def fake_scan(self, project, base_lock=None, **options):
+        self.scanned.append((project, base_lock, options))
+        return self.report
+
+    def scan(self, session=SESSION, origin=BASE, project_id=None):
+        headers = {} if origin is None else {"origin": origin}
+        return self.client.post(f"{S}/projects/{project_id or self.project_id}/scans",
+                                data={"session": session}, headers=headers,
+                                follow_redirects=False)  # fmt: skip
+
+    def test_a_scan_against_head_with_extraction_is_recorded_and_shown(self):
+        from starlette.testclient import TestClient
+
+        self.client = TestClient(self.app.build_app(
+            PORT, SESSION, model_dir=Path("m"), cache_dir=Path("c"),
+            known_malicious_dir=Path("k")), base_url=BASE)  # fmt: skip
+        self.addCleanup(self.client.close)
+        project_page = self.page(f"/projects/{self.project_id}")
+        self.assertIn(f'action="{S}/projects/{self.project_id}/scans"', project_page)
+        self.assertIn("Git HEAD", project_page)
+        with mock.patch.object(history, "record", wraps=history.record) as record:
+            response = self.scan()
+        self.assertEqual(response.status_code, 303, response.text)
+        ((project, base_lock, options),) = self.scanned
+        self.assertEqual(project, Path(str(self.project.resolve())))  # the registered path
+        self.assertIsNone(base_lock)
+        self.assertEqual(options, {"base_ref": None, "extract": True, "model_dir": Path("m"),
+                                   "cache_dir": Path("c"), "no_cache": False,
+                                   "known_malicious_dir": Path("k")})  # fmt: skip
+        record.assert_called_once_with("scan", project, self.report, None, base_ref=None,
+                                       base_lock=False)  # fmt: skip
+        (run,) = history.list_runs(self.project_id)
+        self.assertEqual(response.headers["location"], f"{S}/runs/{run['id']}")
+        stored = history.get_run(run["id"])
+        self.assertEqual((stored["kind"], stored["base_ref"], stored["base_lock"]),
+                         ("scan", None, False))  # fmt: skip
+        self.assertEqual((stored["report"], stored["preview"]), (self.report, None))
+        html = self.page(f"/runs/{run['id']}")
+        self.assertIn("검사(scan)", html)
+        self.assertIn("검사 결과: ", html)
+        self.assertEqual((self.preview_files.call_count, self.apply_preview.call_count), (0, 0))
+
+    def test_an_unrecorded_scan_still_shows_its_report(self):
+        for patched in ({"side_effect": sqlite3.OperationalError("x")}, {"return_value": None}):
+            with self.subTest(patched=patched), mock.patch.object(history, "record", **patched):
+                response = self.scan()
+                self.assertEqual(response.status_code, 200)
+                self.assertIn(self.app.SCAN_NOT_RECORDED, response.text)
+                self.assertIn("검사 결과: ", response.text)
+                self.assertNotIn(f"{S}/runs/", response.text)
+                self.assertIn(f'href="{S}/projects/{self.project_id}"', response.text)
+        self.assertEqual(history.list_runs(self.project_id), [])
+
+    def test_errors_show_a_page_and_record_nothing(self):
+        extract = 'Install analyzer dependencies: python -m pip install -e ".[extract]"'
+        hostile = '<script>alert(1)</script> "quoted" \u202e'
+        secret = "C:\\private\\folder synthetic-secret-0123456789"
+        cases = [
+            (GuardError(extract), extract.replace('"', "&#34;")),
+            (GuardError(hostile), "&lt;script&gt;alert(1)&lt;/script&gt; &#34;quoted&#34; \\u202e"),
+            (ValueError(secret), self.app.SCAN_FAILED),
+            (OSError(secret), self.app.SCAN_FAILED),
+            (RecursionError(secret), self.app.SCAN_FAILED),
+        ]  # fmt: skip
+        for error, shown in cases:
+            with self.subTest(error=type(error).__name__, text=str(error)[:20]):
+                self.scan_project.side_effect = error
+                response = self.scan()
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(shown, response.text)
+                self.assertIn(f"<h1>{self.app.SCAN_TITLE}</h1>", response.text)
+                self.assertIn("이력에 기록하지 않았습니다.", response.text)
+                for hidden in ("private", "synthetic-secret", "<script>", "\u202e"):
+                    self.assertNotIn(hidden, response.text)
+        self.assertEqual(history.list_runs(self.project_id), [])
+
+    def test_missing_or_unknown_projects_run_nothing(self):
+        self.assertEqual(self.scan(project_id=99).status_code, 404)
+        self.assertEqual(self.scan(project_id=2**70).status_code, 404)
+        self.head.unlink()
+        self.project.rmdir()
+        response = self.scan()
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(self.app.PROJECT_MISSING, response.text)
+        project_page = self.page(f"/projects/{self.project_id}")
+        self.assertIn("검사할 수 없습니다", project_page)
+        self.assertNotIn("/scans", project_page)
+        self.assertEqual(self.scan_project.call_count, 0)
+
+    def test_form_session_and_origin(self):
+        for response in (self.scan(session="wrong"), self.scan(origin=None),
+                         self.scan(origin=f"http://127.0.0.1:{PORT + 1}")):  # fmt: skip
+            self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.get(f"/projects/{self.project_id}/scans").status_code, 405)
+        self.assertEqual(self.scan_project.call_count, 0)
+
+    def test_one_scan_or_update_at_a_time_while_pages_stay_open(self):
+        seen = {}
+
+        def during_scan(project, base_lock=None, **options):
+            # Switch the fakes first so a missing refusal fails at the assertions instead of
+            # recursing.
+            self.scan_project.side_effect = self.fake_scan
+            seen["scan"], seen["check"] = self.scan(), self.check("example")
+            seen["page"] = self.get(f"/projects/{self.project_id}")
+            return self.fake_scan(project, base_lock, **options)
+
+        self.scan_project.side_effect = during_scan
+        self.assertEqual(self.scan().status_code, 303)
+        for name in ("scan", "check"):
+            self.assertEqual((seen[name].status_code, seen[name].text), (409, self.app.BUSY))
+        self.assertEqual(seen["page"].status_code, 200)
+        self.assertEqual((len(self.scanned), len(self.previewed)), (1, 0))
+
+        def during_check(project, names, **options):
+            self.preview_files.side_effect = self.fake_preview
+            seen["scan during check"] = self.scan()
+            return self.fake_preview(project, names, **options)
+
+        self.preview_files.side_effect = during_check
+        preview_id = self.preview_id()
+        self.assertEqual(seen["scan during check"].status_code, 409)
+        self.apply_preview.side_effect = lambda *a, **k: (
+            seen.setdefault("scan during apply", self.scan()),
+            self.fake_apply(*a, **k),
+        )[1]
+        self.assertEqual(self.apply(preview_id).status_code, 200)
+        self.assertEqual(seen["scan during apply"].status_code, 409)
+        self.assertEqual(len(self.scanned), 1)
+        self.assertEqual(self.scan().status_code, 303)  # free again
 
 
 class GateDisplayTests(ScreenFixture):
