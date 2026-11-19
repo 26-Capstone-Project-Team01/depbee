@@ -326,6 +326,69 @@ class InputsTest(unittest.TestCase):
         with self.assertRaisesRegex(actions.ActionError, "control"):
             actions.check_inputs(self.env | {"LOCKFILE": "app\n/package-lock.json"}, self.tmp)
 
+    def _workspace_and_outside(self) -> tuple[Path, Path]:
+        # ws2 starts with the text of ws: a string prefix comparison would let it through.
+        ws, outside = self.tmp / "ws", self.tmp / "ws2"
+        for root in (ws, outside):
+            (root / "app").mkdir(parents=True)
+            (root / "app" / "package-lock.json").write_text("{}", encoding="utf-8")
+            (root / "report.json").write_text('{"results": []}', encoding="utf-8")
+        return ws, outside
+
+    def _link(self, link: Path, target: Path) -> None:
+        try:
+            link.symlink_to(target, target_is_directory=target.is_dir())
+        except OSError as exc:  # Windows without Developer Mode or the symlink privilege
+            self.skipTest(f"no symbolic link privilege here, runs on CI ubuntu: {exc.strerror}")
+
+    def test_links_must_stay_inside_the_workspace(self):
+        # Review F3: is_file() follows links, so a link in the workspace reached files outside it.
+        ws, outside = self._workspace_and_outside()
+        self._link(ws / "package-lock.json", outside / "app" / "package-lock.json")
+        self._link(ws / "linked", outside / "app")
+        self._link(ws / "outside.json", outside / "report.json")
+        self._link(ws / "inner", ws / "app")
+        self._link(ws / "inside.json", ws / "report.json")
+        self._link(self.tmp / "ws-link", ws)
+        for name, value in [("LOCKFILE", "package-lock.json"),
+                            ("LOCKFILE", "linked/package-lock.json"),
+                            ("REPORT", "outside.json")]:  # fmt: skip
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(actions.ActionError, "links must not point outside"),
+            ):
+                actions.check_inputs(self.env | {name: value}, ws)
+        for name, value in [("LOCKFILE", "inner/package-lock.json"), ("REPORT", "inside.json")]:
+            with self.subTest(value=value):
+                actions.check_inputs(self.env | {name: value}, ws)
+        # A workspace reached through a link is resolved too.
+        actions.check_inputs(self.env | {"REPORT": "report.json"}, self.tmp / "ws-link")
+
+    def test_paths_without_links_still_pass(self):
+        ws, _ = self._workspace_and_outside()
+        folder = ws / "한글 폴더"
+        folder.mkdir()
+        (folder / "package-lock.json").write_text("{}", encoding="utf-8")
+        for name, value in [("LOCKFILE", "app/package-lock.json"),
+                            ("LOCKFILE", "한글 폴더/package-lock.json"),
+                            ("REPORT", "report.json")]:  # fmt: skip
+            with self.subTest(value=value):
+                actions.check_inputs(self.env | {name: value}, ws)
+
+    @unittest.skipUnless(os.name == "nt", "Windows junctions")
+    def test_junction_to_a_folder_outside_the_workspace(self):
+        import _winapi  # CreateJunction needs no privilege, unlike symbolic links
+
+        ws, outside = self._workspace_and_outside()
+        try:
+            _winapi.CreateJunction(str(outside / "app"), str(ws / "linked"))
+            _winapi.CreateJunction(str(ws / "app"), str(ws / "inner"))
+        except (AttributeError, OSError) as exc:
+            self.skipTest(f"cannot create junctions here: {exc}")
+        with self.assertRaisesRegex(actions.ActionError, "links must not point outside"):
+            actions.check_inputs(self.env | {"LOCKFILE": "linked/package-lock.json"}, ws)
+        actions.check_inputs(self.env | {"LOCKFILE": "inner/package-lock.json"}, ws)
+
     def test_verify(self):
         model = self.tmp / "model.txt"
         model.write_bytes(b"synthetic model")
