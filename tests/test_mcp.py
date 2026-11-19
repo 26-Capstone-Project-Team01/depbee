@@ -27,7 +27,7 @@ from test_markdown import HOSTILE
 from test_workflow import Fixture
 
 from depbee import mcp
-from depbee.cli import main
+from depbee.cli import _notices, main
 from depbee.contracts import GuardError
 from depbee.pipeline import scan
 
@@ -272,6 +272,35 @@ class ResponseTests(MCPFixture):
         error = mcp.check_package("example")
         self.assertEqual(error["notices"], [mcp.ERROR_NOTICE, mcp.ERROR_DATA_NOTICE])
         self.assertEqual(list(error), ["notices", "package_data", "error"])
+
+    def test_without_the_index_one_notice_says_nothing_was_compared(self):
+        # MCP-KM-01: after the emphasized ones, before NOTICES; only when known_malicious is null.
+        self.mixed()
+        for label, known, compared in (("no detectors", None, False),
+                                       ("rules only", None, False),
+                                       ("index", Listed(), True)):  # fmt: skip
+            rules = MixedRules() if label != "no detectors" else None
+            with self.subTest(label), self.detectors(known, rules):
+                response = mcp.scan_lockfile(str(self.project), str(self.base),
+                                             model_dir=Path("m"))  # fmt: skip
+                emphasized = [f"{a} {b}" for a, b in _notices(response["report"])]
+                self.assertTrue(any(n.startswith("보류 ") for n in emphasized))
+                self.assertEqual(any(n.startswith("경고: ") for n in emphasized), compared)
+                middle = [] if compared else [mcp.KNOWN_MALICIOUS_NOTICE]
+                self.assertEqual(response["notices"], [*emphasized, *middle, *mcp.NOTICES])
+                self.assertEqual(response["report"]["detectors"]["known_malicious"] is None,
+                                 not compared)  # fmt: skip
+        # A report without detectors (none of this service lacks it) counts as not connected.
+        report = copy.deepcopy(response["report"])
+        del report["detectors"]
+        with mock.patch("depbee.service.scan_project", return_value=report):
+            notices = mcp.scan_lockfile(str(self.project))["notices"]
+        self.assertEqual(notices.count(mcp.KNOWN_MALICIOUS_NOTICE), 1)
+        self.assertNotIn(mcp.KNOWN_MALICIOUS_NOTICE, mcp.check_package("example")["notices"])
+        self.assertIn("기지 악성 기록과 대조하지 않았습니다.", mcp.KNOWN_MALICIOUS_NOTICE)
+        self.assertIn("Started without a known malicious index (--known-malicious-dir), the "
+                      "server does not compare reports with known malicious records.",
+                      mcp.INSTRUCTIONS)  # fmt: skip
 
     def test_errors_quoting_a_lockfile_get_a_cut_copy_and_the_cli_error_stays(self):
         # REV Sol round 1 major: a bad lock entry's location (a package path) is quoted in the
