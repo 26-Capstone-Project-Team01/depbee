@@ -122,14 +122,14 @@ mkdir "$state\tmp", "$state\cache", "$state\mcp-home" | Out-Null
 $env:DEPBEE_MODEL_DIR = "<모델 폴더>"
 $env:DEPBEE_KNOWN_MALICIOUS_DIR = "<색인 폴더>"
 $env:DEPBEE_HISTORY_DB = "$state\history.sqlite3"
-$env:TMP = "$state\tmp"; $env:TEMP = "$state\tmp"
+$env:TMP = "$state\tmp"; $env:TEMP = "$state\tmp"; $env:TMPDIR = "$state\tmp"
 $env:PYTHONIOENCODING = 'utf-8'
 $cache = "$state\cache"
 ```
 
 - `DEPBEE_MODEL_DIR`, `DEPBEE_KNOWN_MALICIOUS_DIR`: `--model-dir`, `--known-malicious-dir`을 생략한 명령이 씁니다([실행](#실행), [기지 악성 탐지기](#기지-악성-탐지기), [색인 만들기](#색인-만들기)).
 - `DEPBEE_HISTORY_DB`: 이력이 이 파일에, 반영 백업이 그 옆 `backups\`에 생깁니다. 지정하지 않으면 홈 폴더의 기본 위치에 생깁니다([로컬 이력 저장소](#로컬-이력-저장소)).
-- `TMP`, `TEMP`: tarball을 풀 임시 폴더입니다.
+- `TMP`, `TEMP`, `TMPDIR`: tarball을 풀 임시 폴더입니다. Python은 `TMPDIR`를 `TEMP`·`TMP`보다 먼저 보므로 셋을 함께 둡니다.
 - 추출 캐시는 환경 변수로 옮길 수 없어 `--cache-dir`를 받는 명령(`scan`, `check`, `update`, `dashboard`)에 `--cache-dir $cache`를 붙입니다. 빠뜨리면 기본 위치 `~/.cache/depbee`에 쌓입니다. MCP 서버에는 이 옵션이 없어 아래 [MCP](#mcp)처럼 서버의 홈 폴더를 옮깁니다.
 - `PYTHONIOENCODING`: 결과를 파일로 돌리거나 다른 프로그램으로 넘길 때 필요합니다. 없으면 Windows에서 한글이 시스템 코드 페이지로 나갑니다.
 
@@ -199,6 +199,7 @@ depbee dashboard --cache-dir $cache                  # 빈 포트를 OS가 고�
       "env": {
         "TMP": "<시연 상태 폴더>\\tmp",
         "TEMP": "<시연 상태 폴더>\\tmp",
+        "TMPDIR": "<시연 상태 폴더>\\tmp",
         "USERPROFILE": "<시연 상태 폴더>\\mcp-home",
         "PYTHONIOENCODING": "utf-8"
       }
