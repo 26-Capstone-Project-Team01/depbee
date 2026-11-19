@@ -1,5 +1,13 @@
 # 검증 기록
 
+## 2026-11-20: 대시보드 Ctrl+C 종료와 등록 안내문(DEMO-02)
+
+- 브라우저 리허설: 아래 DEMO-01 기록의 시연 환경(`d3445b0` 비편집 설치)에서 `depbee dashboard --port 0`을 띄우고 Orca 내장 브라우저로 화면을 확인했다. 시작 두 줄은 README와 같았다. 첫 화면(등록한 프로젝트 없음) → 시연 폴더 등록 → 프로젝트 화면(직접 의존성 3개, 중첩 2개, 검사만 버튼과 업데이트 확인 폼) → 업데이트 확인 11초(npm 11.6.1, 바뀐 5개, 통과 3·삭제 2, 모델 D04-E00, 기지 악성 색인 연결, 규칙 미연결, 항목별 ML 위험 점수·비교 버전·기여도 막대) → 반영 방식 lockfile(확인란 없음) 반영 1초("업데이트 반영: 반영함", lockfile sha256 변화, 이력 파일 옆 `backups/`의 백업 위치, 되돌리기 안내) → 검사만 3초(실행 #2 통과, 바뀐 5개) → 프로젝트 화면의 반영 이력 1건과 실행 기록 2건(#2 scan, #1 업데이트 미리보기).
+- Ctrl+C: 대시보드를 띄운 터미널에 Ctrl+C를 한 번 보내자 1초 안에 데모 경로 프로세스가 0개가 되고 그 포트에서 리슨하는 소켓이 없었으며, 브라우저 새로고침은 빈 페이지였다(그 주소 무효). 다만 터미널에 Python `KeyboardInterrupt` traceback이 찍혔다. uvicorn 0.54.0의 `Server.capture_signals`는 정상 종료 뒤 잡아 둔 신호를 `signal.raise_signal`로 다시 올리고, 그 결과 `uvicorn.Server.run()`이 `KeyboardInterrupt`로 끝나는데 depbee가 잡지 않았다. 등록 폼 안내문이 대시보드의 검사만·업데이트 확인을 언급하지 않는 것도 이때 찾았다.
+- 수정: `depbee.dashboard.app.serve()`가 uvicorn 실행에서 나온 `KeyboardInterrupt`만 잡아 stdout에 `대시보드를 종료했습니다. 위 주소는 더 이상 열리지 않습니다.` 한 줄을 쓰고 돌아가, `depbee dashboard`는 종료 코드 0으로 끝난다. 소켓은 전처럼 `finally`에서 닫는다. 다른 명령의 Ctrl+C 동작과 그 밖의 예외는 바꾸지 않았다. 프로젝트 목록의 등록 안내문과 실행 없음 문구에 프로젝트 화면의 "검사만"·"업데이트 확인"과 CLI `depbee scan`·`depbee update` 검사 기록을 적었다.
+- 단위 테스트(가짜 uvicorn 서버, 합성 자료만): 전체 490개에서 492개. 가짜 `Server.run`이 `KeyboardInterrupt`를 내면 `serve(0)`와 `main(["dashboard", "--port", "0"])`이 예외 없이 종료 줄을 남기고(후자는 0을 돌려줌) 소켓이 닫히는지, `OSError`는 그대로 올라가고 종료 줄이 없는지, 두 문구가 프로젝트 목록에 나오는지 확인한다. 테스트가 `KeyboardInterrupt`를 잡아 실패로 바꾸므로, 수정 전 `app.py` 사본에 붙이면 unittest 실행이 멈추지 않고 그 테스트 하나가 실패했다(대시보드 테스트 55개 중 실패 1). `.[dev,ml]`만 있는 환경은 대시보드 테스트가 skip되어 skip 68개(새 테스트 2개 포함), 모든 extra를 설치한 환경은 skip 3개로 전과 같다.
+- 확인하지 못한 것: 수정한 코드로 실제 터미널에서 보낸 Ctrl+C(가짜 서버로만 확인), 요청 처리 중이나 두 번 보낸 Ctrl+C, Ctrl+Break와 SIGTERM(바꾸지 않음), POSIX.
+
 ## 2026-11-19: 진입점별 시연 리허설(DEMO-01)
 
 - 범위: README에 [진입점별 시연](../README.md#진입점별-시연) 절을 더하고, 그 명령을 저장소 밖 시연 환경에서 실행했다. 코드·테스트는 바꾸지 않았다(base `d3445b0`). 시연 환경은 `d3445b0`의 `git archive` 사본을 전용 venv(Python 3.13.5)에 비편집으로 `[ml,extract,mcp,web]` 설치한 것이고, 모델 D04-E00과 기지 악성 색인(OSV npm MAL, 기준 시점 2026-10-06T14:00:47Z)의 sha256을 대조했다. feature-extractor의 설치 출처(`direct_url.json`의 GitHub 주소와 고정 커밋 `c24761d`)를 확인했고 모든 `--extract` 보고서의 `provenance.feature_extractor.commit`이 이 커밋이었다. 정상 시연 프로젝트는 `lodash ^4.17.15`, `ms ^2.1.1`, `semver ^7.5.0`의 lockfile을 커밋한 Git 저장소다.
@@ -9,7 +17,7 @@
 - README 따라 하기: 새 폴더에서 README의 npm 단계(`npm init -y`, `npm install lodash@4.17.15 ms@2.1.1 semver@7.5.0 --package-lock-only --ignore-scripts`, Git 커밋)를 그대로 실행했고 `node_modules`가 생기지 않았다. 이어 README CLI 1~7단계와 Actions 판정 재현 (a)·(b)의 첫 줄과 종료 코드가 README에 적은 것과 같았다.
 - Actions 판정 재현(`action.yml` 단계를 같은 인자로 로컬 PowerShell에서 실행, 설치·Release 다운로드·캐시·artifact 단계 제외): 예시 보고서 03은 항상 실패, 02는 경고이고 `fail-on ml-hit`면 실패, 04·06은 경고이고 `fail-on incomplete`면 실패, 01·05는 통과였다. 실제 scan 보고서로 정상 업데이트는 통과, 기지 악성 일치는 실패(`::error`와 lockfile 줄 번호), pre-release 보류는 경고이고 `fail-on incomplete`면 실패, 로컬 사본의 ML 기준 이상은 경고이고 `fail-on ml-hit`면 실패였다. `--markdown` 없는 판정도 같았다. PowerShell 7.4 이상에서 `PYTHONUTF8`·`PYTHONIOENCODING` 없이 `--format markdown > summary`를 만들면 summary가 cp949로 저장되어 판정이 "보고서를 판정하지 못했습니다"(종료 코드 1)였고, `PYTHONUTF8=1`이면 정상이었다. 같은 조건에서 텍스트 출력을 파이프로 받으면 한글이 깨졌다.
 - 격리: README 명령을 `--cache-dir` 없이 그대로 실행한 리허설 한 번이 실제 `~/.cache/depbee`에 정상 패키지 feature 캐시 4개를 만들었다. 시작 전에는 없던 폴더이고 안의 파일이 모두 그 실행 뒤에 생긴 것임을 확인한 뒤 지웠으며, 최종 감사에서 `~/.local/share/depbee`·`~/.cache/depbee`는 없었다. 이 일로 README의 준비 절이 이력·백업·캐시·임시 파일을 시연 전용 상태 폴더에 두게 했다. MCP 서버의 캐시는 서버 환경의 USERPROFILE로 시연 폴더 아래에 두었다. `%TEMP%`에 `depbee_*`·`feature_extractor_src_*`가 남지 않았고, 사용자 Claude Code 설정과 전역 Git 설정을 바꾸지 않았다.
-- 확인하지 못한 것: 사람이 보는 브라우저 화면과 Ctrl+C 종료, 대화형 Claude Code의 `/mcp` 화면과 권한 창, 비공개 feature-extractor를 clone하는 인증 경로(pip가 휠 캐시를 재사용해 실행되지 않음), 공개·Release 뒤 실제 PR 실행, Linux·macOS.
+- 확인하지 못한 것: 사람이 보는 브라우저 화면과 Ctrl+C 종료(위 2026-11-20 DEMO-02 기록에서 확인), 대화형 Claude Code의 `/mcp` 화면과 권한 창, 비공개 feature-extractor를 clone하는 인증 경로(pip가 휠 캐시를 재사용해 실행되지 않음), 공개·Release 뒤 실제 PR 실행, Linux·macOS.
 
 ## 2026-11-19: 대시보드 검사만 버튼(SVC-07-SCAN)
 
