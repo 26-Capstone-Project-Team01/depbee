@@ -175,9 +175,9 @@ depbee dashboard --port 8765 --model-dir models/<model-id> --known-malicious-dir
 ```
 
 - `--model-dir`, `--known-malicious-dir`, `--cache-dir`/`--no-cache`는 검사만과 업데이트 확인에 쓰며 뜻은 `depbee scan`·`depbee update`와 같습니다(`--model-dir`이 없으면 `DEPBEE_MODEL_DIR`, 그것도 없으면 모델 없이 검사해 바뀐 항목은 보류. `--known-malicious-dir`이 없으면 `DEPBEE_KNOWN_MALICIOUS_DIR`, 그것도 없으면 기지 악성 대조 없이 검사).
-- 시작하면 표준 출력에 주소 한 줄(`http://127.0.0.1:<포트>/s/<세션>/`)과 종료 방법(Ctrl+C)이 나옵니다. 이 주소를 브라우저에 붙여 넣어 엽니다. 브라우저를 자동으로 열지 않습니다. Ctrl+C로 끄면 `대시보드를 종료했습니다. 위 주소는 더 이상 열리지 않습니다.` 한 줄을 남기고 종료 코드 0으로 끝납니다. `web` extra 없이 실행하면 설치 안내와 함께 종료 코드 2로 끝나고, 다른 명령은 이 extra 없이 그대로 동작합니다.
+- 시작하면 표준 출력에 세션 주소와 종료 방법(Ctrl+C)이 나옵니다. 등록한 프로젝트가 하나면 프로젝트 상세 주소, 없거나 여러 개면 프로젝트 관리 주소가 나옵니다. 이 주소를 브라우저에 붙여 넣어 엽니다. 브라우저를 자동으로 열지 않습니다. Ctrl+C로 끄면 `대시보드를 종료했습니다. 위 주소는 더 이상 열리지 않습니다.` 한 줄을 남기고 종료 코드 0으로 끝납니다. `web` extra 없이 실행하면 설치 안내와 함께 종료 코드 2로 끝나고, 다른 명령은 이 extra 없이 그대로 동작합니다.
 - 프로젝트 목록: 등록한 폴더(사라졌으면 "찾을 수 없음"), 등록 시각, 최근 실행 요약(검사와 업데이트 미리보기를 나누지 않고 가장 최근 실행 하나와 그 종류), 최근 실행 10개의 판정별 개수 표(추이), 등록 폼. 등록은 `package-lock.json` 일반 파일이 있는 로컬 폴더의 절대 경로만 받습니다. 상대 경로, 네트워크 공유(`\\server\share`), 장치 경로(`\\.\`, `\\?\`), Windows 예약 이름(`CON`, `NUL` 등), 공유·장치로 가는 링크는 거부합니다. 같은 폴더를 다시 등록하면 처음 등록을 그대로 씁니다.
-- 프로젝트 상세: 지금 `package-lock.json`에서 읽은 의존성(직접·중첩, 이름, 버전, 위치), 검사만 버튼, 업데이트 확인 폼, 업데이트 반영 이력(시각, 방식, 결과, 이유, 확인 여부, 백업 위치, `npm ci` 종료 코드, 연결된 미리보기 실행), 실행 기록(상한 없이 모두, 최근순). 의존성은 npm을 실행하지 않고 `scan`과 같은 lockfile 검사를 거쳐 읽습니다. 직접 의존성은 lockfile 루트 항목의 `dependencies`·`devDependencies`·`optionalDependencies`·`peerDependencies`에 있는 이름이고 나머지는 중첩입니다. 반영 이력에는 CLI `update --apply`가 남긴 기록도 함께 보입니다.
+- 프로젝트 상세: 지금 `package-lock.json`에서 읽은 의존성(직접·중첩, 이름, 버전, 위치), 검사만 버튼, 업데이트 확인 폼, 업데이트 반영 이력(시각, 방식, 결과, 이유, 확인 여부, 백업 위치, `npm ci` 종료 코드, 연결된 미리보기 실행), 실행 기록(상한 없이 모두, 최근순). 이름으로 검색하거나 직접·중첩으로 필터링할 수 있습니다. `package.json`에서 업데이트 대상으로 지정할 수 있는 직접 의존성에는 **후보 확인**이 표시됩니다. **전체 업데이트 확인**은 필터와 관계없이 허용된 범위의 업데이트를 미리 봅니다. 의존성은 npm을 실행하지 않고 `scan`과 같은 lockfile 검사를 거쳐 읽습니다. 직접 의존성은 lockfile 루트 항목의 `dependencies`·`devDependencies`·`optionalDependencies`·`peerDependencies`에 있는 이름이고 나머지는 중첩입니다. 반영 이력에는 CLI `update --apply`가 남긴 기록도 함께 보입니다.
 - 실행 상세: 텍스트 출력과 같은 순서(위험 → 보류 → 통과 → 삭제, 같은 판정 안에서는 ML 위험 점수 순)와 문구로, 기지 악성 일치와 보류를 강조하고 항목마다 판정, ML 위험 점수, 비교 버전, 이유, 대안(안전 보증 아님), 탐지기 칸, 추출된 사실, 모델 설명(기여도 막대)을 나눠 보여 줍니다. update 미리보기 기록은 미리보기 요약을 위에, 반영 기록이 있으면 반영 절을 아래에 보입니다. npm 페이지 링크는 `https://www.npmjs.com/package/`와 인코딩한 패키지 이름으로만 만들고(`rel="noreferrer"`), 보고서·lockfile·registry에서 온 주소로는 링크를 만들지 않습니다.
 - 모델 정보: 저장된 실행의 보고서에 있는 모델 ID, 판정 기준 점수, 모델·manifest 해시, 분석기와 depbee-analyzer 정보만 보입니다. 학습 데이터 버전과 공격 유형별 탐지율은 보고서에 출처가 없어 보이지 않습니다.
 - 판정·이유·종료 코드·탐지기 상태는 저장된 보고서 값 그대로이며 다시 계산하지 않습니다. 모든 화면에 "'통과'는 모델의 판정일 뿐 패키지가 안전하다는 보증이 아닙니다."를 둡니다.
@@ -216,8 +216,10 @@ depbee dashboard --port 8765 --model-dir models/<model-id> --known-malicious-dir
 
 ```powershell
 python -m pip install ".[mcp,ml,extract]"
-depbee mcp --model-dir models/<model-id> --known-malicious-dir models/known-malicious
+depbee mcp --model-dir "C:\depbee-assets\model" --known-malicious-dir "C:\depbee-assets\index"
 ```
+
+위 자산 폴더는 사용자가 관리하는 절대 경로로 바꿉니다. 연결하지 않을 자산은 옵션과 값을 함께 생략합니다. 빈 값을 인자로 주면 입력 오류입니다.
 
 `python -m depbee`는 현재 폴더를 import 경로 맨 앞에 넣으므로, MCP 클라이언트가 신뢰할 수 없는 작업 폴더에서 서버를 띄울 수 있으면 위처럼 콘솔 스크립트(`depbee mcp`)나 `python -P -m depbee mcp`로 등록합니다.
 
@@ -359,23 +361,26 @@ depbee-analyzer를 함께 개발할 때는 그 저장소를 받아 `pip install 
 python -m pip wheel --no-deps --wheel-dir dist .
 ```
 
-wheel을 받은 사람은 depbee 소스를 받을 필요가 없습니다. Python 3.11 이상의 가상환경을 만들고 활성화한 뒤 wheel이 있는 폴더에서 하나를 골라 실행합니다. 파일 이름은 받은 버전에 맞춥니다.
+wheel로 depbee를 실행할 수 있습니다. 모델 manifest나 색인을 직접 생성할 때는 소스 저장소의 `scripts/`를 사용합니다. Python 3.11 이상의 가상환경을 만들고 활성화한 뒤 wheel이 있는 폴더에서 하나를 골라 실행합니다. 파일 이름은 받은 버전에 맞춥니다.
 
 ```sh
 python -m pip install ./depbee-0.1.0-py3-none-any.whl                  # 기본 CLI와 plan
 python -m pip install "./depbee-0.1.0-py3-none-any.whl[ml,extract,mcp,web]"  # ML 분석과 네 진입점
 ```
 
-빈 가상환경에서 설치하면 Windows에는 `.venv\Scripts\depbee.exe`, macOS/Linux에는 `.venv/bin/depbee`가 생깁니다. 활성화한 터미널에서 `depbee --help`로 설치를 확인합니다. wheel에는 Python 코드와 대시보드 템플릿·스타일이 들어갑니다. ML 모델, 기지 악성 색인, 분석기는 별도로 준비합니다. `extract` 옵션은 설치할 때 고정된 분석기 커밋을 가져오므로 비공개 저장소의 Git 읽기 권한이 필요합니다.
+빈 가상환경에서 설치하면 Windows에는 `.venv\Scripts\depbee.exe`, macOS/Linux에는 `.venv/bin/depbee`가 생깁니다. 활성화한 터미널에서 `depbee --help`로 설치를 확인합니다. wheel에는 Python 코드와 대시보드 템플릿·스타일이 들어갑니다. ML 모델, 기지 악성 색인, 분석기는 별도로 준비합니다. `extract` 옵션은 설치할 때 고정된 분석기 커밋을 가져오므로 비공개 저장소의 Git 읽기 권한이 필요합니다. 사용한 분석기 커밋은 보고서의 `provenance.feature_extractor.commit`에서 확인합니다.
+
+같은 버전 번호의 시험 wheel을 교체할 때는 새 가상환경을 사용하거나 `python -m pip install --force-reinstall`에 사용할 wheel 경로와 extra를 지정합니다.
 
 ## 검증
 
 ```powershell
 python -m unittest discover -s tests -v
 python -m ruff check .
-python -m ruff format --check .
 python -m build
 ```
+
+`python -m ruff format --check .`는 개발 CI 밖의 별도 서식 점검입니다. 기존 파일에 서식 차이가 남을 수 있습니다.
 
 테스트는 네트워크와 depbee-analyzer 없이 돌도록 depbee-analyzer 호출을 가짜로 바꿔 둡니다. ML 의존성이 없으면 native LightGBM 테스트는 skip됩니다.
 depbee-analyzer(`.[extract]`)가 설치돼 있으면 고정 커밋의 loader·extractor를 합성 tarball과 가짜 registry 응답으로 실행하는 경계 테스트도 돌고, 없으면 skip됩니다. 네트워크는 쓰지 않습니다.

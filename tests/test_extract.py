@@ -386,8 +386,8 @@ class Snapshot:
 
 def stand_in_backend(fetch, snapshots):
     """Real FeatureExtractorBackend and depbee download; depbee-analyzer's build_snapshot and
-    build_row are stand-ins. build_snapshot reads versions[version] as c24761d loader.py:55-56
-    does. build_row asks for source, as c24761d build_row does for the default (obfuscation)
+    build_row are stand-ins. build_snapshot reads versions[version] as the pinned loader.py:55-56
+    does. build_row asks for source, as the pinned build_row does for the default (obfuscation)
     extractors, and reads both unpacked package.json files. Tarballs come from a FakeRegistry."""
 
     def build_snapshot(packument, package, version):
@@ -943,7 +943,7 @@ class PackageCheckTests(Fixture):
     importlib.util.find_spec("depbee_analyzer"), "Install .[extract] for the pinned loader tests"
 )
 class PinnedLoaderTests(Fixture):
-    """The installed, pinned depbee-analyzer (c24761d) behind the real backend: its loader,
+    """The installed, pinned depbee-analyzer behind the real backend: its loader,
     sources, pipeline and extractors run on synthetic tarballs. Only depbee's registry access is a
     FakeRegistry, and depbee-analyzer's own requests.get fails if it is ever called, so a pin
     change that fetches again or reads another document breaks these tests (PR #7 nit 3)."""

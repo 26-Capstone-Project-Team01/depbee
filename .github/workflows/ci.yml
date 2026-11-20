@@ -28,7 +28,7 @@ jobs:
       - run: python -m unittest discover -s tests -v
       - run: python -m build
 
-  # The action itself with synthetic reports only. Installing feature-extractor (private), registry
+  # The action itself with synthetic reports only. Installing depbee-analyzer (private), registry
   # downloads and the Release model are not possible here yet (docs/ci-cd.md).
   action:
     runs-on: ubuntu-latest

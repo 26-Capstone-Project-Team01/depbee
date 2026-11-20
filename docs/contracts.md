@@ -67,7 +67,7 @@
 ```
 
 - feature 값은 숫자, true/false, 문자열, null만 쓴다. 어떤 feature가 어떤 자료형을 받는지는 모델 manifest가 정하고 추론기가 검사한다. 특징을 임의로 생략하거나 0으로 채우지 않는다.
-- `baseline_version`(선택)은 새 버전과 비교한 버전이다. 내장 분석기는 같은 release line의 직전 stable을 쓴다(README "동작 방식").
+- `baseline_version`(선택)은 새 버전과 비교한 버전이다. 내장 분석기는 같은 release line의 직전 stable을 쓴다. [사용 참고서의 동작 방식](usage.md#동작-방식)
 - `evidence`는 문자열 배열이다. 패키지에서 온 문자열을 담을 수 있으므로 CLI가 출력할 때 제어 문자를 이스케이프한다.
 - 분석에 실패한 항목: `{"change_id":"...","status":"failed","error":"실패 이유"}`
 - 모델의 학습 범위 밖이라 분석하지 않은 항목: `{"change_id":"...","status":"unsupported","reason":"out_of_training_scope","error":"설명"}`. reason은 `out_of_training_scope`(새 버전이 pre-release 등), `no_baseline`(비교할 이전 stable 없음)을 쓴다.
