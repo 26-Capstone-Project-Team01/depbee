@@ -1,7 +1,8 @@
 """The dashboard's web app (extra [web]): Starlette routes, Jinja2 pages and the uvicorn server.
 
 Only depbee.dashboard.serve() imports this module. History goes through depbee.history (a new
-connection per call), dependencies through service.list_dependencies(), and every verdict,
+connection per call), lockfile rows through service.list_dependencies(), package.json for
+individual update buttons, and every verdict,
 label and line through the depbee.cli helpers the text output uses.
 """
 
@@ -253,16 +254,27 @@ def build_app(
         found = _project(request.path_params["project_id"])
         if found is None:
             return _text(404, "등록된 프로젝트가 아닙니다.")
-        query = request.query_params.get("q", "").strip()
-        scope = request.query_params.get("scope", "all")
-        if len(query) > MAX_NAME_LENGTH or scope not in ("all", "direct", "nested"):
+        params = request.query_params
+        query = params.get("q", "").strip()
+        scope = params.get("scope", "all")
+        if (
+            len(params.getlist("q")) > 1
+            or len(params.getlist("scope")) > 1
+            or len(query) > MAX_NAME_LENGTH
+            or not query.isprintable()
+            or scope not in ("all", "direct", "nested")
+        ):
             return _text(400, "패키지 이름이나 의존성 종류를 확인하세요.")
         dependencies, problem = _dependencies(found["path"])
         direct_count = sum(row["direct"] for row in dependencies)
         needle = query.casefold()
-        rows = [row for row in dependencies if needle in row["name"].casefold()
-                and (scope == "all" or row["direct"] == (scope == "direct"))]  # fmt: skip
-        targets = _preview_targets(found["path"]) if direct_count else set()
+        rows = [
+            row
+            for row in dependencies
+            if (scope == "all" or row["direct"] == (scope == "direct"))
+            and (not needle or needle in _clean(row["name"] or "").casefold())
+        ]
+        targets = _preview_targets(found["path"]) if any(row["direct"] for row in rows) else set()
         runs = [_run_row(run) for run in history.list_runs(found["id"])]
         applies = [_apply_row(row) for row in history.list_applies(found["id"])]
         return page(request, "project.html", project=found, found=_found(found["path"]),

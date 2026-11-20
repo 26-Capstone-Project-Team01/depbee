@@ -183,7 +183,11 @@ class PageTests(DashboardFixture):
 
         html = self.page("/projects/1?q=EXa&scope=direct")
         self.assertIn('form="preview-project" name="packages" value="example"', html)
-        self.assertIn('<input type="hidden" name="session"', html)
+        form = re.search(r'<form [^>]*id="preview-project"[^>]*>(.*?)</form>', html, re.S)
+        self.assertIsNotNone(form)
+        self.assertIn(f'action="{S}/projects/1/previews"', form[0])
+        self.assertIn(f'<input type="hidden" name="session" value="{SESSION}">', form[1])
+        self.assertIn(f'href="{S}/projects/1?q=EXa&amp;scope=direct#history"', html)
         self.assertNotIn("<td>inner</td>", html)
         nested = self.page("/projects/1?scope=nested")
         self.assertIn("<td>inner</td>", nested)
@@ -191,7 +195,23 @@ class PageTests(DashboardFixture):
         self.assertNotIn('form="preview-project" name="packages"', self.page("/projects/1?q=peer"))
         self.assertIn("조건에 맞는 패키지가 없습니다", self.page("/projects/1?q=missing"))
         self.assertEqual(self.get("/projects/1?scope=invalid").status_code, 400)
+        for invalid in ("scope=direct&scope=nested", "q=x&q=y", "q=%01x%01", "q=" + "x" * 215):
+            self.assertEqual(self.get(f"/projects/1?{invalid}").status_code, 400)
         self.assertEqual(history.list_runs(1), [])
+
+    def test_missing_dependency_name_keeps_project_accessible(self):
+        history.register_project(self.project)
+        entry = "node_modules/missing"
+        self.new["packages"][entry] = {**package(), "name": None}
+        self.save_locks()
+        html = self.page("/projects/1")
+        self.assertIn("<td>이름 없음</td>", html)
+        self.assertIn(entry, html)
+        self.assertNotIn(entry, self.page("/projects/1?q=example"))
+        self.assertNotIn('name="packages" value="None"', html)
+        self.new["packages"][entry]["name"] = []
+        self.save_locks()
+        self.assertIn("package-lock.json을 읽을 수 없습니다", self.page("/projects/1"))
 
     def test_resources_have_no_external_urls(self):
         package_dir = Path(self.app.__file__).parent
@@ -384,6 +404,19 @@ class SecurityTests(DashboardFixture):
             url = out.getvalue().splitlines()[0]
             self.assertTrue(url.endswith(f"/projects/{project_id}" if only_one else "/"))
         self.assertIn("프로젝트 등록", self.page("/"))
+        self.assertIn(f'<a href="{S}/">프로젝트</a>', self.page(f"/projects/{project_id}"))
+
+    def test_start_address_falls_back_to_project_list_on_unreadable_history(self):
+        from depbee.dashboard import app
+
+        self.db.write_bytes(b"not a database")
+        out = io.StringIO()
+        with (
+            mock.patch.object(app.uvicorn, "Server", self.fake_server(KeyboardInterrupt())),
+            contextlib.redirect_stdout(out),
+        ):
+            app.serve(0)
+        self.assertTrue(out.getvalue().splitlines()[0].endswith("/"))
 
     def test_ctrl_c_ends_the_dashboard_with_one_line_and_exit_code_0(self):
         from depbee.dashboard import app

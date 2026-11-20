@@ -17,6 +17,7 @@ a { color: var(--green); text-underline-offset: .22em; }
 a:hover { color: #08372a; }
 :focus-visible { outline: 3px solid #156a95; outline-offset: 3px; }
 .masthead { background: var(--ink); }
+.masthead :focus-visible { outline-color: #f4f7ef; }
 .masthead nav, main, footer { width: min(100% - 3rem, 76rem); margin-inline: auto; }
 .masthead nav { display: flex; align-items: center; gap: 1.7rem; min-height: 4.3rem; }
 .masthead a { color: #f4f7ef; text-decoration: none; font-weight: 600; }
@@ -36,13 +37,14 @@ p { margin: .55rem 0; }
 .error, .flag { font-weight: 700; }
 .error, .empty { border-left: 3px solid currentColor; padding: .8rem 1rem; }
 button, input, select { color: var(--ink); font: inherit; }
-button, input[type=text], input[type=search], select { min-height: 2.6rem; border: 1px solid #91a89a; border-radius: .35rem; }
+button, input[type=text], input[type=search], select { min-height: 2.6rem; border: 1px solid #688273; border-radius: .35rem; }
 input[type=text], input[type=search], select { max-width: 100%; padding: .45rem .7rem; background: #fff; }
 button { padding: .45rem .95rem; background: #fff; font-weight: 650; cursor: pointer; }
 button:hover { border-color: var(--green); background: var(--pale); }
 button.primary { background: var(--green); border-color: var(--green); color: #fff; }
 button.primary:hover { background: #124a38; }
-label { display: block; margin-bottom: .25rem; font-weight: 650; }
+.filters label, .target-form label, label[for=path] { display: block; margin-bottom: .25rem; font-weight: 650; }
+#path { width: min(100%, 40rem); }
 table { border-collapse: collapse; width: 100%; background: white; margin: .6rem 0; }
 th, td { border-bottom: 1px solid var(--line); padding: .55rem .75rem; text-align: left; vertical-align: middle; overflow-wrap: anywhere; }
 th { font-size: .87rem; color: var(--muted); background: #edf2ec; font-weight: 650; }
@@ -63,7 +65,6 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .workspace-heading { justify-content: space-between; flex-wrap: wrap; padding: .85rem 0 1.7rem; }
 .workspace-heading h1 { margin: 0 0 .35rem; }
 .project-path, .file-label { font-family: var(--mono); font-size: .88rem; overflow-wrap: anywhere; }
-.primary span { margin-left: .65rem; }
 .section-nav { gap: 1.6rem; border-bottom: 1px solid var(--line); }
 .section-nav a { padding: .65rem 0; color: var(--ink); font-size: .93rem; font-weight: 650; text-decoration: none; }
 .section-nav a:hover { text-decoration: underline; }
@@ -98,6 +99,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .project { margin: 1rem 0; }
 .project h2 { margin-top: 0; }
 .open-project { display: inline-block; margin-block: .45rem; font-weight: 650; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); overflow: hidden; white-space: nowrap; }
 @media (max-width: 48rem) {
   .masthead nav, main, footer { width: calc(100% - 1.5rem); }
   .masthead nav { gap: 1.1rem; }

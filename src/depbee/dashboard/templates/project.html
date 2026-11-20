@@ -2,24 +2,25 @@
 {% block title %}{{ project_name }} 의존성 · depbee{% endblock %}
 {% block main %}
 {% set url = base ~ "/projects/" ~ project.id %}
+{% set section_url = url ~ ("?" ~ {"q": query, "scope": scope}|urlencode if query or scope != "all" else "") %}
 <div class="breadcrumb"><a href="{{ base }}/">프로젝트</a><span aria-hidden="true">/</span><strong>{{ project_name }}</strong></div>
 <section class="workspace-heading">
   <div>
-    <h1>프로젝트 의존성</h1>
-    <p class="project-path">{{ project.path }}</p>
+    <h1 aria-describedby="project-path">프로젝트 의존성</h1>
+    <p id="project-path" class="project-path">{{ project.path }}</p>
     {% if not found %}<p class="flag">찾을 수 없음</p>{% endif %}
   </div>
   {% if found %}
   <form method="post" action="{{ url }}/previews" id="preview-project">
     <input type="hidden" name="session" value="{{ session }}">
-    <button class="primary" type="submit" name="packages" value="">전체 업데이트 확인 <span aria-hidden="true">↗</span></button>
+    <button class="primary" type="submit" name="packages" value="">전체 업데이트 확인</button>
   </form>
   {% endif %}
 </section>
 <nav class="section-nav" aria-label="프로젝트 항목">
-  <a href="{{ url }}#dependencies">의존성 목록</a>
-  <a href="{{ url }}#checks">검사와 미리보기</a>
-  <a href="{{ url }}#history">기록</a>
+  <a href="{{ section_url }}#dependencies">의존성 목록</a>
+  <a href="{{ section_url }}#checks">검사와 미리보기</a>
+  <a href="{{ section_url }}#history">기록</a>
 </nav>
 <section class="inventory" id="dependencies">
   <div class="inventory-heading"><h2>의존성 목록</h2>{% if not problem %}<span class="file-label">package-lock.json</span>{% endif %}</div>
@@ -47,7 +48,7 @@
   <table class="dependencies" aria-label="설치된 의존성">
     <thead><tr><th scope="col">패키지</th><th scope="col">설치 버전</th><th scope="col">설치 위치</th><th scope="col">종류</th><th scope="col">업데이트 후보</th></tr></thead>
     <tbody>{% for row in rows %}
-      <tr><td>{{ row.name }}</td><td>{{ row.version if row.version is not none else "-" }}</td><td>{{ row.location }}</td>
+      <tr><td>{{ row.name if row.name is not none else "이름 없음" }}</td><td>{{ row.version if row.version is not none else "-" }}</td><td>{{ row.location }}</td>
         <td><span class="kind{% if row.direct %} direct{% endif %}">{{ "직접" if row.direct else "중첩" }}</span></td>
         <td>{% if found and row.direct and row.name in targets and row.location == "node_modules/" ~ row.name %}
           <button type="submit" form="preview-project" name="packages" value="{{ row.name }}" aria-label="{{ row.name }} 업데이트 후보 확인">후보 확인</button>
@@ -64,16 +65,16 @@
 </section>
 <section id="checks" class="operations">
   <div><h2>변경 검사</h2>
-  <p>현재 lockfile과 Git HEAD의 차이를 검사합니다. 설치와 파일 반영은 수행하지 않습니다.</p>
+  <p>현재 lockfile과 Git HEAD의 차이를 검사합니다. 프로젝트 파일은 그대로 두며, 모델이 없으면 ML 판정을 보류합니다.</p>
   {% if found %}<form method="post" action="{{ url }}/scans">
     <input type="hidden" name="session" value="{{ session }}"><button type="submit">검사만</button>
   </form>{% else %}<p>프로젝트 폴더를 찾을 수 없어 검사할 수 없습니다.</p>{% endif %}
   </div>
   <div><h2>패키지 지정 미리보기</h2>
-  <p>여러 직접 의존성을 함께 확인하려면 이름을 공백으로 구분하세요. npm이 제안한 변경을 검토한 뒤 반영할 수 있습니다.</p>
+  <p>임시 사본에서 설치 스크립트를 끈 채 업데이트를 계산합니다. 결과를 검토하고 반영하기 전까지 프로젝트 파일은 그대로입니다. 한 번에 한 요청만 실행합니다.</p>
   {% if found %}<form method="post" action="{{ url }}/previews" class="target-form">
     <input type="hidden" name="session" value="{{ session }}">
-    <label for="packages">대상 패키지 이름</label>
+    <label for="packages">패키지 이름 (공백으로 구분, 비우면 전체)</label>
     <input id="packages" name="packages" type="text" maxlength="{{ max_targets }}">
     <button type="submit">미리보기와 검사</button>
   </form>{% else %}<p>프로젝트 폴더를 찾을 수 없어 업데이트를 확인할 수 없습니다.</p>{% endif %}
