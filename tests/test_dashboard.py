@@ -693,6 +693,27 @@ class CandidateTests(DashboardFixture):
         self.assertIn(f'<a href="{S}/runs/{mine}#r0">근거', self.cells()["node_modules/example"])
         self.assertNotIn(f"/runs/{theirs}", self.page(self.updates))
 
+    def test_a_location_the_history_stores_as_escaped_text_is_the_same_location(self):
+        # The history stores a lone surrogate in a result row's location as the text \udc80. The
+        # lockfile row, the stored row and a later check's target must still be one location.
+        odd = "node_modules/\udc80x"
+        self.old["packages"][odd] = package()
+        self.write(self.head, self.old)
+
+        def cell():
+            rows = re.findall(r'<tr><th scope="row">[^<]*</th><td>[^<]*</td><td>([^<]*)</td>\n'
+                              r"<td>.*?</td>\n<td>(.*?)</td>\n</tr>", self.page(self.packages),
+                              re.S)  # fmt: skip
+            self.assertEqual(len(rows), 4)
+            return dict(rows)["node_modules/\\udc80x"].strip()
+
+        row = {**self.report["results"][0], "location": odd, "package": "\udc80x"}
+        run = self.check({**self.report, "results": [row]}, targets=None)
+        self.assertIn(f'<a href="{S}/runs/{run}#r0">근거', cell())
+        # Later that package alone is checked and would not change: its candidate goes.
+        self.check(self.nothing(), targets=["\udc80x"], changed_count=0)
+        self.assertEqual(cell(), '<span class="quiet">후보 없음</span>')
+
     def test_a_look_reads_only_the_reports_whose_candidates_it_shows(self):
         self.check(targets=None)
         for _ in range(12):
