@@ -12,6 +12,7 @@
 | `update` 미리보기·반영 | `ml`, `extract` | 불필요 | 필요 | 필요 | 권장(없으면 반영마다 확인 필요) | registry |
 | 대시보드 | `web`, `ml`, `extract` | 검사만에 필요 | 업데이트 확인에 필요 | 필요 | 권장 | registry |
 | MCP | `mcp`, `ml`, `extract` | `scan_lockfile`의 기본 HEAD 기준에 필요 | 불필요 | 필요 | 권장 | registry, 에이전트 서비스 |
+| Actions 공개 시연(합성 정책) | 설치 없음 | 불필요 | 불필요 | 불필요 | 불필요(가상 목록) | github.com 열람 |
 | Actions 판정 재현 | 없음(표준 라이브러리) | 실제 보고서를 만들 때만 | 불필요 | 실제 보고서를 만들 때만 | 실제 보고서를 만들 때만 | 예시 보고서면 불필요 |
 | Actions 실제 PR | action이 설치 | runner | 불필요 | Release | Release | 공개와 Release 뒤 |
 
@@ -140,7 +141,29 @@ MCP 호출은 이력에 기록되지 않습니다. `scan_lockfile`은 언제나 
 
 ### GitHub Actions
 
-공개와 Release 전에도 action의 판정 단계(`src/depbee/actions.py report`, 표준 라이브러리만 씀)는 로컬에서 같은 인자로 실행할 수 있습니다. `GITHUB_STEP_SUMMARY`가 없으면 job summary가 주석 뒤에 터미널로 나옵니다.
+Actions 장면은 셋으로 나뉩니다. 공개 시연 저장소는 합성 lockfile로 정책이 PR에 어떻게 나타나는지 보여 줍니다. 로컬 판정 재현은 depbee의 판정 단계를 예시 보고서로 실행합니다. 실제 제품 검사는 저장소 공개와 Release 뒤에만 됩니다.
+
+**공개 시연 저장소(합성 정책 시연).** [depbee-actions-demo](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo)는 설치 없이 브라우저로 볼 수 있습니다. 열린 PR 세 개가 장면 하나씩이고 모두 `package-lock.json` 한 파일만 바꿉니다.
+
+| 장면 | PR | lockfile에서 바뀐 것 | Check | lockfile 줄 주석 |
+| --- | --- | --- | --- | --- |
+| 정상 버전 변경 | [#1](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/pull/1) | `ms` 2.1.1에서 2.1.3 | 성공 | 없음 |
+| 사전 배포 버전 보류 | [#2](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/pull/2) | `ms` 2.1.1에서 3.0.0-canary.1 | 성공 | 경고 `사전 배포 버전이라 보류, 통과가 아님` |
+| 가상 목록 일치 | [#3](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/pull/3) | 가상 패키지 `DEPBEE-DEMO-SENTINEL` 9.9.9 추가 | 실패 | 오류 `시연용 가상 목록과 일치(DEMO-FIXTURE-0001)` |
+
+각 PR의 **Checks** 탭에서 `fixture PR 검사 (depbee 제품 미실행)`의 job summary를, **Files changed** 탭에서 lockfile 줄의 주석을 봅니다. 세 장면과 자체 테스트를 한 번에 실행한 기록은 [Actions run 44781575143](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/actions/runs/44781575143)입니다(workflow `fixture 시연 (depbee 제품 미실행)`의 수동 실행). 가상 목록 일치 장면의 실패가 기대 결과이므로 이 실행은 전체가 실패로 표시됩니다. 다시 실행하는 방법과 실행 결과에서 확인할 것은 시연 저장소 README의 [fixture 시연의 세 장면](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo#fixture-시연의-세-장면)에 있습니다.
+
+이 시연에서 depbee 제품은 실행되지 않습니다. 시연 저장소의 fixture 게이트(`tools/fixture_gate.py`)가 lockfile의 이름과 버전을 가상 목록과 비교할 뿐이고, 기지 악성 색인 대조와 tarball 추출과 ML 위험 점수는 없습니다. 그래서 Check의 성공은 depbee가 검사해서 통과했다는 뜻이 아니며 보안 판정도 아닙니다. 이 시연이 보여 주는 것은 정책입니다. 일치는 실패이고, 보류는 경고이되 통과가 아니며, 결과는 Check와 lockfile 줄 주석과 summary와 보고서 artifact로 남습니다. 시연 저장소의 artifact는 7일 뒤 지워집니다. `DEPBEE-DEMO-SENTINEL`은 시연을 위해 지은 가상의 이름이며 실제 악성 패키지 기록이 아닙니다.
+
+**실제 제품 검사의 공개 조건.** 외부 저장소의 PR에서 depbee Action이 실제로 검사하려면 세 가지가 필요합니다.
+
+1. depbee 저장소와, 설치 단계에서 받는 depbee-analyzer 저장소가 공개돼 있습니다.
+2. 모델과 기지 악성 색인을 첨부한 공개 Release가 있습니다.
+3. workflow가 Action을 전체 커밋 SHA로 고정하고 모델과 색인의 Release 태그와 SHA-256을 지정합니다.
+
+두 저장소와 Release는 아직 공개되지 않았으므로 지금은 실제 제품 검사가 공개 PR에서 실행되지 않습니다([공개 전 제한과 미검증](ci-cd.md#공개-전-제한과-미검증)). 시연 저장소에는 이 연결(`depbee.yml`)이 준비돼 있고 PR 검사는 꺼져 있습니다. 켜는 순서는 그 저장소 README의 [제품 연동 켜기](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo#제품-연동-켜기)에 있습니다. 가상 목록 일치 장면은 실제 색인에 없는 이름이라 제품 검사에서는 재현되지 않습니다.
+
+**로컬 판정 재현.** 공개와 Release 전에도 action의 판정 단계(`src/depbee/actions.py report`, 표준 라이브러리만 씀)는 로컬에서 같은 인자로 실행할 수 있습니다. `GITHUB_STEP_SUMMARY`가 없으면 job summary가 주석 뒤에 터미널로 나옵니다.
 
 ```powershell
 cd "<depbee 폴더>"

@@ -454,6 +454,8 @@ python -m pip install "./depbee-0.1.0-py3-none-any.whl[ml,extract,mcp,web]"  # M
 
 같은 버전 번호의 시험 wheel을 교체할 때는 새 가상환경을 사용하거나 `python -m pip install --force-reinstall`에 사용할 wheel 경로와 extra를 지정합니다.
 
+PowerShell에서 가상환경 활성화가 제한되면 활성화하지 않고 `.\.venv\Scripts\python.exe -m pip install ".[ml,extract,mcp,web]"`과 `.\.venv\Scripts\depbee.exe --help`를 직접 실행할 수 있습니다. 가상환경 활성화 없이 계속 사용하려면 Python 3.11 이상의 `pipx` 환경에서 `pipx install ".[ml,extract,mcp,web]"`로 설치합니다. `pipx ensurepath`를 한 번 실행하고 새 터미널에서 `depbee --help`를 확인합니다. Windows의 `depbee.exe`와 macOS/Linux의 `depbee`는 Python 환경의 실행 명령입니다. 현재 공개 Release나 Python 없이 실행하는 독립 바이너리는 제공하지 않습니다.
+
 ## 검증
 
 ```powershell
