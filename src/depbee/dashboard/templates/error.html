@@ -1,8 +1,9 @@
 {% extends "base.html" %}
-{% block title %}depbee 오류{% endblock %}
+{% block title %}오류 - depbee{% endblock %}
 {% block main %}
-{% if project is not none %}<p><a href="{{ base }}/projects/{{ project.id }}">{{ project.path }}</a></p>{% endif %}
+{% with here = "오류" %}{% include "trail.html" %}{% endwith %}
 <h1>{{ title|default("업데이트 확인·반영 오류") }}</h1>
 <p class="error">{{ message }}</p>
-<p>이력에 기록하지 않았습니다.</p>
+{# note: what to do next when nothing ran (app.stopped); the failed runs below were not stored. #}
+{% if note is not defined %}<p>이력에 기록하지 않았습니다.</p>{% elif note %}<p>{{ note }}</p>{% endif %}
 {% endblock %}

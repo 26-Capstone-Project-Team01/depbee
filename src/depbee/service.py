@@ -51,11 +51,12 @@ RESTORE_NOTICE = (
 )
 
 
-def list_dependencies(project: Path) -> list[dict]:
+def list_dependencies(project: Path, *, declared: bool = False) -> list[dict]:
     """The project's installed dependencies from package-lock.json, without npm or the network:
-    [{location, name, version, direct}] (inputs.npm.read_dependencies). Raises GuardError,
-    OSError or ValueError for a missing or invalid lockfile, as a scan would."""
-    return read_dependencies(project)
+    [{location, name, version, direct}] (inputs.npm.read_dependencies). declared: each row also
+    gets "declared", the root entry's dependency fields that name it. Raises GuardError, OSError
+    or ValueError for a missing or invalid lockfile, as a scan would."""
+    return read_dependencies(project, declared=declared)
 
 
 def plan_project(

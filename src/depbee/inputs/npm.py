@@ -67,27 +67,34 @@ def _snapshot(loaded: tuple[dict, str]) -> tuple[dict, str]:
     return entries, sha256
 
 
-def read_dependencies(project: Path) -> list[dict]:
+def read_dependencies(project: Path, *, declared: bool = False) -> list[dict]:
     """The packages installed by project/package-lock.json, in location order.
 
     Each is {location, name, version, direct}: direct when the location is node_modules/<name> of
     a name in the root entry's DEPENDENCY_FIELDS, nested otherwise. The lockfile gets the same
     checks as a scan (size, lockfileVersion 2 or 3, entry types); npm is not run.
+
+    declared: each row also gets "declared", the root entry's DEPENDENCY_FIELDS (in that order)
+    that name its location; several when the root declares the name more than once, none for a
+    nested row. The name looked up is the one the root declares, which is the location: an alias
+    is found under its alias, and a nested copy of a declared package has no declaration.
     """
     loaded = read_json(project / "package-lock.json")
     entries, _ = _snapshot(loaded)
     root = loaded[0]["packages"].get("", {})
     if not isinstance(root, dict):
         raise GuardError("Invalid lock entry: the root entry")
-    direct = set()
+    fields: dict[str, list[str]] = {}
     for field in DEPENDENCY_FIELDS:
         names = root.get(field, {})
         if not isinstance(names, dict):
             raise GuardError(f"Invalid {field} in the root lock entry")
-        direct |= {f"node_modules/{name}" for name in names}
+        for name in names:
+            fields.setdefault(f"node_modules/{name}", []).append(field)
     return [
         {"location": location, "name": entry["name"], "version": entry["version"],
-         "direct": location in direct}
+         "direct": location in fields,
+         **({"declared": fields.get(location, [])} if declared else {})}
         for location, entry in sorted(entries.items())
     ]  # fmt: skip
 

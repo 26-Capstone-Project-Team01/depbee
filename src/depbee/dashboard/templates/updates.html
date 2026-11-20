@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} 업데이트 - depbee{% endblock %}
+{% block main %}
+{% set url = base ~ "/projects/" ~ project.id %}
+{% include "project_head.html" %}
+<section aria-labelledby="candidates-title">
+<h2 id="candidates-title">업데이트 후보</h2>
+{% if state.checks %}
+<p>지금의 package.json과 package-lock.json으로 확인한 결과입니다. {% if state.summary %}{{ state.summary }}.{% else %}바뀌는 항목이 없었습니다.{% endif %}</p>
+<p class="note">확인한 실행: {% for check in state.checks %}<a href="{{ base }}/runs/{{ check.id }}">#{{ check.id }}</a> ({{ check.created_at|when }}, {{ "전체" if check.targets is none else check.targets }}){% if not loop.last %}, {% endif %}{% endfor %}</p>
+{% if state.rows %}
+<table class="stack candidates" aria-label="업데이트 후보">
+<thead><tr><th scope="col">패키지</th><th scope="col">현재 → 후보</th><th scope="col">판정</th><th scope="col">ML 위험 점수</th><th scope="col">검사 근거</th><th scope="col">보고서</th></tr></thead>
+<tbody>
+{% for row in state.rows %}
+<tr>
+<th scope="row">{{ row.package }}<span class="where">{{ row.location }}</span></th>
+<td>{% if row.before is none %}<span class="quiet">새로 추가</span>{% else %}{{ row.before }}{% endif %} <span aria-hidden="true">→</span><span class="visually-hidden">에서</span> {% if row.after is none %}<span class="quiet">삭제</span>{% else %}{{ row.after }}{% endif %}</td>
+<td><span class="verdict {{ row.cell }}"><span class="cell {{ row.cell }}" aria-hidden="true"></span>{{ row.label }}</span>{% if row.known_hit %} <strong class="known">기지 악성 기록 일치</strong>{% endif %}</td>
+<td>{{ row.score if row.score is not none else "-" }}</td>
+<td>{% if row.reason is not none %}<p>이유: {{ row.reason }}</p>{% endif %}
+{% if row.evidence %}<ul>
+{% for line in row.evidence[:3] %}<li>{{ line }}</li>
+{% endfor %}</ul>
+{% if row.evidence|length > 3 %}<p class="note">추출된 사실이 {{ row.evidence|length - 3 }}개 더 있습니다.</p>{% endif %}
+{% elif row.reason is none %}<span class="quiet">추출된 사실 없음</span>{% endif %}</td>
+<td><a href="{{ base }}/runs/{{ row.run_id }}#r{{ row.position }}">실행 #{{ row.run_id }}<span class="visually-hidden">의 {{ row.package }} 근거 전체</span></a>{% if row.npm is not none %} <a href="{{ row.npm }}" rel="noreferrer noopener">npm 페이지<span class="visually-hidden"> {{ row.package }}</span></a>{% endif %}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+<p class="note">검사 근거는 두 버전의 배포본을 비교해 추출한 사실이며 탐지기 결과와 모델 설명은 보고서에 있습니다. 릴리스 노트와 변경 내역 원문은 depbee가 수집하지 않으므로 npm 페이지에서 직접 확인합니다.</p>
+{% endif %}
+{% elif not state.readable %}
+<p class="empty">package.json이나 package-lock.json을 읽을 수 없어 지금 파일의 업데이트 후보를 알 수 없습니다.</p>
+{% elif state.last and applied_at %}
+<p class="empty">실행 <a href="{{ base }}/runs/{{ state.last.id }}">#{{ state.last.id }}</a>의 업데이트를 {{ applied_at|when }}에 반영했습니다. 반영한 뒤의 파일로는 아직 확인하지 않았습니다.</p>
+{% elif state.last %}
+<p class="empty">지금 파일로 확인한 결과가 없습니다. 마지막 업데이트 확인(실행 <a href="{{ base }}/runs/{{ state.last.id }}">#{{ state.last.id }}</a>, {{ state.last.created_at|when }}) 뒤에 package.json이나 package-lock.json이 바뀌어, 그 결과는 현재 후보로 보지 않습니다.</p>
+{% else %}
+<p class="empty">아직 업데이트를 확인하지 않았습니다. 아래에서 확인하면 후보 버전과 검사 근거가 여기에 나옵니다.</p>
+{% endif %}
+</section>
+<section aria-labelledby="check-title">
+<h2 id="check-title">업데이트 확인</h2>
+<p>임시 사본에서 설치 스크립트를 끈 채 업데이트를 계산하고, 바뀌는 버전을 검사합니다. 결과를 검토하고 반영하기 전까지 프로젝트 파일은 그대로입니다. 확인은 몇 초에서 수십 초 걸리며 한 번에 한 요청만 실행합니다.</p>
+{% if project.found %}
+<div class="actions">
+<form method="post" action="{{ url }}/previews">
+<input type="hidden" name="session" value="{{ session }}">
+<button class="primary" type="submit" name="packages" value="">전체 업데이트 확인</button>
+</form>
+<form method="post" action="{{ url }}/previews">
+<input type="hidden" name="session" value="{{ session }}">
+<label for="packages">패키지 이름 (공백으로 구분)</label>
+<div class="field">
+<input id="packages" name="packages" type="text" maxlength="{{ max_targets }}" required>
+<button type="submit">지정한 패키지 확인</button>
+</div>
+</form>
+</div>
+{% else %}<p>프로젝트 폴더를 찾을 수 없어 업데이트를 확인할 수 없습니다.</p>{% endif %}
+</section>
+{% if previews %}
+<section aria-labelledby="previews-title">
+<h2 id="previews-title">열려 있는 미리보기</h2>
+<p>반영은 미리보기 화면에서 합니다. 미리보기는 이 대시보드 프로세스 메모리에만 있어 대시보드를 끄면 사라집니다.</p>
+<ul class="previews">
+{% for kept in previews %}
+<li><a href="{{ base }}/previews/{{ kept.id }}">{{ kept.created_at|when }} 미리보기 열기</a>{% if kept.run_id is not none %} (실행 #{{ kept.run_id }}){% endif %}
+<ul>
+{% for line in kept.lines %}<li>{{ line }}</li>
+{% endfor %}</ul>
+{% if not kept.current %}<p class="warning">이 미리보기 뒤에 package.json이나 package-lock.json이 바뀌어 반영을 시도하면 거부됩니다. 업데이트 확인을 다시 실행하세요.</p>{% endif %}
+</li>
+{% endfor %}
+</ul>
+</section>
+{% endif %}
+<section aria-labelledby="scan-title">
+<h2 id="scan-title">커밋하지 않은 변경 검사</h2>
+<p>현재 lockfile과 Git HEAD의 차이를 검사합니다. 프로젝트 파일은 그대로 두며, 모델이 없으면 ML 판정을 보류합니다.</p>
+{% if project.found %}<form method="post" action="{{ url }}/scans">
+<input type="hidden" name="session" value="{{ session }}"><button type="submit">검사만</button>
+</form>{% else %}<p>프로젝트 폴더를 찾을 수 없어 검사할 수 없습니다.</p>{% endif %}
+</section>
+{% endblock %}

@@ -5,12 +5,26 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}depbee{% endblock %}</title>
 <link rel="stylesheet" href="{{ base }}/static/style.css">
+<link rel="icon" type="image/svg+xml" href="{{ base }}/static/icon.svg">
 </head>
 <body>
+<a class="skip" href="#main">본문으로 건너뛰기</a>
 <header class="masthead">
-<nav aria-label="주 메뉴"><a class="brand" href="{{ base }}/" aria-label="depbee 홈">depbee</a><a href="{{ base }}/">프로젝트</a><a href="{{ base }}/model">모델 정보</a></nav>
+<div class="top">
+<a class="brand" href="{{ base }}/"><span class="cell" aria-hidden="true"></span>depbee</a>
+<a href="{{ base }}/model"{% if section == "model" %} aria-current="page"{% endif %}>모델 정보</a>
+</div>
+{# The registered projects as tabs: links, the open one marked aria-current (no script). #}
+<nav class="tabs" aria-label="프로젝트">
+<ul>
+{% for tab in tabs %}
+<li><a class="tab" href="{{ base }}/projects/{{ tab.id }}"{% if tab.current %} aria-current="{{ "page" if section == "packages" else "true" }}"{% endif %}><span class="cell {{ tab.cell }}" aria-hidden="true"></span><span class="tab-name">{{ tab.name }}</span> <span class="tab-state">{{ tab.state }}</span></a></li>
+{% endfor %}
+<li><a class="tab manage" href="{{ base }}/"{% if section == "manage" %} aria-current="page"{% endif %}>프로젝트 관리</a></li>
+</ul>
+</nav>
 </header>
-<main>
+<main id="main">
 {% block main %}{% endblock %}
 </main>
 <footer>

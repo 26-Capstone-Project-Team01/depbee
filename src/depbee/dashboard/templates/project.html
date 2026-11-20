@@ -1,114 +1,77 @@
 {% extends "base.html" %}
-{% block title %}{{ project_name }} 의존성 · depbee{% endblock %}
+{% block title %}{{ project.name }} 패키지 - depbee{% endblock %}
 {% block main %}
 {% set url = base ~ "/projects/" ~ project.id %}
-{% set section_url = url ~ ("?" ~ {"q": query, "scope": scope}|urlencode if query or scope != "all" else "") %}
-<div class="breadcrumb"><a href="{{ base }}/">프로젝트</a><span aria-hidden="true">/</span><strong>{{ project_name }}</strong></div>
-<section class="workspace-heading">
-  <div>
-    <h1 aria-describedby="project-path">프로젝트 의존성</h1>
-    <p id="project-path" class="project-path">{{ project.path }}</p>
-    {% if not found %}<p class="flag">찾을 수 없음</p>{% endif %}
-  </div>
-  {% if found %}
-  <form method="post" action="{{ url }}/previews" id="preview-project">
-    <input type="hidden" name="session" value="{{ session }}">
-    <button class="primary" type="submit" name="packages" value="">전체 업데이트 확인</button>
-  </form>
-  {% endif %}
-</section>
-<nav class="section-nav" aria-label="프로젝트 항목">
-  <a href="{{ section_url }}#dependencies">의존성 목록</a>
-  <a href="{{ section_url }}#checks">검사와 미리보기</a>
-  <a href="{{ section_url }}#history">기록</a>
-</nav>
-<section class="inventory" id="dependencies">
-  <div class="inventory-heading"><h2>의존성 목록</h2>{% if not problem %}<span class="file-label">package-lock.json</span>{% endif %}</div>
-  {% if problem %}
-  <p class="error">{{ problem }}</p>
-  {% else %}
-  <p class="inventory-count">직접 {{ direct_count }}개, 중첩 {{ nested_count }}개. <span>업데이트 후보는 미리보기에서 확인합니다.</span></p>
-  <form method="get" action="{{ url }}" class="filters">
-    <div class="search-field"><label for="dep-query">패키지 이름</label>
-      <input type="search" id="dep-query" name="q" maxlength="{{ max_query }}" value="{{ query }}" placeholder="패키지 검색">
-    </div>
-    <div><label for="dep-scope">의존성 종류</label>
-      <select id="dep-scope" name="scope">
-      {% for value, label in (("all", "전체"), ("direct", "직접"), ("nested", "중첩")) %}
-      <option value="{{ value }}"{% if scope == value %} selected{% endif %}>{{ label }}</option>
-      {% endfor %}
-      </select>
-    </div>
-    <button type="submit">검색</button>
-  </form>
-  {% if query or scope != "all" %}
-  <div class="filter-summary"><p>검색 결과 <strong>{{ rows|length }}개</strong></p><a href="{{ url }}">필터 초기화</a></div>
-  {% endif %}
-  {% if rows %}
-  <table class="dependencies" aria-label="설치된 의존성">
-    <thead><tr><th scope="col">패키지</th><th scope="col">설치 버전</th><th scope="col">설치 위치</th><th scope="col">종류</th><th scope="col">업데이트 후보</th></tr></thead>
-    <tbody>{% for row in rows %}
-      <tr><td>{{ row.name if row.name is not none else "이름 없음" }}</td><td>{{ row.version if row.version is not none else "-" }}</td><td>{{ row.location }}</td>
-        <td><span class="kind{% if row.direct %} direct{% endif %}">{{ "직접" if row.direct else "중첩" }}</span></td>
-        <td>{% if found and row.direct and row.name in targets and row.location == "node_modules/" ~ row.name %}
-          <button type="submit" form="preview-project" name="packages" value="{{ row.name }}" aria-label="{{ row.name }} 업데이트 후보 확인">후보 확인</button>
-        {% else %}<span class="unavailable">개별 확인 대상 아님</span>{% endif %}</td>
-      </tr>
-    {% endfor %}</tbody>
-  </table>
-  {% elif query or scope != "all" %}
-  <p class="empty">조건에 맞는 패키지가 없습니다. 다른 이름이나 종류로 검색하세요.</p>
-  {% else %}
-  <p class="empty">이 lockfile에 설치된 의존성이 없습니다.</p>
-  {% endif %}
-  {% endif %}
-</section>
-<section id="checks" class="operations">
-  <div><h2>변경 검사</h2>
-  <p>현재 lockfile과 Git HEAD의 차이를 검사합니다. 프로젝트 파일은 그대로 두며, 모델이 없으면 ML 판정을 보류합니다.</p>
-  {% if found %}<form method="post" action="{{ url }}/scans">
-    <input type="hidden" name="session" value="{{ session }}"><button type="submit">검사만</button>
-  </form>{% else %}<p>프로젝트 폴더를 찾을 수 없어 검사할 수 없습니다.</p>{% endif %}
-  </div>
-  <div><h2>패키지 지정 미리보기</h2>
-  <p>임시 사본에서 설치 스크립트를 끈 채 업데이트를 계산합니다. 결과를 검토하고 반영하기 전까지 프로젝트 파일은 그대로입니다. 한 번에 한 요청만 실행합니다.</p>
-  {% if found %}<form method="post" action="{{ url }}/previews" class="target-form">
-    <input type="hidden" name="session" value="{{ session }}">
-    <label for="packages">패키지 이름 (공백으로 구분, 비우면 전체)</label>
-    <input id="packages" name="packages" type="text" maxlength="{{ max_targets }}">
-    <button type="submit">미리보기와 검사</button>
-  </form>{% else %}<p>프로젝트 폴더를 찾을 수 없어 업데이트를 확인할 수 없습니다.</p>{% endif %}
-  </div>
-</section>
-<section id="history">
-<h2>업데이트 반영 이력(최근순)</h2>
-{% if applies %}
-<table>
-<thead><tr><th>시각(UTC)</th><th>방식</th><th>결과</th><th>이유</th><th>확인</th><th>백업 위치</th><th>npm ci 종료 코드</th><th>미리보기 실행</th></tr></thead>
+{% include "project_head.html" %}
+<section aria-labelledby="packages-title">
+<div class="pane-head">
+<h2 id="packages-title">패키지</h2>
+{% if project.found %}
+<form method="post" action="{{ url }}/previews" id="preview-project">
+<input type="hidden" name="session" value="{{ session }}">
+<button class="primary" type="submit" name="packages" value="">전체 업데이트 확인</button>
+</form>
+{% endif %}
+</div>
+{% if not project.found %}
+{# The head above says that the folder is missing and where to go. #}
+<p class="empty">폴더가 없어 패키지 목록을 읽을 수 없습니다.</p>
+{% elif problem %}
+<p class="error">{{ problem }}</p>
+{% else %}
+<p>직접 {{ direct_count }}개, 중첩 {{ nested_count }}개. 지금 package-lock.json에 있는 항목입니다.</p>
+<p class="state">
+{% if state.rows %}업데이트 후보 {{ state.rows|length }}개를 확인했습니다. 판정과 검사 근거는 <a href="{{ url }}/updates">업데이트</a>에 있습니다.
+{% elif state.checks %}{{ state.checks[0].created_at|when }}에 확인했고 바뀌는 항목이 없었습니다.
+{% elif not state.readable %}package.json이나 package-lock.json을 읽을 수 없어 업데이트 후보를 알 수 없습니다.
+{% elif state.last %}마지막 업데이트 확인 뒤에 package.json이나 package-lock.json이 바뀌었습니다. 후보를 다시 확인하세요.
+{% else %}업데이트 후보는 아직 확인하지 않았습니다. 확인은 몇 초에서 수십 초 걸립니다.
+{% endif %}
+</p>
+<form method="get" action="{{ url }}" class="filters">
+<div class="grow"><label for="dep-query">패키지 이름</label>
+<input type="search" id="dep-query" name="q" maxlength="{{ max_query }}" value="{{ query }}" placeholder="패키지 검색">
+</div>
+<div><label for="dep-scope">의존성 종류</label>
+<select id="dep-scope" name="scope">
+{% for value, label in (("all", "전체"), ("direct", "직접"), ("nested", "중첩")) %}
+<option value="{{ value }}"{% if scope == value %} selected{% endif %}>{{ label }}</option>
+{% endfor %}
+</select>
+</div>
+<button type="submit">검색</button>
+</form>
+{% if query or scope != "all" %}
+<p class="filter-summary">검색 결과 <strong>{{ rows|length }}개</strong>. <a href="{{ url }}">필터 초기화</a></p>
+{% endif %}
+{% if rows %}
+<table class="stack packages" aria-label="설치된 패키지">
+<thead><tr><th scope="col">패키지</th><th scope="col">설치 버전</th><th scope="col">설치 위치</th><th scope="col">종류</th><th scope="col">업데이트 후보</th></tr></thead>
 <tbody>
-{% for row in applies %}
-<tr>
-<td>{{ row.created_at }}</td>
-<td>{{ row.mode }}</td>
-<td>{{ row.outcome }}</td>
-<td>{{ row.reason }}</td>
-<td>{{ row.confirmed }}</td>
-<td>{{ row.backup if row.backup is not none else "-" }}</td>
-<td>{{ row.npm_ci_exit_code if row.npm_ci_exit_code is not none else "-" }}</td>
-<td><a href="{{ base }}/runs/{{ row.run_id }}">#{{ row.run_id }}</a></td>
+{% for row in rows %}
+<tr><th scope="row">{{ row.name if row.name is not none else "이름 없음" }}</th><td>{{ row.version if row.version is not none else "-" }}</td><td>{{ row.location }}</td>
+<td>{% if row.direct %}<strong>직접</strong> {{ row.declared }}{% if row.declared_as is not none %}<span class="where">선언 이름 {{ row.declared_as }}</span>{% endif %}{% else %}중첩{% endif %}</td>
+<td>{% set candidate = row.candidate %}
+{% if candidate %}
+<span class="move"><span class="visually-hidden">후보 </span><span aria-hidden="true">→</span> {{ candidate.after if candidate.after is not none else "삭제" }}</span>
+{% if candidate.status != "removed" %}<span class="verdict {{ candidate.cell }}"><span class="cell {{ candidate.cell }}" aria-hidden="true"></span>{{ candidate.label }}</span>{% endif %}
+<a href="{{ base }}/runs/{{ candidate.run_id }}#r{{ candidate.position }}">근거<span class="visually-hidden"> {{ candidate.package }}</span></a>
+{% elif row.checked %}<span class="quiet">후보 없음</span>
+{% elif row.direct and row.name in targets and row.location == "node_modules/" ~ row.name %}
+<button type="submit" form="preview-project" name="packages" value="{{ row.name }}" aria-label="{{ row.name }} 업데이트 후보 확인">후보 확인</button>
+{% else %}<span class="unknown"><span class="cell none" aria-hidden="true"></span>미확인</span>
+{% endif %}</td>
 </tr>
 {% endfor %}
 </tbody>
 </table>
+<p class="note">종류의 "직접"은 package-lock.json 루트 항목에 선언된 패키지이고, 뒤의 일반·개발·선택·피어는 그 선언이 dependencies·devDependencies·optionalDependencies·peerDependencies 중 어디에 있는지입니다(여러 곳이면 모두). "선언 이름"은 패키지 이름과 다른 이름(alias)으로 선언된 경우입니다. "중첩"은 루트에 선언되지 않은 항목입니다.</p>
+<p class="note">후보는 package.json이 허용하는 범위 안에서 npm이 고른 버전이며, 지금의 package.json과 package-lock.json으로 확인한 결과만 보입니다. "미확인" 항목은 전체 업데이트 확인으로 한꺼번에 확인합니다. "후보 없음"은 그 확인에서 바뀌지 않은 항목입니다.</p>
+{% elif query or scope != "all" %}
+<p class="empty">조건에 맞는 패키지가 없습니다. 다른 이름이나 종류로 검색하세요.</p>
 {% else %}
-<p>기록된 반영이 없습니다.</p>
+<p class="empty">이 lockfile에 설치된 의존성이 없습니다.</p>
 {% endif %}
-<h2>실행 기록(최근순)</h2>
-{% if runs %}
-{% include "counts.html" %}
-{% else %}
-<p>기록된 실행이 없습니다.</p>
 {% endif %}
-<p class="note">등록 시각(UTC) {{ project.registered_at }}</p>
 </section>
 {% endblock %}

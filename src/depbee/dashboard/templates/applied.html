@@ -1,7 +1,7 @@
 {% extends "base.html" %}
-{% block title %}depbee 업데이트 반영 결과{% endblock %}
+{% block title %}업데이트 반영 결과 - depbee{% endblock %}
 {% block main %}
-<p><a href="{{ base }}/projects/{{ project.id }}">{{ project.path }}</a></p>
+{% with here = "반영 결과" %}{% include "trail.html" %}{% endwith %}
 <h1>업데이트 반영: {{ apply.outcome }}</h1>
 {% include "apply_lines.html" %}
 {% if run_id is not none %}<p>이력: <a href="{{ base }}/runs/{{ run_id }}">실행 #{{ run_id }}</a>에 반영 기록을 남겼습니다.</p>{% endif %}
