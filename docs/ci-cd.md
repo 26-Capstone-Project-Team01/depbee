@@ -68,7 +68,7 @@ jobs:
 ### 단계
 
 1. Python 3.13 준비(`actions/setup-python`).
-2. 입력 검사, 임시 폴더 생성, `pyproject.toml`에서 feature-extractor 고정 커밋 읽기.
+2. 입력 검사, 임시 폴더 생성, `pyproject.toml`에서 depbee-analyzer 고정 커밋 읽기.
 3. depbee 설치: `python -I -m pip install "$GITHUB_ACTION_PATH[extract,ml]"`. 실패하면 step이 실패한다.
 4. Release에서 `model.txt`, `manifest.json`을 HTTPS로 받고(파일당 100 MiB, 300초 상한) 입력의 sha256과 비교한다. 다르면 실패한다. depbee도 모델을 열 때 `manifest.json`의 `model_sha256`과 `model.txt`를 다시 비교한다.
 5. `known-malicious-version` Release에서 `known-malicious-index.json`, `known-malicious-manifest.json`을 모델과 같은 curl 옵션(HTTPS만, 파일당 128 MiB, 300초 상한)으로 받아 `$OUT/known-malicious/index.json`, `manifest.json`에 두고, `index.json`을 `known-malicious-sha256`과 비교한다. 다르면 실패한다.
@@ -110,7 +110,7 @@ CLI 종료 코드 0/1/2의 의미는 그대로다.
 
 - depbee 분석 캐시 폴더(`$RUNNER_TEMP/depbee-cache`)를 `actions/cache/restore`·`actions/cache/save`로 보존한다. 같은 버전 쌍을 다시 받아 추출하지 않기 위한 성능용이다.
 - 키는 `depbee-<runner OS>-<model-sha256>-<extractor 커밋>-<run id>-<run attempt>`이고, 같은 앞부분을 `restore-keys`로 쓴다. 매 실행이 새 키로 저장해 이전 항목에 새 항목이 쌓인다.
-- 캐시는 판정의 신뢰 근거가 아니다. depbee는 캐시 항목마다 모델 입력·feature-extractor 설치 출처·depbee 버전·형식을 키로 확인하고 맞지 않으면 다시 추출한다.
+- 캐시는 판정의 신뢰 근거가 아니다. depbee는 캐시 항목마다 모델 입력·depbee-analyzer 설치 출처·depbee 버전·형식을 키로 확인하고 맞지 않으면 다시 추출한다.
 - 범위: `pull_request` 실행이 저장한 캐시는 그 PR의 merge ref(`refs/pull/N/merge`) 범위라 같은 PR의 다음 실행과 재실행만 복원한다. 다른 PR과 기본 브랜치는 쓰지 못한다. 이 action은 `pull_request`에서만 동작하므로 기본 브랜치 캐시를 만들지 않는다. 그래서 새 PR의 첫 실행은 캐시 없이 시작한다.
 - 저장 권한이 없는 실행에서는 저장만 실패하고 step과 job은 실패하지 않는다([GitHub 문서](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)). 저장소 캐시는 기본 10 GB이고 7일 동안 쓰지 않은 항목은 지워진다.
 
@@ -137,7 +137,7 @@ CLI 종료 코드 0/1/2의 의미는 그대로다.
 
 ### 공개 전 제한과 미검증
 
-- depbee와 feature-extractor가 아직 비공개라 다른 저장소에서 이 action을 실행할 수 없다. 설치 단계(`[extract]`는 feature-extractor를 git 주소와 커밋으로 받음)가 토큰 없이 되지 않는다.
+- depbee와 depbee-analyzer가 아직 비공개라 다른 저장소에서 이 action을 실행할 수 없다. 설치 단계(`[extract]`는 depbee-analyzer를 git 주소와 커밋으로 받음)가 토큰 없이 되지 않는다.
 - 모델과 기지 악성 색인을 첨부한 Release가 아직 없어 그 입력에 기본값이 없다.
 - 실제 PR에서의 설치, 모델·색인 다운로드, `depbee scan --extract`, 캐시 저장·복원, 주석 표시는 확인하지 않았다. 확인한 범위는 아래 자기 검사와 `docs/validation.md`에 있다.
 - Linux runner만 고려했다. Windows·macOS runner는 확인하지 않았다(`bash`, `curl`, `sed`, `mktemp`를 쓴다).

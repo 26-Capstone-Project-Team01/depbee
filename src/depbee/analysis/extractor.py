@@ -1,4 +1,4 @@
-"""Analyze changes with the team's feature-extractor. Package code is read, never executed.
+"""Analyze changes with the team's depbee-analyzer. Package code is read, never executed.
 
 For each analyzable change, the installed version is compared with its registry predecessor
 (``baseline.select_baseline``), the same pairing the model was trained on. The lockfile's
@@ -22,7 +22,7 @@ from . import bounded, cache, registry
 from .artifact import validate
 from .baseline import is_stable, select_baseline
 
-#: Features of feature-extractor's package_json (7) and obfuscation (22) extractors.
+#: Features of depbee-analyzer's package_json (7) and obfuscation (22) extractors.
 FEATURE_SCHEMA = "depbee-features-v1"
 BOOLEAN_FEATURES = (
     "installScriptPresent",
@@ -44,7 +44,7 @@ _OBF_METRICS = (
 NULLABLE_FEATURES = tuple(
     f"obf{metric}{part}" for metric in _OBF_METRICS for part in ("New", "Change", "ChangedCode")
 )
-#: Same definitions as feature-extractor's package_json extractor.
+#: Same definitions as depbee-analyzer's package_json extractor.
 INSTALL_SCRIPT_KEYS = ("preinstall", "install", "postinstall")
 DEPENDENCY_FIELDS = ("dependencies", "optionalDependencies")
 
@@ -53,14 +53,14 @@ _MAX_LISTED_DEPENDENCIES = 5
 
 
 def _installed_identity() -> dict | None:
-    """Provenance of the installed feature-extractor, or None if it cannot be verified.
+    """Provenance of the installed depbee-analyzer, or None if it cannot be verified.
 
     Verified: pip installed it from Git at exactly the commit that depbee's ``extract`` extra pins
     (direct_url.json; not editable, not a local folder) and every installed module still has the
     hash pip recorded. Only then are extracted features reused between runs (analysis.cache).
     """
     try:
-        dist = importlib.metadata.distribution("feature-extractor")
+        dist = importlib.metadata.distribution("depbee-analyzer")
         direct = json.loads(dist.read_text("direct_url.json") or "null")
         pins = importlib.metadata.requires("depbee") or []
     except (importlib.metadata.PackageNotFoundError, ValueError):
@@ -68,12 +68,12 @@ def _installed_identity() -> dict | None:
     vcs = direct.get("vcs_info") if isinstance(direct, dict) else None
     if not isinstance(vcs, dict) or vcs.get("vcs") != "git" or "dir_info" in direct:
         return None
-    pinned = f"feature-extractor @ git+{direct.get('url')}@{vcs.get('commit_id')}"
+    pinned = f"depbee-analyzer @ git+{direct.get('url')}@{vcs.get('commit_id')}"
     if pinned not in (pin.split(";")[0].strip() for pin in pins):
         return None
     recorded = {}
     for file in dist.files or []:
-        if file.parts[0] != "feature_extractor" or file.hash is None:
+        if file.parts[0] != "depbee_analyzer" or file.hash is None:
             continue
         try:
             data = Path(dist.locate_file(file)).read_bytes()
@@ -94,10 +94,10 @@ def _installed_identity() -> dict | None:
 
 
 class _RegistrySource:
-    """feature-extractor SnapshotSource for registry versions, used instead of its
+    """depbee-analyzer SnapshotSource for registry versions, used instead of its
     RegistrySnapshotSource: the snapshot comes from the packument depbee checked (the pinned
     loader's public build_snapshot, which fetches nothing without include_source), and the source
-    tree from depbee's checked download (analysis.registry), unpacked under work. feature-extractor's
+    tree from depbee's checked download (analysis.registry), unpacked under work. depbee-analyzer's
     build_row uses only get_snapshot of the sources it is given."""
 
     def __init__(self, packument: dict, build_snapshot: Callable, work: Path) -> None:
@@ -116,20 +116,20 @@ class _RegistrySource:
 
 
 class FeatureExtractorBackend:
-    """The calls into feature-extractor, kept apart so tests can run without network access.
+    """The calls into depbee-analyzer, kept apart so tests can run without network access.
 
     Registry metadata and tarballs are downloaded by analysis.registry, never by
-    feature-extractor, so its size, address and integrity checks apply to everything read. The
+    depbee-analyzer, so its size, address and integrity checks apply to everything read. The
     metadata download and the extraction (both downloads, unpacking and feature extraction) run
     in child processes of analysis.bounded, killed when the change's time budget runs out.
     """
 
     def __init__(self) -> None:
         try:
-            from feature_extractor.core.errors import FeatureExtractorError
-            from feature_extractor.core.loader import build_snapshot
-            from feature_extractor.core.pipeline import build_row, resolve_extractors
-            from feature_extractor.core.sources import LocalArchiveSnapshotSource
+            from depbee_analyzer.core.errors import FeatureExtractorError
+            from depbee_analyzer.core.loader import build_snapshot
+            from depbee_analyzer.core.pipeline import build_row, resolve_extractors
+            from depbee_analyzer.core.sources import LocalArchiveSnapshotSource
         except ImportError as exc:
             raise GuardError(
                 'Install analyzer dependencies: python -m pip install -e ".[extract]"'
@@ -140,7 +140,7 @@ class FeatureExtractorBackend:
             bounded.StepError,
             bounded.TimeLimitError,
         )
-        self.version = f"feature-extractor {importlib.metadata.version('feature-extractor')}"
+        self.version = f"depbee-analyzer {importlib.metadata.version('depbee-analyzer')}"
         self.identity = _installed_identity()
         self.fetch_packument = registry.packument
         self._build_snapshot = build_snapshot
@@ -201,7 +201,7 @@ def _object(value: object, label: str) -> dict:
 
 
 def _dist(packument: dict, name: str, version: str) -> dict:
-    """dist of a compared version. feature-extractor c24761d reads dist.tarball without type
+    """dist of a compared version. The analyzer reads dist.tarball without type
     checks (loader.py:100), so a malformed manifest must fail before it is called."""
     manifest = packument["versions"][version]
     if not isinstance(manifest, dict):
@@ -216,7 +216,7 @@ def _dependencies(manifest: dict) -> set[str]:
 
 
 class ExtractorAnalyzer:
-    """``Analyzer`` that runs feature-extractor in-process for each analyzable change.
+    """``Analyzer`` that runs depbee-analyzer in-process for each analyzable change.
 
     ``local_sources`` maps (package, version) to a directory holding a copy of that version
     (``.../package/package.json``), for versions the registry no longer serves. Such copies
@@ -310,7 +310,7 @@ class ExtractorAnalyzer:
     def _cache_key(self, name: str, new: str, baseline: str, packument: dict) -> dict:
         """Everything the features depend on; any change makes a new key (a miss).
 
-        depbee's own code (downloads, unpacking, the calls into feature-extractor) is covered by
+        depbee's own code (downloads, unpacking, the calls into depbee-analyzer) is covered by
         its version, and within one version only by cache.FORMAT, which is raised by hand.
 
         Not the request, the lockfile's previous version or the location: the same compared pair

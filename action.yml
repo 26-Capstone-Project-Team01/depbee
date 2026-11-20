@@ -62,7 +62,7 @@ runs:
         out=$(mktemp -d "$RUNNER_TEMP/depbee.XXXXXX")
         echo "out=$out" >> "$GITHUB_OUTPUT"
         if [ -z "$REPORT" ]; then
-          commit=$(sed -n 's/.*feature-extractor@\([0-9a-f]\{40\}\).*/\1/p' "$GITHUB_ACTION_PATH/pyproject.toml")
+          commit=$(sed -n 's/.*"depbee-analyzer @ git+[^"@]*@\([0-9a-f]\{40\}\)".*/\1/p' "$GITHUB_ACTION_PATH/pyproject.toml")
           test -n "$commit"
           echo "extractor=$commit" >> "$GITHUB_OUTPUT"
         fi

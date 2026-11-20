@@ -15,7 +15,7 @@
 <dt>model_sha256</dt><dd>{{ model.model_sha256 if model.model_sha256 is not none else "-" }}</dd>
 <dt>manifest_sha256</dt><dd>{{ model.manifest_sha256 if model.manifest_sha256 is not none else "-" }}</dd>
 <dt>분석기</dt><dd>{{ model.analyzer_version if model.analyzer_version is not none else "-" }}</dd>
-<dt>feature-extractor</dt><dd>{% if model.extractor %}{{ model.extractor|join(", ") }}{% else %}-{% endif %}</dd>
+<dt>depbee-analyzer</dt><dd>{% if model.extractor %}{{ model.extractor|join(", ") }}{% else %}-{% endif %}</dd>
 <dt>실행 수</dt><dd>{{ model.runs }}</dd>
 <dt>마지막 실행(UTC)</dt><dd>{{ model.last }}</dd>
 </dl>

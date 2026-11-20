@@ -87,7 +87,7 @@ class BoundedTests(Fixture):
         self.assertEqual(list(target.iterdir()), [])  # it never got to write a file
 
     def stand_in(self, row):
-        """The real FeatureExtractorBackend.extract and _extract_here; only feature-extractor's
+        """The real FeatureExtractorBackend.extract and _extract_here; only depbee-analyzer's
         build_snapshot and build_row are stand-ins (module functions, so they cross by pickle)."""
         backend = FeatureExtractorBackend.__new__(FeatureExtractorBackend)
         backend.errors = (bounded.StepError, bounded.TimeLimitError)
@@ -317,7 +317,7 @@ class BoundedTests(Fixture):
         self.assertTrue(all(child.poll() is not None for child in self.children))
 
     @unittest.skipUnless(
-        importlib.util.find_spec("feature_extractor"), "Install .[extract] for the pinned loader"
+        importlib.util.find_spec("depbee_analyzer"), "Install .[extract] for the pinned loader"
     )
     def test_pinned_extraction_runs_in_a_child(self):
         doc = packument({"1.0.1": "2026-01-02T00:00:00Z", "1.1.0": "2026-01-03T00:00:00Z"})

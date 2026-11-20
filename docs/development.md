@@ -3,8 +3,8 @@
 ## 1. 모델 인계와 통합 마무리
 
 - 모델 담당자에게 검증 세트로 정한 임계값과 학습 기록을 받아 manifest에 반영
-- feature를 바꿀 때 `depbee-features-v1` 스키마 이름, `pyproject.toml`의 feature-extractor 고정 커밋, 모델을 함께 갱신
-- feature-extractor 고정 커밋을 바꿀 때는 `.[extract]`를 설치한 환경에서 loader 경계 테스트(`PinnedLoaderTests`)가 skip 없이 통과하는지 확인한다
+- feature를 바꿀 때 `depbee-features-v1` 스키마 이름, `pyproject.toml`의 depbee-analyzer 고정 커밋, 모델을 함께 갱신
+- depbee-analyzer 고정 커밋을 바꿀 때는 `.[extract]`를 설치한 환경에서 loader 경계 테스트(`PinnedLoaderTests`)가 skip 없이 통과하는지 확인한다
 - 학습 데이터 쪽 비교 기준 규칙이 바뀌면 `analysis/baseline.py`도 맞춘다
 
 ## 2. 탐지 CI

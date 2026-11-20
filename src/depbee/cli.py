@@ -177,7 +177,7 @@ def _parser() -> argparse.ArgumentParser:
             source.add_argument(
                 "--extract",
                 action="store_true",
-                help="Run feature-extractor on each changed version (needs .[extract])",
+                help="Run depbee-analyzer on each changed version (needs .[extract])",
             )
             cmd.add_argument(
                 "--local-source",

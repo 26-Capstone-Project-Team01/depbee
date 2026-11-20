@@ -109,7 +109,7 @@ def scan_project(
     """Build the request, pick the analyzer and model, and return the pipeline.scan() report.
 
     base_lock, base_ref: the base lockfile, as in plan_project().
-    analysis: trusted precomputed analysis JSON. extract: run feature-extractor instead.
+    analysis: trusted precomputed analysis JSON. extract: run depbee-analyzer instead.
     local_sources: NAME@VERSION=DIR specs under local_root (extract only).
     model_dir: trusted model directory. If None, DEPBEE_MODEL_DIR is read on each call; empty or
     unset means no model. A bad path is an error and never falls back to another model.
@@ -174,7 +174,7 @@ def _detectors(known_malicious_dir: Path | None) -> dict:
 def _cache_options(predictor, cache_dir: Path | None, no_cache: bool) -> dict:
     """ExtractorAnalyzer cache options; none without a verified model or with no_cache.
 
-    The analyzer also requires verified feature-extractor provenance before it uses the cache.
+    The analyzer also requires verified depbee-analyzer provenance before it uses the cache.
     """
     if no_cache or not isinstance(getattr(predictor, "identity", None), dict):
         return {}
