@@ -6,7 +6,7 @@
   "exit_code": 0,
   "model_id": "example-model-001",
   "threshold": 0.5,
-  "analyzer_version": "feature-extractor 0.1.0",
+  "analyzer_version": "depbee-analyzer 0.1.0",
   "detectors": {
     "known_malicious": {
       "source": "EXAMPLE-KNOWN-MALICIOUS-LIST",

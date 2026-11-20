@@ -1,6 +1,6 @@
-"""npm registry downloads for the extractor, with the checks feature-extractor does not make.
+"""npm registry downloads for the extractor, with the checks depbee-analyzer does not make.
 
-The pinned feature-extractor (c24761d, loader.py) fetches with requests and ``timeout=30`` per
+The pinned depbee-analyzer (loader.py) fetches with requests and ``timeout=30`` per
 socket operation only, follows any redirect, never hashes the tarball, and unpacks it without size
 or member limits. depbee therefore downloads packuments and tarballs itself:
 
@@ -11,8 +11,8 @@ or member limits. depbee therefore downloads packuments and tarballs itself:
 - tarball bytes must match the version's ``dist.integrity`` before anything is unpacked, using
   the strongest listed algorithm as npm does (``dist.shasum`` if there is no integrity);
 - unpacking stops at limits on the unpacked size and member count and uses the tarfile "data"
-  filter and package-root rule of feature-extractor's loader. Symbolic links are not unpacked
-  (npm installs none, feature-extractor reads none) and a hard link counts as the file it copies.
+  filter and package-root rule of depbee-analyzer's loader. Symbolic links are not unpacked
+  (npm installs none, depbee-analyzer reads none) and a hard link counts as the file it copies.
 
 The limits are constants, not options; docs/validation.md records why each value was chosen.
 """
@@ -40,7 +40,7 @@ MAX_PACKUMENT_BYTES = 128 * 1024 * 1024
 MAX_TARBALL_BYTES = 128 * 1024 * 1024
 MAX_UNPACKED_BYTES = 512 * 1024 * 1024
 MAX_MEMBERS = 20_000
-SOCKET_TIMEOUT_SECONDS = 30  # per socket operation, as in feature-extractor
+SOCKET_TIMEOUT_SECONDS = 30  # per socket operation, as in depbee-analyzer
 _CHUNK = 1024 * 1024
 _ALGORITHMS = ("sha512", "sha384", "sha256", "sha1")  # strongest first, as ssri picks
 
@@ -126,7 +126,7 @@ def _failure(exc: Exception) -> str:
 
 
 def packument(name: str) -> dict:
-    """Full registry metadata of name, at the URL feature-extractor's fetch_packument uses.
+    """Full registry metadata of name, at the URL depbee-analyzer's fetch_packument uses.
 
     Downloaded in a bounded child process (part of the change's time budget); the bytes, at most
     MAX_PACKUMENT_BYTES, are parsed here.
@@ -176,7 +176,7 @@ def tarball(name: str, version: str, dist: dict) -> bytes:
 
 
 def _data_without_symlinks(member: tarfile.TarInfo, path: str) -> tarfile.TarInfo | None:
-    """feature-extractor's "data" filter (loader.py:112-114), which refuses links that leave the
+    """depbee-analyzer's "data" filter (loader.py:112-114), which refuses links that leave the
     folder, then leaves out symbolic links. Where os.symlink fails (Windows without the
     privilege) tarfile would copy a link's target instead, bytes the size limit never counted."""
     member = tarfile.data_filter(member, path)
@@ -216,7 +216,7 @@ def unpack(data: bytes, directory: Path, what: str) -> Path:
             archive.extractall(directory, members=members, filter=_data_without_symlinks)
     except (tarfile.TarError, OSError) as exc:
         raise RegistryError(f"Cannot unpack {what}: {exc}") from exc
-    # feature-extractor's _locate_package_root (loader.py:123-142): the folder or its one child
+    # depbee-analyzer's _locate_package_root (loader.py:123-142): the folder or its one child
     # that holds package.json.
     if (directory / "package.json").is_file():
         return directory

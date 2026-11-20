@@ -1,6 +1,6 @@
 # 연결 규약 v1
 
-확정: LightGBM native 모델을 전달받는다. 내장 분석기(`--extract`)는 feature-extractor의 feature를 `depbee-features-v1` 스키마로 낸다.
+확정: LightGBM native 모델을 전달받는다. 내장 분석기(`--extract`)는 depbee-analyzer의 feature를 `depbee-features-v1` 스키마로 낸다.
 아래 JSON 구조는 지금 구현과 일치한다. 필드를 바꿀 때는 팀 합의 후 `schema_version`을 올린다.
 
 ## 1. CLI → 분석기
@@ -52,7 +52,7 @@
 {
   "schema_version": 1,
   "request_id": "plan 명령이 반환한 값",
-  "analyzer_version": "feature-extractor 0.1.0",
+  "analyzer_version": "depbee-analyzer 0.1.0",
   "feature_schema": "depbee-features-v1",
   "results": [
     {
@@ -67,7 +67,7 @@
 ```
 
 - feature 값은 숫자, true/false, 문자열, null만 쓴다. 어떤 feature가 어떤 자료형을 받는지는 모델 manifest가 정하고 추론기가 검사한다. 특징을 임의로 생략하거나 0으로 채우지 않는다.
-- `baseline_version`(선택)은 새 버전과 비교한 버전이다. 내장 분석기는 같은 release line의 직전 stable을 쓴다(README "동작 방식").
+- `baseline_version`(선택)은 새 버전과 비교한 버전이다. 내장 분석기는 같은 release line의 직전 stable을 쓴다. [사용 참고서의 동작 방식](usage.md#동작-방식)
 - `evidence`는 문자열 배열이다. 패키지에서 온 문자열을 담을 수 있으므로 CLI가 출력할 때 제어 문자를 이스케이프한다.
 - 분석에 실패한 항목: `{"change_id":"...","status":"failed","error":"실패 이유"}`
 - 모델의 학습 범위 밖이라 분석하지 않은 항목: `{"change_id":"...","status":"unsupported","reason":"out_of_training_scope","error":"설명"}`. reason은 `out_of_training_scope`(새 버전이 pre-release 등), `no_baseline`(비교할 이전 stable 없음)을 쓴다.
@@ -114,7 +114,7 @@ SHA-256은 파일 변조·혼동 확인용이다. 모델은 신뢰하는 팀원�
 ## 4. CLI → 사용자·CI
 
 보고서는 request_id, model_id, threshold, analyzer_version, detectors, provenance, scope, results를 포함한다.
-`provenance`는 `detectors` 바로 다음에 오는 출처 객체이며 `model`과 `feature_extractor` 두 키가 항상 있다. `model`은 확인한 모델 파일과 manifest의 SHA-256(`model_sha256`, `manifest_sha256`)이고 모델 없이 실행하면 null이다. `feature_extractor`는 설치된 feature-extractor의 고정 커밋(`commit`), 설치 파일 해시(`files_sha256`), Python 버전(`python`)이고, feature를 추출하지 않는 실행(`--extract` 없는 `scan`, `--analysis`)이거나 고정 커밋 그대로 설치됐는지 확인하지 못하면(편집 가능 설치, 로컬 폴더 설치, 설치 후 수정) null이다. 설치 주소(URL)는 넣지 않는다. 둘 다 필요한 키가 모두 문자열로 있는 확인된 identity만 옮기고, 그렇지 않으면(다른 예측기·backend를 주입한 경우) 오류 대신 null이다. `feature_extractor`는 설치 출처라 그 실행에서 추출한 변경이 0건이거나 모두 실패해도 값이 있다(`analyzer_version`과 같다). `plan`의 출력(요청)과 오류 JSON에는 없다.
+`provenance`는 `detectors` 바로 다음에 오는 출처 객체이며 `model`과 `feature_extractor` 두 키가 항상 있다. `model`은 확인한 모델 파일과 manifest의 SHA-256(`model_sha256`, `manifest_sha256`)이고 모델 없이 실행하면 null이다. `feature_extractor`는 설치된 depbee-analyzer의 고정 커밋(`commit`), 설치 파일 해시(`files_sha256`), Python 버전(`python`)이고, feature를 추출하지 않는 실행(`--extract` 없는 `scan`, `--analysis`)이거나 고정 커밋 그대로 설치됐는지 확인하지 못하면(편집 가능 설치, 로컬 폴더 설치, 설치 후 수정) null이다. 설치 주소(URL)는 넣지 않는다. 둘 다 필요한 키가 모두 문자열로 있는 확인된 identity만 옮기고, 그렇지 않으면(다른 예측기·backend를 주입한 경우) 오류 대신 null이다. `feature_extractor`는 설치 출처라 그 실행에서 추출한 변경이 0건이거나 모두 실패해도 값이 있다(`analyzer_version`과 같다). `plan`의 출력(요청)과 오류 JSON에는 없다.
 
 `detectors`는 `analyzer_version` 바로 다음에 오며 이 실행에 연결된 ML 외 탐지기다. `known_malicious`(기지 악성 목록의 `source`, `list_as_of`, `list_sha256`)와 `rules`(`ruleset_version`) 두 키가 항상 있고, 연결되지 않은 탐지기는 null이다. `list_as_of`는 ISO 8601 UTC(`Z`)이며, 형식이 어긋나면 값은 받은 그대로 두고 그 목록으로 일치를 찾지 못한 항목을 `failed`로 둔다(일치는 그대로 `hit`). depbee의 기지 악성 색인 로더는 형식이 어긋난 `list_as_of`를 읽을 때 거부하므로(오류, 종료 코드 2) 이 경로는 `pipeline.scan()`에 다른 탐지기를 직접 넘긴 경우에만 남는다. 각 결과의 끝(시간 필드가 있으면 그 앞)에는 `known_malicious`(`status`, `reason`, `detail`, `matches`), `rules`(`status`, `reason`, `detail`, `checks`), `ml`(`status`), `rule_ml_agreement`가 이 순서로 있다. 탐지기 상태는 `hit`, `not_hit`, `not_run`, `failed`이고, 연결되지 않은 탐지기는 `not_run`(`detector_not_configured`)이다. `ml.status`는 ML 경로(분석·추론)만의 결과이며, `rule_ml_agreement`는 규칙과 ML의 일치 여부를 표시만 하고 판정을 바꾸지 않는다. 필드별 정의와 이유 코드는 [결과 계약 초안](result-contract-draft.md) 3·4절에 있다. 탐지기는 `pipeline.scan()`의 선택 인자(`known_malicious`, `rules`, `contracts.KnownMaliciousDetector`·`RuleDetector`)로 연결된다. 기지 악성 목록은 아래 "기지 악성 색인"의 폴더를 `--known-malicious-dir`(`scan`, `check`, `update`, `mcp`, `dashboard`) 또는 환경 변수 `DEPBEE_KNOWN_MALICIOUS_DIR`로 주면 service가 한 번 읽어 넘기고, 이때 `detectors.known_malicious`는 `{"source": "OSV npm MAL", "list_as_of": 색인의 목록 시점, "list_sha256": index.json 파일 바이트의 SHA-256}`이다. 색인을 주지 않은 실행과 규칙 탐지기(아직 없음)는 null이고 해당 항목 칸은 `not_run`이다.
 

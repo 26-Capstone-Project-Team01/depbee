@@ -115,7 +115,7 @@ def quick_row(name, old, new, label, extractors, *, old_source, new_source):
 
 
 def real_extract(files, name, old, new, packument, work):
-    """The installed, pinned feature-extractor behind FeatureExtractorBackend._extract_here in
+    """The installed, pinned depbee-analyzer behind FeatureExtractorBackend._extract_here in
     this child, with tarballs from files ({url: bytes}) instead of the registry."""
     offline()
     from depbee.analysis.extractor import FeatureExtractorBackend

@@ -1,6 +1,6 @@
 """Synthetic tests for the extractor analyzer, baseline rule and Korean output.
 
-No network access and no package code: feature-extractor is replaced by FakeBackend.
+No network access and no package code: depbee-analyzer is replaced by FakeBackend.
 """
 
 import contextlib
@@ -123,7 +123,7 @@ class BaselineTests(unittest.TestCase):
 
 
 class FakeBackend:
-    """Stands in for feature-extractor; returns fixed features."""
+    """Stands in for depbee-analyzer; returns fixed features."""
 
     errors = ()
     version = "fake-extractor"
@@ -378,16 +378,16 @@ class FetchError(Exception):
 
 @dataclasses.dataclass(frozen=True)
 class Snapshot:
-    """Stand-in for feature-extractor's PackageVersionSnapshot, also a frozen dataclass."""
+    """Stand-in for depbee-analyzer's PackageVersionSnapshot, also a frozen dataclass."""
 
     package_json: dict
     source_dir: Path | None = None
 
 
 def stand_in_backend(fetch, snapshots):
-    """Real FeatureExtractorBackend and depbee download; feature-extractor's build_snapshot and
-    build_row are stand-ins. build_snapshot reads versions[version] as c24761d loader.py:55-56
-    does. build_row asks for source, as c24761d build_row does for the default (obfuscation)
+    """Real FeatureExtractorBackend and depbee download; depbee-analyzer's build_snapshot and
+    build_row are stand-ins. build_snapshot reads versions[version] as the pinned loader.py:55-56
+    does. build_row asks for source, as the pinned build_row does for the default (obfuscation)
     extractors, and reads both unpacked package.json files. Tarballs come from a FakeRegistry."""
 
     def build_snapshot(packument, package, version):
@@ -940,12 +940,12 @@ class PackageCheckTests(Fixture):
 
 
 @unittest.skipUnless(
-    importlib.util.find_spec("feature_extractor"), "Install .[extract] for the pinned loader tests"
+    importlib.util.find_spec("depbee_analyzer"), "Install .[extract] for the pinned loader tests"
 )
 class PinnedLoaderTests(Fixture):
-    """The installed, pinned feature-extractor (c24761d) behind the real backend: its loader,
+    """The installed, pinned depbee-analyzer behind the real backend: its loader,
     sources, pipeline and extractors run on synthetic tarballs. Only depbee's registry access is a
-    FakeRegistry, and feature-extractor's own requests.get fails if it is ever called, so a pin
+    FakeRegistry, and depbee-analyzer's own requests.get fails if it is ever called, so a pin
     change that fetches again or reads another document breaks these tests (PR #7 nit 3)."""
 
     def setUp(self):
@@ -953,7 +953,7 @@ class PinnedLoaderTests(Fixture):
         self.doc = packument({"1.0.0": "2026-01-01T00:00:00Z", "1.0.1": "2026-01-02T00:00:00Z",
                               "1.1.0": "2026-01-03T00:00:00Z"})  # fmt: skip
         # The registry manifest adds an install script that the tarball's package.json lacks, so
-        # installScriptAdded shows which document feature-extractor read.
+        # installScriptAdded shows which document depbee-analyzer read.
         self.doc["versions"]["1.1.0"]["scripts"] = {"postinstall": "node setup.js"}
         self.served = FakeRegistry()
         for version in self.doc["versions"]:
@@ -971,15 +971,15 @@ class PinnedLoaderTests(Fixture):
             self.doc["versions"]["1.1.0"]["dist"]["integrity"]
         )
         self.save_locks()
-        self.own_requests = mock.Mock(side_effect=AssertionError("feature-extractor fetched"))
+        self.own_requests = mock.Mock(side_effect=AssertionError("depbee-analyzer fetched"))
         for patcher in (mock.patch("depbee.analysis.registry._open", self.served),
-                        mock.patch("feature_extractor.core.loader.requests.get",
+                        mock.patch("depbee_analyzer.core.loader.requests.get",
                                    self.own_requests)):  # fmt: skip
             patcher.start()
             self.addCleanup(patcher.stop)
 
     def test_one_metadata_read_and_the_checked_document_for_both_snapshots(self):
-        from feature_extractor.core.loader import build_snapshot
+        from depbee_analyzer.core.loader import build_snapshot
 
         self.assertIs(FeatureExtractorBackend()._build_snapshot, build_snapshot)
         for label, run in (

@@ -259,7 +259,7 @@ def scan(
     # Only a package request (check, no lockfile) adds input_kind; lockfile reports are unchanged.
     package = {"input_kind": "package"} if request.get("input_kind") == "package" else {}
     # Verified identities only: a model without one, or an analyzer without a verified
-    # feature-extractor backend (--analysis, unverified install), gives null. No install URL (D-10).
+    # depbee-analyzer backend (--analysis, unverified install), gives null. No install URL (D-10).
     model = getattr(predictor, "identity", None)
     extractor = getattr(getattr(analyzer, "backend", None), "identity", None)
     return {

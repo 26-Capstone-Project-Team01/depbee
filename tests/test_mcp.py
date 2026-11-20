@@ -2,7 +2,7 @@
 
 Equivalence with the CLI is checked without fixed verdicts: the same synthetic input goes to
 cli.main(--format json) and to the tool, and their reports must be equal apart from the times.
-Synthetic only: FakeBackend stands in for feature-extractor and the registry, the detectors and
+Synthetic only: FakeBackend stands in for depbee-analyzer and the registry, the detectors and
 the predictor are fakes; no network, no package code. The protocol tests need the [mcp] extra.
 """
 

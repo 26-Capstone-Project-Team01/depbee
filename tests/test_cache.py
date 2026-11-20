@@ -1,6 +1,6 @@
-"""Feature cache, feature-extractor provenance and elapsed times (DEV-02e).
+"""Feature cache, depbee-analyzer provenance and elapsed times (DEV-02e).
 
-Synthetic data only: feature-extractor is FakeBackend, there is no network and no package code.
+Synthetic data only: depbee-analyzer is FakeBackend, there is no network and no package code.
 """
 
 import base64
@@ -222,7 +222,7 @@ class CacheTests(CacheFixture):
         for label, options, setup in (
             ("no_cache", {"no_cache": True}, None),
             ("no model", {"model_dir": None}, None),
-            ("unverified feature-extractor", {}, lambda: setattr(self.backend, "identity", None)),
+            ("unverified depbee-analyzer", {}, lambda: setattr(self.backend, "identity", None)),
         ):
             with self.subTest(label):
                 if setup:
@@ -592,16 +592,16 @@ class ProvenanceTests(Fixture):
     """_installed_identity with a synthetic installed distribution (importlib.metadata mocked)."""
 
     COMMIT = "1" * 40
-    URL = "https://github.com/example/feature-extractor"
+    URL = "https://github.com/example/depbee-analyzer"
     CONTENT = b"x = 1\n"
 
     def dist(self, direct, content=CONTENT, recorded=None):
         site = self.root / "site"
-        (site / "feature_extractor").mkdir(parents=True, exist_ok=True)
-        (site / "feature_extractor" / "core.py").write_bytes(content)
-        file = importlib.metadata.PackagePath("feature_extractor/core.py")
+        (site / "depbee_analyzer").mkdir(parents=True, exist_ok=True)
+        (site / "depbee_analyzer" / "core.py").write_bytes(content)
+        file = importlib.metadata.PackagePath("depbee_analyzer/core.py")
         file.hash = importlib.metadata.FileHash(recorded or f"sha256={b64(self.CONTENT)}")
-        compiled = importlib.metadata.PackagePath("feature_extractor/core.pyc")
+        compiled = importlib.metadata.PackagePath("depbee_analyzer/core.pyc")
         compiled.hash = None
         return mock.Mock(
             files=[file, compiled],
@@ -610,7 +610,7 @@ class ProvenanceTests(Fixture):
         )
 
     def identity(self, direct, pins=None, **kwargs):
-        pins = pins or [f"feature-extractor @ git+{self.URL}@{self.COMMIT} ; extra == \"extract\""]
+        pins = pins or [f"depbee-analyzer @ git+{self.URL}@{self.COMMIT} ; extra == \"extract\""]
         with (
             mock.patch("importlib.metadata.distribution", return_value=self.dist(direct, **kwargs)),
             mock.patch("importlib.metadata.requires", return_value=pins),
@@ -626,7 +626,7 @@ class ProvenanceTests(Fixture):
             ("local folder", {"url": "file:///x", "dir_info": {}}, {}),
             ("no direct_url.json", None, {}),
             ("other commit", {**good, "vcs_info": {"vcs": "git", "commit_id": "2" * 40}}, {}),
-            ("other url", {**good, "url": "https://evil.test/feature-extractor"}, {}),
+            ("other url", {**good, "url": "https://evil.test/depbee-analyzer"}, {}),
             ("changed after install", good, {"content": b"x = 2\n"}),
             ("other recorded hash", good, {"recorded": "sha256=x"}),
             ("not sha256", good, {"recorded": f"md5={b64(self.CONTENT)}"}),

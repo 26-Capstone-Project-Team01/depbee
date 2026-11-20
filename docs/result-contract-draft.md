@@ -45,7 +45,7 @@ CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 �
 | `request_id`, `input_kind`, `scope` | 최상위 | 그대로 |
 | `status`(`passed`/`flagged`/`incomplete`), `exit_code` | 최상위 | 그대로. 지금 계산 규칙(미완료 2 > 위험 1 > 0)을 바꾸지 않는다 |
 | `model_id`, `threshold` | 최상위 | ML 모델 식별과 임계값. `ml` 안에 복사하지 않는다 |
-| `analyzer_version` | 최상위 | 그대로. null이면 분석기가 연결되지 않은 실행이다(4.1절). feature-extractor 출처의 상세는 `provenance.feature_extractor`(SVC-02에서 구현)에 둔다 |
+| `analyzer_version` | 최상위 | 그대로. null이면 분석기가 연결되지 않은 실행이다(4.1절). depbee-analyzer 출처의 상세는 `provenance.feature_extractor`(SVC-02에서 구현)에 둔다 |
 | `elapsed_seconds` | 최상위·결과 항목 | 그대로. 채택(D-11)은 결과 항목의 값(그 항목의 메타데이터 조회·캐시 조회·추출 시간, 추론 제외)에 탐지기 시간을 넣지 않고 필요하면 탐지기별 필드를 따로 둔다는 것이다. 항목 값은 `ExtractorAnalyzer`가 변경마다 잰 시간(`extractor.py` 268~271행)이라 `pipeline.scan()` 안에서 돈 탐지기 시간은 들어가지 않는다. 최상위 값은 [연결 규약](contracts.md) 4절 정의대로 서비스 함수 호출부터 판정 완료까지의 전체 시간(`service._timed()`의 `elapsed_since(started)`)이므로, 탐지기를 `pipeline.scan()` 안에서 실행하면 그 시간이 포함된다. 최상위에서도 탐지기 시간을 빼려면 별도의 동작 변경과 확인이 필요하다 |
 | `status`(`flagged`/`not_flagged`/`incomplete`/`removed`) | 결과 항목 | 값은 그대로. SVC-03부터 ML 경로(분석·추론)와 연결된 탐지기의 기지 악성 `hit`(채택(D-2))·`failed`(채택(D-7))로 정한다(4.2절). 탐지기 미연결이면 ML 경로로만 정해진 그 전 값과 같다. ML 경로만의 결과는 `ml.status`가 나타낸다 |
 | `score` | 결과 항목 | ML 위험 점수. `ml`에 복사하지 않는다. 채택(D-2)·채택(D-7)로 항목 `status`가 바뀌어도 지우지 않는다 |
@@ -78,9 +78,9 @@ SVC-03은 새 필드를 `pipeline.scan()`에서 항목 dict와 최상위 dict에
 | `detectors.known_malicious.list_sha256` | string | 예 | 사용한 목록 스냅샷 파일의 SHA-256. 스냅샷 없이 조회하면 null(채택(D-3)) |
 | `detectors.rules` | object | 예 | null이면 규칙 탐지기가 연결되지 않음 |
 | `detectors.rules.ruleset_version` | string | 아니오 | 규칙 묶음의 버전. 표기 형식은 규칙 저장 위치가 정해진 뒤 정하고 그 전에는 문자열(채택(D-9)) |
-| `provenance` | object | 아니오 | **SVC-02에서 구현했다(채택(D-10)).** 코드가 이미 확인하던 출처 정보(모델 파일 해시, feature-extractor 설치 출처). `pipeline.scan()`이 `detectors` 다음에 넣는다(SVC-02에서는 `analyzer_version` 바로 다음이었고, SVC-03이 그 사이에 `detectors`를 넣었다) |
+| `provenance` | object | 아니오 | **SVC-02에서 구현했다(채택(D-10)).** 코드가 이미 확인하던 출처 정보(모델 파일 해시, depbee-analyzer 설치 출처). `pipeline.scan()`이 `detectors` 다음에 넣는다(SVC-02에서는 `analyzer_version` 바로 다음이었고, SVC-03이 그 사이에 `detectors`를 넣었다) |
 | `provenance.model` | object | 예 | `LightGBMPredictor.identity`를 그대로 옮긴 `{"model_sha256", "manifest_sha256"}`. 모델이 없거나, identity가 두 키를 모두 문자열로 갖지 않으면(주입한 예측기, PR #10 리뷰 m1) null. `model_id`·`threshold`는 기존 최상위 필드에 있으므로 넣지 않는다 |
-| `provenance.feature_extractor` | object | 예 | `FeatureExtractorBackend.identity`에서 `commit`, `files_sha256`, `python`만 옮긴다. feature-extractor로 추출하지 않는 실행(`--extract` 없는 `scan`, `--analysis`)이거나 설치 출처를 확인하지 못하면(identity가 None이거나 세 키를 모두 문자열로 갖지 않음) null. `url`은 설치 기록(`direct_url.json`)에서 온 값이라 넣지 않는다(채택(D-10)). 설치 출처이므로 이번 실행에서 추출한 변경이 0건이거나 모두 실패해도 값이 있다(`analyzer_version`과 같음, PR #10 리뷰 n3) |
+| `provenance.feature_extractor` | object | 예 | `FeatureExtractorBackend.identity`에서 `commit`, `files_sha256`, `python`만 옮긴다. depbee-analyzer로 추출하지 않는 실행(`--extract` 없는 `scan`, `--analysis`)이거나 설치 출처를 확인하지 못하면(identity가 None이거나 세 키를 모두 문자열로 갖지 않음) null. `url`은 설치 기록(`direct_url.json`)에서 온 값이라 넣지 않는다(채택(D-10)). 설치 출처이므로 이번 실행에서 추출한 변경이 0건이거나 모두 실패해도 값이 있다(`analyzer_version`과 같음, PR #10 리뷰 n3) |
 
 ### 3.2 결과 항목
 
