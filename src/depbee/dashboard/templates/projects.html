@@ -7,7 +7,9 @@
 {% endif %}
 {% for project in projects %}
 <section class="project">
-<h2><a href="{{ base }}/projects/{{ project.id }}">{{ project.path }}</a>{% if not project.found %} <span class="flag">찾을 수 없음</span>{% endif %}</h2>
+<h2><a href="{{ base }}/projects/{{ project.id }}">{{ project.name }} <span aria-hidden="true">↗</span></a>{% if not project.found %} <span class="flag">찾을 수 없음</span>{% endif %}</h2>
+<p class="project-path">{{ project.path }}</p>
+<a class="open-project" href="{{ base }}/projects/{{ project.id }}">의존성 목록 열기</a>
 <p>등록 시각(UTC): {{ project.registered_at }}</p>
 {% if project.runs %}
 {% set latest = project.runs[0] %}

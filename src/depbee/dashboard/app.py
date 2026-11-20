@@ -9,6 +9,7 @@ import hmac
 import importlib.resources
 import secrets
 import socket
+import sqlite3
 import stat
 import threading
 from collections import OrderedDict
@@ -49,8 +50,9 @@ from ..cli import (
     _summary,
     _text_label,
 )
-from ..contracts import GuardError
+from ..contracts import GuardError, read_json
 from ..inputs.npm import MAX_NAME_LENGTH, PACKAGE_NAME
+from ..inputs.npm_cli import DEPENDENCY_FIELDS, UPDATE_NAME
 
 HOST = "127.0.0.1"
 MAX_BODY = 16 * 1024  # bytes of a request body (Starlette answers 413 above it)
@@ -230,7 +232,8 @@ def build_app(
         rows = []
         for project in history.list_projects():
             runs = [_run_row(run) for run in history.list_runs(project["id"], RECENT_RUNS)]
-            rows.append({**project, "found": _found(project["path"]), "runs": runs})
+            rows.append({**project, "name": Path(project["path"]).name or project["path"],
+                         "found": _found(project["path"]), "runs": runs})  # fmt: skip
         return page(request, "projects.html", status, projects=rows, error=error)
 
     async def register(request: Request) -> Response:
@@ -250,12 +253,23 @@ def build_app(
         found = _project(request.path_params["project_id"])
         if found is None:
             return _text(404, "등록된 프로젝트가 아닙니다.")
+        query = request.query_params.get("q", "").strip()
+        scope = request.query_params.get("scope", "all")
+        if len(query) > MAX_NAME_LENGTH or scope not in ("all", "direct", "nested"):
+            return _text(400, "패키지 이름이나 의존성 종류를 확인하세요.")
         dependencies, problem = _dependencies(found["path"])
+        direct_count = sum(row["direct"] for row in dependencies)
+        needle = query.casefold()
+        rows = [row for row in dependencies if needle in row["name"].casefold()
+                and (scope == "all" or row["direct"] == (scope == "direct"))]  # fmt: skip
+        targets = _preview_targets(found["path"]) if direct_count else set()
         runs = [_run_row(run) for run in history.list_runs(found["id"])]
         applies = [_apply_row(row) for row in history.list_applies(found["id"])]
         return page(request, "project.html", project=found, found=_found(found["path"]),
-                    dependencies=dependencies, problem=problem, runs=runs, applies=applies,
-                    max_targets=MAX_TARGETS)  # fmt: skip
+                    project_name=Path(found["path"]).name or found["path"], rows=rows,
+                    direct_count=direct_count, nested_count=len(dependencies) - direct_count,
+                    query=query, scope=scope, targets=targets, max_query=MAX_NAME_LENGTH,
+                    problem=problem, runs=runs, applies=applies, max_targets=MAX_TARGETS)  # fmt: skip
 
     def run(request: Request) -> Response:
         run_id = request.path_params["run_id"]
@@ -489,6 +503,24 @@ def _dependencies(path: str) -> tuple[list[dict], str | None]:
         return [], "package-lock.json을 읽을 수 없습니다(지원하지 않는 형식이거나 손상됨)."
 
 
+def _preview_targets(path: str) -> set[str]:
+    """Peer-only entries in the lockfile cannot be targeted by npm update."""
+    try:
+        manifest = mcp._unlinked(Path(path) / "package.json", "package.json")
+        if manifest is None or not stat.S_ISREG(manifest.lstat().st_mode):
+            return set()
+        package, _ = read_json(manifest)
+    except (GuardError, OSError, ValueError, RecursionError):
+        return set()
+    return {
+        name
+        for field in DEPENDENCY_FIELDS
+        if isinstance(package.get(field), dict)
+        for name in package[field]
+        if len(name) <= MAX_NAME_LENGTH and UPDATE_NAME.fullmatch(name)
+    }
+
+
 def _run_row(run: dict) -> dict:
     status = run["status"]
     return {
@@ -692,7 +724,12 @@ def serve(
             server_header=False, proxy_headers=False, log_level="warning", lifespan="off",
             ws="none",
         )  # fmt: skip
-        print(f"http://{HOST}:{actual}/s/{session}/", flush=True)
+        try:
+            projects = history.list_projects()
+        except (history.HistoryError, OSError, sqlite3.Error, RuntimeError):
+            projects = []  # The existing dashboard error page handles history read failures.
+        target = f"projects/{projects[0]['id']}" if len(projects) == 1 else ""
+        print(f"http://{HOST}:{actual}/s/{session}/{target}", flush=True)
         print("이 주소를 브라우저에서 여세요. 종료하려면 Ctrl+C를 누르세요.", flush=True)
         try:
             uvicorn.Server(config).run(sockets=[sock])

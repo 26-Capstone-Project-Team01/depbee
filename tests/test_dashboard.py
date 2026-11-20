@@ -172,6 +172,27 @@ class PageTests(DashboardFixture):
         for url in ("/projects/2", "/runs/1", f"/runs/{2**70}"):
             self.assertEqual(self.get(url).status_code, 404, url)
 
+    def test_explorer_filters_and_preview_targets(self):
+        root = {"dependencies": {"example": "^1.0.0"}, "peerDependencies": {"peer": "*"}}
+        self.new["packages"][""] = root
+        self.new["packages"]["node_modules/peer"] = package()
+        self.new["packages"]["node_modules/example/node_modules/inner"] = package("2.0.0")
+        self.save_locks()
+        (self.project / "package.json").write_text(json.dumps(root), encoding="utf-8")
+        history.register_project(self.project)
+
+        html = self.page("/projects/1?q=EXa&scope=direct")
+        self.assertIn('form="preview-project" name="packages" value="example"', html)
+        self.assertIn('<input type="hidden" name="session"', html)
+        self.assertNotIn("<td>inner</td>", html)
+        nested = self.page("/projects/1?scope=nested")
+        self.assertIn("<td>inner</td>", nested)
+        self.assertNotIn('form="preview-project" name="packages"', nested)
+        self.assertNotIn('form="preview-project" name="packages"', self.page("/projects/1?q=peer"))
+        self.assertIn("조건에 맞는 패키지가 없습니다", self.page("/projects/1?q=missing"))
+        self.assertEqual(self.get("/projects/1?scope=invalid").status_code, 400)
+        self.assertEqual(history.list_runs(1), [])
+
     def test_resources_have_no_external_urls(self):
         package_dir = Path(self.app.__file__).parent
         files = [*package_dir.glob("templates/*.html"), *package_dir.glob("static/*")]
@@ -344,6 +365,25 @@ class SecurityTests(DashboardFixture):
                 raise error
 
         return Server
+
+    def test_start_address_opens_the_only_project_and_keeps_management_available(self):
+        from depbee.dashboard import app
+
+        project_id = history.register_project(self.project)
+        second = self.root / "second"
+        second.mkdir()
+        for only_one in (True, False):
+            if not only_one:
+                history.register_project(second)
+            out = io.StringIO()
+            with (
+                mock.patch.object(app.uvicorn, "Server", self.fake_server(KeyboardInterrupt())),
+                contextlib.redirect_stdout(out),
+            ):
+                app.serve(0)
+            url = out.getvalue().splitlines()[0]
+            self.assertTrue(url.endswith(f"/projects/{project_id}" if only_one else "/"))
+        self.assertIn("프로젝트 등록", self.page("/"))
 
     def test_ctrl_c_ends_the_dashboard_with_one_line_and_exit_code_0(self):
         from depbee.dashboard import app
