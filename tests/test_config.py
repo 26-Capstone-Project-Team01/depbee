@@ -13,9 +13,12 @@ import importlib.util
 import io
 import json
 import os
+import shlex
 import shutil
+import subprocess
 import sys
 import unittest
+import venv
 from pathlib import Path
 from unittest import mock
 
@@ -28,6 +31,7 @@ from test_workflow import Fixture
 from depbee import cli, config, history, mcp
 from depbee.cli import main
 from depbee.contracts import GuardError
+from depbee.inference.lightgbm import LightGBMPredictor
 from depbee.service import scan_project, setup_assets
 
 ML = importlib.util.find_spec("lightgbm") is not None
@@ -112,7 +116,6 @@ class SettingsFileTests(Fixture):
     def test_nothing_saved_is_no_settings_and_creates_nothing(self):
         before = sorted(self.root.iterdir())
         self.assertIsNone(config.load())
-        self.assertIsNone(config.saved_dir("model_dir"))
         self.assertFalse(config.clear())
         self.assertEqual(sorted(self.root.iterdir()), before)  # not even the folder
 
@@ -125,11 +128,11 @@ class SettingsFileTests(Fixture):
         self.assertEqual(saved, {**expected, "path": str(self.user / "config.json")})
         self.assertEqual(json.loads((self.user / "config.json").read_text("utf-8")), expected)
         self.assertEqual(config.load(), expected)
-        self.assertEqual(config.saved_dir("model_dir"), self.root / "assets" / "model")
-        self.assertIsNone(config.saved_dir("known_malicious_dir"))
         self.assertEqual([p.name for p in self.user.iterdir()], ["config.json"])  # no leftovers
-        if os.name != "nt":
+        if os.name != "nt":  # the folder depbee created and its file are the user's alone
+            self.assertEqual(self.user.stat().st_mode & 0o777, 0o700)
             self.assertEqual((self.user / "config.json").stat().st_mode & 0o777, 0o600)
+        self.assertFalse(config.open_to_others(self.root / "not-there"))  # nothing to tell
         self.assertTrue(config.clear())
         self.assertIsNone(config.load())
 
@@ -324,8 +327,9 @@ class SetupTests(NativeAssets):
         self.assertEqual(
             (code, report["model_id"], report["detectors"]["known_malicious"]), (2, None, None)
         )  # nothing saved: no model, no index, as before
-        with contextlib.chdir(self.root):  # a relative folder is saved as an absolute one
-            code, out, err = run_cli("setup", "assets")
+        with contextlib.chdir(self.root), \
+                mock.patch.object(cli, "_installed", return_value=True):  # fmt: skip
+            code, out, err = run_cli("setup", "assets")  # a relative folder is saved as absolute
         self.assertEqual((code, err), (0, ""))
         expected = {"assets_dir": str(self.assets), "model_dir": str(self.assets / "model"),
                     "known_malicious_dir": str(self.assets / "index")}  # fmt: skip
@@ -390,6 +394,80 @@ class SetupTests(NativeAssets):
                 self.assertIn(message, json.loads(err)["error"])
                 self.assertEqual(self.settings.read_bytes(), saved)  # the earlier setup stays
 
+    def test_a_file_or_broken_link_in_place_of_a_subfolder_is_an_error_not_no_asset(self):
+        """Only a name that is not there is "not connected". With a file or a broken link in
+        its place, saving would drop the index or the model of the earlier setup without a
+        word, and the next scan would pass what it had flagged."""
+        run_cli("setup", str(self.assets))
+        saved = self.settings.read_bytes()
+        broken, target = self.root / "broken", self.root / "not-there"
+
+        def broken_link(path):
+            if os.name != "nt":
+                path.symlink_to(target, True)
+                return
+            import _winapi  # CreateJunction needs no privilege, unlike symbolic links
+
+            target.mkdir()
+            _winapi.CreateJunction(str(target), str(path))
+            target.rmdir()
+
+        plant = {
+            "a file": lambda path: path.write_text("synthetic placeholder\n", "utf-8"),
+            "a broken link": broken_link,
+        }
+        for name in ("index", "model"):
+            for kind, put in plant.items():
+                with self.subTest(name=name, kind=kind):
+                    shutil.rmtree(broken, ignore_errors=True)
+                    shutil.copytree(self.assets, broken)
+                    shutil.rmtree(broken / name)
+                    put(broken / name)
+                    self.assertTrue(os.path.lexists(broken / name))  # the name is taken,
+                    self.assertFalse((broken / name).is_dir())  # by nothing a scan could read
+                    code, out, err = run_cli("setup", str(broken))
+                    self.assertEqual((code, out), (2, ""))
+                    error = json.loads(err)["error"]
+                    self.assertIn(f"{broken / name} is not a folder", error)
+                    self.assertEqual(self.settings.read_bytes(), saved)
+        code, report = self.scan_without_options()  # still the index of the first setup
+        self.assertEqual((code, report["detectors"]["known_malicious"]),
+                         (1, identity(self.index_sha)))  # fmt: skip
+        self.assertEqual(report["results"][0]["known_malicious"]["status"], "hit")
+
+    def test_one_request_uses_the_model_and_the_index_of_one_saved_setup(self):
+        """Another setup replaces the settings while a scan is between its model and its index.
+        Reading the file once for each of them joined the first setup's model with the second
+        setup's index in one report."""
+        run_cli("setup", str(self.assets))
+        second = self.root / "second"
+        shutil.copytree(self.assets / "model", second / "model")
+        self.write(second / "model" / "manifest.json",
+                   {**self.manifest, "model_id": "synthetic-second"})  # fmt: skip
+        other, other_sha = self.index(OTHER)  # does not list example@1.1.0
+        other.rename(second / "index")
+        loaded = []
+
+        def load_then_set_up_again(directory):
+            predictor = LightGBMPredictor(directory)
+            if not loaded:
+                config.save(second, second / "model", second / "index")
+            loaded.append(directory)
+            return predictor
+
+        with mock.patch("depbee.service.LightGBMPredictor", side_effect=load_then_set_up_again):
+            _, during = self.scan_without_options()
+        _, after = self.scan_without_options()  # the next request reads the settings again
+        self.assertEqual(loaded, [self.assets / "model"])
+        self.assertEqual(
+            (during["model_id"], during["detectors"]["known_malicious"],
+             during["results"][0]["known_malicious"]["status"]),
+            ("synthetic-test-only", identity(self.index_sha), "hit"))  # fmt: skip
+        self.assertEqual(
+            (after["model_id"], after["detectors"]["known_malicious"],
+             after["results"][0]["known_malicious"]["status"]),
+            ("synthetic-second", identity(other_sha), "not_hit"))  # fmt: skip
+
     def test_folders_that_are_not_asset_folders_and_bad_arguments(self):
         empty = self.root / "empty"
         empty.mkdir()
@@ -444,6 +522,121 @@ class SetupTests(NativeAssets):
         result = anyio.run(call)
         self.assertTrue(result.is_error)
         self.assertIn("Model SHA-256 does not match the manifest", result.content[0].text)
+
+
+class RegistrationCommandTests(IndexMixin, Fixture):
+    """What `depbee setup DIR` prints for the agents depends on which depbee the Python that
+    runs it starts from another folder. A throwaway virtual environment stands for that Python:
+    what its site-packages hold is what it imports, whatever this test run's own Python has."""
+
+    def setUp(self):
+        super().setUp()
+        self.assets = self.root / "assets"
+        self.assets.mkdir()
+        self.index(LISTED)[0].rename(self.assets / "index")
+        home = self.root / "venv"
+        venv.EnvBuilder(with_pip=False).create(home)
+        windows = os.name == "nt"
+        scripts = home / ("Scripts" if windows else "bin")
+        self.python = scripts / ("python.exe" if windows else "python")
+        self.script = scripts / ("depbee.exe" if windows else "depbee")
+        (self.site,) = home.glob("Lib/site-packages" if windows else "lib/python*/site-packages")
+        patcher = mock.patch.object(sys, "executable", str(self.python))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def printed(self):
+        code, out, err = run_cli("setup", str(self.assets))
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(config.load()["known_malicious_dir"], str(self.assets / "index"))
+        return out
+
+    def test_a_copy_its_python_would_not_start_gets_no_registration_command(self):
+        """The reported case: depbee run from a source folder (python -m depbee) in a Python
+        that has another depbee installed, with that one's depbee.exe beside it. The command
+        printed was that script: an agent would have started the other copy."""
+        (self.site / "depbee").mkdir()
+        (self.site / "depbee" / "__init__.py").write_text('__version__ = "0"\n', "utf-8")
+        self.script.write_bytes(b"")  # the installed copy's console script
+        for installed in ("another copy", "none"):
+            with self.subTest(installed=installed):
+                out = self.printed()
+                self.assertNotIn(" mcp add ", out)
+                self.assertNotIn(str(self.script), out)
+                self.assertTrue(out.endswith(f"{cli.SETUP_SAVED}\n{cli.SETUP_NOT_INSTALLED}\n"))
+            shutil.rmtree(self.site / "depbee", ignore_errors=True)  # now: not installed at all
+
+    def test_an_installed_copy_gets_its_console_script_else_its_python(self):
+        # As an editable install does it: the folder of this very copy is on the Python's path.
+        source = Path(cli.__file__).resolve().parents[1]
+        (self.site / "depbee-editable.pth").write_text(f"{source}\n", "utf-8")
+        quote = (lambda text: f'"{text}"') if os.name == "nt" else shlex.quote
+        for launcher in (f"{quote(str(self.python))} -P -m depbee", quote(str(self.script))):
+            with self.subTest(launcher=launcher):
+                self.assertEqual(self.printed().splitlines()[-2:], [
+                    f"  Claude Code: claude mcp add --scope user depbee -- {launcher} mcp",
+                    f"  Codex: codex mcp add depbee -- {launcher} mcp"])  # fmt: skip
+            self.script.write_bytes(b"")  # now with the console script of that install
+
+
+class Terminal(io.StringIO):
+    def isatty(self):
+        return True
+
+
+@unittest.skipUnless(os.name == "nt", "Windows access lists")
+class SharedFolderTests(Fixture):
+    """The settings folder under a folder that the Users group may change, as a folder outside
+    the user's profile or on a shared drive is. On Windows a new file gets the access list of
+    its folder, so what depbee keeps there is as open as the folder."""
+
+    def setUp(self):
+        super().setUp()
+        shared = self.root / "shared"
+        shared.mkdir()
+        # BUILTIN\Users by its SID, so that the name's language does not matter.
+        subprocess.run(["icacls", str(shared), "/grant", "*S-1-5-32-545:(OI)(CI)M"],
+                       check=True, capture_output=True, timeout=60)  # fmt: skip
+        self.user = shared / "depbee"
+        os.environ["DEPBEE_CONFIG_DIR"] = str(self.user)
+
+    def on_terminal(self, *argv):
+        out, err = io.StringIO(), Terminal()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_a_folder_that_exists_is_used_as_it_is_and_a_person_is_told(self):
+        self.user.mkdir()
+        config.save(self.root, self.root, None)
+        self.assertTrue(config.open_to_others(self.user))  # depbee does not change its access
+        shown = (f"저장된 자산 설정: {self.user / 'config.json'}\n  모델: {self.root}\n"
+                 "  기지 악성 색인: 연결 안 됨\n")  # fmt: skip
+        notice = cli.SHARED_FOLDER.format(folder=self.user) + "\n"
+        self.assertEqual(self.on_terminal("setup"), (0, shown, notice))
+        self.assertEqual(run_cli("setup"), (0, shown, ""))  # captured output is as it was
+        state = {"url": "http://127.0.0.1:8123/s/" + "s" * 43 + "/"}
+        with mock.patch("depbee.dashboard.lifecycle.start", return_value=(state, True)):
+            started = (0, f"{state['url']}\n{cli.BACKGROUND_STARTED}\n")
+            self.assertEqual(self.on_terminal("dashboard", "--background"), (*started, notice))
+            self.assertEqual(run_cli("dashboard", "--background"), (*started, ""))
+
+    @unittest.skipIf(sys.version_info < (3, 12, 4), "this Python ignores mkdir's mode on Windows")
+    @unittest.skipIf(config._elevated(), "run as administrator: see the test below")
+    def test_a_folder_depbee_creates_is_the_users_alone(self):
+        config.save(self.root, self.root, None)
+        self.assertFalse(config.open_to_others(self.user))  # not its parent's access list
+        self.assertEqual(config.load()["model_dir"], str(self.root))  # and the user reads it
+        self.assertEqual(self.on_terminal("setup")[2], "")
+        (self.user / "more.txt").write_text("the user can still write here\n", "utf-8")
+        self.assertTrue(config.clear())
+
+    def test_a_folder_created_as_administrator_keeps_its_parents_access(self):
+        """Owned by Administrators and open to its owner alone, it would be closed to the same
+        user in an ordinary terminal."""
+        with mock.patch.object(config, "_elevated", return_value=True):
+            config.save(self.root, self.root, None)
+        self.assertTrue(config.open_to_others(self.user))
 
 
 class McpWithoutOptionsTests(IndexMixin, MCPFixture):

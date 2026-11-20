@@ -13,6 +13,11 @@ token, so a state file whose port is now someone else's is seen as stale, and is
 process killed here is the child start() has just created and still holds, when it does not
 become ready.
 
+The lock also orders who may touch the state file. Only the process that holds it writes the
+file, and a file left behind is removed only by a caller that holds it (_sweep), so a check that
+found an old file never removes the one a new instance has written meanwhile. A stop waits for
+the instance that took its request: once the lock belongs to a newer instance, it is done.
+
 Standard library only: the child imports the web libraries through dashboard.serve().
 """
 
@@ -127,11 +132,28 @@ def _read(folder: Path) -> dict | None:
 
 
 def _forget(folder: Path, token: str) -> None:
-    """Remove the state file if it is still the one with this token; a newer instance's stays."""
+    """An instance's removal of its own state file, as it ends: the file goes if it is still the
+    one with this token. Only for the instance itself, which holds the lock: for anyone else the
+    file could become a newer instance's between the look and the removal (_sweep)."""
     state = _read(folder)
     if state is not None and state["token"] == token:
         with contextlib.suppress(OSError):
             os.unlink(folder / STATE)
+
+
+def _sweep(folder: Path) -> None:
+    """Remove the state file a gone instance left behind. The lock is taken first and kept until
+    the file is removed: an instance writes its file only while it holds the lock, so what is
+    removed here is never the file of an instance that started meanwhile. While an instance (or
+    another check, for an instant) holds the lock, nothing is removed."""
+    descriptor = _acquire(folder)
+    if descriptor is None:
+        return
+    try:
+        with contextlib.suppress(OSError):
+            os.unlink(folder / STATE)
+    finally:
+        os.close(descriptor)
 
 
 def _mac(token: str, *parts: str) -> str:
@@ -276,7 +298,7 @@ def start(
         return state, False
     folder = _folder()
     try:
-        folder.mkdir(parents=True, exist_ok=True)
+        config.make_dir(folder)
     except OSError as exc:
         raise GuardError(f"The depbee settings folder cannot be created: {folder}") from exc
     token = secrets.token_urlsafe(32)
@@ -339,7 +361,10 @@ def start(
         if not started and process.poll() is None:
             process.kill()
             process.wait()
-            _forget(folder, token)
+            # What it may have published. If its lock is not free yet, or is another instance's,
+            # nothing is removed here and the next status() does it.
+            with contextlib.suppress(OSError):
+                _sweep(folder)
 
 
 def status() -> tuple[str, dict | None]:
@@ -353,14 +378,18 @@ def status() -> tuple[str, dict | None]:
     if _alive(folder):
         return "unresponsive", None
     if state is not None:
-        _forget(folder, state["token"])
+        _sweep(folder)
     return "stopped", None
 
 
 def stop() -> bool:
     """Stop the background instance: True once its process has ended, False if none was
     running. GuardError if one is alive but does not take the request, or has not ended
-    STOP_SECONDS after taking it (it finishes a running check or apply first)."""
+    STOP_SECONDS after taking it (it finishes a running check or apply first).
+
+    The wait is for the instance that took the request. Its lock is also the next instance's,
+    so a lock that is held again does not mean it is still there: once the state file is another
+    instance's, the one stopped has ended, and the new one is neither waited for nor touched."""
     folder = _folder()
     state = _read(folder)
     if state is None or not _control(state, "stop"):
@@ -373,6 +402,9 @@ def stop() -> bool:
         )
     deadline = time.monotonic() + STOP_SECONDS
     while _alive(folder):
+        current = _read(folder)
+        if current is not None and current["token"] != state["token"]:
+            return True  # the lock is a newer instance's now
         if time.monotonic() > deadline:
             raise GuardError(
                 f"The background dashboard took the stop request but has not ended within "
@@ -380,5 +412,5 @@ def stop() -> bool:
                 "longer opens; check again with depbee dashboard --status"
             )
         time.sleep(0.1)
-    _forget(folder, state["token"])
+    _sweep(folder)
     return True

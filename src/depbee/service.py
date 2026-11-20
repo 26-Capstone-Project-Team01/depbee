@@ -27,7 +27,7 @@ from .inputs.npm import (
     check_package_spec,
     read_dependencies,
 )
-from .known_malicious import KnownMaliciousIndex, load
+from .known_malicious import load
 from .pipeline import scan
 
 NPMRC_NOTICE = "프로젝트 .npmrc는 복사하지 않았습니다. 사용자·전역 npm 설정은 적용될 수 있습니다."
@@ -113,14 +113,15 @@ def scan_project(
     analysis: trusted precomputed analysis JSON. extract: run depbee-analyzer instead.
     local_sources: NAME@VERSION=DIR specs under local_root (extract only).
     model_dir: trusted model directory. If None, DEPBEE_MODEL_DIR is read on each call, and if
-    that is empty or unset, the folder saved by depbee setup (_asset_dir); none of them means no
+    that is empty or unset, the folder saved by depbee setup (_assets); none of them means no
     model. A bad path is an error and never falls back to another model.
     known_malicious_dir: trusted known malicious index folder (known_malicious.load), read right
     after the model. If None, DEPBEE_KNOWN_MALICIOUS_DIR is read on each call, then the folder
     saved by depbee setup; none of them means no index (detectors.known_malicious null, as
     before). A bad index is an error, never "no index". The same index is matched against the
     changes and, with extract, keeps known malicious versions out of the baseline candidates
-    (D-16).
+    (D-16). The saved settings are read once for the call, so its model and index are those of
+    one saved setup.
     progress: called per extracted package; the caller decides how to show it.
     cache_dir, no_cache: the extracted-feature cache (default ~/.cache/depbee); see _cache_dir().
     With extract=True the report also has elapsed_seconds (in total and per result) and cache_hit.
@@ -136,8 +137,7 @@ def scan_project(
         raise GuardError("Use either an analysis file or extraction, not both")
     request = plan_project(project, base_lock, base_ref=base_ref)
     sources = _local_sources(local_sources or [], extract, local_root)
-    predictor = _predictor(model_dir)
-    detectors = _detectors(known_malicious_dir)
+    predictor, detectors = _assets(model_dir, known_malicious_dir)
     if not extract:
         analyzer = ArtifactAnalyzer(analysis) if analysis else None
         return scan(request, analyzer, predictor, **detectors)
@@ -149,40 +149,58 @@ def scan_project(
     return _timed(scan(request, analyzer, predictor, **detectors), analyzer, started)
 
 
-def _asset_dir(given: Path | None, variable: str, setting: str) -> Path | None:
-    """given, else the environment variable read on this call (empty counts as unset), else the
-    folder `depbee setup` saved for the user (config.saved_dir); None if there is none of them.
-    Never read from the project being checked."""
-    if given is not None:
-        return given
-    from_environment = os.environ.get(variable)
-    return Path(from_environment) if from_environment else config.saved_dir(setting)
+def _assets(
+    model_dir: Path | None, known_malicious_dir: Path | None
+) -> tuple[LightGBMPredictor | None, dict]:
+    """The model and the known malicious index of one request: (the predictor or None, the
+    known_malicious keyword for scan() and ExtractorAnalyzer).
 
+    Each folder is the one given, else its environment variable read on this call (empty counts
+    as unset), else the one `depbee setup` saved for the user; none of them: no model, no index.
+    The saved settings are read once, and only if a folder is still missing, so the model and
+    the index of one request are those of one saved setup even if a depbee setup replaces the
+    file meanwhile. The next request reads them again. Never read from the project being checked.
 
-def _predictor(model_dir: Path | None) -> LightGBMPredictor | None:
-    """The model of _asset_dir(model_dir, DEPBEE_MODEL_DIR, saved model_dir); none: no model."""
-    model_dir = _asset_dir(model_dir, "DEPBEE_MODEL_DIR", "model_dir")
-    return LightGBMPredictor(model_dir) if model_dir else None
-
-
-def _known_malicious(directory: Path | None) -> KnownMaliciousIndex | None:
-    """The index of _asset_dir(directory, DEPBEE_KNOWN_MALICIOUS_DIR, saved
-    known_malicious_dir); none: no index."""
-    directory = _asset_dir(directory, "DEPBEE_KNOWN_MALICIOUS_DIR", "known_malicious_dir")
-    return load(directory) if directory else None
+    The model is loaded first, then the index. Without an index the keyword is empty: scan() and
+    ExtractorAnalyzer are then called exactly as before (a caller's own detector, as in tests,
+    is not replaced by None)."""
+    folders = {}
+    for key, given, variable in (
+        ("model_dir", model_dir, "DEPBEE_MODEL_DIR"),
+        ("known_malicious_dir", known_malicious_dir, "DEPBEE_KNOWN_MALICIOUS_DIR"),
+    ):
+        from_environment = os.environ.get(variable)
+        folders[key] = given if given is not None else from_environment or None
+    if None in folders.values():
+        saved = config.load() or {}
+        folders = {key: folder or saved.get(key) for key, folder in folders.items()}
+    predictor = LightGBMPredictor(Path(folders["model_dir"])) if folders["model_dir"] else None
+    index_dir = folders["known_malicious_dir"]
+    index = load(Path(index_dir)) if index_dir else None
+    return predictor, ({"known_malicious": index} if index is not None else {})
 
 
 def setup_assets(assets_dir: Path) -> dict:
     """Save assets_dir as the user's trusted asset folder for every later command.
 
     assets_dir/model (model.txt, manifest.json) and assets_dir/index (index.json,
-    manifest.json) are each loaded here as a scan loads them. A subfolder that does not exist
-    is saved as not connected; at least one must exist. Nothing is saved if one fails to load
-    (GuardError, OSError or ValueError, as from a scan). Nothing is downloaded.
+    manifest.json) are each loaded here as a scan loads them. A subfolder whose name is not
+    there is saved as not connected; at least one must exist. Nothing is saved, and the settings
+    of an earlier setup stay, if one fails to load (GuardError, OSError or ValueError, as from a
+    scan) or if its name is taken by something that is no folder (a file, a broken link): that
+    is a damaged asset folder, not one without that asset. Nothing is downloaded.
     Returns config.save()'s settings with model_id and list_as_of (None if not connected).
     """
     root = Path(os.path.abspath(assets_dir))
-    found = {key: root / name for key, name in config.LAYOUT.items() if (root / name).is_dir()}
+    found = {}
+    for key, name in config.LAYOUT.items():
+        if (root / name).is_dir():
+            found[key] = root / name
+        elif os.path.lexists(root / name):
+            raise GuardError(
+                f"{root / name} is not a folder (a file or a broken link has its name); "
+                "nothing was saved"
+            )
     if not found:
         raise GuardError(
             f"No model or index folder in {root}: expected model/ (model.txt, manifest.json) "
@@ -192,14 +210,6 @@ def setup_assets(assets_dir: Path) -> dict:
     model_id = LightGBMPredictor(model).model_id if model else None
     list_as_of = load(index).list_as_of if index else None
     return {**config.save(root, model, index), "model_id": model_id, "list_as_of": list_as_of}
-
-
-def _detectors(known_malicious_dir: Path | None) -> dict:
-    """The known_malicious keyword for scan() and ExtractorAnalyzer, only when an index is
-    connected: without one both are called exactly as before (a caller's own detector, as in
-    tests, is not replaced by None)."""
-    index = _known_malicious(known_malicious_dir)
-    return {"known_malicious": index} if index is not None else {}
 
 
 def _cache_options(predictor, cache_dir: Path | None, no_cache: bool) -> dict:
@@ -257,8 +267,7 @@ def check_package(
     check_package_spec(name, version)
     from .analysis.extractor import ExtractorAnalyzer
 
-    predictor = _predictor(model_dir)
-    detectors = _detectors(known_malicious_dir)
+    predictor, detectors = _assets(model_dir, known_malicious_dir)
     analyzer = ExtractorAnalyzer(
         progress=progress, **_cache_options(predictor, cache_dir, no_cache), **detectors
     )

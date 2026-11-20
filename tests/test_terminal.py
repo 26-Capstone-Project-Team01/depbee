@@ -16,7 +16,7 @@ from unittest import mock
 
 from test_detectors import ADVISORY, KnownList
 from test_output_formats import EXAMPLE_05_TEXT, EXAMPLES, FormatFixture, capture
-from test_workflow import FakePredictor
+from test_workflow import FakePredictor, package
 
 from depbee import __version__, terminal
 from depbee.cli import _print_markdown, _print_text, main
@@ -215,6 +215,28 @@ class NextStepTests(FormatFixture):
         self.assertEqual(self.steps(self.mixed()), [terminal.KNOWN_STEP.format(count=2),
                                                     terminal.ML_STEP.format(count=1),
                                                     terminal.PENDING_STEP.format(count=2)])  # fmt: skip
+
+    def test_a_report_that_only_removes_is_not_told_to_install(self):
+        """It passes (exit code 0), but there is no version in it to install."""
+        self.old["packages"]["node_modules/gone"] = package()
+        self.save_locks()
+        mixed = self.scan_with(0.1, known_malicious=KnownList())
+        self.assertEqual(sorted(row["status"] for row in mixed["results"]),
+                         ["not_flagged", "removed"])  # fmt: skip
+        self.assertEqual(self.steps(mixed), [terminal.PASS_STEP])  # for the version that stays
+        self.new["packages"] = {}
+        self.save_locks()
+        removed = scan(self.request(), None, FakePredictor(), known_malicious=KnownList())
+        self.assertEqual((removed["exit_code"], [row["status"] for row in removed["results"]]),
+                         (0, ["removed", "removed"]))  # fmt: skip
+        self.assertEqual(self.steps(removed), [])
+        self.assertEqual(self.steps(removed, "update"), [terminal.APPLY_STEP])
+        # As typed in a terminal: the report, and no step that speaks of installing.
+        code, out, err = run(["scan", str(self.project), "--base-lock", str(self.base)],
+                             Terminal(), colors=False)  # fmt: skip
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("[삭제] example@1.0.0", out)
+        self.assertNotIn("설치는 검사한 버전 그대로", " ".join(out.split()))
 
     def test_unfinished_items_with_a_remedy_name_it(self):
         no_model = scan(self.request(), self.adapter(), None, known_malicious=KnownList())

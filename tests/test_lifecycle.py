@@ -155,6 +155,16 @@ class LockAndStateTests(Folder):
         old.close()
         self.assertEqual(lifecycle._read(self.folder)["token"], TOKEN)
 
+    def test_a_left_state_file_is_removed_only_by_a_caller_that_holds_the_lock(self):
+        self.publish()
+        held = lifecycle._acquire(self.folder)  # as a new instance that is about to publish
+        lifecycle._sweep(self.folder)
+        self.assertEqual(lifecycle._read(self.folder)["token"], TOKEN)  # it may be the holder's
+        os.close(held)
+        lifecycle._sweep(self.folder)
+        self.assertFalse((self.folder / lifecycle.STATE).exists())
+        self.assertFalse(lifecycle._alive(self.folder))  # and the lock is given back
+
     def test_a_state_file_nobody_answers_for_is_stale_and_removed(self):
         with socket.create_server(("127.0.0.1", 0)) as unused:
             port = unused.getsockname()[1]
@@ -495,6 +505,104 @@ class ProcessTests(Folder):
         self.assertEqual((code, line), (0, cli.BACKGROUND_STARTED))
         self.assertNotEqual(again, url)
         self.assertEqual(self.get(again), 200)
+        self.assertEqual(self.depbee("--stop"), (0, [cli.BACKGROUND_STOPPED], ""))
+
+    def test_a_start_during_the_cleanup_of_an_old_state_file_keeps_its_own(self):
+        """A check has found the state file of an instance that is gone and is at the point of
+        removing it when a new start runs. Removing whatever is there by then took the new
+        instance's file: the server ran, and --status and --stop no longer found it. The
+        removal now holds the lock the new instance needs before it writes its file."""
+        asked = []  # control requests to the port of the instance that is gone
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                asked.append(self.path)
+                self.send_response(404)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        gone = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        self.addCleanup(gone.server_close)
+        threading.Thread(target=gone.serve_forever, daemon=True).start()
+        self.addCleanup(gone.shutdown)
+        port = gone.server_address[1]
+        self.folder.mkdir(mode=0o700)
+        lifecycle.Instance(self.folder, TOKEN).publish(
+            f"http://127.0.0.1:{port}/s/{'s' * 43}/", port
+        )
+        state_file, log = self.folder / lifecycle.STATE, self.folder / lifecycle.LOG
+        unlink, starts, published = os.unlink, [], []
+
+        def is_new():
+            state = lifecycle._read(self.folder)
+            return state is not None and state["token"] != TOKEN
+
+        def wait(condition, seconds):
+            deadline = time.monotonic() + seconds
+            while not condition() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            return condition()
+
+        def start_meanwhile(path, *args, **kwargs):
+            if not starts and Path(path) == state_file:
+                starts.append(self.depbee("--background", wait=False))
+                # Its own check has read the old file and asked the old port (the second
+                # request, after this test's). Its child takes the lock within a moment if
+                # nothing holds it, and then writes its file; a child that has to wait for this
+                # removal gets the lock afterwards (the wait here is shorter than its patience).
+                self.assertTrue(wait(lambda: len(asked) >= 2, 60))
+                if wait(log.exists, lifecycle.LOCK_SECONDS / 2) and wait(is_new, 30):
+                    published.append(state_file.read_bytes())
+            return unlink(path, *args, **kwargs)
+
+        def restore():  # after a failure: a server without its file could not be stopped
+            if published and not state_file.exists():
+                state_file.write_bytes(published[0])
+
+        self.addCleanup(restore)
+        with mock.patch.object(lifecycle.os, "unlink", side_effect=start_meanwhile):
+            self.assertEqual(lifecycle.status(), ("stopped", None))
+        (start,) = starts
+        out, err = start.communicate(timeout=90)
+        self.assertEqual(published, [], "an instance wrote its state file during the removal")
+        self.assertEqual((start.returncode, err), (0, ""))
+        url, line = out.splitlines()
+        self.assertEqual(line, cli.BACKGROUND_STARTED)
+        state = lifecycle._read(self.folder)
+        self.assertIsNotNone(state, "the new instance's state file went with the old one")
+        self.assertEqual(state["url"], url)
+        code, lines, _ = self.depbee("--status")
+        self.assertEqual((code, lines[0]), (0, url))
+        self.assertEqual(self.get(url), 200)
+        self.assertEqual(self.depbee("--stop"), (0, [cli.BACKGROUND_STOPPED], ""))
+
+    def test_a_stop_is_done_when_its_instance_ended_whatever_started_after_it(self):
+        """The stopped instance ends and a new one starts before the stop looks again. The lock
+        is held again, by the new instance: waiting for the lock waited for the wrong server
+        and failed after the time limit, although the old one had ended."""
+        _, (old, _), _ = self.depbee("--background")
+        control, restarts = lifecycle._control, []
+
+        def restart_once_stopped(state, action):
+            accepted = control(state, action)
+            if action == "stop" and accepted:
+                wait_until_free(self.folder)  # the instance that took the request has ended
+                restarts.append(self.depbee("--background"))
+            return accepted
+
+        with mock.patch.object(lifecycle, "_control", side_effect=restart_once_stopped), \
+                mock.patch.object(lifecycle, "STOP_SECONDS", 2):  # fmt: skip
+            self.assertEqual(run_cli("dashboard", "--stop"),
+                             (0, cli.BACKGROUND_STOPPED + "\n", ""))  # fmt: skip
+        ((code, (new, line), err),) = restarts
+        self.assertEqual((code, line, err), (0, cli.BACKGROUND_STARTED, ""))
+        self.assertNotEqual(new, old)
+        # The new instance was neither waited for nor touched: its file and server are there.
+        code, lines, _ = self.depbee("--status")
+        self.assertEqual((code, lines[0]), (0, new))
+        self.assertEqual(self.get(new), 200)
         self.assertEqual(self.depbee("--stop"), (0, [cli.BACKGROUND_STOPPED], ""))
 
     def test_a_start_that_fails_says_why_and_leaves_nothing_running(self):

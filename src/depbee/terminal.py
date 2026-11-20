@@ -194,7 +194,9 @@ def next_steps(command: str, report: dict, apply: dict | None = None) -> list[st
                 steps.append(text.format(count=count))
     if pending:
         steps.append(PENDING_STEP.format(count=sum(pending.values())))
-    if report["exit_code"] == 0 and command != "update":
+    # A report that only removes dependencies passes too, but has no version to install.
+    installs = any(row["status"] != "removed" for row in report["results"])
+    if installs and report["exit_code"] == 0 and command != "update":
         steps.append(PASS_STEP)
     if "detectors" in report and report["detectors"]["known_malicious"] is None:
         steps.append(INDEX_STEP)

@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
@@ -175,6 +176,26 @@ SETUP_OVERRIDDEN = (
 SETUP_SAVED = (
     "이제 scan, check, update, dashboard, mcp에 --model-dir과 --known-malicious-dir을 주지 "
     "않아도 이 자산을 씁니다. 에이전트에도 경로 옵션 없이 등록합니다."
+)
+# Instead of the registration commands, when this copy has no command that runs it from any
+# folder (_installed).
+SETUP_NOT_INSTALLED = (
+    "  지금 실행한 depbee는 이 Python에 설치된 사본이 아니어서(설치하지 않은 소스 폴더에서 "
+    "실행했거나, 같은 Python에 다른 사본이 설치돼 있음) 에이전트가 다른 폴더에서 이 버전을 "
+    "실행할 명령이 없습니다. 에이전트가 쓸 Python 환경에 이 버전을 설치한 뒤, 그 환경의 "
+    "depbee로 depbee setup DIR을 다시 실행하면 등록 명령이 나옵니다."
+)
+# On stderr of an interactive terminal, after a setup or a background start (_warn_shared).
+SHARED_FOLDER = (
+    "주의: 사용자 설정 폴더({folder})는 이 PC의 다른 계정도 열 수 있습니다(Users, Everyone 같은 "
+    "그룹에 권한이 있음). 이 폴더에는 신뢰하는 자산 경로(config.json)와 백그라운드 대시보드의 "
+    "세션 주소·제어 값(dashboard.json)이 있습니다. 폴더 권한에서 그 그룹을 빼거나, 아직 없는 "
+    "경로를 DEPBEE_CONFIG_DIR로 지정해 depbee가 본인 전용 폴더를 만들게 하세요."
+)
+# Run by the Python that runs this depbee, started in no particular folder: 0 if what it
+# imports as depbee is the folder given (_installed).
+_SAME_COPY = (
+    "import os, sys, depbee; sys.exit(not os.path.samefile(depbee.__path__[0], sys.argv[1]))"
 )
 
 
@@ -950,13 +971,38 @@ def _record(
         print(HISTORY_FAILED, file=sys.stderr)
 
 
+def _installed() -> bool:
+    """This copy of depbee is the one its Python imports when started in any folder: an
+    installed one, an editable install included. It is asked of that Python itself, without the
+    current folder (-P) and without PYTHONPATH (-E), as an agent starts the registered command.
+    False for a source folder that only runs through PYTHONPATH or the current folder, and for
+    one beside another installed copy: the console script would then start that other copy."""
+    try:
+        check = subprocess.run(
+            [sys.executable, "-P", "-E", "-c", _SAME_COPY, str(Path(__file__).parent)],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=60,
+        )  # fmt: skip
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return check.returncode == 0
+
+
 def _launcher() -> str:
     """The command that starts this depbee from any folder, quoted for a shell: the console
     script beside the Python that runs it, else that Python with -P -m depbee (-P: the current
-    folder is no import path)."""
+    folder is no import path). Only for a copy that is _installed()."""
     quote = (lambda text: f'"{text}"') if os.name == "nt" else shlex.quote
     script = Path(sys.executable).with_name("depbee.exe" if os.name == "nt" else "depbee")
     return quote(str(script)) if script.is_file() else f"{quote(sys.executable)} -P -m depbee"
+
+
+def _warn_shared(folder: Path) -> None:
+    """Tell a person at a terminal (stderr) that the settings folder is open to other accounts
+    (config.open_to_others). Captured or piped output stays as it was."""
+    if terminal.interactive(sys.stderr) and config.open_to_others(folder):
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(errors="backslashreplace")
+        print(SHARED_FOLDER.format(folder=_clean(folder)), file=sys.stderr)
 
 
 def _asset_lines(saved: dict, details: dict) -> list[str]:
@@ -989,6 +1035,7 @@ def _setup(args: argparse.Namespace) -> int:
         for key, variable in ASSET_VARIABLES.items():
             if os.environ.get(variable):
                 print(SETUP_OVERRIDDEN.format(variable=variable, name=ASSET_NAMES[key]))
+        _warn_shared(config.path().parent)
         return 0
     saved = setup_assets(args.assets_dir)
     print(f"자산 설정을 저장했습니다: {_clean(saved['path'])}")
@@ -999,9 +1046,13 @@ def _setup(args: argparse.Namespace) -> int:
     for line in _asset_lines(saved, details):
         print(line)
     print(SETUP_SAVED)
-    launcher = _clean(_launcher())
-    print(f"  Claude Code: claude mcp add --scope user depbee -- {launcher} mcp")
-    print(f"  Codex: codex mcp add depbee -- {launcher} mcp")
+    if _installed():
+        launcher = _clean(_launcher())
+        print(f"  Claude Code: claude mcp add --scope user depbee -- {launcher} mcp")
+        print(f"  Codex: codex mcp add depbee -- {launcher} mcp")
+    else:
+        print(SETUP_NOT_INSTALLED)
+    _warn_shared(Path(saved["path"]).parent)
     return 0
 
 
@@ -1020,6 +1071,7 @@ def _dashboard(args: argparse.Namespace) -> int:
         state, started = lifecycle.start(args.port, **options)
         print(state["url"])
         print(BACKGROUND_STARTED if started else BACKGROUND_RUNNING)
+        _warn_shared(config.user_dir())
         return 0
     if args.port or any(options.values()):
         raise GuardError("--status and --stop take no other option")
