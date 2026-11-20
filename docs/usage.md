@@ -16,6 +16,33 @@ python scripts/write_manifest.py models/<model-id> --model-id <model-id> --thres
 임계값은 모델 담당자가 검증 세트로 정한 값을 넣습니다.
 manifest 구조는 [연결 규약](contracts.md)에 있습니다.
 
+## 자산 폴더 설정 (`depbee setup`)
+
+모델 폴더와 기지 악성 색인 폴더를 한 번 저장해 두면 `scan`, `check`, `update`, `dashboard`, `mcp`에 `--model-dir`과 `--known-malicious-dir`을 주지 않아도 됩니다. 자산 폴더 하나 아래에 두 폴더를 다음 이름으로 둡니다.
+
+```text
+<자산 폴더>/
+  model/   model.txt, manifest.json     (모델 준비 절의 결과)
+  index/   index.json, manifest.json    (색인 만들기 절의 결과)
+```
+
+```powershell
+depbee setup C:\depbee-assets    # 저장. macOS/Linux 예: depbee setup /opt/depbee-assets
+depbee setup                     # 저장된 설정 보기
+depbee setup --clear             # 저장된 설정 지우기
+```
+
+- 저장할 때 `model`과 `index`를 검사에서 쓰는 방식 그대로 읽어 확인합니다(모델 파일과 manifest의 SHA-256 대조와 LightGBM 로딩, 색인과 manifest의 SHA-256 대조와 형식 검사). 하나라도 읽지 못하면 아무것도 저장하지 않고 오류(종료 코드 2)로 끝나며, 전에 저장한 설정은 그대로 둡니다. 모델 확인에는 `ml` extra가 필요합니다.
+- `model`이나 `index` 폴더가 없으면 그 자산은 "연결 안 됨"으로 저장합니다. 둘 다 없으면 오류입니다. 나중에 빠진 폴더를 채웠다면 `depbee setup <자산 폴더>`를 다시 실행합니다. 같은 폴더 안의 파일만 바꿨다면 다시 저장할 필요가 없습니다.
+- depbee는 자산을 내려받지 않고 찾아다니지도 않습니다. 사용자가 이름을 준 폴더만 저장하며, 대상 프로젝트 폴더나 현재 폴더에서 모델·색인·설정 파일을 찾지 않습니다. 직접 만들었거나 SHA-256을 확인한 폴더만 저장합니다.
+- 우선순위: 명령의 옵션, 환경 변수(`DEPBEE_MODEL_DIR`, `DEPBEE_KNOWN_MALICIOUS_DIR`, 빈 값은 없는 것으로 봄), 저장된 설정 순으로 처음 있는 것을 씁니다. 셋 다 없으면 전과 같이 모델은 없음(분석할 변경은 보류), 색인은 연결 안 됨입니다. `depbee setup`은 환경 변수가 저장한 값보다 먼저 쓰이고 있으면 그 사실을 함께 보여 줍니다.
+- 저장된 폴더가 나중에 없어지거나 내용이 맞지 않게 되면 "자산 없음"으로 바꾸지 않고 오류(종료 코드 2)로 끝납니다. 옵션이나 환경 변수로 준 폴더와 같은 규칙입니다.
+- 설정 파일은 사용자 설정 폴더의 `config.json`입니다. 사용자 설정 폴더는 기본이 홈 폴더 아래 `~/.config/depbee/`(Windows도 홈 폴더 기준)이고, 환경 변수 `DEPBEE_CONFIG_DIR`(실행할 때마다 읽고 빈 값은 없는 것으로 봄)로 바꿀 수 있습니다. 이 변수에는 절대 경로만 줄 수 있습니다. 상대 경로는 실행한 자리의 폴더로 읽지 않고 오류(종료 코드 2)로 끝납니다. 파일에는 자산 폴더와 두 폴더의 절대 경로만 들어 있습니다.
+- 현재 폴더, 대상 프로젝트, 이력 파일의 위치(`DEPBEE_HISTORY_DB`)는 사용자 설정 폴더를 바꾸지 못합니다. `DEPBEE_HISTORY_DB`는 상대 경로일 수 있어 그 폴더가 프로젝트 폴더가 될 수 있기 때문입니다. 그래서 받은 저장소 안에 `config.json`이나 `model`·`index` 폴더가 들어 있어도 쓰이지 않습니다.
+- 시연이나 시험처럼 평소 설정과 분리해야 하는 환경은 이력의 `DEPBEE_HISTORY_DB`와 별도로 `DEPBEE_CONFIG_DIR`을 그 환경 전용 폴더의 절대 경로로 지정합니다. 지정하지 않으면 그 환경의 명령도 홈 폴더의 설정을 읽습니다. MCP 서버처럼 홈 폴더(`USERPROFILE`, `HOME`)를 통째로 옮긴 프로세스는 옮긴 홈 아래의 `.config/depbee/`를 씁니다.
+- 설정은 같은 폴더의 임시 파일에 쓴 뒤 `os.replace`로 바꾸므로 쓰다가 실패해도 이전 파일이 남습니다. 설정 파일이 손상됐거나 depbee가 쓴 형식이 아니면(JSON 오류, 상대 경로 등) 설정이 없는 것으로 넘기지 않고 오류(종료 코드 2)로 끝납니다. `depbee setup <자산 폴더>`로 다시 저장하거나 `depbee setup --clear`로 지웁니다.
+- 오래 떠 있는 `mcp`와 `dashboard`도 호출마다 설정을 읽으므로, 서버를 띄운 뒤에 저장한 설정도 다음 검사부터 쓰입니다.
+
 ## 실행
 
 ```powershell
@@ -57,7 +84,7 @@ pre-release와 비교할 이전 stable이 없는 버전은 `scan`과 같이 `inc
 `scan`·`check`의 JSON 결과에는 출처(`provenance`)도 있습니다. 확인한 모델 파일·manifest의 SHA-256과, 설치된 depbee-analyzer의 고정 커밋·설치 파일 해시·Python 버전이며, 모델이 없거나 depbee-analyzer로 추출하지 않았거나 설치 출처를 확인하지 못하면 해당 값은 null입니다.
 JSON 결과에는 기지 악성·규칙 탐지기 칸(`detectors`, 항목별 `known_malicious`·`rules`)과 ML 경로만의 상태(`ml`), 규칙/ML 일치 여부(`rule_ml_agreement`)도 있습니다. 기지 악성 목록은 `--known-malicious-dir`(또는 `DEPBEE_KNOWN_MALICIOUS_DIR`)로 연결합니다([기지 악성 탐지기](#기지-악성-탐지기)). 연결하지 않았거나 규칙 탐지기(아직 없음)처럼 연결되지 않은 탐지기는 "연결 안 됨"(`not_run`)으로 나오고, 그때 판정과 종료 코드는 모델 결과만으로 정해집니다. 텍스트·Markdown 출력도 개수 아래에 연결되지 않은 탐지기를 "연결 안 됨(미실행)"으로, 연결된 기지 악성 목록은 출처와 기준 시점으로 한 번 적습니다. 탐지기가 연결된 보고서라면 텍스트·Markdown은 기지 악성 기록 일치를 맨 위에 경고로 강조하고(낮은 ML 위험 점수는 이 경고를 취소하지 않음), 항목마다 기지 악성(일치·미적중·미실행·실패)과 규칙(적중·미적중·미실행·실패, 규칙별 근거와 위치) 결과, 그리고 판정에 쓰지 않는 규칙/ML 일치 표시를 따로 보여 줍니다. 규칙 중 일부가 적중하고 일부가 실패한 항목은 규칙 칸에 "적중, 실패 N개"로 함께 보입니다. 이 필드들이 없는 예전 보고서는 탐지기 칸을 "확인 안 됨"으로 보이고(미적중으로 읽지 않음), ML 상태는 판정과 이유에서 구한 값에 "참고값"을 붙여 보입니다. 필드 정의는 [연결 규약](contracts.md) 4절에 있습니다.
 
-`scan`과 `check`에서 `--model-dir`을 생략하면 환경 변수 `DEPBEE_MODEL_DIR`의 모델 폴더를 씁니다. `--model-dir`이 항상 우선하고, 둘 다 없거나 환경 변수가 빈 값이면 모델 없이 처리합니다(분석할 변경이 있으면 `incomplete`).
+`scan`과 `check`에서 `--model-dir`을 생략하면 환경 변수 `DEPBEE_MODEL_DIR`의 모델 폴더를, 그것도 없거나 빈 값이면 [`depbee setup`으로 저장한 모델 폴더](#자산-폴더-설정-depbee-setup)를 씁니다. `--model-dir`이 항상 우선하고, 셋 다 없으면 모델 없이 처리합니다(분석할 변경이 있으면 `incomplete`).
 지정한 경로가 잘못되면 다른 모델로 대체하지 않고 오류(종료 코드 2)로 끝납니다. 대상 프로젝트의 설정에서는 모델 경로를 읽지 않습니다.
 이 폴더의 모델은 신뢰한 입력으로 다루므로(manifest와 모델 해시만 대조합니다) 직접 준비한 신뢰할 수 있는 모델 폴더만 지정합니다.
 
@@ -66,6 +93,17 @@ registry에서 내려간 버전(예: 삭제된 악성 버전)을 시연할 때�
 사본은 lockfile integrity로 확인할 수 없어 결과의 근거에 그 사실이 표시됩니다.
 
 예시 lockfile(`examples/`)에는 패키지 코드가 없고 URL·integrity가 가상 값이라 `--extract`로는 분석되지 않습니다.
+
+### 터미널에서 보는 화면
+
+사람이 터미널에서 직접 실행할 때만 붙는 표시가 있습니다. 표준 출력이 터미널이 아니면(파이프, 파일로 보내기, 다른 프로그램이 받는 출력) 붙지 않으므로, 텍스트 출력을 읽는 스크립트와 `--format json`·`--format markdown`·`--output` 파일, MCP, GitHub Action의 결과는 전과 같습니다. 판정, 이유, 종료 코드는 어느 경우에도 같습니다.
+
+- 시작 화면: 인수 없이 `depbee`를 실행하면 벌 인장과 버전, 자주 쓰는 명령 여섯 개, 종료 코드의 뜻을 보여 줍니다. 검사한 것이 없으므로 종료 코드는 전과 같이 2입니다(통과로 읽히지 않게). `depbee --help`는 같은 머리말과 명령 안내에 argparse의 명령 목록을 더한 것이고 종료 코드 0입니다. 명령 안내는 화면 폭에 맞춰 명령과 설명을 한 줄에 두거나, 좁으면 설명을 명령 아래 줄에 둡니다. 표준 출력이 터미널이 아니면 벌 인장 대신 `depbee <버전>` 한 줄로 시작합니다.
+- 벌 인장: ASCII 문자만 쓴 세 줄 그림(시작 화면, `--help`)과 한 줄 표시 `-(||||)o`(텍스트 결과의 첫 줄 앞)입니다. 콘솔 코드 페이지나 글꼴과 관계없이 보입니다.
+- 색: 전체 판정과 항목 머리의 `[위험]`은 빨강, `[보류]`는 노랑, `[통과]`는 초록, 기지 악성 일치 경고는 빨강, 보류 안내는 노랑입니다. 색은 이미 글자로 적힌 판정을 다시 표시할 뿐이라 색이 없어도 빠지는 정보가 없습니다. 환경 변수 `NO_COLOR`가 있거나(빈 값 제외) `TERM=dumb`이거나, Windows 콘솔이 ANSI 색(가상 터미널 모드)을 받지 않으면 색 없이 같은 글자만 나옵니다. 벌 인장과 다음 동작은 색과 관계없이 나옵니다.
+- 다음 동작: `scan`, `check`, `update`의 텍스트 결과 끝에 지금 할 일을 급한 순서로 적습니다. 기지 악성 기록과 일치한 항목은 설치하지 말 것, ML 위험 점수가 기준 이상인 항목은 근거를 검토할 것, 보류는 통과가 아니며 원인이 모델 없음이면 `depbee setup`이나 `--model-dir`, 분석 없음이면 `--extract`로 다시 실행할 것, 기지 악성 목록이 연결되지 않았으면 그 사실과 연결 방법, 위험·보류가 없으면 검사한 버전 그대로 설치할 것을 안내합니다. `update` 미리보기에는 반영 방법(`--apply lockfile`, `--apply install`)과, 반영할 때 확인이 필요한 항목 수와 `--confirm-warnings`가 필요하다는 것을 적습니다. 기지 악성 일치가 있으면 반영할 수 없다고 적습니다. 이 안내는 보고서의 항목별 값과 반영 게이트(`update --apply`가 쓰는 것과 같은 함수)에서만 만들며 판정을 바꾸지 않습니다. 긴 문장은 화면 폭에 맞춰 띄어쓰기에서 줄을 바꿉니다.
+- `plan`은 표준 출력에 JSON만 내보냅니다. 터미널에서 실행했을 때만 바뀐 의존성 수와 검사 명령 안내 한 줄을 표준 오류에 씁니다.
+- 한글 도움말과 화면이 인코딩할 수 없는 문자 때문에 중단되지 않도록, depbee는 표준 출력에 쓸 수 없는 문자를 `\uXXXX` 꼴로 바꿔 씁니다(보고서 출력이 전부터 쓰던 방식).
 
 ## 기지 악성 탐지기
 
@@ -83,7 +121,7 @@ depbee check lodash@4.17.21 --model-dir models/<model-id> --known-malicious-dir 
 - npm 보안 대체 버전 `0.0.1-security`는 기록이 무엇이든 적중으로 보지 않습니다. 같은 기록의 다른 버전은 그대로 적중합니다.
 - 판정: 일치하면 ML 점수와 관계없이 그 항목은 위험(`flagged`, 종료 코드 1)이고 낮은 점수는 이 경고를 취소하지 않습니다. 분석하지 않는 `--extract` 없는 `scan`도 이름·버전을 대조합니다.
 - 비교 기준 후보 제외: 색인이 연결된 실행에서는 기록의 명시 버전이나 상한 있는 범위에 든 버전을 비교 기준 후보에서 빼고 다음 후보와 비교하며, 근거에 "비교 기준 후보에서 뺌: <버전> (기지 악성 기록 <ID>)"를 더합니다. 모든 버전·"X 이상" 범위와 철회 기록은 이 제외에 쓰지 않습니다. 후보가 모두 빠지면 비교 기준 없음(`no_baseline`, 보류)입니다. 그래서 색인 유무에 따라 비교 버전·feature·점수가 달라질 수 있습니다. `--analysis`로 준 분석 결과에는 적용되지 않습니다.
-- 옵션과 환경 변수: `scan`, `check`, `update`, `mcp`, `dashboard`가 같은 옵션을 받습니다. 생략하면 환경 변수 `DEPBEE_KNOWN_MALICIOUS_DIR`(호출마다 읽음)의 폴더를 씁니다. 둘 다 없거나 환경 변수가 빈 값이면 대조하지 않고(`detectors.known_malicious`가 null, 항목은 "연결 안 됨"), 상태와 종료 코드는 ML 경로로만 정해집니다. 기본 경로는 없고 대상 프로젝트의 설정에서는 읽지 않습니다.
+- 옵션과 환경 변수: `scan`, `check`, `update`, `mcp`, `dashboard`가 같은 옵션을 받습니다. 생략하면 환경 변수 `DEPBEE_KNOWN_MALICIOUS_DIR`(호출마다 읽음)의 폴더를, 그것도 없거나 빈 값이면 [`depbee setup`으로 저장한 색인 폴더](#자산-폴더-설정-depbee-setup)를 씁니다. 셋 다 없으면 대조하지 않고(`detectors.known_malicious`가 null, 항목은 "연결 안 됨"), 상태와 종료 코드는 ML 경로로만 정해집니다. 기본 경로는 없고 대상 프로젝트의 설정에서는 읽지 않습니다.
 - 지정한 색인 폴더가 없거나, 읽을 수 없거나, `index.json`의 SHA-256이 `manifest.json`의 `index_sha256`과 다르거나, 형식·자료형·목록 시점이 어긋나면 "색인 없음"으로 바꾸지 않고 보고서 없이 오류(종료 코드 2)로 끝납니다. `scan`·`check`는 registry를 조회하기 전에, `update`는 모델처럼 npm 미리보기 뒤 새 lockfile을 검사할 때 읽습니다. 이 폴더의 색인은 신뢰한 입력으로 다루므로 직접 만들었거나 SHA-256을 확인한 색인만 지정합니다.
 - 보고서의 `detectors.known_malicious`에는 출처(`source`: `OSV npm MAL`), 목록 시점(`list_as_of`), `index.json`의 SHA-256(`list_sha256`)이 남습니다.
 
@@ -172,9 +210,10 @@ depbee는 [대시보드](#로컬-대시보드-depbee-dashboard)에 등록한 프
 python -m pip install ".[web,ml,extract]"
 depbee dashboard                       # 빈 포트를 OS가 고름
 depbee dashboard --port 8765 --model-dir models/<model-id> --known-malicious-dir models/known-malicious
+depbee dashboard --background          # 백그라운드로 실행 (아래 백그라운드 실행)
 ```
 
-- `--model-dir`, `--known-malicious-dir`, `--cache-dir`/`--no-cache`는 검사만과 업데이트 확인에 쓰며 뜻은 `depbee scan`·`depbee update`와 같습니다(`--model-dir`이 없으면 `DEPBEE_MODEL_DIR`, 그것도 없으면 모델 없이 검사해 바뀐 항목은 보류. `--known-malicious-dir`이 없으면 `DEPBEE_KNOWN_MALICIOUS_DIR`, 그것도 없으면 기지 악성 대조 없이 검사).
+- `--model-dir`, `--known-malicious-dir`, `--cache-dir`/`--no-cache`는 검사만과 업데이트 확인에 쓰며 뜻은 `depbee scan`·`depbee update`와 같습니다(`--model-dir`이 없으면 `DEPBEE_MODEL_DIR`, 그것도 없으면 `depbee setup`으로 저장한 모델 폴더, 셋 다 없으면 모델 없이 검사해 바뀐 항목은 보류. `--known-malicious-dir`도 같은 순서이고 셋 다 없으면 기지 악성 대조 없이 검사).
 - 시작하면 표준 출력에 세션 주소와 종료 방법(Ctrl+C)이 나옵니다. 등록한 프로젝트가 하나면 프로젝트 상세 주소, 없거나 여러 개면 프로젝트 관리 주소가 나옵니다. 이 주소를 브라우저에 붙여 넣어 엽니다. 브라우저를 자동으로 열지 않습니다. Ctrl+C로 끄면 `대시보드를 종료했습니다. 위 주소는 더 이상 열리지 않습니다.` 한 줄을 남기고 종료 코드 0으로 끝납니다. `web` extra 없이 실행하면 설치 안내와 함께 종료 코드 2로 끝나고, 다른 명령은 이 extra 없이 그대로 동작합니다.
 - 프로젝트 목록: 등록한 폴더(사라졌으면 "찾을 수 없음"), 등록 시각, 최근 실행 요약(검사와 업데이트 미리보기를 나누지 않고 가장 최근 실행 하나와 그 종류), 최근 실행 10개의 판정별 개수 표(추이), 등록 폼. 등록은 `package-lock.json` 일반 파일이 있는 로컬 폴더의 절대 경로만 받습니다. 상대 경로, 네트워크 공유(`\\server\share`), 장치 경로(`\\.\`, `\\?\`), Windows 예약 이름(`CON`, `NUL` 등), 공유·장치로 가는 링크는 거부합니다. 같은 폴더를 다시 등록하면 처음 등록을 그대로 씁니다.
 - 프로젝트 상세: 지금 `package-lock.json`에서 읽은 의존성(직접·중첩, 이름, 버전, 위치), 검사만 버튼, 업데이트 확인 폼, 업데이트 반영 이력(시각, 방식, 결과, 이유, 확인 여부, 백업 위치, `npm ci` 종료 코드, 연결된 미리보기 실행), 실행 기록(상한 없이 모두, 최근순). 이름으로 검색하거나 직접·중첩으로 필터링할 수 있습니다. `package.json`에서 업데이트 대상으로 지정할 수 있는 직접 의존성에는 **후보 확인**이 표시됩니다. **전체 업데이트 확인**은 필터와 관계없이 허용된 범위의 업데이트를 미리 봅니다. 의존성은 npm을 실행하지 않고 `scan`과 같은 lockfile 검사를 거쳐 읽습니다. 직접 의존성은 lockfile 루트 항목의 `dependencies`·`devDependencies`·`optionalDependencies`·`peerDependencies`에 있는 이름이고 나머지는 중첩입니다. 반영 이력에는 CLI `update --apply`가 남긴 기록도 함께 보입니다.
@@ -208,6 +247,30 @@ depbee dashboard --port 8765 --model-dir models/<model-id> --known-malicious-dir
 - 패키지 이름·위치·근거·경로·오류 문구 등 보고서와 lockfile, 이력, 서비스에서 온 문자열은 텍스트 출력처럼 제어·양방향·영폭 문자를 `\uXXXX`로 바꾼 뒤 HTML 이스케이프합니다.
 - npm은 서비스 함수를 통해서만 실행됩니다(미리보기는 임시 사본, 설치는 반영 뒤 프로젝트에서 `npm ci --ignore-scripts`).
 
+### 백그라운드 실행
+
+터미널을 차지하지 않고 대시보드를 띄워 두는 방법입니다. 화면과 보안 동작은 위와 같고, 시작·확인·종료 방식만 다릅니다.
+
+```powershell
+depbee dashboard --background    # 시작하고 주소 출력. 옵션(--port, --model-dir 등)은 위와 같음
+depbee dashboard --status        # 실행 중인 주소와 PID, 시작 시각
+depbee dashboard --stop          # 종료
+```
+
+- 시작: `--background`는 창 없는 별도 프로세스로 대시보드를 띄우고, 그 서버가 실제로 응답하는 것을 확인한 뒤에만 주소를 출력하고 종료 코드 0으로 돌아옵니다. 첫 줄은 포그라운드 실행과 같은 세션 주소이고 둘째 줄은 안내입니다. 시작한 터미널을 닫거나 그 터미널의 프로세스를 종료해도 대시보드는 계속 실행됩니다. Windows에서는 콘솔 창이 뜨지 않습니다(대시보드가 실행하는 git·npm도 창을 띄우지 않음). macOS·Linux에서는 새 세션으로 분리합니다.
+- 이미 실행 중이면 새로 띄우지 않고 실행 중인 주소와 "이미 백그라운드에서 실행 중"이라는 안내를 출력합니다(종료 코드 0). 이때 준 `--port` 같은 옵션은 쓰이지 않습니다. 옵션을 바꾸려면 `--stop` 뒤에 다시 시작합니다. 여러 터미널에서 동시에 시작해도 하나만 뜨고 모두 같은 주소를 받습니다.
+- 준비되지 않으면 주소를 출력하지 않습니다. 포트를 쓸 수 없거나 `web` extra가 없는 등 시작에 실패하면 그 오류를, 30초 안에 응답하지 않으면 시간 초과를 표준 오류의 error JSON으로 알리고 종료 코드 2로 끝납니다. 시간 초과일 때는 방금 띄운 프로세스를 종료해 반쯤 뜬 서버를 남기지 않습니다.
+- 확인: `--status`는 실행 중이면 주소와 PID·시작 시각(UTC)을 출력합니다. 실행 중이 아니면 그렇게 알리고 종료 코드 0입니다. 프로세스는 있는데 응답하지 않으면(시작 중이거나, 하던 작업을 마치고 종료하는 중) 그렇게 알리고 종료 코드 2입니다.
+- 종료: `--stop`은 서버에 종료를 요청하고 프로세스가 끝난 것을 확인한 뒤 돌아옵니다. 서버는 Ctrl+C 때와 같이 스스로 정상 종료합니다. 실행 중이 아니면 "실행 중인 백그라운드 대시보드가 없습니다"라고 알리고 종료 코드 0입니다(여러 번 실행해도 같음). 진행 중인 검사나 반영이 있으면 서버는 그 작업을 마친 뒤 끝나므로, 15초 안에 끝나지 않으면 그 사실을 오류(종료 코드 2)로 알립니다. 그 사이 새 접속은 받지 않으며 `--status`로 다시 확인합니다.
+- depbee는 PID로 프로세스를 강제 종료하지 않습니다. 종료 요청은 `127.0.0.1`의 해당 포트로만 보내고, 시작할 때 만든 무작위 제어 값으로 서명합니다(HMAC-SHA256, 값 자체는 보내지 않음). 서버도 같은 값으로 서명한 응답을 돌려주므로, 죽은 대시보드의 포트를 다른 프로그램이 쓰고 있어도 실행 중으로 착각하거나 그 프로그램에 종료를 시키지 않습니다. 제어 값이 맞지 않는 요청은 세션 없는 다른 요청과 똑같이 403입니다. 예외는 하나로, `--background`가 방금 직접 띄운 프로세스가 30초 안에 준비되지 않을 때 그 프로세스만 종료합니다.
+- 상태 파일: 사용자 설정 폴더([자산 폴더 설정](#자산-폴더-설정-depbee-setup)의 `config.json`과 같은 폴더, 기본 `~/.config/depbee/`, 바꾸려면 절대 경로의 `DEPBEE_CONFIG_DIR`)에 `dashboard.lock`, `dashboard.json`, `dashboard.log`를 둡니다. 사용자 설정 폴더마다 백그라운드 대시보드는 하나입니다. 실행 여부는 서버 프로세스가 살아 있는 동안 잡고 있는 `dashboard.lock`의 운영체제 잠금으로 판단하므로, 프로세스가 강제 종료되거나 PC가 꺼져도 잠금은 저절로 풀립니다. 그렇게 남은 `dashboard.json`은 다음 `--status`·`--stop`·`--background`가 죽은 것으로 알아보고 지우거나 새로 씁니다.
+- `--status`와 `--stop`은 사용자 설정 폴더의 파일만 봅니다. 현재 폴더, 프로젝트 폴더, 이력 파일(`DEPBEE_HISTORY_DB`) 옆에 같은 이름의 파일이 있어도 읽지 않고, 그 파일이 가리키는 포트로 아무 요청도 보내지 않으며, 그 파일을 지우지도 않습니다. `DEPBEE_CONFIG_DIR`이 상대 경로면 어떤 파일도 건드리기 전에 오류(종료 코드 2)로 끝납니다.
+- `dashboard.json`에는 세션 주소와 제어 값이 들어 있습니다. 이 파일을 읽을 수 있는 사람은 대시보드를 쓸 수 있으므로 사용자 설정 폴더를 다른 사람이 읽을 수 있는 곳에 두지 않습니다. macOS·Linux에서는 이 파일을 소유자만 읽고 쓰게(0600) 만들고, Windows에서는 사용자 폴더의 권한을 따릅니다. 서버가 정상 종료하면 이 파일을 지웁니다. 세션 주소와 제어 값은 명령줄 인자나 `dashboard.log`에 쓰지 않습니다.
+- `dashboard.log`에는 서버의 표준 오류(uvicorn 경고, 처리하지 못한 예외의 traceback)가 들어가고 시작할 때마다 비웁니다. traceback에는 경로나 패키지 문자열이 들어갈 수 있습니다.
+- 백그라운드 서버는 사용자 설정 폴더를 작업 폴더로 삼으므로 시작한 프로젝트 폴더를 붙잡지 않습니다. 상대 경로로 준 옵션과 상대 경로일 수 있는 환경 변수(`DEPBEE_HISTORY_DB`, `DEPBEE_MODEL_DIR`, `DEPBEE_KNOWN_MALICIOUS_DIR`)는 시작한 폴더 기준의 절대 경로로 바꿔 넘기므로, 이력과 자산은 포그라운드로 띄웠을 때와 같은 파일을 씁니다.
+- 포그라운드 `depbee dashboard`는 전과 같이 상태 파일을 쓰지 않고 Ctrl+C로 끕니다. `--status`·`--stop`은 백그라운드로 띄운 것만 다룹니다.
+- 확인한 환경과 한계: Windows 11과 Linux(WSL2의 Ubuntu 24.04)에서 실제 프로세스로 시작·확인·중복 시작·동시 시작·종료·재시작, 강제 종료된 서버가 남긴 상태의 정리를 확인했습니다. 터미널이 사라진 뒤의 유지는 Windows에서 콘솔 창 닫기와 프로세스 트리 종료로, Linux에서 터미널 끊김(SIGHUP)으로 확인했습니다. macOS는 Linux와 같은 코드 경로(새 세션, `flock` 잠금)를 쓰지만 실행해 확인하지 않았습니다. 로그아웃하면 운영체제가 사용자 프로세스를 끝낼 수 있고, 로그인이나 재부팅 뒤에 자동으로 다시 시작하지 않습니다.
+
 지금 할 수 없는 것: 대시보드에서 `check` 실행, 검사만의 다른 비교 기준(Git ref, 이전 lockfile 파일) 선택(CLI로 실행하면 등록한 프로젝트의 `scan`은 기록됨), 등록 해제와 이력 삭제, GitHub Actions `report.json` 가져오기, 추이 그래프, 의심 코드 위치와 과거 캠페인 정보.
 
 ## MCP 진입점 (검사 전용)
@@ -216,15 +279,16 @@ depbee dashboard --port 8765 --model-dir models/<model-id> --known-malicious-dir
 
 ```powershell
 python -m pip install ".[mcp,ml,extract]"
-depbee mcp --model-dir "C:\depbee-assets\model" --known-malicious-dir "C:\depbee-assets\index"
+depbee setup "C:\depbee-assets"    # 한 번만: 모델과 색인 폴더 저장
+depbee mcp                         # 등록할 서버 명령은 이것뿐
 ```
 
-위 자산 폴더는 사용자가 관리하는 절대 경로로 바꿉니다. 연결하지 않을 자산은 옵션과 값을 함께 생략합니다. 빈 값을 인자로 주면 입력 오류입니다.
+[자산 폴더를 저장](#자산-폴더-설정-depbee-setup)해 두면 서버 명령에 경로를 넣지 않습니다. 저장하지 않고 쓰려면 `depbee mcp --model-dir "<모델 폴더>" --known-malicious-dir "<색인 폴더>"`처럼 절대 경로를 주거나 서버 환경에 `DEPBEE_MODEL_DIR`·`DEPBEE_KNOWN_MALICIOUS_DIR`를 둡니다. 옵션, 환경 변수, 저장된 설정 순으로 쓰고, 연결하지 않을 자산은 옵션과 값을 함께 생략합니다. 빈 값을 인자로 주면 입력 오류입니다.
 
 `python -m depbee`는 현재 폴더를 import 경로 맨 앞에 넣으므로, MCP 클라이언트가 신뢰할 수 없는 작업 폴더에서 서버를 띄울 수 있으면 위처럼 콘솔 스크립트(`depbee mcp`)나 `python -P -m depbee mcp`로 등록합니다.
 
 - 도구는 두 개입니다. `check_package`(`package`: `NAME@VERSION`)는 `check`와, `scan_lockfile`(`project`, 선택 `base_lock` 또는 `base_ref`)은 `scan --extract`와 같은 검사를 하고 같은 보고서를 돌려줍니다. 판정·이유·종료 코드는 CLI와 같은 공통 pipeline이 정합니다.
-- 검사 전용입니다. 설치, 업데이트 미리보기·반영, 프로젝트 파일을 쓰는 도구는 없습니다. 다만 추출한 feature 캐시(`~/.cache/depbee`)와 임시 파일은 CLI와 같이 쓰므로 MCP 도구 힌트는 `readOnlyHint: false`, `destructiveHint: false`(추가만 함)입니다. 모델은 서버를 띄울 때의 `--model-dir` 또는 `DEPBEE_MODEL_DIR`만, 기지 악성 색인은 `--known-malicious-dir` 또는 `DEPBEE_KNOWN_MALICIOUS_DIR`만 쓰고 도구 입력으로 받지 않습니다. 색인 없이 띄운 서버는 기지 악성 대조를 하지 않으며(`report.detectors.known_malicious`가 null), 그때 응답의 `notices`에는 이번 결과를 기지 악성 기록과 대조하지 않았으므로 통과(종료 코드 0)도 알려진 악성 버전이 아니라는 확인이 아니라는 안내가 붙습니다. 통과면 에이전트가 설치를 이어 가므로 색인을 연결해 등록하는 것을 권장합니다(예: `depbee mcp --model-dir <모델 폴더> --known-malicious-dir <색인 폴더>`, 또는 서버 환경에 `DEPBEE_KNOWN_MALICIOUS_DIR`). 색인이 연결되면 이 안내는 없습니다.
+- 검사 전용입니다. 설치, 업데이트 미리보기·반영, 프로젝트 파일을 쓰는 도구는 없습니다. 다만 추출한 feature 캐시(`~/.cache/depbee`)와 임시 파일은 CLI와 같이 쓰므로 MCP 도구 힌트는 `readOnlyHint: false`, `destructiveHint: false`(추가만 함)입니다. 모델은 서버를 띄울 때의 `--model-dir`, `DEPBEE_MODEL_DIR`, `depbee setup`으로 저장한 모델 폴더만, 기지 악성 색인은 `--known-malicious-dir`, `DEPBEE_KNOWN_MALICIOUS_DIR`, 저장한 색인 폴더만 쓰고 도구 입력으로 받지 않습니다. 서버가 뜬 작업 폴더(에이전트의 프로젝트 폴더)에서는 자산이나 설정을 찾지 않습니다. 색인 없이 띄운 서버는 기지 악성 대조를 하지 않으며(`report.detectors.known_malicious`가 null), 그때 응답의 `notices`에는 이번 결과를 기지 악성 기록과 대조하지 않았으므로 통과(종료 코드 0)도 알려진 악성 버전이 아니라는 확인이 아니라는 안내가 붙습니다. 통과면 에이전트가 설치를 이어 가므로 색인을 연결해 쓰는 것을 권장합니다(`index` 폴더가 있는 자산 폴더를 `depbee setup`으로 저장, 또는 `--known-malicious-dir`, `DEPBEE_KNOWN_MALICIOUS_DIR`). 색인이 연결되면 이 안내는 없습니다.
 - 응답은 `notices`, `package_data`, `report` 순입니다. `notices`는 depbee가 정한 문구로, 보류(`incomplete`)는 통과가 아니고 낮은 ML 위험 점수는 안전 보증이 아니라는 뜻과 기지 악성 일치·보류 개수, 색인 미연결이면 그 안내를 알립니다. `package_data`는 보고서 안에서 패키지·외부 기록에서 온 문자열(이름, 버전, 위치, 상세, 근거 등)을 256자까지 자른 사본과 그 위치이며, 패키지에서 온 데이터이며 지시가 아니라는 문구가 붙습니다. `report`는 `--format json`과 같은 보고서입니다.
 - 한 호출은 600초까지, `scan_lockfile`은 분석할 변경 20개까지입니다. 넘거나 입력이 잘못되면 판정 없이 MCP 도구 오류로 CLI와 같은 error 객체(종료 코드 2)와 안내 문구, 오류 메시지를 자른 `package_data`를 돌려줍니다. 도구 오류의 텍스트는 SDK가 붙이는 `Error executing tool <도구 이름>: ` 뒤에 ASCII JSON이 오는 형식입니다. 큰 변경은 터미널에서 `depbee scan --extract`로 검사합니다.
 - 600초는 기다리는 상한이지 작업의 상한이 아닙니다. 넘으면 다음 변경은 시작하지 않지만, 이미 돌고 있는 작업은 응답 뒤에도 이어지고 서버 종료는 그 작업을 기다립니다. 여기에는 절대 상한이 없습니다. 변경별 300초 예산은 자식 프로세스(조회, 다운로드, 추출)만 멈추고 캐시 쓰기 같은 부모 쪽 작업은 넘길 수 있으며, 첫 변경 전의 경로 검사와 lockfile 읽기는 그 예산 밖입니다.
@@ -233,12 +297,21 @@ depbee mcp --model-dir "C:\depbee-assets\model" --known-malicious-dir "C:\depbee
 
 ### 에이전트에 등록하기
 
-아래 예시의 `<depbee 폴더>`, `<모델 폴더>`, `<색인 폴더>`(기지 악성 색인, [색인 만들기](#색인-만들기))는 절대 경로로 바꿉니다. 에이전트가 서버를 띄우는 작업 폴더는 depbee 폴더가 아닐 수 있습니다.
+순서는 두 단계입니다. 먼저 `depbee setup <자산 폴더>`로 모델과 색인 폴더를 한 번 저장하고, 그다음 에이전트에 `depbee mcp`를 등록합니다. `depbee setup <자산 폴더>`는 저장을 마치면 지금 설치된 depbee 실행 파일의 절대 경로를 넣은 Claude Code·Codex 등록 명령을 출력하므로 그 줄을 복사하면 됩니다. 아래는 직접 입력할 때의 형태이고 `<depbee 폴더>`는 절대 경로로 바꿉니다. 에이전트가 서버를 띄우는 작업 폴더는 depbee 폴더가 아닐 수 있으므로 실행 파일은 절대 경로로 적습니다.
+
+| 환경 | 한 번 저장 | 등록 |
+| --- | --- | --- |
+| PowerShell, Claude Code | `depbee setup "C:\depbee-assets"` | `claude mcp add --scope user depbee -- "<depbee 폴더>\.venv\Scripts\depbee.exe" mcp` |
+| PowerShell, Codex | `depbee setup "C:\depbee-assets"` | `codex mcp add depbee -- "<depbee 폴더>\.venv\Scripts\depbee.exe" mcp` |
+| Bash·Zsh, Claude Code | `depbee setup /opt/depbee-assets` | `claude mcp add --scope user depbee -- "<depbee 폴더>/.venv/bin/depbee" mcp` |
+| Bash·Zsh, Codex | `depbee setup /opt/depbee-assets` | `codex mcp add depbee -- "<depbee 폴더>/.venv/bin/depbee" mcp` |
+
+자산을 저장하지 않고 등록하려면 `mcp` 뒤에 `--model-dir "<모델 폴더>" --known-malicious-dir "<색인 폴더>"`를 붙입니다(절대 경로, [색인 만들기](#색인-만들기)). 이 옵션은 저장된 설정보다 우선합니다.
 
 **Claude Code:** `claude mcp add`로 stdio 서버를 등록합니다. `--` 뒤의 명령과 인자는 그대로 서버 실행에 쓰입니다.
 
 ```powershell
-claude mcp add --scope user depbee -- "<depbee 폴더>\.venv\Scripts\depbee.exe" mcp --model-dir "<모델 폴더>" --known-malicious-dir "<색인 폴더>"
+claude mcp add --scope user depbee -- "<depbee 폴더>\.venv\Scripts\depbee.exe" mcp
 ```
 
 `--scope`는 `local`(기본값, 현재 프로젝트에서 나만 사용), `project`(프로젝트 루트의 `.mcp.json`에 저장해 저장소로 공유, 처음 쓸 때 사용 승인을 물음), `user`(내 모든 프로젝트)입니다. 위 명령의 경로는 내 PC의 경로이므로 `local`이나 `user`를 권장합니다. `claude mcp list`로 등록 상태를 확인합니다.
@@ -246,13 +319,13 @@ claude mcp add --scope user depbee -- "<depbee 폴더>\.venv\Scripts\depbee.exe"
 **Codex:** `codex mcp add`로 등록하거나 `~/.codex/config.toml`(신뢰한 프로젝트라면 프로젝트의 `.codex/config.toml`)에 `[mcp_servers.<이름>]` 표를 직접 씁니다. Codex의 도구 호출 기본 제한은 60초라 depbee 검사(최대 600초)가 끝나기 전에 끊길 수 있으므로 `tool_timeout_sec`를 600보다 크게 둡니다.
 
 ```powershell
-codex mcp add depbee -- "<depbee 폴더>\.venv\Scripts\depbee.exe" mcp --model-dir "<모델 폴더>" --known-malicious-dir "<색인 폴더>"
+codex mcp add depbee -- "<depbee 폴더>\.venv\Scripts\depbee.exe" mcp
 ```
 
 ```toml
 [mcp_servers.depbee]
 command = '<depbee 폴더>\.venv\Scripts\depbee.exe'
-args = ["mcp", "--model-dir", '<모델 폴더>', "--known-malicious-dir", '<색인 폴더>']
+args = ["mcp"]
 tool_timeout_sec = 660
 ```
 
@@ -313,6 +386,8 @@ MCP는 에이전트가 도구를 부를 때만 효과가 있습니다. 프로젝
 ```text
 src/depbee/
   cli.py                  # 인자·한국어 텍스트·JSON 출력·종료 코드
+  terminal.py             # 터미널에서만 붙는 표시: 벌 인장, 색, 시작 화면, 다음 동작
+  config.py               # 사용자 설정(depbee setup): 저장한 모델·색인 폴더, 원자적 파일 쓰기
   contracts.py            # 공통 규약과 Analyzer/Predictor 인터페이스
   inputs/npm.py           # 대상 프로젝트와 기준 lockfile 비교, check의 단일 버전 요청
   inputs/git.py           # Git 커밋에서 기준 lockfile 읽기
@@ -329,6 +404,7 @@ src/depbee/
   mcp.py                  # 검사 전용 MCP 진입점(check_package, scan_lockfile)
   history.py              # 로컬 이력 저장소(SQLite): 프로젝트 등록, 보고서 기록·조회
   dashboard/              # 로컬 대시보드(depbee dashboard): app.py, templates/, static/
+  dashboard/lifecycle.py  # 백그라운드 대시보드의 시작·상태·종료(잠금, 상태 파일, 제어 요청)
 scripts/write_manifest.py # 모델 파일로 manifest.json 생성
 scripts/build_known_malicious_index.py # OSV npm all.zip으로 기지 악성 색인 폴더 생성
 tests/                    # 합성 자료를 이용한 회귀·모델 연동 테스트

@@ -36,7 +36,14 @@ depbee --help
 
 가상환경 활성화 없이 계속 사용하려면 Python 3.11 이상의 `pipx` 환경에서 `pipx install ".[ml,extract,mcp,web]"`로 설치합니다. `pipx ensurepath`를 한 번 실행하고 새 터미널에서 `depbee --help`를 확인합니다. Windows의 `depbee.exe`와 macOS/Linux의 `depbee`는 Python 환경의 실행 명령입니다. 현재 공개 Release나 Python 없이 실행하는 독립 바이너리는 제공하지 않습니다. [wheel 만들기와 설치](docs/usage.md#wheel-만들기와-설치)
 
-ML 검사에는 **모델 폴더**(`model.txt`, `manifest.json`), 기지 악성 대조에는 **색인 폴더**(`index.json`, `manifest.json`)를 준비합니다. PowerShell에서는 `$env:DEPBEE_MODEL_DIR = 'C:\depbee-assets\model'`과 `$env:DEPBEE_KNOWN_MALICIOUS_DIR = 'C:\depbee-assets\index'`를 실제 경로로 바꾸고, Bash/Zsh에서는 `export DEPBEE_MODEL_DIR='/모델/경로'`와 `export DEPBEE_KNOWN_MALICIOUS_DIR='/색인/경로'`를 사용합니다. 모델이 없으면 ML 판정이 보류되고, 색인이 없으면 기지 악성 대조를 건너뜁니다. [모델 준비](docs/usage.md#모델-준비) · [색인 만들기](docs/usage.md#색인-만들기)
+ML 검사에는 **모델 폴더**(`model.txt`, `manifest.json`), 기지 악성 대조에는 **색인 폴더**(`index.json`, `manifest.json`)를 준비합니다. 두 폴더를 자산 폴더 하나 아래에 `model`, `index`라는 이름으로 두고 한 번 저장하면, 이후의 명령과 MCP 등록에 경로를 주지 않아도 됩니다.
+
+```powershell
+depbee setup C:\depbee-assets    # macOS/Linux 예: depbee setup /opt/depbee-assets
+depbee setup                     # 저장된 설정 보기, 지우려면 depbee setup --clear
+```
+
+depbee는 자산을 내려받지 않습니다. 직접 만들었거나 SHA-256을 확인한 폴더만 저장합니다. 저장할 때 두 자산을 검사에서 쓰는 방식 그대로 읽어 확인하고, 없는 쪽은 연결하지 않은 것으로 저장합니다. 설정은 홈 폴더의 `~/.config/depbee/config.json`에 두며, 현재 폴더나 검사하는 프로젝트 안의 파일은 설정으로 읽지 않습니다. 한 번만 다른 자산을 쓰려면 `--model-dir`·`--known-malicious-dir` 옵션(가장 우선)이나 환경 변수 `DEPBEE_MODEL_DIR`·`DEPBEE_KNOWN_MALICIOUS_DIR`를 사용합니다. 어느 것도 없으면 ML 판정은 보류되고 기지 악성 대조는 건너뜁니다. [자산 폴더 설정](docs/usage.md#자산-폴더-설정-depbee-setup) · [모델 준비](docs/usage.md#모델-준비) · [색인 만들기](docs/usage.md#색인-만들기)
 
 ## CLI
 
@@ -51,13 +58,20 @@ depbee update                  # npm 업데이트 미리보기 (Node.js와 npm �
 
 검사 종료 코드는 `0` 통과, `1` 위험, `2` 보류 또는 오류입니다. 결과를 파일에 남기려면 `depbee scan . --extract --format json --output report.json`을 사용합니다(`report.json`은 새 파일이어야 합니다).
 
+인수 없이 `depbee`만 실행하면 자주 쓰는 명령을 모은 시작 화면이 나옵니다. 검사한 것이 없으므로 이때의 종료 코드는 2입니다. 터미널에서 직접 실행한 텍스트 결과에는 판정의 색과 마지막의 **다음 동작** 안내가 붙습니다. 파이프나 파일로 보낸 출력, JSON, Markdown은 전과 같습니다. [터미널에서 보는 화면](docs/usage.md#터미널에서-보는-화면)
+
 미리보기를 검토한 뒤 `depbee update --apply lockfile`로 변경을 반영하거나 `depbee update --apply install`로 설치까지 진행할 수 있습니다. 설치에는 `npm ci --ignore-scripts`를 사용합니다. 기지 악성 일치는 반영을 거부하고, ML 기준 이상·보류·기지 악성 미확인은 추가 확인을 요구합니다. [반영 조건과 백업·복구](docs/usage.md#업데이트-반영-depbee-update---apply)
 
 ## 로컬 대시보드
 
 ```powershell
-depbee dashboard
+depbee dashboard                # 이 터미널에서 실행, Ctrl+C로 종료
+depbee dashboard --background   # 백그라운드로 실행하고 주소 출력 (터미널을 닫아도 유지)
+depbee dashboard --status       # 실행 중인 백그라운드 대시보드의 주소 다시 보기
+depbee dashboard --stop         # 백그라운드 대시보드 종료
 ```
+
+`--background`는 서버가 실제로 응답한 뒤에 주소를 출력하고, 이미 실행 중이면 새로 띄우지 않고 그 주소를 보여 줍니다. `--stop`으로 끄면 그 주소는 만료됩니다. [백그라운드 실행](docs/usage.md#백그라운드-실행)
 
 터미널에 출력된 `127.0.0.1` 주소를 엽니다. 등록한 프로젝트가 하나면 그 프로젝트의 의존성 화면이, 없거나 여러 개면 프로젝트 관리 화면이 열립니다. 관리 화면에서 npm 프로젝트의 절대 경로를 등록하거나 기존 프로젝트를 선택합니다.
 
@@ -65,21 +79,25 @@ depbee dashboard
 
 ## MCP
 
-Claude Code에서 설치 전에 검사하려면 대상 프로젝트 폴더에서 depbee를 stdio 서버로 등록합니다. 아래의 실행 파일과 자산 경로를 자신이 관리하는 절대 경로로 바꿉니다. 준비하지 않은 자산은 해당 옵션과 값을 함께 생략합니다. 옵션을 생략하면 서버에 설정한 환경 변수를 사용합니다. 모델도 설정하지 않으면 ML 점수는 보류되고, 색인도 설정하지 않으면 기지 악성 대조를 건너뜁니다.
+에이전트가 설치 전에 검사하게 하려면 depbee를 stdio 서버로 등록합니다. [설치와 준비](#설치와-준비)의 `depbee setup`으로 자산 폴더를 한 번 저장했다면 등록 명령은 `depbee mcp`뿐이고 모델·색인 경로를 넣지 않습니다. `depbee setup <자산 폴더>`는 저장을 마치면 지금 설치된 실행 파일의 절대 경로로 아래 등록 명령을 출력하므로 그대로 복사해 쓸 수 있습니다.
 
 **PowerShell**
 
 ```powershell
-claude mcp add --scope local depbee -- 'C:\tools\depbee\.venv\Scripts\depbee.exe' mcp --model-dir 'C:\depbee-assets\model' --known-malicious-dir 'C:\depbee-assets\index'
-claude mcp list
+depbee setup 'C:\depbee-assets'
+claude mcp add --scope user depbee -- 'C:\tools\depbee\.venv\Scripts\depbee.exe' mcp
+codex mcp add depbee -- 'C:\tools\depbee\.venv\Scripts\depbee.exe' mcp
 ```
 
 **Bash 또는 Zsh**
 
 ```sh
-claude mcp add --scope local depbee -- '/opt/depbee/.venv/bin/depbee' mcp --model-dir '/opt/depbee-assets/model' --known-malicious-dir '/opt/depbee-assets/index'
-claude mcp list
+depbee setup '/opt/depbee-assets'
+claude mcp add --scope user depbee -- '/opt/depbee/.venv/bin/depbee' mcp
+codex mcp add depbee -- '/opt/depbee/.venv/bin/depbee' mcp
 ```
+
+실행 파일 경로는 자신의 설치 위치로 바꾸고, 쓰는 에이전트의 줄만 실행합니다. 등록은 `claude mcp list`나 `codex mcp list`로 확인합니다. 자산을 저장하지 않았으면 모델이 없어 ML 점수는 보류되고 기지 악성 대조는 건너뜁니다. 저장하지 않고 등록할 때는 `mcp` 뒤에 `--model-dir <모델 폴더> --known-malicious-dir <색인 폴더>`를 붙이거나 서버 환경에 `DEPBEE_MODEL_DIR`·`DEPBEE_KNOWN_MALICIOUS_DIR`를 둡니다.
 
 예를 들어 “lodash 4.17.21을 설치하기 전에 검사해 줘”라고 요청하면 `check_package`가 버전 하나를 검사합니다. “이 프로젝트의 lockfile 변경을 검사해 줘”에는 `scan_lockfile`을 사용합니다. 두 도구는 검사 결과를 반환하고 설치·업데이트는 에이전트가 수행합니다. [Codex 설정과 MCP 입력](docs/usage.md#에이전트에-등록하기)
 

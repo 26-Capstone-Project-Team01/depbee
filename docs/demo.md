@@ -35,6 +35,7 @@ mkdir "$state\tmp", "$state\cache", "$state\mcp-home" | Out-Null
 $env:DEPBEE_MODEL_DIR = "<모델 폴더>"
 $env:DEPBEE_KNOWN_MALICIOUS_DIR = "<색인 폴더>"
 $env:DEPBEE_HISTORY_DB = "$state\history.sqlite3"
+$env:DEPBEE_CONFIG_DIR = "$state\config"
 $env:TMP = "$state\tmp"; $env:TEMP = "$state\tmp"; $env:TMPDIR = "$state\tmp"
 $env:PYTHONIOENCODING = 'utf-8'
 $cache = "$state\cache"
@@ -42,6 +43,7 @@ $cache = "$state\cache"
 
 - `DEPBEE_MODEL_DIR`, `DEPBEE_KNOWN_MALICIOUS_DIR`: `--model-dir`, `--known-malicious-dir`을 생략한 명령이 씁니다([실행](usage.md#실행), [기지 악성 탐지기](usage.md#기지-악성-탐지기), [색인 만들기](usage.md#색인-만들기)).
 - `DEPBEE_HISTORY_DB`: 이력이 이 파일에, 반영 백업이 그 옆 `backups\`에 생깁니다. 지정하지 않으면 홈 폴더의 기본 위치에 생깁니다([로컬 이력 저장소](usage.md#로컬-이력-저장소)).
+- `DEPBEE_CONFIG_DIR`: 사용자 설정 폴더입니다. 절대 경로여야 합니다(`$state`가 절대 경로). 지정하지 않으면 이 창의 명령도 홈 폴더(`~/.config/depbee/`)에 `depbee setup`으로 저장해 둔 모델·색인을 읽어, 아래 표와 "색인 없이" 장면의 결과가 달라집니다. 백그라운드 대시보드(`depbee dashboard --background`)의 상태 파일도 이 폴더에 생깁니다([자산 폴더 설정](usage.md#자산-폴더-설정-depbee-setup)).
 - `TMP`, `TEMP`, `TMPDIR`: tarball을 풀 임시 폴더입니다. Python은 `TMPDIR`를 `TEMP`·`TMP`보다 먼저 보므로 셋을 함께 둡니다.
 - 추출 캐시는 환경 변수로 옮길 수 없어 `--cache-dir`를 받는 명령(`scan`, `check`, `update`, `dashboard`)에 `--cache-dir $cache`를 붙입니다. 빠뜨리면 기본 위치 `~/.cache/depbee`에 쌓입니다. MCP 서버에는 이 옵션이 없어 아래 [MCP](#mcp)처럼 서버의 홈 폴더를 옮깁니다.
 - `PYTHONIOENCODING`: 결과를 파일로 돌리거나 다른 프로그램으로 넘길 때 필요합니다. 없으면 Windows에서 한글이 시스템 코드 페이지로 나갑니다.
@@ -121,7 +123,7 @@ depbee dashboard --cache-dir $cache                  # 빈 포트를 OS가 고�
 }
 ```
 
-JSON 문자열 안의 Windows 경로는 역슬래시를 두 번(`\\`) 씁니다. MCP 서버의 추출 캐시는 Python `Path.home()` 아래 `.cache\depbee`에 생기고, `Path.home()`은 Windows에서 `USERPROFILE`, macOS·Linux에서 `HOME`을 따릅니다. 그래서 위처럼 서버 환경의 `USERPROFILE`(macOS·Linux는 `HOME`)을 `<시연 상태 폴더>` 아래로 옮기면 캐시가 기본 위치에 생기지 않습니다.
+JSON 문자열 안의 Windows 경로는 역슬래시를 두 번(`\\`) 씁니다. MCP 서버의 추출 캐시는 Python `Path.home()` 아래 `.cache\depbee`에 생기고, `Path.home()`은 Windows에서 `USERPROFILE`, macOS·Linux에서 `HOME`을 따릅니다. 그래서 위처럼 서버 환경의 `USERPROFILE`(macOS·Linux는 `HOME`)을 `<시연 상태 폴더>` 아래로 옮기면 캐시가 기본 위치에 생기지 않습니다. 사용자 설정 폴더도 평소 것과 분리됩니다. 서버가 이 창의 `DEPBEE_CONFIG_DIR`을 물려받으면 그 폴더를, 아니면 옮긴 홈 아래 `.config\depbee`를 쓰기 때문입니다. 어느 쪽이든 홈 폴더에 저장해 둔 모델·색인 설정은 읽지 않고 위 `args`의 폴더만 씁니다.
 
 ```powershell
 cd "<시연 폴더>"

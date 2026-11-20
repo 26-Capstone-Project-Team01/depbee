@@ -15,7 +15,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import __version__
+from . import __version__, config
 from .analysis import bounded, cache
 from .analysis.artifact import ArtifactAnalyzer
 from .contracts import GuardError, elapsed_since, parse_json
@@ -111,13 +111,15 @@ def scan_project(
     base_lock, base_ref: the base lockfile, as in plan_project().
     analysis: trusted precomputed analysis JSON. extract: run depbee-analyzer instead.
     local_sources: NAME@VERSION=DIR specs under local_root (extract only).
-    model_dir: trusted model directory. If None, DEPBEE_MODEL_DIR is read on each call; empty or
-    unset means no model. A bad path is an error and never falls back to another model.
+    model_dir: trusted model directory. If None, DEPBEE_MODEL_DIR is read on each call, and if
+    that is empty or unset, the folder saved by depbee setup (_asset_dir); none of them means no
+    model. A bad path is an error and never falls back to another model.
     known_malicious_dir: trusted known malicious index folder (known_malicious.load), read right
-    after the model. If None, DEPBEE_KNOWN_MALICIOUS_DIR is read on each call; empty or unset
-    means no index (detectors.known_malicious null, as before). A bad index is an error, never
-    "no index". The same index is matched against the changes and, with extract, keeps known
-    malicious versions out of the baseline candidates (D-16).
+    after the model. If None, DEPBEE_KNOWN_MALICIOUS_DIR is read on each call, then the folder
+    saved by depbee setup; none of them means no index (detectors.known_malicious null, as
+    before). A bad index is an error, never "no index". The same index is matched against the
+    changes and, with extract, keeps known malicious versions out of the baseline candidates
+    (D-16).
     progress: called per extracted package; the caller decides how to show it.
     cache_dir, no_cache: the extracted-feature cache (default ~/.cache/depbee); see _cache_dir().
     With extract=True the report also has elapsed_seconds (in total and per result) and cache_hit.
@@ -146,21 +148,49 @@ def scan_project(
     return _timed(scan(request, analyzer, predictor, **detectors), analyzer, started)
 
 
+def _asset_dir(given: Path | None, variable: str, setting: str) -> Path | None:
+    """given, else the environment variable read on this call (empty counts as unset), else the
+    folder `depbee setup` saved for the user (config.saved_dir); None if there is none of them.
+    Never read from the project being checked."""
+    if given is not None:
+        return given
+    from_environment = os.environ.get(variable)
+    return Path(from_environment) if from_environment else config.saved_dir(setting)
+
+
 def _predictor(model_dir: Path | None) -> LightGBMPredictor | None:
-    """model_dir, else DEPBEE_MODEL_DIR read on this call; empty or unset means no model."""
-    env_model = os.environ.get("DEPBEE_MODEL_DIR")
-    if model_dir is None and env_model:
-        model_dir = Path(env_model)
+    """The model of _asset_dir(model_dir, DEPBEE_MODEL_DIR, saved model_dir); none: no model."""
+    model_dir = _asset_dir(model_dir, "DEPBEE_MODEL_DIR", "model_dir")
     return LightGBMPredictor(model_dir) if model_dir else None
 
 
 def _known_malicious(directory: Path | None) -> KnownMaliciousIndex | None:
-    """directory, else DEPBEE_KNOWN_MALICIOUS_DIR read on this call; empty or unset means none.
-    Never read from the project being checked."""
-    env_dir = os.environ.get("DEPBEE_KNOWN_MALICIOUS_DIR")
-    if directory is None and env_dir:
-        directory = Path(env_dir)
+    """The index of _asset_dir(directory, DEPBEE_KNOWN_MALICIOUS_DIR, saved
+    known_malicious_dir); none: no index."""
+    directory = _asset_dir(directory, "DEPBEE_KNOWN_MALICIOUS_DIR", "known_malicious_dir")
     return load(directory) if directory else None
+
+
+def setup_assets(assets_dir: Path) -> dict:
+    """Save assets_dir as the user's trusted asset folder for every later command.
+
+    assets_dir/model (model.txt, manifest.json) and assets_dir/index (index.json,
+    manifest.json) are each loaded here as a scan loads them. A subfolder that does not exist
+    is saved as not connected; at least one must exist. Nothing is saved if one fails to load
+    (GuardError, OSError or ValueError, as from a scan). Nothing is downloaded.
+    Returns config.save()'s settings with model_id and list_as_of (None if not connected).
+    """
+    root = Path(os.path.abspath(assets_dir))
+    found = {key: root / name for key, name in config.LAYOUT.items() if (root / name).is_dir()}
+    if not found:
+        raise GuardError(
+            f"No model or index folder in {root}: expected model/ (model.txt, manifest.json) "
+            "and index/ (index.json, manifest.json)"
+        )
+    model, index = found.get("model_dir"), found.get("known_malicious_dir")
+    model_id = LightGBMPredictor(model).model_id if model else None
+    list_as_of = load(index).list_as_of if index else None
+    return {**config.save(root, model, index), "model_id": model_id, "list_as_of": list_as_of}
 
 
 def _detectors(known_malicious_dir: Path | None) -> dict:

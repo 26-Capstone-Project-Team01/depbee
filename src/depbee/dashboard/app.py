@@ -717,11 +717,15 @@ def _models() -> list[dict]:
 
 def serve(
     port: int, *, model_dir: Path | None = None, cache_dir: Path | None = None,
-    no_cache: bool = False, known_malicious_dir: Path | None = None,
+    no_cache: bool = False, known_malicious_dir: Path | None = None, background=None,
 ) -> None:  # fmt: skip
     """Bind 127.0.0.1:port (0 picks a free one), print the session address once and serve until
     Ctrl+C, which ends with one line and no traceback. The session is in the address line only:
-    no access log, and errors never quote requests."""
+    no access log, and errors never quote requests.
+
+    background (lifecycle.Instance): serve as the background instance instead. The address is
+    not printed but published in the instance's state file once the port is bound, and the
+    instance's control endpoint, in front of the app, can end the server as Ctrl+C does."""
     if not 0 <= port <= 65535:
         raise GuardError("--port must be between 0 and 65535")
     # Only when given, so that build_app is called as before without an index.
@@ -730,21 +734,29 @@ def serve(
     try:
         actual = sock.getsockname()[1]
         session = secrets.token_urlsafe(32)
+        app = build_app(actual, session, model_dir=model_dir, cache_dir=cache_dir,
+                        no_cache=no_cache, **known)  # fmt: skip
+        if background is not None:
+            app = background.control(app, lambda: setattr(server, "should_exit", True))
         config = uvicorn.Config(
-            build_app(actual, session, model_dir=model_dir, cache_dir=cache_dir,
-                      no_cache=no_cache, **known), host=HOST, port=actual, access_log=False,
+            app, host=HOST, port=actual, access_log=False,
             server_header=False, proxy_headers=False, log_level="warning", lifespan="off",
             ws="none",
         )  # fmt: skip
+        server = uvicorn.Server(config)
         try:
             projects = history.list_projects()
         except (history.HistoryError, OSError, sqlite3.Error, RuntimeError):
             projects = []  # The existing dashboard error page handles history read failures.
         target = f"projects/{projects[0]['id']}" if len(projects) == 1 else ""
-        print(f"http://{HOST}:{actual}/s/{session}/{target}", flush=True)
-        print("이 주소를 브라우저에서 여세요. 종료하려면 Ctrl+C를 누르세요.", flush=True)
+        url = f"http://{HOST}:{actual}/s/{session}/{target}"
+        if background is None:
+            print(url, flush=True)
+            print("이 주소를 브라우저에서 여세요. 종료하려면 Ctrl+C를 누르세요.", flush=True)
+        else:
+            background.publish(url, actual)
         try:
-            uvicorn.Server(config).run(sockets=[sock])
+            server.run(sockets=[sock])
         except KeyboardInterrupt:
             # After its graceful shutdown uvicorn re-raises the captured Ctrl+C (capture_signals).
             print(STOPPED, flush=True)

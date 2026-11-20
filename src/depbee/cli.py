@@ -3,11 +3,12 @@ import errno
 import json
 import os
 import re
+import shlex
 import sys
 from collections import Counter
 from pathlib import Path
 
-from . import __version__
+from . import __version__, config, terminal
 from .contracts import GuardError
 from .service import (
     APPLY_MODES,
@@ -16,6 +17,7 @@ from .service import (
     plan_project,
     preview_update,
     scan_project,
+    setup_assets,
 )
 
 STATUS_LABELS = {
@@ -128,6 +130,52 @@ CAUSE_LABELS = {
 HISTORY_FAILED = (
     "depbee: 이 검사 결과를 로컬 이력에 기록하지 못했습니다. 출력과 종료 코드는 그대로입니다."
 )
+WARNING = "경고:"  # starts the known malicious notice (_notices); _print_text colors by it
+# Colors of an apply outcome on an interactive terminal (terminal.painter tones).
+OUTCOME_TONES = {
+    "applied": "passed", "unchanged": "removed", "refused": "incomplete", "failed": "flagged",
+}  # fmt: skip
+# depbee dashboard --background, --status and --stop (dashboard.lifecycle): the line after the
+# address, or the only line.
+BACKGROUND_STARTED = (
+    "백그라운드에서 실행 중입니다. 이 주소를 브라우저에서 여세요. 주소를 다시 보려면 "
+    "depbee dashboard --status, 종료하려면 depbee dashboard --stop을 실행하세요."
+)
+BACKGROUND_RUNNING = (
+    "이미 백그라운드에서 실행 중이어서 새로 시작하지 않았습니다. 옵션을 바꿔 다시 시작하려면 "
+    "depbee dashboard --stop 뒤에 실행하세요."
+)
+BACKGROUND_STATUS = (
+    "백그라운드에서 실행 중입니다(PID {pid}, 시작 {started_at}). 종료하려면 "
+    "depbee dashboard --stop을 실행하세요."
+)
+BACKGROUND_NONE = (
+    "실행 중인 백그라운드 대시보드가 없습니다. 시작하려면 depbee dashboard --background를 "
+    "실행하세요."
+)
+BACKGROUND_UNRESPONSIVE = (
+    "백그라운드 대시보드 프로세스가 있지만 응답하지 않습니다(시작 중이거나, 하던 작업을 "
+    "마치고 종료하는 중). 잠시 뒤 다시 확인하세요."
+)
+BACKGROUND_STOPPED = "백그라운드 대시보드를 종료했습니다. 이전 주소는 더 이상 열리지 않습니다."
+# depbee setup (config, service.setup_assets).
+ASSET_NAMES = {"model_dir": "모델", "known_malicious_dir": "기지 악성 색인"}
+ASSET_VARIABLES = {
+    "model_dir": "DEPBEE_MODEL_DIR", "known_malicious_dir": "DEPBEE_KNOWN_MALICIOUS_DIR",
+}  # fmt: skip
+SETUP_NONE = "저장된 자산 설정이 없습니다."
+SETUP_HOW = (
+    "한 번 저장하려면 depbee setup DIR을 실행하세요. DIR/model에는 model.txt와 "
+    "manifest.json, DIR/index에는 index.json과 manifest.json을 둡니다."
+)
+SETUP_CLEARED = "저장된 자산 설정을 지웠습니다."
+SETUP_OVERRIDDEN = (
+    "  참고: 이 터미널에는 환경 변수 {variable}의 값이 있어 저장한 {name} 폴더보다 먼저 쓰입니다."
+)
+SETUP_SAVED = (
+    "이제 scan, check, update, dashboard, mcp에 --model-dir과 --known-malicious-dir을 주지 "
+    "않아도 이 자산을 씁니다. 에이전트에도 경로 옵션 없이 등록합니다."
+)
 
 
 def _cache_arguments(cmd: argparse.ArgumentParser) -> None:
@@ -156,7 +204,13 @@ def _asset_arguments(cmd: argparse.ArgumentParser) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Analyze npm updates without installing packages")
+    # The top of --help is the start screen's (main() without arguments): terminal.head, guide.
+    parser = argparse.ArgumentParser(
+        prog="depbee",
+        description="\n".join(terminal.head(__version__, sys.stdout)),
+        epilog="\n".join(terminal.guide()),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command", required=True)
     for name, help_text in (
@@ -251,6 +305,21 @@ def _parser() -> argparse.ArgumentParser:
         "list (every item while no such list is connected). Known malicious matches are refused "
         "anyway",
     )
+    setup = commands.add_parser(
+        "setup",
+        help="Save a trusted asset folder once (DIR/model and DIR/index), so that later "
+        "commands and MCP registrations need no --model-dir or --known-malicious-dir; without "
+        "DIR, show what is saved",
+    )
+    setup.add_argument(
+        "assets_dir",
+        nargs="?",
+        type=_asset_directory,
+        metavar="DIR",
+        help="Folder with model/ (model.txt, manifest.json) and index/ (index.json, "
+        "manifest.json); a subfolder that does not exist is saved as not connected",
+    )
+    setup.add_argument("--clear", action="store_true", help="Remove the saved settings")
     serve = commands.add_parser(
         "mcp",
         help="Serve the read-only check_package and scan_lockfile tools over MCP stdio "
@@ -268,6 +337,23 @@ def _parser() -> argparse.ArgumentParser:
     )
     _asset_arguments(dashboard)
     _cache_arguments(dashboard)
+    mode = dashboard.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--background",
+        action="store_true",
+        help="Start it as a background process that outlives this terminal, wait until it "
+        "answers and print its address; if one already runs, print that one's address instead",
+    )
+    mode.add_argument(
+        "--status",
+        action="store_true",
+        help="Print the address of the running background dashboard, if there is one",
+    )
+    mode.add_argument(
+        "--stop",
+        action="store_true",
+        help="Ask the background dashboard to stop and wait until its process has ended",
+    )
     return parser
 
 
@@ -338,7 +424,7 @@ def _notices(report: dict) -> list[tuple[str, str]]:
     notices = []
     if known:
         notices.append((
-            f"경고: 기지 악성 기록 일치 {known}개.",
+            f"{WARNING} 기지 악성 기록 일치 {known}개.",
             "낮은 ML 위험 점수는 이 경고를 취소하지 않습니다. 이 일치로 위험 판정했습니다.",
         ))  # fmt: skip
     if pending:
@@ -500,16 +586,19 @@ def _rest_line(row: dict) -> str:
     )
 
 
-def _print_text(report: dict) -> None:
+def _print_text(report: dict, paint=terminal.plain, mark: str = "") -> None:
+    """The report as text. paint and mark are for an interactive terminal (_emit): colors of
+    the verdict words and the bee mark before the first line; by default the text has neither."""
     # A console code page (e.g. cp949) may not encode every character in package data.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="backslashreplace")
     package_input = report.get("input_kind") == "package"
-    status = OVERALL_LABELS.get(report["status"], report["status"])
-    print(f"depbee 검사 결과: {status} (종료 코드 {report['exit_code']})")
+    status = paint(report["status"], OVERALL_LABELS.get(report["status"], report["status"]))
+    print(f"{mark}depbee 검사 결과: {status} (종료 코드 {report['exit_code']})")
     print(_summary(report["results"], package_input))
     for emphasized, rest in _notices(report):
-        print(f"{emphasized} {rest}")
+        tone = "flagged" if emphasized.startswith(WARNING) else "incomplete"
+        print(f"{paint(tone, emphasized)} {rest}")
     if report["model_id"]:
         print(f"모델: {_clean(report['model_id'])}, 판정 기준 점수 {report['threshold']}")
     for line in _detector_setup(report, _clean):
@@ -527,7 +616,7 @@ def _print_text(report: dict) -> None:
     if report.get("elapsed_seconds") is not None:
         print(f"소요 시간: {report['elapsed_seconds']:.3f}초")
     for row in _ordered(report["results"]):
-        label = STATUS_LABELS.get(row["status"], row["status"])
+        label = paint(row["status"], STATUS_LABELS.get(row["status"], row["status"]))
         version = row["after_version"] or row["before_version"]
         print()
         print(f"[{label}] {_clean(row['package'])}@{_clean(version)}  ({_clean(row['location'])})")
@@ -803,19 +892,35 @@ def _emit(
                 lines += [f"- {line}", *(f"  - {sub}" for sub in subs)]
             print("\n".join(lines))
         return
+    # On an interactive terminal only: the bee mark, colors and the next steps (terminal). A
+    # pipe or a file gets the text as it always was.
+    human = terminal.interactive(sys.stdout)
+    paint = terminal.painter(sys.stdout)
+    mark = f"{paint('mark', terminal.MARK)} " if human else ""
     if preview is not None:
-        print("depbee 업데이트 미리보기")
+        print(f"{mark}depbee 업데이트 미리보기")
         for line in _preview_lines(preview, _clean):
             print(line)
         print()
-    _print_text(report)
+        mark = ""
+    _print_text(report, paint, mark)
     if apply is not None:
         print()
-        print(f"depbee 업데이트 반영: {_text_label(OUTCOME_LABELS, apply['outcome'])}")
+        outcome = paint(
+            OUTCOME_TONES.get(apply["outcome"], ""), _text_label(OUTCOME_LABELS, apply["outcome"])
+        )
+        print(f"depbee 업데이트 반영: {outcome}")
         for line, subs in _apply_lines(apply, _clean, _text_label):
             print(line)
             for sub in subs:
                 print(f"  - {sub}")
+    if human:
+        steps = terminal.next_steps(args.command, report, apply)
+        if steps:
+            print()
+            print(paint("strong", terminal.NEXT_TITLE))
+            for line in terminal.bullets(steps):
+                print(line)
 
 
 def _record(
@@ -845,8 +950,101 @@ def _record(
         print(HISTORY_FAILED, file=sys.stderr)
 
 
+def _launcher() -> str:
+    """The command that starts this depbee from any folder, quoted for a shell: the console
+    script beside the Python that runs it, else that Python with -P -m depbee (-P: the current
+    folder is no import path)."""
+    quote = (lambda text: f'"{text}"') if os.name == "nt" else shlex.quote
+    script = Path(sys.executable).with_name("depbee.exe" if os.name == "nt" else "depbee")
+    return quote(str(script)) if script.is_file() else f"{quote(sys.executable)} -P -m depbee"
+
+
+def _asset_lines(saved: dict, details: dict) -> list[str]:
+    """One line per asset of the saved settings; details: text after a connected folder."""
+    lines = []
+    for key, name in ASSET_NAMES.items():
+        if saved[key] is None:
+            lines.append(f"  {name}: 연결 안 됨")
+        else:
+            lines.append(f"  {name}: {_clean(saved[key])}" + details.get(key, ""))
+    return lines
+
+
+def _setup(args: argparse.Namespace) -> int:
+    """depbee setup: save, show or clear the user's asset folder (config)."""
+    if args.clear:
+        if args.assets_dir is not None:
+            raise GuardError("setup takes DIR or --clear, not both")
+        print(SETUP_CLEARED if config.clear() else SETUP_NONE)
+        return 0
+    if args.assets_dir is None:
+        saved = config.load()
+        if saved is None:
+            print(SETUP_NONE)
+            print(SETUP_HOW)
+            return 0
+        print(f"저장된 자산 설정: {_clean(config.path())}")
+        for line in _asset_lines(saved, {}):
+            print(line)
+        for key, variable in ASSET_VARIABLES.items():
+            if os.environ.get(variable):
+                print(SETUP_OVERRIDDEN.format(variable=variable, name=ASSET_NAMES[key]))
+        return 0
+    saved = setup_assets(args.assets_dir)
+    print(f"자산 설정을 저장했습니다: {_clean(saved['path'])}")
+    details = {
+        "model_dir": f" (모델 ID {_clean(saved['model_id'])})",
+        "known_malicious_dir": f" (기준 시점 {_clean(saved['list_as_of'])})",
+    }
+    for line in _asset_lines(saved, details):
+        print(line)
+    print(SETUP_SAVED)
+    launcher = _clean(_launcher())
+    print(f"  Claude Code: claude mcp add --scope user depbee -- {launcher} mcp")
+    print(f"  Codex: codex mcp add depbee -- {launcher} mcp")
+    return 0
+
+
+def _dashboard(args: argparse.Namespace) -> int:
+    """depbee dashboard: serve here until Ctrl+C, or start, show or stop the background one."""
+    options = {"model_dir": args.model_dir, "cache_dir": args.cache_dir,
+               "no_cache": args.no_cache, "known_malicious_dir": args.known_malicious_dir}  # fmt: skip
+    if not (args.background or args.status or args.stop):
+        from .dashboard import serve
+
+        serve(args.port, **options)
+        return 0
+    from .dashboard import lifecycle
+
+    if args.background:
+        state, started = lifecycle.start(args.port, **options)
+        print(state["url"])
+        print(BACKGROUND_STARTED if started else BACKGROUND_RUNNING)
+        return 0
+    if args.port or any(options.values()):
+        raise GuardError("--status and --stop take no other option")
+    if args.stop:
+        print(BACKGROUND_STOPPED if lifecycle.stop() else BACKGROUND_NONE)
+        return 0
+    kind, state = lifecycle.status()
+    if kind == "running":
+        print(state["url"])
+        print(BACKGROUND_STATUS.format(pid=state["pid"], started_at=state["started_at"]))
+        return 0
+    print(BACKGROUND_UNRESPONSIVE if kind == "unresponsive" else BACKGROUND_NONE)
+    return 2 if kind == "unresponsive" else 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    arguments = sys.argv[1:] if argv is None else argv
+    # Korean help and screens must not fail on a stream whose encoding lacks a character.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="backslashreplace")
+    if not arguments:
+        # The start screen instead of argparse's usage error; still 2: nothing was checked.
+        print("\n".join([*terminal.head(__version__, sys.stdout), "", *terminal.guide()]))
+        return 2
+    args = _parser().parse_args(arguments)
     try:
         if args.command == "mcp":
             from .mcp import serve
@@ -854,18 +1052,21 @@ def main(argv: list[str] | None = None) -> int:
             serve(args.model_dir, args.known_malicious_dir)
             return 0
         if args.command == "dashboard":
-            from .dashboard import serve as dashboard
-
-            dashboard(args.port, model_dir=args.model_dir, cache_dir=args.cache_dir,
-                      no_cache=args.no_cache,
-                      known_malicious_dir=args.known_malicious_dir)  # fmt: skip
-            return 0
+            return _dashboard(args)
+        if args.command == "setup":
+            return _setup(args)
         # Refuse a taken --output before any download or extraction; _emit's "x" mode still
         # guards against a file created meanwhile. Same error text as that open().
         if args.output is not None and args.output.exists():
             raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(args.output))
         if args.command == "plan":
-            _emit(plan_project(args.project, args.base_lock, base_ref=args.base_ref), args)
+            request = plan_project(args.project, args.base_lock, base_ref=args.base_ref)
+            _emit(request, args)
+            if terminal.interactive(sys.stdout):  # stdout stays the JSON alone
+                changes = request["changes"]
+                print(terminal.PLAN_STEP.format(
+                    count=len(changes), analyzable=sum(c["analyzable"] for c in changes),
+                ), file=sys.stderr)  # fmt: skip
             return 0
         progress = None
         # Extraction takes seconds per package; show progress unless stdout is JSON.

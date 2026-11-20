@@ -1,0 +1,204 @@
+"""What a person at a terminal sees beyond the plain report: the bee mark, colors, the start
+screen and the next steps.
+
+The mark, the colors and the next steps are for an interactive terminal only (interactive()). A
+pipe, a file, JSON, Markdown, MCP stdio and the GitHub Action get the same bytes as without this
+module. Colors only repeat what the words already say ([위험], [보류], ...): they are never the
+only signal, and NO_COLOR, TERM=dumb or a console without ANSI support turns them off.
+"""
+
+import os
+import shutil
+import unicodedata
+from collections import Counter
+
+from .service import update_gate
+
+# ASCII only, so that any console code page and font shows it.
+STAMP = (r"   \\ //", r" -(||||)o", r'   "  "')
+MARK = "-(||||)o"  # one line, in front of a report's first line
+TAGLINE = (
+    "npm 패키지를 설치하기 전에 버전 변경을 검사합니다.",
+    "검사는 패키지 코드를 실행하지 않습니다.",
+)
+# The start screen's commands (ASCII, so that padding by characters lines them up).
+GUIDE = (
+    ("depbee check lodash@4.17.21", "설치 전에 정확한 버전 하나 검사"),
+    ("depbee scan . --extract", "커밋하지 않은 lockfile 변경 검사"),
+    ("depbee update", "npm update 미리보기와 검사, --apply로 반영"),
+    ("depbee dashboard --background", "로컬 대시보드 실행 (--status, --stop)"),
+    ("depbee setup DIR", "자산 폴더를 한 번 저장 (DIR/model, DIR/index)"),
+    ("depbee mcp", "에이전트용 MCP 서버 (stdio)"),
+)
+GUIDE_END = (
+    "종료 코드: 0 통과, 1 위험, 2 보류 또는 오류",
+    "'통과'와 낮은 점수는 안전 보증이 아닙니다.",
+    "명령별 옵션: depbee <명령> --help",
+)
+NEXT_TITLE = "다음 동작"
+NOTHING_CHANGED = "바뀐 의존성이 없어 검사할 것이 없습니다."
+KNOWN_STEP = (
+    "기지 악성 기록과 일치한 {count}개 항목은 설치하거나 업데이트하지 마세요. "
+    "다른 버전을 쓰려면 그 버전을 다시 검사하세요."
+)
+ML_STEP = (
+    "ML 위험 점수가 기준 이상인 {count}개 항목은 위의 추출된 사실과 판단 근거를 검토한 뒤 "
+    "설치 여부를 정하세요."
+)
+# Unfinished items whose reason has a direct remedy; analysis_missing only after scan.
+REASON_STEPS = {
+    "model_missing": (
+        "모델이 연결되지 않아 {count}개 항목을 판정하지 못했습니다. 모델 폴더가 있으면 "
+        "depbee setup DIR로 한 번 저장하거나 --model-dir로 지정하세요."
+    ),
+    "analysis_missing": (
+        "분석 결과가 없어 {count}개 항목을 판정하지 못했습니다. --extract(또는 이 변경을 담은 "
+        "--analysis 파일)로 다시 실행하세요."
+    ),
+}
+PENDING_STEP = (
+    "보류 {count}개는 통과가 아닙니다. 항목의 이유를 확인하고, 설치하려면 직접 검토하세요."
+)
+PASS_STEP = (
+    "위험이나 보류 항목이 없습니다. 설치는 검사한 버전 그대로 진행하고, 버전을 바꾸면 다시 "
+    "검사하세요."
+)
+INDEX_STEP = (
+    "기지 악성 목록이 연결되지 않아 알려진 악성 버전인지는 확인하지 않았습니다. 색인 폴더가 "
+    "있으면 depbee setup DIR 또는 --known-malicious-dir로 연결하세요."
+)
+APPLY_STEP = (
+    "반영하려면 같은 명령에 --apply lockfile을, 설치까지 하려면 --apply install을 붙이세요."
+)
+CONFIRM_STEP = (
+    " 확인이 필요한 항목이 {count}개 있어, 검토한 뒤 --confirm-warnings도 함께 줘야 합니다."
+)
+BLOCKED_STEP = "기지 악성 기록 일치가 있어 이 업데이트는 반영할 수 없습니다."
+PLAN_STEP = (
+    "바뀐 의존성 {count}개 중 분석할 수 있는 변경은 {analyzable}개입니다. 검사하려면 같은 "
+    "프로젝트와 기준으로 depbee scan에 --extract를 붙여 실행하세요."
+)
+# ANSI SGR codes by tone: the report's statuses, plus mark, strong and dim.
+_SGR = {
+    "flagged": "1;31", "incomplete": "1;33", "passed": "32", "not_flagged": "32",
+    "removed": "2", "dim": "2", "strong": "1", "mark": "33",
+}  # fmt: skip
+_VIRTUAL_TERMINAL = 0x0004  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+
+
+def interactive(stream) -> bool:
+    """A person is reading stream: it is a terminal, not a pipe, a file or a capture."""
+    try:
+        return bool(stream.isatty())
+    except (AttributeError, ValueError):  # no such method, or a closed stream
+        return False
+
+
+def plain(tone: str, text: str) -> str:
+    return text
+
+
+def painter(stream):
+    """paint(tone, text) for stream: text in the tone's color if stream is a terminal that takes
+    ANSI colors and the user has not turned them off, else text itself (plain)."""
+    if not (interactive(stream) and _colors(stream)):
+        return plain
+    return lambda tone, text: f"\x1b[{_SGR[tone]}m{text}\x1b[0m" if tone in _SGR else text
+
+
+def _colors(stream) -> bool:
+    if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
+        return False
+    if os.name != "nt":
+        return True
+    # A Windows console shows ANSI colors only in virtual terminal mode. It is switched on here;
+    # a console that refuses (or a stream that is no console) stays plain.
+    try:
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetConsoleMode.argtypes = (wintypes.HANDLE, wintypes.LPDWORD)
+        kernel32.SetConsoleMode.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        handle = msvcrt.get_osfhandle(stream.fileno())
+        mode = wintypes.DWORD()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        return bool(
+            mode.value & _VIRTUAL_TERMINAL
+            or kernel32.SetConsoleMode(handle, mode.value | _VIRTUAL_TERMINAL)
+        )
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _width(text: str) -> int:
+    """Terminal columns text takes: a wide (Korean) character takes two."""
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+
+
+def head(version: str, stream) -> list[str]:
+    """The top of the start screen and of --help: the bee stamp with the name and version on an
+    interactive terminal, the name and version alone elsewhere; then the tagline."""
+    if not interactive(stream):
+        return [f"depbee {version}", *TAGLINE]
+    paint = painter(stream)
+    top, middle, bottom = (paint("mark", line) for line in STAMP)
+    return [top, f"{middle}  depbee {version}", bottom, *TAGLINE]
+
+
+def guide() -> list[str]:
+    """The start guide for the terminal's width: each command beside its description if every
+    line fits, else the description under its command."""
+    pad = max(len(command) for command, _ in GUIDE) + 2
+    rows = [f"  {command:<{pad}}{text}" for command, text in GUIDE]
+    if max(map(_width, rows)) >= shutil.get_terminal_size().columns:
+        rows = [line for command, text in GUIDE for line in (f"  {command}", f"      {text}")]
+    return ["시작하기", *rows, "", *GUIDE_END]
+
+
+def bullets(steps: list[str]) -> list[str]:
+    """steps as "  - " bullets that fit the terminal's width: broken at spaces, the later lines
+    of a step indented under its text. A word wider than the terminal is left whole."""
+    limit = shutil.get_terminal_size().columns - 1
+    lines = []
+    for step in steps:
+        line = "  -"
+        for word in step.split(" "):
+            if _width(line) + 1 + _width(word) > limit and line.strip(" -"):
+                lines.append(line)
+                line = "   "
+            line += f" {word}"
+        lines.append(line)
+    return lines
+
+
+def next_steps(command: str, report: dict, apply: dict | None = None) -> list[str]:
+    """What the reader can do after this report, most urgent first. Only from the report's own
+    fields and service.update_gate(), the gate an apply goes through, so the steps never say
+    more than the verdicts do. command: scan, check or update; apply: update's apply document,
+    None for a preview."""
+    if not report["results"]:
+        return [NOTHING_CHANGED]
+    blocked, confirm = update_gate(report)
+    steps = [KNOWN_STEP.format(count=len(blocked))] if blocked else []
+    hits = sum("ml_hit" in item["causes"] for item in confirm)
+    if hits:
+        steps.append(ML_STEP.format(count=hits))
+    pending = Counter(item["reason"] for item in confirm if "incomplete" in item["causes"])
+    for reason, text in REASON_STEPS.items():
+        if reason != "analysis_missing" or command == "scan":
+            count = pending.pop(reason, 0)
+            if count:
+                steps.append(text.format(count=count))
+    if pending:
+        steps.append(PENDING_STEP.format(count=sum(pending.values())))
+    if report["exit_code"] == 0 and command != "update":
+        steps.append(PASS_STEP)
+    if "detectors" in report and report["detectors"]["known_malicious"] is None:
+        steps.append(INDEX_STEP)
+    if command == "update" and apply is None:
+        confirmation = CONFIRM_STEP.format(count=len(confirm)) if confirm else ""
+        steps.append(BLOCKED_STEP if blocked else APPLY_STEP + confirmation)
+    return steps
