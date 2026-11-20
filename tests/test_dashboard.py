@@ -714,6 +714,59 @@ class CandidateTests(DashboardFixture):
         self.check(self.nothing(), targets=["\udc80x"], changed_count=0)
         self.assertEqual(cell(), '<span class="quiet">후보 없음</span>')
 
+    def test_a_lone_surrogate_and_its_escape_text_are_two_locations(self):
+        # The history stores both locations as the same text; the stored reports tell them
+        # apart. Each keeps its own candidate, from its own run and its own row.
+        lone, text = "node_modules/\udc80x", "node_modules/\\udc80x"
+        self.old["packages"][lone] = package("7.0.0")
+        self.old["packages"][text] = package("8.0.0")
+        self.write(self.head, self.old)
+
+        def cells():
+            """The candidate cells of the two rows (told apart by the installed version: their
+            location is shown with the same characters)."""
+            rows = re.findall(r'<tr><th scope="row">[^<]*</th><td>([^<]*)</td><td>([^<]*)</td>\n'
+                              r"<td>.*?</td>\n<td>(.*?)</td>\n</tr>", self.page(self.packages),
+                              re.S)  # fmt: skip
+            shown = {version: cell.strip() for version, location, cell in rows
+                     if location == "node_modules/\\udc80x"}  # fmt: skip
+            self.assertEqual(sorted(shown), ["7.0.0", "8.0.0"])
+            return shown["7.0.0"], shown["8.0.0"]
+
+        def row(location, package_name, before, after):
+            return {**self.report["results"][0], "location": location, "package": package_name,
+                    "before_version": before, "after_version": after}  # fmt: skip
+
+        both = [row(lone, "\udc80x", "7.0.0", "7.1.0"), row(text, "\\udc80x", "8.0.0", "8.1.0")]
+        first = self.check({**self.report, "results": both}, targets=None)
+        of_lone, of_text = cells()
+        self.assertIn(" 7.1.0</span>", of_lone)
+        self.assertIn(f'<a href="{S}/runs/{first}#r0">근거', of_lone)
+        self.assertIn(" 8.1.0</span>", of_text)
+        self.assertIn(f'<a href="{S}/runs/{first}#r1">근거', of_text)
+        updates = self.page(self.updates)
+        self.assertIn("바뀐 의존성 2개: 위험 2, 통과 0, 보류 0.", updates)
+        for position in (0, 1):
+            self.assertIn(f'href="{S}/runs/{first}#r{position}"', updates)
+        # A later check of the package named with the escape text alone: only that location
+        # takes the new run's row.
+        second = self.check({**self.report, "results": [row(text, "\\udc80x", "8.0.0", "8.2.0")]},
+                            targets=["\\udc80x"])  # fmt: skip
+        of_lone, of_text = cells()
+        self.assertIn(f'<a href="{S}/runs/{first}#r0">근거', of_lone)
+        self.assertIn(" 8.2.0</span>", of_text)
+        self.assertIn(f'<a href="{S}/runs/{second}#r0">근거', of_text)
+        updates = self.page(self.updates)
+        self.assertIn(f'href="{S}/runs/{first}#r0"', updates)
+        self.assertIn(f'href="{S}/runs/{second}#r0"', updates)
+        self.assertNotIn(f'href="{S}/runs/{first}#r1"', updates)
+        # A later check of the package named with the lone surrogate alone finds nothing: only
+        # that location loses its candidate.
+        self.check(self.nothing(), targets=["\udc80x"], changed_count=0)
+        of_lone, of_text = cells()
+        self.assertEqual(of_lone, '<span class="quiet">후보 없음</span>')
+        self.assertIn(f'<a href="{S}/runs/{second}#r0">근거', of_text)
+
     def test_a_look_reads_only_the_reports_whose_candidates_it_shows(self):
         self.check(targets=None)
         for _ in range(12):

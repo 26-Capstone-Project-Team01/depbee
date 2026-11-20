@@ -70,6 +70,9 @@ MAX_TARGETS = 1024  # characters of the update target names field
 KEPT_PREVIEWS = 10  # update previews kept in memory; the oldest is dropped first
 RECENT_RUNS = 10  # runs per project in the list's trend table
 MAX_ID = 2**63 - 1  # SQLite's largest integer; a larger id in a URL is simply not found
+# The history stores a lone surrogate in a result row's location as the text \udXXX, which a
+# location can also hold as it is: a stored location with this text may stand for either.
+ESCAPED_SURROGATE = "\\ud"
 # The hexagon mark (style.css .cell) next to a stored status; the words beside it say the status.
 CELLS = {"flagged": "risk", "incomplete": "hold", "not_flagged": "pass"}
 TAB_STATES = {
@@ -325,10 +328,10 @@ def build_app(
         direct_count = sum(row["direct"] for row in dependencies)
         needle = query.casefold()
         state = _update_state(found)
-        candidates = {_key(row["location"]): row for row in state["rows"]}
+        candidates = {row["location"]: row for row in state["rows"]}
         rows = [
-            {**row, "candidate": candidates.get(_key(row["location"])),
-             "checked": state["full"] is not None or _key(row["location"]) in state["covered"],
+            {**row, "candidate": candidates.get(row["location"]),
+             "checked": state["full"] is not None or row["location"] in state["covered"],
              "declared": ", ".join(DECLARED_LABELS[field] for field in row["declared"]),
              "declared_as": _declared_as(row)}
             for row in dependencies
@@ -673,12 +676,6 @@ def _made_from(preview: object) -> tuple:
     return (preview.get("package_json_sha256"), preview.get("package_lock_sha256"))
 
 
-def _key(location: object) -> object:
-    """A location as the history stores the locations of result rows (history._text), so that a
-    lockfile's own location and a stored one compare equal."""
-    return history._text(location)
-
-
 def _update_state(project: dict) -> dict:
     """What the history says about updating the project's files as they are now; nothing here
     runs npm or reaches the network. Only this project's update previews made from package.json
@@ -702,25 +699,37 @@ def _candidates(checks: list[dict]) -> dict:
     the newest check of everything). Each lockfile location takes the newest check that covers
     it. A check covers the locations of its result rows, its targets' own locations
     (node_modules/<name>) and, without targets, every location; a covered location without a
-    row has no candidate.
+    row has no candidate. Locations are compared as the lockfile and the reports spell them. A
+    stored location is that spelling unless it holds ESCAPED_SURROGATE, and only a check with
+    such a stored location has its locations read from its stored report.
 
-    Only a check that covers a location no newer check covers is used, and only the stored
-    reports of the used checks with a candidate row are read (history.get_run). checks: {id,
-    created_at, targets (the names, None for everything)} of the checks used, newest first;
-    rows: _result() views in the report order (D-13) with before, after, the run and the row's
-    position in its report (the anchor on the run page); covered: the locations the used checks
-    cover, as stored (_key); full: the check of everything among them (as in checks), None if
-    only named packages were checked; summary: the counts as the text output words them, None
-    without a row."""
+    Only a check that covers a location no newer check covers is used, and beyond that only the
+    stored reports of the used checks with a candidate row are read (history.get_run). checks:
+    {id, created_at, targets (the names, None for everything)} of the checks used, newest
+    first; rows: _result() views in the report order (D-13) with before, after, the run and the
+    row's position in its report (the anchor on the run page); covered: the locations the used
+    checks cover; full: the check of everything among them (as in checks), None if only named
+    packages were checked; summary: the counts as the text output words them, None without a
+    row."""
+    reports = {}  # run -> its stored report, read once
+
+    def report_of(run_id: int) -> dict:
+        if run_id not in reports:
+            reports[run_id] = history.get_run(run_id)["report"]
+        return reports[run_id]
+
     owners = {}  # location -> (run of the newest check that covers it, its row's position or None)
     listed = []
     for check in checks:
         targets = check["targets"]
         names = [n for n in targets if isinstance(n, str)] if isinstance(targets, list) else []
-        for position, location in enumerate(check["locations"]):
+        locations = check["locations"]
+        if any(isinstance(place, str) and ESCAPED_SURROGATE in place for place in locations):
+            locations = [row["location"] for row in report_of(check["id"])["results"]]
+        for position, location in enumerate(locations):
             owners.setdefault(location, (check["id"], position))
         for name in names:
-            owners.setdefault(_key(f"node_modules/{name}"), (check["id"], None))
+            owners.setdefault(f"node_modules/{name}", (check["id"], None))
         # Joined here: a filter's safe string would be escaped twice after _finalize.
         listed.append({"id": check["id"], "created_at": check["created_at"],
                        "targets": None if targets is None else ", ".join(names)})  # fmt: skip
@@ -732,7 +741,7 @@ def _candidates(checks: list[dict]) -> dict:
             positions.setdefault(run_id, []).append(position)
     picked = {}  # id(a candidate's report row) -> its run, its position and its report
     for run_id, wanted in positions.items():
-        report = history.get_run(run_id)["report"]
+        report = report_of(run_id)
         for position in wanted:
             picked[id(report["results"][position])] = (run_id, position, report)
     raw = _ordered([report["results"][position] for _, position, report in picked.values()])
