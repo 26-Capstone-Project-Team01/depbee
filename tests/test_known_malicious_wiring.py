@@ -1,7 +1,7 @@
 """Known malicious index wiring (KM-01): service, CLI, MCP, dashboard options and D-16.
 
 Synthetic only: indexes built from made-up MAL-EXAMPLE-* records, FakeBackend for
-feature-extractor and the registry, fake predictors and a fake npm; no network, no package code.
+depbee-analyzer and the registry, fake predictors and a fake npm; no network, no package code.
 """
 
 import contextlib
@@ -59,6 +59,27 @@ class IndexMixin:
 
 def identity(sha256):
     return {"source": "OSV npm MAL", "list_as_of": AS_OF, "list_sha256": sha256}
+
+
+class AssetArgumentTests(unittest.TestCase):
+    def test_blank_asset_argument_is_rejected_before_running_the_command(self):
+        for command in (
+            ["scan", "."],
+            ["check", "example@1.0.0"],
+            ["update"],
+            ["dashboard"],
+            ["mcp"],
+        ):
+            for option in ("--model-dir", "--known-malicious-dir"):
+                for blank in ("", "  "):
+                    with self.subTest(command=command, option=option, blank=blank):
+                        err = io.StringIO()
+                        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+                            main([*command, option, blank])
+                        self.assertEqual(cm.exception.code, 2)
+                        self.assertIn(
+                            f"{option}: give a non-empty trusted directory", err.getvalue()
+                        )
 
 
 class ServiceTests(IndexMixin, MCPFixture):

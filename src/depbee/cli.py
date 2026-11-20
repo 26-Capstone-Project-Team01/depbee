@@ -140,10 +140,17 @@ def _cache_arguments(cmd: argparse.ArgumentParser) -> None:
     cache.add_argument("--no-cache", action="store_true", help="Neither read nor write the cache")
 
 
-def _known_malicious_argument(cmd: argparse.ArgumentParser) -> None:
+def _asset_directory(value: str) -> Path:
+    if not value.strip():
+        raise argparse.ArgumentTypeError("give a non-empty trusted directory or omit the option")
+    return Path(value)
+
+
+def _asset_arguments(cmd: argparse.ArgumentParser) -> None:
+    cmd.add_argument("--model-dir", type=_asset_directory, help="Trusted manifest.json + model.txt")
     cmd.add_argument(
         "--known-malicious-dir",
-        type=Path,
+        type=_asset_directory,
         help="Trusted manifest.json + index.json of a known malicious list",
     )
 
@@ -190,8 +197,7 @@ def _parser() -> argparse.ArgumentParser:
             cmd.add_argument(
                 "--local-root", type=Path, help="Directory that every --local-source must be in"
             )
-            cmd.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
-            _known_malicious_argument(cmd)
+            _asset_arguments(cmd)
             cmd.add_argument("--format", choices=FORMATS, default="text")
             _cache_arguments(cmd)
     check = commands.add_parser(
@@ -205,8 +211,7 @@ def _parser() -> argparse.ArgumentParser:
         "e.g. lodash@4.17.21 or @scope/name@1.0.0",
     )
     check.add_argument("--output", type=Path, help="Write a NEW JSON file (never overwrite inputs)")
-    check.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
-    _known_malicious_argument(check)
+    _asset_arguments(check)
     check.add_argument("--format", choices=FORMATS, default="text")
     _cache_arguments(check)
     update = commands.add_parser(
@@ -227,8 +232,7 @@ def _parser() -> argparse.ArgumentParser:
     update.add_argument(
         "--output", type=Path, help="Write a NEW JSON file (never overwrite inputs)"
     )
-    update.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
-    _known_malicious_argument(update)
+    _asset_arguments(update)
     update.add_argument("--format", choices=FORMATS, default="text")
     _cache_arguments(update)
     update.add_argument(
@@ -252,8 +256,7 @@ def _parser() -> argparse.ArgumentParser:
         help="Serve the read-only check_package and scan_lockfile tools over MCP stdio "
         "(needs .[mcp] and, to analyze, .[extract])",
     )
-    serve.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
-    _known_malicious_argument(serve)
+    _asset_arguments(serve)
     dashboard = commands.add_parser(
         "dashboard",
         help="Serve the local dashboard on 127.0.0.1: registered projects, their dependencies "
@@ -263,8 +266,7 @@ def _parser() -> argparse.ArgumentParser:
     dashboard.add_argument(
         "--port", type=int, default=0, help="Port on 127.0.0.1 (default 0: a free port)"
     )
-    dashboard.add_argument("--model-dir", type=Path, help="Trusted manifest.json + model.txt")
-    _known_malicious_argument(dashboard)
+    _asset_arguments(dashboard)
     _cache_arguments(dashboard)
     return parser
 
