@@ -69,7 +69,6 @@ MAX_PATH = 1024  # characters of a path to register
 MAX_TARGETS = 1024  # characters of the update target names field
 KEPT_PREVIEWS = 10  # update previews kept in memory; the oldest is dropped first
 RECENT_RUNS = 10  # runs per project in the list's trend table
-CURRENT_CHECKS = 10  # newest stored update previews read for a project's current candidates
 MAX_ID = 2**63 - 1  # SQLite's largest integer; a larger id in a URL is simply not found
 # The hexagon mark (style.css .cell) next to a stored status; the words beside it say the status.
 CELLS = {"flagged": "risk", "incomplete": "hold", "not_flagged": "pass"}
@@ -325,12 +324,11 @@ def build_app(
         dependencies, problem = _dependencies(found["path"])
         direct_count = sum(row["direct"] for row in dependencies)
         needle = query.casefold()
-        # Without a readable lockfile there are no rows to put a candidate on.
-        state = _update_state(found, history.list_runs(found["id"]) if problem is None else [])
-        candidates = {row["location"]: row for row in state["rows"]}
+        state = _update_state(found)
+        candidates = {_key(row["location"]): row for row in state["rows"]}
         rows = [
-            {**row, "candidate": candidates.get(row["location"]),
-             "checked": state["full"] or row["location"] in state["covered"],
+            {**row, "candidate": candidates.get(_key(row["location"])),
+             "checked": state["full"] is not None or _key(row["location"]) in state["covered"],
              "declared": ", ".join(DECLARED_LABELS[field] for field in row["declared"]),
              "declared_as": _declared_as(row)}
             for row in dependencies
@@ -349,7 +347,7 @@ def build_app(
         found = _project(request.path_params["project_id"])
         if found is None:
             return _text(404, "등록된 프로젝트가 아닙니다.")
-        state = _update_state(found, history.list_runs(found["id"]))
+        state = _update_state(found)
         # A copy: the request handlers of other threads add and drop previews meanwhile.
         held = [
             {"id": preview_id, "run_id": kept["run_id"], "created_at": kept["created_at"],
@@ -675,60 +673,77 @@ def _made_from(preview: object) -> tuple:
     return (preview.get("package_json_sha256"), preview.get("package_lock_sha256"))
 
 
-def _update_state(project: dict, runs: list[dict]) -> dict:
-    """What the stored runs (history.list_runs) say about updating the project's files as they
-    are now; nothing here runs npm or reaches the network. Only this project's update previews
-    made from package.json and package-lock.json with the SHA-256 they have now count as
-    current checks (_candidates): a result from older files or from another project is never a
-    current candidate. now: the two hashes (None for a file that cannot be read); last: the
-    newest update preview when none is current."""
+def _key(location: object) -> object:
+    """A location as the history stores the locations of result rows (history._text), so that a
+    lockfile's own location and a stored one compare equal."""
+    return history._text(location)
+
+
+def _update_state(project: dict) -> dict:
+    """What the history says about updating the project's files as they are now; nothing here
+    runs npm or reaches the network. Only this project's update previews made from package.json
+    and package-lock.json with the SHA-256 they have now count as current checks, however many
+    other runs came after them (history.list_previews; _candidates): a result from other files
+    or from another project is never a current candidate. now: the two hashes (None for a file
+    that cannot be read); last: the newest update preview when the files can be read and none
+    is current."""
     now = (_sha256(project["path"], "package.json"), _sha256(project["path"], "package-lock.json"))
-    previews = [run for run in runs if run["kind"] == "update_preview"]
-    checks = []
-    # shortcut: only the newest CURRENT_CHECKS previews are read (each with its whole report);
-    # ask the history by hash instead if a project ever needs older ones.
-    for run in previews[:CURRENT_CHECKS] if None not in now else []:
-        stored = history.get_run(run["id"])
-        if stored is not None and _made_from(stored["preview"]) == now:
-            checks.append(stored)
-    return {"now": now, "readable": None not in now,
-            "last": previews[0] if previews and not checks else None, **_candidates(checks)}  # fmt: skip
+    readable = None not in now
+    checks = history.list_previews(project["id"], *now) if readable else []
+    newest = (
+        history.list_runs(project["id"], 1, "update_preview") if readable and not checks else []
+    )
+    return {"now": now, "readable": readable, "last": newest[0] if newest else None,
+            **_candidates(checks)}  # fmt: skip
 
 
 def _candidates(checks: list[dict]) -> dict:
-    """The update candidates of current checks (stored update previews, newest first). Each
-    lockfile location takes the row of the newest check that covers it. A check covers the
-    locations it would change, its targets' own locations (node_modules/<name>) and, without
-    targets, every location; a covered location without a row has no candidate in that check.
+    """The update candidates of current checks (history.list_previews: newest first, down to
+    the newest check of everything). Each lockfile location takes the newest check that covers
+    it. A check covers the locations of its result rows, its targets' own locations
+    (node_modules/<name>) and, without targets, every location; a covered location without a
+    row has no candidate.
 
-    checks: {id, created_at, targets (the names, None for everything)} of the checks used; rows:
-    _result() views in the report order (D-13) with before, after, the run and the row's
-    position in its report (the anchor on the run page); covered, full: what a location without
-    a row was checked by; summary: the counts as the text output words them, None without a
-    row."""
-    picked, covered, full, used = {}, set(), False, []
+    Only a check that covers a location no newer check covers is used, and only the stored
+    reports of the used checks with a candidate row are read (history.get_run). checks: {id,
+    created_at, targets (the names, None for everything)} of the checks used, newest first;
+    rows: _result() views in the report order (D-13) with before, after, the run and the row's
+    position in its report (the anchor on the run page); covered: the locations the used checks
+    cover, as stored (_key); full: the check of everything among them (as in checks), None if
+    only named packages were checked; summary: the counts as the text output words them, None
+    without a row."""
+    owners = {}  # location -> (run of the newest check that covers it, its row's position or None)
+    listed = []
     for check in checks:
-        results, targets = check["report"]["results"], check["preview"].get("targets")
+        targets = check["targets"]
         names = [n for n in targets if isinstance(n, str)] if isinstance(targets, list) else []
-        for position, row in enumerate(results):
-            if row["location"] not in covered:
-                picked[id(row)] = (check, position)
-        covered |= {row["location"] for row in results} | {f"node_modules/{n}" for n in names}
+        for position, location in enumerate(check["locations"]):
+            owners.setdefault(location, (check["id"], position))
+        for name in names:
+            owners.setdefault(_key(f"node_modules/{name}"), (check["id"], None))
         # Joined here: a filter's safe string would be escaped twice after _finalize.
-        used.append({"id": check["id"], "created_at": check["created_at"],
-                     "targets": None if targets is None else ", ".join(names)})  # fmt: skip
-        if targets is None:
-            full = True
-            break  # everything was checked then: an older check adds nothing
-    raw = _ordered([row for check in checks for row in check["report"]["results"]
-                    if id(row) in picked])  # fmt: skip
+        listed.append({"id": check["id"], "created_at": check["created_at"],
+                       "targets": None if targets is None else ", ".join(names)})  # fmt: skip
+    used = {run_id for run_id, _ in owners.values()}
+    shown = [check for check in listed if check["id"] in used or check["targets"] is None]
+    positions = {}  # run -> the positions of its candidate rows, in report order
+    for run_id, position in owners.values():
+        if position is not None:
+            positions.setdefault(run_id, []).append(position)
+    picked = {}  # id(a candidate's report row) -> its run, its position and its report
+    for run_id, wanted in positions.items():
+        report = history.get_run(run_id)["report"]
+        for position in wanted:
+            picked[id(report["results"][position])] = (run_id, position, report)
+    raw = _ordered([report["results"][position] for _, position, report in picked.values()])
     rows = []
     for row in raw:
-        check, position = picked[id(row)]
-        rows.append({**_result(row, check["report"]), "before": row["before_version"],
-                     "after": row["after_version"], "run_id": check["id"],
+        run_id, position, report = picked[id(row)]
+        rows.append({**_result(row, report), "before": row["before_version"],
+                     "after": row["after_version"], "run_id": run_id,
                      "position": position})  # fmt: skip
-    return {"checks": used, "rows": rows, "covered": covered, "full": full,
+    full = shown[-1] if shown and shown[-1]["targets"] is None else None
+    return {"checks": shown, "rows": rows, "covered": set(owners), "full": full,
             "summary": _summary(raw, False) if raw else None}  # fmt: skip
 
 

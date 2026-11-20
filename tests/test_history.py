@@ -71,7 +71,7 @@ class HistoryFixture(Fixture):
 class StoreTests(HistoryFixture):
     def test_register_record_and_read_back(self):
         project_id = history.register_project(self.project)
-        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(2,)])
+        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(3,)])
         self.assertEqual(sql(self.db, "PRAGMA application_id"), [(history.APPLICATION_ID,)])
         self.assertEqual(history.register_project(self.project), project_id)
         (project,) = history.list_projects()
@@ -125,7 +125,7 @@ class StoreTests(HistoryFixture):
     def test_newer_foreign_and_broken_files_are_not_written(self):
         def newer():
             history.register_project(self.project)
-            sql(self.db, "PRAGMA user_version = 3")
+            sql(self.db, "PRAGMA user_version = 4")
 
         def foreign():
             sql(self.db, "CREATE TABLE other (x)")
@@ -158,7 +158,7 @@ class StoreTests(HistoryFixture):
             history.record("scan", self.project, report)
         self.assertEqual(self.db.read_bytes(), b"")
         history.register_project(self.project)
-        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(2,)])
+        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(3,)])
 
     def test_a_failed_first_registration_leaves_no_marks(self):
         # The application_id and user_version roll back with the schema.
@@ -334,12 +334,17 @@ class ApplyStoreTests(HistoryFixture):
     def test_record_apply_upgrades_version_1_and_skips_without_a_home(self):
         self.make_version_1()
         run_id = history.record("update_preview", self.project, self.report(), PREVIEW)
-        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(2,)])  # record() upgraded it
+        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(3,)])  # record() upgraded it
         sql(self.db, "DROP TABLE applies")
+        sql(self.db, "DROP TABLE previews")
+        sql(self.db, "DROP INDEX runs_by_kind")
         sql(self.db, "PRAGMA user_version = 1")
         history.record_apply(run_id, PREVIEW, apply_document())
-        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(2,)])
+        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(3,)])
         self.assertEqual(history.get_run(run_id)["apply"]["outcome"], "applied")
+        # The run recorded before the previews table is found by its files again.
+        self.assertEqual([check["id"] for check in history.list_previews(1, "a" * 64, "b" * 64)],
+                         [run_id])  # fmt: skip
         os.environ.pop("DEPBEE_HISTORY_DB")
         with mock.patch("pathlib.Path.home", side_effect=RuntimeError("no home")):
             self.assertIsNone(history.record_apply(run_id, PREVIEW, apply_document()))
@@ -356,16 +361,16 @@ class ApplyStoreTests(HistoryFixture):
         self.assertEqual(self.db.read_bytes(), before)  # reads and skipped records do not upgrade
         run_id = history.record("update_preview", self.project, self.report(), PREVIEW,
                                 apply=apply_document())  # fmt: skip
-        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(2,)])
+        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(3,)])
         self.assertEqual(sql(self.db, "PRAGMA application_id"), [(history.APPLICATION_ID,)])
-        self.assertIn("applies", self.tables())
+        self.assertLessEqual({"applies", "previews"}, self.tables())
         self.assertEqual(history.get_run(run_id)["apply"]["outcome"], "applied")
 
     def test_registering_also_upgrades_version_1(self):
         self.make_version_1(register=False)
         history.register_project(self.project)
-        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(2,)])
-        self.assertIn("applies", self.tables())
+        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(3,)])
+        self.assertLessEqual({"applies", "previews"}, self.tables())
 
     def test_a_failed_upgrading_write_leaves_version_1(self):
         self.make_version_1()
@@ -382,8 +387,146 @@ class ApplyStoreTests(HistoryFixture):
             history.record("update_preview", self.project, self.report(), PREVIEW,
                            apply=apply_document())  # fmt: skip
         self.assertEqual(sql(self.db, "PRAGMA user_version"), [(1,)])
-        self.assertNotIn("applies", self.tables())
+        self.assertFalse({"applies", "previews"} & self.tables())
         self.assertEqual(sql(self.db, "SELECT count(*) FROM runs"), [(0,)])
+
+
+def preview_document(targets=None, files=("a" * 64, "b" * 64)):
+    """A synthetic update preview document for these targets, made from files with these two
+    SHA-256 (package.json, package-lock.json)."""
+    return {**PREVIEW, "targets": targets, "package_json_sha256": files[0],
+            "package_lock_sha256": files[1]}  # fmt: skip
+
+
+class PreviewStoreTests(HistoryFixture):
+    """user_version 3: the previews table. A project's update previews of given package.json and
+    package-lock.json files are found through it, however many other runs the project has."""
+
+    FILES = ("a" * 64, "b" * 64)
+    OTHER = ("d" * 64, "e" * 64)
+
+    def setUp(self):
+        super().setUp()
+        self.project_id = history.register_project(self.project)
+        self.report = scan_project(self.project, self.base, analysis=self.analysis,
+                                   model_dir=Path("m"))  # fmt: skip
+        self.nothing = {**self.report, "results": []}
+        self.location = self.report["results"][0]["location"]
+
+    def check(self, targets=None, files=FILES, report=None, project=None):
+        return history.record("update_preview", project or self.project, report or self.report,
+                              preview_document(targets, files))  # fmt: skip
+
+    def found(self, files=FILES, project_id=None):
+        checks = history.list_previews(project_id or self.project_id, *files)
+        return [(check["id"], check["targets"], check["locations"]) for check in checks]
+
+    def make_version_2(self):
+        """The database as the version 2 code left it: without what version 3 added."""
+        sql(self.db, "DROP TABLE previews")
+        sql(self.db, "DROP INDEX runs_by_kind")
+        sql(self.db, "PRAGMA user_version = 2")
+
+    def test_previews_of_the_same_files_newest_first_down_to_one_of_everything(self):
+        everything = self.check()
+        named = self.check(["example"])
+        self.check(files=self.OTHER)
+        history.record("scan", self.project, self.report)  # not an update preview
+        none = self.check(["other"], report=self.nothing)
+        self.assertEqual(self.found(), [(none, ["other"], []), (named, ["example"], [self.location]),
+                                        (everything, None, [self.location])])  # fmt: skip
+        self.assertEqual(
+            [check["created_at"] for check in history.list_previews(self.project_id, *self.FILES)],
+            [history.get_run(run)["created_at"] for run in (none, named, everything)],
+        )
+        for _ in range(12):  # runs in between do not hide them
+            self.check(["other"], files=self.OTHER, report=self.nothing)
+            history.record("scan", self.project, self.report)
+        self.assertEqual([check[0] for check in self.found()], [none, named, everything])
+        newer = self.check()  # a later preview of everything: the older ones are not read
+        self.assertEqual(self.found(), [(newer, None, [self.location])])
+        self.assertEqual(len(self.found(self.OTHER)), 13)
+        self.assertEqual(self.found(("f" * 64, "b" * 64)), [])  # another package.json
+        self.assertEqual(history.list_previews(self.project_id + 1, *self.FILES), [])
+
+    def test_previews_of_another_project_with_the_same_files_are_not_found(self):
+        (self.root / "other").mkdir()
+        other_id = history.register_project(self.root / "other")
+        mine = self.check()
+        theirs = self.check(["example"], project=self.root / "other")
+        self.assertEqual(self.found(), [(mine, None, [self.location])])
+        self.assertEqual(self.found(project_id=other_id), [(theirs, ["example"], [self.location])])
+
+    def test_runs_of_one_kind(self):
+        preview = self.check()
+        scan = history.record("scan", self.project, self.report)
+        self.assertEqual([run["id"] for run in history.list_runs(self.project_id)], [scan, preview])
+        self.assertEqual(
+            [run["id"] for run in history.list_runs(self.project_id, kind="update_preview")],
+            [preview],
+        )
+        self.assertEqual([run["id"] for run in history.list_runs(self.project_id, 1, "scan")],
+                         [scan])  # fmt: skip
+
+    def test_a_preview_without_its_hashes_is_stored_and_never_found(self):
+        # Reports and previews are stored as given; only a document's own strings are indexed.
+        bare = history.record("update_preview", self.project, self.report)
+        odd = history.record("update_preview", self.project, self.report,
+                             {"package_json_sha256": 5, "package_lock_sha256": None,
+                              "targets": "example"})  # fmt: skip
+        self.assertEqual(
+            sql(self.db, "SELECT run_id, package_json_sha256, package_lock_sha256, targets "
+                         "FROM previews ORDER BY run_id"),
+            [(bare, None, None, None), (odd, None, None, '"example"')],
+        )  # fmt: skip
+        self.assertEqual(self.found(), [])
+        self.assertIsNone(history.get_run(bare)["preview"])
+        self.assertEqual(history.list_runs(self.project_id, 1, "update_preview")[0]["id"], odd)
+
+    def test_a_version_2_file_is_read_as_it_is_and_indexed_by_the_next_write(self):
+        everything, named = self.check(), self.check(["example"])
+        stale = self.check(files=self.OTHER)
+        bare = history.record("update_preview", self.project, self.report)
+        broken = self.check()  # its stored document will not be JSON
+        scan = history.record("scan", self.project, self.report)
+        self.make_version_2()
+        sql(self.db, "UPDATE runs SET preview = 'not a document' WHERE id = ?", broken)
+        before = self.db.read_bytes()
+        expected = [(named, ["example"], [self.location]), (everything, None, [self.location])]
+        self.assertEqual(self.found(), expected)  # found by reading the stored previews
+        self.assertEqual([check[0] for check in self.found(self.OTHER)], [stale])
+        self.assertEqual(history.list_runs(self.project_id, 1, "update_preview")[0]["id"], broken)
+        self.assertEqual(self.db.read_bytes(), before)  # reads do not upgrade
+        self.assertEqual(history.record("scan", self.project, self.report), scan + 1)
+        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(3,)])
+        self.assertEqual(
+            sql(self.db, "SELECT run_id, project_id, package_json_sha256, package_lock_sha256, "
+                         "targets FROM previews ORDER BY run_id"),
+            [(everything, self.project_id, "a" * 64, "b" * 64, None),
+             (named, self.project_id, "a" * 64, "b" * 64, '["example"]'),
+             (stale, self.project_id, "d" * 64, "e" * 64, None),
+             (bare, self.project_id, None, None, None),
+             (broken, self.project_id, None, None, None)],
+        )  # fmt: skip
+        self.assertEqual(
+            sql(self.db, "SELECT count(*) FROM previews p JOIN runs r ON r.id = p.run_id "
+                         "WHERE p.created_at = r.created_at"), [(5,)])  # fmt: skip
+        self.assertEqual(self.found(), expected)  # the same answer through the index
+        self.assertEqual([check[0] for check in self.found(self.OTHER)], [stale])
+
+    def test_a_failed_upgrade_leaves_version_2(self):
+        run = self.check()
+        self.make_version_2()
+        (self.root / "other").mkdir()
+        # The table and its rows roll back with the registration that fails after them.
+        with mock.patch.object(history, "_now", side_effect=RuntimeError("synthetic")):
+            with self.assertRaises(RuntimeError):
+                history.register_project(self.root / "other")
+        self.assertEqual(sql(self.db, "PRAGMA user_version"), [(2,)])
+        self.assertEqual(sql(self.db, "SELECT name FROM sqlite_master WHERE name LIKE 'previews%' "
+                                      "OR name = 'runs_by_kind'"), [])  # fmt: skip
+        self.assertEqual(len(history.list_projects()), 1)
+        self.assertEqual([check[0] for check in self.found()], [run])
 
 
 class CliTests(HistoryFixture):
@@ -457,7 +600,7 @@ class CliTests(HistoryFixture):
 
         def newer():
             history.register_project(self.project)
-            sql(self.db, "PRAGMA user_version = 3")
+            sql(self.db, "PRAGMA user_version = 4")
 
         def foreign():
             sql(self.db, "CREATE TABLE other (x)")
@@ -482,7 +625,7 @@ class CliTests(HistoryFixture):
             warnings.simplefilter("always")
             self.assertEqual(run(self.scan_argv())[2], "")
             history.list_projects(), history.list_runs(1), history.get_run(1)
-            sql(self.db, "PRAGMA user_version = 3")
+            sql(self.db, "PRAGMA user_version = 4")
             self.assertEqual(run(self.scan_argv())[2], HISTORY_FAILED + "\n")
             gc.collect()
         self.assertFalse([w for w in caught if issubclass(w.category, ResourceWarning)])

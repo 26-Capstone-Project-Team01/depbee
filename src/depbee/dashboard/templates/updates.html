@@ -6,7 +6,12 @@
 <section aria-labelledby="candidates-title">
 <h2 id="candidates-title">업데이트 후보</h2>
 {% if state.checks %}
+{# Only a check of everything is evidence that nothing else would change. #}
+{% if state.full %}
 <p>지금의 package.json과 package-lock.json으로 확인한 결과입니다. {% if state.summary %}{{ state.summary }}.{% else %}바뀌는 항목이 없었습니다.{% endif %}</p>
+{% else %}
+<p>지금의 package.json과 package-lock.json으로 일부 패키지만 확인한 결과입니다. {% if state.summary %}{{ state.summary }}.{% else %}확인한 패키지에는 업데이트 후보가 없었습니다.{% endif %} 나머지 패키지는 미확인이며 전체 업데이트 확인으로 확인합니다.</p>
+{% endif %}
 <p class="note">확인한 실행: {% for check in state.checks %}<a href="{{ base }}/runs/{{ check.id }}">#{{ check.id }}</a> ({{ check.created_at|when }}, {{ "전체" if check.targets is none else check.targets }}){% if not loop.last %}, {% endif %}{% endfor %}</p>
 {% if state.rows %}
 <table class="stack candidates" aria-label="업데이트 후보">

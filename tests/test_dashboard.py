@@ -593,7 +593,7 @@ class CandidateTests(DashboardFixture):
         self.assertIn(f'<a href="{S}/runs/{refused}">#{refused}</a>', updates)
         self.assertIn("그 결과는 현재 후보로 보지 않습니다.", updates)
 
-    def test_added_and_removed_entries_and_only_the_newest_checks_are_read(self):
+    def test_added_and_removed_entries_and_a_later_check_of_one_of_them(self):
         row = self.report["results"][0]
         added = {**row, "location": "node_modules/new", "package": "new",
                  "before_version": None, "after_version": "3.0.0"}  # fmt: skip
@@ -609,11 +609,122 @@ class CandidateTests(DashboardFixture):
                       '<span class="visually-hidden">에서</span> 3.0.0</td>', updates)  # fmt: skip
         self.assertIn('에서</span> <span class="quiet">삭제</span></td>', updates)
         self.assertIn(f'href="{S}/runs/{run}#r1"', updates)
-        # A current check older than the newest CURRENT_CHECKS previews is not looked for.
-        with mock.patch.object(self.app, "CURRENT_CHECKS", 2):
-            for _ in range(2):
-                self.check(self.nothing(), package_lock_sha256="4" * 64)
-            self.assert_unchecked(self.cells())
+        self.assertIn("바뀐 의존성 2개: 위험 1, 통과 0, 보류 0, 삭제 1.", updates)
+        # A later check of other alone would not remove it: that row goes, the added entry of
+        # the check of everything stays.
+        later = self.check(self.nothing(), targets=["other"], changed_count=0)
+        self.assertEqual(self.cells()["node_modules/other"], '<span class="quiet">후보 없음</span>')
+        updates = self.page(self.updates)
+        self.assertIn('<span class="quiet">새로 추가</span>', updates)
+        self.assertNotIn('<span class="quiet">삭제</span>', updates)
+        self.assertIn("확인한 결과입니다. 바뀐 의존성 1개: 위험 1, 통과 0, 보류 0.", updates)
+        self.assertRegex(updates, rf'#{later}</a> \([^)]*, other\), <a href="{S}/runs/{run}">'
+                                  rf"#{run}</a> \([^)]*, 전체\)</p>")  # fmt: skip
+
+    def test_a_check_of_everything_stands_after_many_checks_of_other_packages(self):
+        everything = self.check(targets=None)
+        for _ in range(12):  # more than any window of recent previews
+            newest = self.check(self.nothing(), targets=["other"], changed_count=0)
+        html = self.page(self.packages)
+        self.assertIn("업데이트 후보 1개를 확인했습니다.", html)
+        cells = self.cells(html)
+        self.assertIn(" 1.2.0</span>", cells["node_modules/example"])
+        self.assertIn(f'<a href="{S}/runs/{everything}#r0">근거', cells["node_modules/example"])
+        for location in ("node_modules/other", "node_modules/example/node_modules/inner"):
+            self.assertEqual(cells[location], '<span class="quiet">후보 없음</span>')
+        updates = self.page(self.updates)
+        self.assertIn("확인한 결과입니다. 바뀐 의존성 1개: 위험 1, 통과 0, 보류 0.", updates)
+        self.assertIn('class="stack candidates"', updates)
+        # Listed are the checks whose result is shown: the newest of other and the one of
+        # everything, not the eleven checks of other that the newest one replaced.
+        self.assertRegex(updates, rf'확인한 실행: <a href="{S}/runs/{newest}">#{newest}</a> '
+                                  rf'\([^)]*, other\), <a href="{S}/runs/{everything}">'
+                                  rf"#{everything}</a> \([^)]*, 전체\)</p>")  # fmt: skip
+
+    def test_restored_files_have_their_candidates_again(self):
+        self.check(targets=None)
+        original = self.head.read_bytes()
+        self.write(self.head, lock("1.0.0"))  # other files for a while, e.g. another branch
+        for _ in range(12):  # checked there: nothing would change
+            self.check(self.nothing(), targets=None, changed_count=0)
+        html = self.page(self.packages)
+        self.assertRegex(html, r"\d\d:\d\d UTC에 확인했고 바뀌는 항목이 없었습니다.")
+        self.assertNotIn("1.2.0", "".join(self.cells(html).values()))
+        self.head.write_bytes(original)  # the same bytes as when the first check ran
+        self.assertIn(" 1.2.0</span>", self.cells()["node_modules/example"])
+        updates = self.page(self.updates)
+        self.assertIn("확인한 결과입니다. 바뀐 의존성 1개: 위험 1, 통과 0, 보류 0.", updates)
+        self.assertNotIn("그 결과는 현재 후보로 보지 않습니다.", updates)
+
+    def test_checks_of_named_packages_never_say_that_nothing_changes(self):
+        self.check(self.nothing(), targets=["other"], changed_count=0)
+        html, updates = self.page(self.packages), self.page(self.updates)
+        self.assertIn("일부 패키지만 확인했고 그 패키지에는 업데이트 후보가 없었습니다. 나머지 "
+                      "패키지는 미확인입니다.", html)  # fmt: skip
+        cells = self.cells(html)
+        self.assertEqual(cells["node_modules/other"], '<span class="quiet">후보 없음</span>')
+        self.assertIn("후보 확인</button>", cells["node_modules/example"])
+        self.assertIn("미확인", cells["node_modules/example/node_modules/inner"])
+        self.assertIn("일부 패키지만 확인한 결과입니다. 확인한 패키지에는 업데이트 후보가 "
+                      "없었습니다. 나머지 패키지는 미확인이며", updates)  # fmt: skip
+        self.assertNotIn('class="stack candidates"', updates)
+        for page in (html, updates):  # only a check of everything is evidence of that
+            self.assertNotIn("바뀌는 항목이 없었습니다", page)
+        self.check(targets=["example"])  # a candidate, still not a check of everything
+        self.assertIn("일부 패키지만 확인했고 업데이트 후보 1개를 찾았습니다. 나머지 패키지는 "
+                      "미확인입니다.", self.page(self.packages))  # fmt: skip
+        self.assertIn("일부 패키지만 확인한 결과입니다. 바뀐 의존성 1개: 위험 1, 통과 0, 보류 0. "
+                      "나머지 패키지는 미확인이며", self.page(self.updates))  # fmt: skip
+
+    def test_projects_with_the_same_files_keep_their_own_candidates(self):
+        twin = self.root / "twin"
+        twin.mkdir()
+        for name in ("package.json", "package-lock.json"):
+            (twin / name).write_bytes((self.project / name).read_bytes())
+        twin_id = history.register_project(twin)
+        mine = self.check(targets=None)
+        # The same two hashes, but the check was made in the other project.
+        self.assertIn(
+            "업데이트 후보는 아직 확인하지 않았습니다.", self.page(f"/projects/{twin_id}")
+        )
+        theirs = self.check(self.nothing(), project=twin, targets=None, changed_count=0)
+        self.assertIn("확인했고 바뀌는 항목이 없었습니다.", self.page(f"/projects/{twin_id}"))
+        self.assertNotIn(f"/runs/{mine}", self.page(f"/projects/{twin_id}/updates"))
+        self.assertIn(f'<a href="{S}/runs/{mine}#r0">근거', self.cells()["node_modules/example"])
+        self.assertNotIn(f"/runs/{theirs}", self.page(self.updates))
+
+    def test_a_look_reads_only_the_reports_whose_candidates_it_shows(self):
+        self.check(targets=None)
+        for _ in range(12):
+            self.check(self.nothing(), targets=["other"], changed_count=0)
+            self.check(package_lock_sha256="4" * 64)  # a preview of other files
+            history.record("scan", self.project, self.report)
+        for view in (self.packages, self.updates):
+            with (
+                mock.patch.object(history, "get_run", wraps=history.get_run) as read,
+                mock.patch.object(history, "list_runs", wraps=history.list_runs) as listed,
+            ):
+                self.assertIn("1.2.0", self.page(view))
+            # One stored report, of the check of everything whose row is shown, out of 37 runs;
+            # and no list of all the project's runs.
+            self.assertEqual(read.call_count, 1, view)
+            for call in listed.call_args_list:
+                self.assertEqual(call.args[1:2], (1,), call)
+
+    def test_a_history_file_of_the_previous_format_shows_the_same_candidates(self):
+        self.check(targets=None)
+        self.check(self.nothing(), targets=["other"], changed_count=0)
+        expected = self.cells()
+        self.assertIn(" 1.2.0</span>", expected["node_modules/example"])
+        with contextlib.closing(sqlite3.connect(self.db)) as connection:
+            connection.execute("DROP TABLE previews")  # as the version 2 code left the file
+            connection.execute("DROP INDEX runs_by_kind")
+            connection.execute("PRAGMA user_version = 2")
+            connection.commit()
+        before = self.db.read_bytes()
+        self.assertEqual(self.cells(), expected)
+        self.assertIn('class="stack candidates"', self.page(self.updates))
+        self.assertEqual(self.db.read_bytes(), before)  # looking does not upgrade the file
 
     def test_candidate_strings_stay_inert(self):
         from markupsafe import escape
