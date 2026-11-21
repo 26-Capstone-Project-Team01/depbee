@@ -37,6 +37,11 @@ from depbee.service import scan_project, setup_assets
 ML = importlib.util.find_spec("lightgbm") is not None
 NO_ML = "Install .[ml] for the setup tests that load a native model"
 SRC = str(Path(__file__).resolve().parents[1] / "src")
+# What `depbee setup` prints with nothing saved, in these tests: Fixture leaves depbee's shipped
+# assets out, so no asset is in use (test_bundled.py has the shipped ones).
+NOTHING = (
+    f"{cli.SETUP_NONE}\n  모델: 연결 안 됨\n  기지 악성 색인: 연결 안 됨\n{cli.SETUP_HOW}\n"
+)
 
 
 def run_cli(*argv):
@@ -199,7 +204,8 @@ class SettingsFileTests(Fixture):
 
 
 class OrderTests(IndexMixin, MCPFixture):
-    """Option, then environment variable, then the saved folder, then none."""
+    """Option, then environment variable, then the saved folder, then depbee's shipped assets:
+    none here, where Fixture leaves them out (test_bundled.py has that last step)."""
 
     def setUp(self):
         super().setUp()
@@ -275,7 +281,7 @@ class OrderTests(IndexMixin, MCPFixture):
                 self.assertEqual((report["model_id"], report["detectors"]["known_malicious"]),
                                  (None, None))  # fmt: skip
                 self.assertEqual(report["results"][0]["reason"], "model_missing")
-                self.assertEqual(self.cli("setup"), (0, f"{cli.SETUP_NONE}\n{cli.SETUP_HOW}\n", ""))
+                self.assertEqual(self.cli("setup"), (0, NOTHING, ""))
                 unchecked = mcp.scan_lockfile(str(self.project), str(self.base))
                 self.assertIn(mcp.KNOWN_MALICIOUS_NOTICE, unchecked["notices"])
                 self.assertEqual(config.path(), self.root / "user" / "config.json")
@@ -352,25 +358,39 @@ class SetupTests(NativeAssets):
                          ("flagged", {"status": "hit"}, "hit"))  # fmt: skip
 
     def test_show_and_clear(self):
-        self.assertEqual(run_cli("setup"), (0, f"{cli.SETUP_NONE}\n{cli.SETUP_HOW}\n", ""))
+        self.assertEqual(run_cli("setup"), (0, NOTHING, ""))
+        self.assertFalse(self.settings.parent.exists())  # showing writes nothing
         run_cli("setup", str(self.assets))
-        os.environ["DEPBEE_MODEL_DIR"] = str(self.root / "elsewhere")
+        saved = self.settings.read_bytes()
+        index = f"  기지 악성 색인: {self.assets / 'index'} (기준 시점 {AS_OF}, 저장된 설정)"
         code, out, err = run_cli("setup")
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out.splitlines(), [
             f"저장된 자산 설정: {self.settings}",
-            f"  모델: {self.assets / 'model'}",
-            f"  기지 악성 색인: {self.assets / 'index'}",
-            cli.SETUP_OVERRIDDEN.format(variable="DEPBEE_MODEL_DIR", name="모델")])  # fmt: skip
+            f"  모델: {self.assets / 'model'} (모델 ID synthetic-test-only, 저장된 설정)",
+            index])  # fmt: skip
+        # The variable is what a scan would use, and its folder does not load: said, and 2 as
+        # that scan would be, not passed over for the saved model.
+        os.environ["DEPBEE_MODEL_DIR"] = str(self.root / "elsewhere")
+        code, out, err = run_cli("setup")
+        self.assertEqual((code, err), (2, ""))
+        lines = out.splitlines()
+        self.assertEqual((lines[0], lines[2], len(lines)),
+                         (f"저장된 자산 설정: {self.settings}", index, 3))  # fmt: skip
+        self.assertTrue(lines[1].startswith(
+            f"  모델: {self.root / 'elsewhere'} (환경 변수 DEPBEE_MODEL_DIR, 읽지 못함: "), lines[1])  # fmt: skip
+        self.assertEqual(self.settings.read_bytes(), saved)
         self.assertEqual(run_cli("setup", "--clear"), (0, f"{cli.SETUP_CLEARED}\n", ""))
         self.assertFalse(self.settings.exists())
         self.assertEqual(run_cli("setup", "--clear"), (0, f"{cli.SETUP_NONE}\n", ""))
 
-    def test_a_subfolder_that_does_not_exist_is_saved_as_not_connected(self):
+    def test_a_subfolder_that_does_not_exist_is_not_saved(self):
+        """Its asset is then the one shipped with depbee (test_bundled.py); here, where Fixture
+        leaves the shipped ones out, none."""
         shutil.rmtree(self.assets / "index")
         code, out, _ = run_cli("setup", str(self.assets))
         self.assertEqual(code, 0)
-        self.assertIn("  기지 악성 색인: 연결 안 됨\n", out)
+        self.assertIn(f"  기지 악성 색인: {cli.SETUP_DEFAULT}\n", out)
         self.assertIsNone(json.loads(self.settings.read_text("utf-8"))["known_malicious_dir"])
         code, report = self.scan_without_options()
         self.assertEqual((code, report["model_id"], report["detectors"]["known_malicious"]),
@@ -608,9 +628,9 @@ class SharedFolderTests(Fixture):
 
     def test_a_folder_that_exists_is_used_as_it_is_and_a_person_is_told(self):
         self.user.mkdir()
-        config.save(self.root, self.root, None)
+        config.save(self.root, None, None)
         self.assertTrue(config.open_to_others(self.user))  # depbee does not change its access
-        shown = (f"저장된 자산 설정: {self.user / 'config.json'}\n  모델: {self.root}\n"
+        shown = (f"저장된 자산 설정: {self.user / 'config.json'}\n  모델: 연결 안 됨\n"
                  "  기지 악성 색인: 연결 안 됨\n")  # fmt: skip
         notice = cli.SHARED_FOLDER.format(folder=self.user) + "\n"
         self.assertEqual(self.on_terminal("setup"), (0, shown, notice))

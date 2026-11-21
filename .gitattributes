@@ -4,3 +4,11 @@
 *.yml text eol=lf
 *.json text eol=lf
 *.pdf binary
+# The shipped model and index are checked against SHA-256 fixed in src/depbee/bundled.py, so
+# their line endings are never converted (model.txt would follow core.autocrlf otherwise).
+src/depbee/assets/model/manifest.json -text
+src/depbee/assets/model/model.txt -text
+src/depbee/assets/index/manifest.json -text
+src/depbee/assets/index/index.json -text
+# The notice test compares this upstream license byte-for-byte with its LF original.
+src/depbee/assets/LICENSE-Apache-2.0.txt text eol=lf

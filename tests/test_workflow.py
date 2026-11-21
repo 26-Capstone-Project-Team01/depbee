@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from unittest import mock
 
+from depbee import bundled
 from depbee.analysis.artifact import ArtifactAnalyzer
 from depbee.cli import _progress, main
 from depbee.contracts import MAX_JSON_BYTES, GuardError, finite_number, read_json
@@ -64,6 +65,12 @@ class Fixture(unittest.TestCase):
         # So does the user's settings folder (depbee.config: assets saved by depbee setup, the
         # background dashboard's files): a developer's own setup must not change results either.
         os.environ["DEPBEE_CONFIG_DIR"] = str(self.root / "user")
+        # Nor does a test get the model and index shipped with depbee: each brings its own
+        # synthetic assets or runs without any, as a caller of pipeline.scan() without them
+        # does. test_bundled.py turns the shipped ones back on.
+        shipped = mock.patch.dict(bundled.DIRS, clear=True)
+        shipped.start()
+        self.addCleanup(shipped.stop)
         self.project = self.root / "project"
         self.project.mkdir()
         self.base = self.root / "base.json"

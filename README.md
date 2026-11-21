@@ -18,7 +18,7 @@ cd depbee
 ```powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install ".[ml,extract,mcp,web]"
+python -m pip install ".[extract,mcp,web]"
 depbee --help
 ```
 
@@ -27,20 +27,13 @@ depbee --help
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install ".[ml,extract,mcp,web]"
+python -m pip install ".[extract,mcp,web]"
 depbee --help
 ```
 
-설치가 끝나면 어느 프로젝트 폴더에서든 `depbee`를 호출할 수 있습니다. 새 터미널에서는 같은 가상환경을 다시 활성화합니다. 이 설치에는 비공개 [분석기 저장소](https://github.com/26-Capstone-Project-Team01/depbee-analyzer) 접근 권한이 필요합니다. 의존성 변경 목록(`depbee plan`)만 보려면 `python -m pip install .`로 충분합니다. 공개 Release와 Python 없이 실행하는 독립 바이너리는 아직 없습니다. [wheel 설치, pipx, 활성화 없이 실행하기](docs/usage.md#wheel-만들기와-설치)
+가상환경을 활성화하면 어느 프로젝트에서든 `depbee`를 실행할 수 있습니다. 패키지에서 특징을 추출하는 `extract` 설치에는 비공개 분석기 저장소 접근 권한이 필요합니다. [분석기 저장소](https://github.com/26-Capstone-Project-Team01/depbee-analyzer) · [wheel과 pipx 설치](docs/usage.md#wheel-만들기와-설치)
 
-ML 검사에는 **모델 폴더**(`model.txt`, `manifest.json`), 기지 악성 대조에는 **색인 폴더**(`index.json`, `manifest.json`)가 필요합니다. 두 폴더를 자산 폴더 하나 아래에 `model`, `index`라는 이름으로 두고 한 번 저장하면, 이후의 명령과 MCP 등록에 경로를 주지 않아도 됩니다.
-
-```powershell
-depbee setup C:\depbee-assets    # macOS/Linux 예: depbee setup /opt/depbee-assets
-depbee setup                     # 저장된 설정 보기, 지우려면 depbee setup --clear
-```
-
-depbee는 자산을 내려받지 않습니다. 직접 만들었거나 SHA-256을 확인한 폴더만 저장합니다. 한 번만 다른 자산을 쓰려면 `--model-dir`·`--known-malicious-dir` 옵션이나 환경 변수 `DEPBEE_MODEL_DIR`·`DEPBEE_KNOWN_MALICIOUS_DIR`를 사용합니다. 자산이 없으면 ML 판정은 보류되고 기지 악성 대조는 건너뜁니다. [자산 폴더 설정](docs/usage.md#자산-폴더-설정-depbee-setup) · [모델 준비](docs/usage.md#모델-준비) · [색인 만들기](docs/usage.md#색인-만들기)
+**설치 직후 `depbee check lodash@4.17.21`로 첫 검사를 실행하세요.** wheel에는 모델 `D04-E00`과 `2026-10-06T14:00:47Z` 기준 OSV npm 색인이 들어 있습니다. `depbee setup`으로 현재 자산을 확인할 수 있고, 매 보고서에 실제 검사에 쓴 모델과 색인이 기록됩니다. [기본 자산 변경](docs/usage.md#기본-자산) · [결과 재현에 남길 값](docs/usage.md#결과-재현에-남길-값)
 
 ## CLI
 
@@ -70,26 +63,26 @@ depbee dashboard --stop         # 백그라운드 대시보드 종료
 
 `--background`는 서버가 실제로 응답한 뒤에 주소를 출력하고, 이미 실행 중이면 새로 띄우지 않고 그 주소를 보여 줍니다. `--stop`으로 끄면 그 주소는 만료됩니다. [백그라운드 실행](docs/usage.md#백그라운드-실행)
 
-터미널에 출력된 `127.0.0.1` 주소를 엽니다. 세션 주소는 개인용입니다. 등록한 프로젝트는 화면 위쪽의 탭으로 전환하고, 프로젝트 관리 탭에서 npm 프로젝트의 절대 경로를 등록합니다. 프로젝트 안은 **패키지**(설치 버전, 위치, 종류, 업데이트 후보), **업데이트**(후보 버전과 검사 근거, 미리보기와 반영), **기록**(실행 기록과 반영 이력, 보고서) 세 화면입니다.
+터미널에 출력된 `127.0.0.1` 주소를 엽니다. 세션 주소는 개인용입니다. 등록한 프로젝트는 화면 위쪽의 탭으로 전환하고, 프로젝트 관리 탭에서 **프로젝트 폴더 선택**으로 npm 프로젝트 폴더를 고르거나 절대 경로를 적어 등록합니다. 파일을 올리는 업로드는 없고, 대시보드는 등록한 폴더의 파일을 그 자리에서 읽습니다. 프로젝트 안은 **패키지**(설치 버전, 위치, 종류, 업데이트 후보), **업데이트**(후보 버전과 검사 근거, 미리보기와 반영), **기록**(실행 기록과 반영 이력, 보고서) 세 화면입니다.
 
 **전체 업데이트 확인**이나 직접 의존성 하나의 **후보 확인**으로 npm이 제안한 변경을 미리 보고, 검사 근거를 검토한 뒤 lockfile 반영이나 설치를 선택합니다. **검사만**은 현재 lockfile과 Git HEAD의 차이를 검사합니다. 화면을 여는 것만으로는 npm을 실행하거나 네트워크로 검사하지 않습니다. 업데이트 후보는 지금의 `package.json`·`package-lock.json`으로 확인한 결과만 보이고, 그렇지 않으면 미확인으로 표시합니다. [화면별 설명](docs/usage.md#로컬-대시보드-depbee-dashboard)
 
 ## MCP
 
-에이전트가 설치 전에 검사하게 하려면 depbee를 stdio 서버로 등록합니다. [설치와 준비](#설치와-준비)의 `depbee setup`으로 자산 폴더를 한 번 저장했다면 등록 명령은 `depbee mcp`뿐이고 모델·색인 경로를 넣지 않습니다. `depbee setup <자산 폴더>`는 저장을 마치면 지금 설치된 실행 파일의 절대 경로로 등록 명령을 출력하므로 그대로 복사해 쓸 수 있습니다.
+에이전트가 설치 전에 검사하게 하려면 depbee를 stdio 서버로 등록합니다. 등록 명령은 `depbee mcp`뿐이고 모델·색인 경로를 넣지 않습니다. 환경 변수나 저장한 설정으로 바꾸지 않았다면, 경로를 주지 않은 서버는 [설치본의 모델과 색인](#설치와-준비)을 씁니다.
 
 ```sh
 claude mcp add --scope user depbee -- "<depbee 실행 파일의 절대 경로>" mcp   # Claude Code
 codex mcp add depbee -- "<depbee 실행 파일의 절대 경로>" mcp                # Codex
 ```
 
-쓰는 에이전트의 줄만 실행하고 `claude mcp list`나 `codex mcp list`로 확인합니다. `check_package`는 정확한 이름@버전 하나를, `scan_lockfile`은 프로젝트의 lockfile 변경을 검사합니다. 두 도구는 검사 결과를 반환하고 설치·업데이트는 에이전트가 수행합니다. 자산을 저장하지 않았으면 ML 점수는 보류되고 기지 악성 대조는 건너뜁니다.
+쓰는 에이전트의 줄만 실행하고 `claude mcp list`나 `codex mcp list`로 확인합니다. `check_package`는 정확한 이름@버전 하나를, `scan_lockfile`은 프로젝트의 lockfile 변경을 검사합니다. 두 도구는 검사 결과를 반환하고 설치·업데이트는 에이전트가 수행합니다. 응답은 안내 문구(`notices`)와 보고서 원문(`report`)을 함께 담고, `report.model_id`와 `report.detectors.known_malicious.list_as_of`가 검사에 쓴 모델과 색인 기준 시점입니다. 서버 지침은 에이전트가 결과를 말할 때 이 두 값을 인용하게 합니다.
 
-PowerShell과 Bash의 등록 명령, Codex 설정, 자산을 저장하지 않고 등록하는 방법은 [에이전트에 등록하기](docs/usage.md#에이전트에-등록하기)에 있습니다. 에이전트가 설치 전에 도구를 부르게 하려면 프로젝트의 지침 파일에 [에이전트 지침 예시](docs/usage.md#에이전트-지침-예시-설치업데이트-전에-먼저-검사)를 복사해 넣습니다.
+PowerShell과 Bash의 등록 명령, Codex 설정, 직접 준비한 모델·색인으로 등록하는 방법은 [에이전트에 등록하기](docs/usage.md#에이전트에-등록하기)에 있습니다. 에이전트가 설치 전에 도구를 부르게 하려면 프로젝트의 지침 파일에 [에이전트 지침 예시](docs/usage.md#에이전트-지침-예시-설치업데이트-전에-먼저-검사)를 복사해 넣습니다.
 
 ## GitHub Actions
 
-PR에서 lockfile 변경을 검사하려면 예시 workflow를 대상 저장소의 `.github/workflows/depbee.yml`에 둡니다. `pull_request`의 기준 커밋과 비교하며, 검사 결과는 Checks의 요약, lockfile 줄 주석, `depbee-report` 아티팩트에서 확인합니다. [복사할 전체 workflow와 필수 입력](docs/ci-cd.md#사용-예시)
+PR에서 lockfile 변경을 검사하려면 예시 workflow를 대상 저장소의 `.github/workflows/depbee.yml`에 둡니다. `pull_request`의 기준 커밋과 비교하며, 검사 결과는 Checks의 요약, lockfile 줄 주석, `depbee-report` 아티팩트에서 확인합니다. Action은 고정한 커밋의 설치본에 든 모델과 색인을 기본으로 쓰고, Release 태그와 SHA-256은 다른 모델이나 색인으로 바꿀 때만 지정합니다. [복사할 전체 workflow와 입력](docs/ci-cd.md#사용-예시)
 
 기지 악성 일치는 `fail-on`과 관계없이 항상 실패합니다. ML 기준 이상과 보류는 기본 경고이며 `fail-on: ml-hit, incomplete`로 실패 조건에 추가할 수 있습니다. 입력이나 검증 오류도 실패합니다. 병합을 막으려면 저장소의 필수 검사로 지정합니다.
 
@@ -109,7 +102,7 @@ PR에서 lockfile 변경을 검사하려면 예시 workflow를 대상 저장소�
 
 ### 실제 제품 검사의 조건
 
-외부 저장소의 PR에서 depbee Action이 실제로 검사하려면 depbee와, 설치 단계에서 사용하는 depbee-analyzer가 모두 공개돼야 합니다. 모델과 색인도 공개 Release에 있어야 합니다. Action은 전체 커밋 SHA로 고정하고 모델과 색인은 각각 Release 태그와 SHA-256을 지정합니다. 두 저장소와 Release는 아직 공개되지 않았으므로 지금은 실제 제품 검사가 공개 PR에서 실행되지 않습니다. 공개 전에도 depbee 저장소 루트에서 아래 명령으로 기지 악성 일치 예시의 실패 판정(종료 코드 1)을 확인할 수 있습니다.
+외부 저장소의 PR에서 depbee Action이 실제로 검사하려면 depbee와, 설치 단계에서 사용하는 depbee-analyzer가 모두 공개돼야 합니다. Action은 전체 커밋 SHA로 고정하고, 모델과 색인은 그 커밋의 설치본에 포함된 것을 기본으로 씁니다. Release 태그와 SHA-256은 다른 모델이나 색인을 명시해 바꿀 때만 씁니다. 두 저장소의 공개가 아직 허용되지 않았으므로, secret 없이 도는 공개 저장소에서의 실제 제품 검사 시연은 실행하지 않았습니다. 공개 전에도 depbee 저장소 루트에서 아래 명령으로 기지 악성 일치 예시의 실패 판정(종료 코드 1)을 확인할 수 있습니다.
 
 ```powershell
 python -I src/depbee/actions.py report docs/examples/result-contract/03-known-malicious-low-ml.json --lockfile examples/project/package-lock.json

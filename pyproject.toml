@@ -4,14 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "depbee"
-version = "0.1.0"
+version = "0.2.0"
 description = "CLI integration for context-aware npm update detection"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+# The shipped model (src/depbee/assets) is scored with these in every install.
+dependencies = ["lightgbm>=4.6,<5", "numpy>=1.26,<3"]
 
 [project.optional-dependencies]
-ml = ["lightgbm>=4.6,<5", "numpy>=1.26,<3"]
+# Part of the base install now; the name stays so that ".[ml]" in older commands still installs.
+ml = []
 # Private team repository; installing it needs GitHub access. Pinned to a reviewed commit.
 extract = [
     "depbee-analyzer @ git+https://github.com/26-Capstone-Project-Team01/depbee-analyzer@917ba903bb2e719419ad5f2daeb7d542940703d5",
@@ -32,6 +34,16 @@ where = ["src"]
 # The dashboard's pages and stylesheet; include-package-data alone takes only MANIFEST.in files.
 [tool.setuptools.package-data]
 "depbee.dashboard" = ["templates/*.html", "static/*.css"]
+# The shipped model and index (depbee.bundled fixes their SHA-256) with their notice and the
+# license of the index's source. Named one by one: nothing else in that folder is shipped.
+"depbee" = [
+    "assets/NOTICE.md",
+    "assets/LICENSE-Apache-2.0.txt",
+    "assets/model/manifest.json",
+    "assets/model/model.txt",
+    "assets/index/manifest.json",
+    "assets/index/index.json",
+]
 
 [tool.ruff]
 target-version = "py311"

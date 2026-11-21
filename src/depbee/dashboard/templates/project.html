@@ -30,7 +30,7 @@
 {% else %}업데이트 후보는 아직 확인하지 않았습니다. 확인은 몇 초에서 수십 초 걸립니다.
 {% endif %}
 </p>
-<form method="get" action="{{ url }}" class="filters">
+<form method="get" action="{{ url }}" class="filters" role="search" aria-label="패키지 검색">
 <div class="grow"><label for="dep-query">패키지 이름</label>
 <input type="search" id="dep-query" name="q" maxlength="{{ max_query }}" value="{{ query }}" placeholder="패키지 검색">
 </div>
@@ -57,6 +57,7 @@
 {% if candidate %}
 <span class="move"><span class="visually-hidden">후보 </span><span aria-hidden="true">→</span> {{ candidate.after if candidate.after is not none else "삭제" }}</span>
 {% if candidate.status != "removed" %}<span class="verdict {{ candidate.cell }}"><span class="cell {{ candidate.cell }}" aria-hidden="true"></span>{{ candidate.label }}</span>{% endif %}
+{% if candidate.known_hit %}<strong class="known">기지 악성 기록 일치</strong>{% endif %}
 <a href="{{ base }}/runs/{{ candidate.run_id }}#r{{ candidate.position }}">근거<span class="visually-hidden"> {{ candidate.package }}</span></a>
 {% elif row.checked %}<span class="quiet">후보 없음</span>
 {% elif row.direct and row.name in targets and row.location == "node_modules/" ~ row.name %}

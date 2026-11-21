@@ -23,6 +23,16 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 # Goes into the Release download URL.
 MODEL_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+# All five: the model and the known malicious index of depbee Releases, each checked against its
+# hash. None: the ones inside the installed depbee package. Some of them is an input error.
+RELEASE_INPUTS = ("MODEL_VERSION", "MODEL_SHA256", "MANIFEST_SHA256",
+                  "KNOWN_MALICIOUS_VERSION", "KNOWN_MALICIOUS_SHA256")  # fmt: skip
+# The report fields that name the model and the known malicious list a scan used, with their
+# labels in the job summary.
+ASSETS = {
+    "model_id": "모델 ID",
+    "detectors.known_malicious.list_as_of": "기지 악성 색인 기준 시점",
+}
 LOCKFILE_NAME = "package-lock.json"
 SAFETY_NOTE = "'통과'는 모델의 판정일 뿐 패키지가 안전하다는 보증이 아닙니다."
 
@@ -34,6 +44,14 @@ class ActionError(Exception):
 def _clean(value: object) -> str:
     """Escape characters that a package could use to control the log (same rule as the CLI)."""
     return "".join(c if c.isprintable() else f"\\u{ord(c):04x}" for c in str(value))
+
+
+def _md(value: object) -> str:
+    """Report text as a Markdown code span, so that no HTML, link or emphasis in it is rendered
+    (the CLI's rule: control characters escaped, a fence longer than any backtick run inside)."""
+    text = _clean(value)
+    fence = "`" * (max((len(run) for run in re.findall("`+", text)), default=0) + 1)
+    return f"{fence} {text} {fence}"
 
 
 def _data(text: str) -> str:
@@ -94,8 +112,18 @@ def _relative_file(value: str, what: str, workspace: Path) -> Path:
     return full
 
 
-def check_inputs(env: dict, workspace: Path) -> None:
-    """Validate the action inputs before anything is installed or downloaded."""
+def _input(name: str) -> str:
+    """The action input of an environment name: MODEL_SHA256 is model-sha256."""
+    return name.lower().replace("_", "-")
+
+
+def check_inputs(env: dict, workspace: Path) -> str | None:
+    """Validate the action inputs before anything is installed or downloaded.
+
+    Returns where the model and the known malicious index of the scan come from: "release" (all
+    five Release inputs), "bundled" (none of them: the installed depbee package's own), or None
+    in self-test mode, which scans nothing.
+    """
     lockfile = env.get("LOCKFILE", "")
     _relative_file(lockfile, "lockfile", workspace)
     if PurePosixPath(lockfile).name != LOCKFILE_NAME:
@@ -104,29 +132,42 @@ def check_inputs(env: dict, workspace: Path) -> None:
     if env.get("REPORT"):
         # Self-test mode: no scan, so the model, base commit and change limit are unused.
         _relative_file(env["REPORT"], "report", workspace)
-        return
+        return None
     limit = env.get("MAX_CHANGES", "")
     if not (limit.isascii() and limit.isdigit() and int(limit) > 0):
         raise ActionError(f"max-changes must be a positive integer: {limit!r}")
-    if not MODEL_VERSION.fullmatch(env.get("MODEL_VERSION", "")):
-        raise ActionError(f"model-version must be a Release tag name: {env.get('MODEL_VERSION')!r}")
-    for name in ("MODEL_SHA256", "MANIFEST_SHA256"):
-        if not SHA256.fullmatch(env.get(name, "")):
-            raise ActionError(f"{name.lower().replace('_', '-')} must be 64 lowercase hex digits")
-    # The known malicious index is required like the model: a run without it could never fail
-    # on a known malicious match (client-dev 2.3 1).
-    if not MODEL_VERSION.fullmatch(env.get("KNOWN_MALICIOUS_VERSION", "")):
+    # The index comes with the model, never one without the other: a run without the index could
+    # never fail on a known malicious match (client-dev 2.3 1).
+    given = [name for name in RELEASE_INPUTS if env.get(name)]
+    if given and len(given) < len(RELEASE_INPUTS):
+        missing = ", ".join(_input(name) for name in RELEASE_INPUTS if name not in given)
         raise ActionError(
-            "known-malicious-version must be a Release tag name: "
-            f"{env.get('KNOWN_MALICIOUS_VERSION')!r}"
+            "Release inputs must be given all five or not at all (none: the model and known "
+            f"malicious index inside the installed depbee are used); missing: {missing}"
         )
-    if not SHA256.fullmatch(env.get("KNOWN_MALICIOUS_SHA256", "")):
-        raise ActionError("known-malicious-sha256 must be 64 lowercase hex digits")
+    for name in given:
+        tag = name.endswith("_VERSION")
+        if not (MODEL_VERSION if tag else SHA256).fullmatch(env[name]):
+            expected = "a Release tag name" if tag else "64 lowercase hex digits"
+            raise ActionError(f"{_input(name)} must be {expected}: {env[name]!r}")
     if not COMMIT.fullmatch(env.get("BASE_SHA", "")):
         raise ActionError(
             "No pull request base commit: run this action on pull_request events "
             "(github.event.pull_request.base.sha)"
         )
+    return "release" if given else "bundled"
+
+
+def tree_digest(root: Path) -> str:
+    """SHA-256 of every file under root: each relative path and file hash, in path order.
+    Bytecode caches are left out: they are not source and change with every checkout."""
+    digest = hashlib.sha256()
+    files = (p for p in root.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+    for name in sorted(p.relative_to(root).as_posix() for p in files):
+        digest.update(os.fsencode(name) + b"\0")
+        with (root / name).open("rb") as stream:
+            digest.update(hashlib.file_digest(stream, "sha256").digest())
+    return digest.hexdigest()
 
 
 def verify(pairs: list[tuple[Path, str]]) -> None:
@@ -156,8 +197,9 @@ def count_changes(plan: Path, limit: int) -> int:
     return len(changes)
 
 
-def load_report(path: Path) -> list[dict]:
-    """The results of a depbee report, checked for the fields this gate reads."""
+def load_report(path: Path) -> tuple[list[dict], dict]:
+    """The results of a depbee report, checked for the fields this gate reads, and its ASSETS
+    fields as the scan wrote them (None for one that is absent, empty or no string)."""
     report = json.loads(path.read_text(encoding="utf-8"))
     rows = report.get("results") if isinstance(report, dict) else None
     if not isinstance(rows, list):
@@ -178,7 +220,14 @@ def load_report(path: Path) -> list[dict]:
                 f"Report result {index} lacks status, package, location, "
                 "known_malicious.status or ml.status with a known value"
             )
-    return rows
+    detectors = report.get("detectors")
+    known = detectors.get("known_malicious") if isinstance(detectors, dict) else None
+    found = (report.get("model_id"), known.get("list_as_of") if isinstance(known, dict) else None)
+    assets = {
+        name: value if isinstance(value, str) and value.strip() else None
+        for name, value in zip(ASSETS, found, strict=True)
+    }
+    return rows, assets
 
 
 def find_line(lines: list[str], location: str) -> int | None:
@@ -190,13 +239,30 @@ def find_line(lines: list[str], location: str) -> int | None:
     return None
 
 
-def decide(rows: list[dict], fail_on: set[str], lockfile: str, lines: list[str]):
-    """Return (failed, annotations, summary lines) from the per-result fields only.
+def decide(
+    rows: list[dict],
+    assets: dict,
+    fail_on: set[str],
+    lockfile: str,
+    lines: list[str],
+    self_test: bool = False,
+):
+    """Return (failed, annotations, summary lines) from the per-result fields and the names of
+    the model and the known malicious list in the report (assets, from load_report).
 
     The top-level exit_code is not used: 2 (unfinished) would hide 1 (risk).
     """
     annotations, counts = [], {"known": 0, "ml": 0, "pending": 0}
-    failed = False
+    # A scan whose report names no model or no known malicious list checked nothing with them, so
+    # it never passes. Only the self-test, which judges a given report, goes on without them.
+    unnamed = [] if self_test else [name for name, value in assets.items() if value is None]
+    failed = bool(unnamed)
+    if unnamed:
+        message = (
+            f"depbee: 보고서에 {', '.join(unnamed)} 값이 없습니다. "
+            "신뢰한 모델과 기지 악성 색인으로 검사했다는 근거가 없어 통과로 두지 않습니다."
+        )
+        annotations.append(command("error", message))
     for row in rows:
         known = row["known_malicious"]["status"] == "hit"
         ml = row["ml"]["status"] == "hit"
@@ -224,9 +290,14 @@ def decide(rows: list[dict], fail_on: set[str], lockfile: str, lines: list[str])
         line = find_line(lines, row["location"])
         annotations.append(command("error" if fails else "warning", message, lockfile, line))
     verdict = "실패" if failed else ("경고" if any(counts.values()) else "통과")
+    absent = "보고서에 없음" + ("" if self_test else ": 실패")
     summary = [
         f"### depbee Actions 판정: {verdict}",
         "",
+        *(
+            f"- {label}(`{name}`): {absent if assets[name] is None else _md(assets[name])}"
+            for name, label in ASSETS.items()
+        ),
         f"- 기지 악성 기록 일치 {counts['known']}개: 항상 실패",
         f"- ML 위험 점수 기준 이상 {counts['ml']}개: "
         + ("실패(fail-on ml-hit)" if "ml-hit" in fail_on else "경고"),
@@ -237,20 +308,36 @@ def decide(rows: list[dict], fail_on: set[str], lockfile: str, lines: list[str])
         "최상위 `exit_code`는 쓰지 않았습니다. 전체 보고서는 artifact `depbee-report`의 "
         "`report.json`입니다.",
     ]
+    if self_test:
+        summary.append(
+            "- 자기 검사(`report` 입력)입니다. "
+            "검사 없이 주어진 보고서만 판정했으므로 실제 검사 결과가 아닙니다."
+        )
     return failed, annotations, summary
 
 
-def gate(report: Path, lockfile: str, fail_on_text: str, markdown: Path | None, summary) -> int:
-    """Print annotations, append the job summary and return the step's exit status."""
+def gate(
+    report: Path,
+    lockfile: str,
+    fail_on_text: str,
+    markdown: Path | None,
+    summary,
+    self_test: bool = False,
+) -> int:
+    """Print annotations, append the job summary and return the step's exit status.
+
+    self_test: the report was given, not scanned (the report input), and may be one that names
+    no model or known malicious list. A scan's report without them fails.
+    """
     try:
         fail_on = parse_fail_on(fail_on_text)
-        rows = load_report(report)
+        rows, assets = load_report(report)
         lockfile = PurePosixPath(lockfile.replace("\\", "/")).as_posix()
         try:
             lines = Path(lockfile).read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeDecodeError):
             lines = []  # annotations fall back to the whole file
-        failed, annotations, lines_out = decide(rows, fail_on, lockfile, lines)
+        failed, annotations, lines_out = decide(rows, assets, fail_on, lockfile, lines, self_test)
         # Written by the depbee CLI from the same report; it already escapes package data.
         cli_markdown = markdown.read_text(encoding="utf-8") if markdown is not None else ""
     except (ActionError, OSError, ValueError, RecursionError) as exc:
@@ -284,6 +371,11 @@ def _parser() -> argparse.ArgumentParser:
     report.add_argument("--lockfile", required=True)
     report.add_argument("--fail-on", default="")
     report.add_argument("--markdown", type=Path, help="depbee --format markdown output")
+    report.add_argument(
+        "--self-test",
+        action="store_true",
+        help="The report was given, not scanned: it need not name a model and known malicious list",
+    )
     return parser
 
 
@@ -292,14 +384,27 @@ def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     if args.command == "report":
+        options = (args.report, args.lockfile, args.fail_on, args.markdown)
         summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
         if not summary_path:
-            return gate(args.report, args.lockfile, args.fail_on, args.markdown, sys.stdout)
+            return gate(*options, sys.stdout, args.self_test)
         with open(summary_path, "a", encoding="utf-8") as summary:
-            return gate(args.report, args.lockfile, args.fail_on, args.markdown, summary)
+            return gate(*options, summary, args.self_test)
     try:
         if args.command == "inputs":
-            check_inputs(dict(os.environ), Path.cwd())
+            assets = check_inputs(dict(os.environ), Path.cwd())
+            output = os.environ.get("GITHUB_OUTPUT")
+            if assets and output:
+                # identity keeps the feature cache of one trusted model apart from another's: the
+                # verified Release hash, else the hash of this depbee package, the files pip
+                # installs with the bundled model among them.
+                identity = (
+                    os.environ["MODEL_SHA256"]
+                    if assets == "release"
+                    else f"bundled-{tree_digest(Path(__file__).resolve().parent)}"
+                )
+                with open(output, "a", encoding="utf-8", newline="\n") as stream:
+                    stream.write(f"assets={assets}\nidentity={identity}\n")
         elif args.command == "verify":
             if len(args.pairs) % 2:
                 raise ActionError("verify needs FILE SHA256 pairs")

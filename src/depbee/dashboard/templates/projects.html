@@ -1,10 +1,36 @@
 {% extends "base.html" %}
 {% block title %}프로젝트 관리 - depbee{% endblock %}
 {% block main %}
-<h1>프로젝트 관리</h1>
-{% if not tabs %}
-<p class="empty">등록한 프로젝트가 없습니다. 아래에 npm 프로젝트 폴더를 등록하면 위쪽에 프로젝트 탭이 생기고, 탭 안에서 패키지와 업데이트 후보, 검사 기록을 봅니다.</p>
-{% else %}
+<h1{% if not tabs %} class="visually-hidden"{% endif %}>프로젝트 관리</h1>
+{# Two columns. Adding a project comes first: the folder dialog, and folded under it the path
+   typed by hand (open after an error of its own, or when the dialog could not be used). Beside
+   it the registered projects or, before the first one, what a registered project is for. #}
+<div class="desk{% if not tabs %} first{% endif %}">
+<section class="add" aria-labelledby="register">
+<h2 id="register">프로젝트 등록</h2>
+<p class="lead">{% if not tabs %}등록한 프로젝트가 없습니다. {% endif %}package-lock.json이 있는 npm 프로젝트 폴더를 고르면 업로드 없이 바로 등록하고 그 프로젝트를 엽니다.</p>
+{% if error and not typed %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+<form method="post" action="{{ base }}/projects/pick">
+<input type="hidden" name="session" value="{{ session }}">
+<button class="primary" type="submit" aria-describedby="pick-hint">프로젝트 폴더 선택</button>
+</form>
+<p class="note" id="pick-hint">이 PC에서 폴더를 열어 파일을 읽습니다.</p>
+<details{% if manual %} open{% endif %}>
+<summary>폴더 경로 직접 입력</summary>
+{% if error and typed %}<p class="error" id="path-error" role="alert">{{ error }}</p>{% endif %}
+<form method="post" action="{{ base }}/projects">
+<input type="hidden" name="session" value="{{ session }}">
+<label for="path">package-lock.json이 있는 폴더의 절대 경로</label>
+<div class="field">
+<input id="path" name="path" type="text" maxlength="1024" required aria-describedby="path-hint{% if error and typed %} path-error{% endif %}"{% if error and typed %} aria-invalid="true"{% endif %}>
+<button type="submit">등록</button>
+</div>
+</form>
+<p class="note" id="path-hint">등록만 하고 검사는 하지 않습니다. 등록한 뒤 프로젝트 화면의 "검사만"이나 "업데이트 확인"으로 검사할 수 있습니다. 이 폴더에서 CLI로 실행한 depbee scan·depbee update 검사도 기록됩니다. 같은 폴더를 다시 등록하면 처음 등록한 프로젝트가 열립니다.</p>
+<p class="note">폴더 선택 창을 열 수 없거나 시간 안에 고르지 않으면 이 폴더 경로 직접 입력이 열립니다. 창은 {{ pick_seconds }}초 뒤 닫히며, 보이지 않거나 키보드 입력을 받지 않으면 {{ switch_keys }}으로 전환하세요.</p>
+</details>
+</section>
+{% if tabs %}
 <section aria-labelledby="registered">
 <h2 id="registered">등록한 프로젝트 {{ tabs|length }}개</h2>
 <ul class="projects">
@@ -12,7 +38,7 @@
 <li>
 <h3><span class="cell {{ project.cell }}" aria-hidden="true"></span><a href="{{ base }}/projects/{{ project.id }}">{{ project.name }}</a></h3>
 <p class="path">{{ project.path }}</p>
-{% if not project.found %}<p class="flag">찾을 수 없음. 폴더를 원래 위치로 되돌리거나, 옮긴 폴더를 아래에서 새로 등록하세요. 지난 기록은 그대로 볼 수 있습니다.</p>{% endif %}
+{% if not project.found %}<p class="flag">찾을 수 없음. 폴더를 원래 위치로 되돌리거나, 옮긴 폴더를 위에서 새로 등록하세요. 지난 기록은 그대로 볼 수 있습니다.</p>{% endif %}
 {% if project.runs %}
 {% set latest = project.runs[0] %}
 <p>최근 실행: {{ latest.kind }}, {{ latest.created_at|when }}, {{ latest.status }}. 위험 {{ latest.counts.flagged }}, 보류 {{ latest.counts.incomplete }}, 통과 {{ latest.counts.not_flagged }}, 삭제 {{ latest.counts.removed }}</p>
@@ -28,18 +54,15 @@
 {% endfor %}
 </ul>
 </section>
-{% endif %}
-<section aria-labelledby="register">
-<h2 id="register">프로젝트 등록</h2>
-{% if error %}<p class="error" id="path-error" role="alert">{{ error }}</p>{% endif %}
-<form method="post" action="{{ base }}/projects">
-<input type="hidden" name="session" value="{{ session }}">
-<label for="path">package-lock.json이 있는 폴더의 절대 경로</label>
-<div class="field">
-<input id="path" name="path" type="text" maxlength="1024" required aria-describedby="path-hint{% if error %} path-error{% endif %}"{% if error %} aria-invalid="true"{% endif %}>
-<button class="primary" type="submit">등록</button>
-</div>
-</form>
-<p class="note" id="path-hint">등록만 하고 검사는 하지 않습니다. 등록한 뒤 프로젝트 화면의 "검사만"이나 "업데이트 확인"으로 검사할 수 있습니다. 이 폴더에서 CLI로 실행한 depbee scan·depbee update 검사도 기록됩니다. 같은 폴더를 다시 등록하면 처음 등록한 프로젝트가 열립니다.</p>
+{% else %}
+<section class="flow" aria-labelledby="flow">
+<h2 id="flow">등록한 뒤 프로젝트 탭에서 하는 일</h2>
+<ol>
+<li><h3>의존성 탐색</h3><p>패키지 화면에서 package-lock.json에 설치된 패키지를 이름과 직접·중첩 종류로 찾습니다.</p></li>
+<li><h3>업데이트 후보 확인</h3><p>업데이트 화면에서 새 버전을 임시 사본으로 계산해 검사하고, 반영하기 전까지 프로젝트 파일은 그대로 둡니다.</p></li>
+<li><h3>검사 보고서</h3><p>후보마다 판정과 ML 위험 점수, 추출된 사실을 보고서로 남기고 기록 화면에서 다시 엽니다.</p></li>
+</ol>
 </section>
+{% endif %}
+</div>
 {% endblock %}

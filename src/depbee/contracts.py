@@ -41,9 +41,25 @@ def parse_json(raw: bytes, source: object) -> tuple[dict, str]:
     return value, hashlib.sha256(raw).hexdigest()
 
 
-def read_json(path: Path) -> tuple[dict, str]:
+def check_sha256(raw: bytes, expected: str | None, source: Path) -> str:
+    """SHA-256 of raw, the bytes just read from source and about to be parsed. expected: the
+    digest fixed for that file (the assets shipped with depbee, bundled.SHA256); other bytes are
+    a GuardError before anything parses them. None: nothing is fixed for this file."""
+    actual = hashlib.sha256(raw).hexdigest()
+    if expected is not None and actual != expected:
+        raise GuardError(
+            f"{source.parent.name}/{source.name} is not the released file (SHA-256 mismatch)"
+        )
+    return actual
+
+
+def read_json(path: Path, sha256: str | None = None) -> tuple[dict, str]:
+    """The JSON object of a file read once and the SHA-256 of its bytes. sha256: the digest
+    fixed for it, checked on those bytes before they are parsed (check_sha256)."""
     with path.open("rb") as stream:
         raw = stream.read(MAX_JSON_BYTES + 1)
+    if sha256 is not None:
+        check_sha256(raw, sha256, path)
     return parse_json(raw, path)
 
 
