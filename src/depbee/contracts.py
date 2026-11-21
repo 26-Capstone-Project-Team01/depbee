@@ -58,7 +58,8 @@ def read_json(path: Path, sha256: str | None = None) -> tuple[dict, str]:
     fixed for it, checked on those bytes before they are parsed (check_sha256)."""
     with path.open("rb") as stream:
         raw = stream.read(MAX_JSON_BYTES + 1)
-    check_sha256(raw, sha256, path)
+    if sha256 is not None:
+        check_sha256(raw, sha256, path)
     return parse_json(raw, path)
 
 
