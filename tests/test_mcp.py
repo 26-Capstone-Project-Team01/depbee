@@ -39,6 +39,10 @@ TIMES = {
     "1.1.0": "2026-01-03T00:00:00Z",
     "1.2.0-beta.1": "2026-01-04T00:00:00Z",
 }
+# The assets installed with depbee, and the model ID and list time README.md and docs/usage.md
+# give for them.
+ASSETS = Path(mcp.__file__).resolve().parent / "assets"
+INSTALLED = ("D04-E00", "2026-10-06T14:00:47Z")
 
 
 def entry(name, version):
@@ -298,9 +302,13 @@ class ResponseTests(MCPFixture):
         self.assertEqual(notices.count(mcp.KNOWN_MALICIOUS_NOTICE), 1)
         self.assertNotIn(mcp.KNOWN_MALICIOUS_NOTICE, mcp.check_package("example")["notices"])
         self.assertIn("기지 악성 기록과 대조하지 않았습니다.", mcp.KNOWN_MALICIOUS_NOTICE)
-        self.assertIn("Started without a known malicious index (--known-malicious-dir), the "
-                      "server does not compare reports with known malicious records.",
-                      mcp.INSTRUCTIONS)  # fmt: skip
+        # No asset path is not "no index": the guidance names the installed defaults, the two
+        # report fields to quote and the per-package outcome.
+        for guidance in (mcp.INSTRUCTIONS, mcp.CHECK_DESCRIPTION, mcp.SCAN_DESCRIPTION):
+            for said in ("installed with depbee", "report.model_id", "known_malicious.status",
+                         "report.detectors.known_malicious.list_as_of"):  # fmt: skip
+                self.assertIn(said, guidance)
+        self.assertIn("null detectors.known_malicious means no index was connected", mcp.INSTRUCTIONS)
 
     def test_errors_quoting_a_lockfile_get_a_cut_copy_and_the_cli_error_stays(self):
         # REV Sol round 1 major: a bad lock entry's location (a package path) is quoted in the
@@ -821,22 +829,52 @@ class ProtocolTests(MCPFixture):
         self.assertIn("\\udc80x", cli_err)
         self.assertTrue(result.content[0].text.endswith(f', "error": {cli_err.strip()}}}'))
 
-    def test_stdio_subprocess_serves_the_tools(self):
+    def stdio(self):
+        """`depbee mcp` alone as a child process, as an agent registers it."""
         from mcp.client.stdio import StdioServerParameters
 
-        src = str(Path(__file__).resolve().parents[1] / "src")
-        params = StdioServerParameters(
+        # Test the same import as the parent, including when the parent uses an installed wheel.
+        src = str(Path(mcp.__file__).resolve().parents[1])
+        return StdioServerParameters(
             command=sys.executable, args=["-m", "depbee", "mcp"], cwd=str(self.root),
             # HOME and USERPROFILE: the child's feature cache (Path.home()) stays in this test.
             env={"PYTHONPATH": src, "TMP": os.environ.get("TMP", ""),
                  "TEMP": os.environ.get("TEMP", ""), "HOME": str(self.root / "home"),
                  "USERPROFILE": str(self.root / "home")},
         )  # fmt: skip
+
+    def test_stdio_subprocess_serves_the_tools(self):
         # An invalid spec is refused before any network access in the child.
-        tools, (result,) = self.call(params, ("check_package", {"package": "example@latest"}))
+        tools, (result,) = self.call(self.stdio(), ("check_package", {"package": "example@latest"}))
         self.assertEqual(sorted(t.name for t in tools), ["check_package", "scan_lockfile"])
         self.assertTrue(result.is_error)
         self.assertIn("exact version", result.content[0].text)
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("depbee_analyzer") is not None,
+        "MCP extraction requires the optional [extract] analyzer",
+    )
+    def test_stdio_server_without_asset_paths_reports_the_installed_model_and_index(self):
+        # No option, no DEPBEE_MODEL_DIR or DEPBEE_KNOWN_MALICIOUS_DIR (Fixture) and an empty
+        # home, so no saved settings: the child's real model, index and analyzer backend, which
+        # this process's patches do not reach. The lockfile is its own base: nothing changed,
+        # so nothing is downloaded.
+        model, index = (json.loads((ASSETS / name / "manifest.json").read_bytes())
+                        for name in ("model", "index"))  # fmt: skip
+        _, (result,) = self.call(self.stdio(), ("scan_lockfile", {
+            "project": str(self.project), "base_lock": str(self.head)}))  # fmt: skip
+        self.assertFalse(result.is_error, result.content[0].text[:300])
+        response = json.loads(result.content[0].text)
+        self.assertEqual(sorted(response), ["notices", "package_data", "report"])
+        report = response["report"]
+        known = report["detectors"]["known_malicious"]
+        self.assertEqual((report["exit_code"], report["results"]), (0, []))
+        # What the guidance has an agent quote is the installed assets' own metadata.
+        self.assertEqual((report["model_id"], known["list_as_of"]), INSTALLED)
+        self.assertEqual((model["model_id"], index["list_as_of"]), INSTALLED)
+        self.assertEqual(report["provenance"]["model"]["model_sha256"], model["model_sha256"])
+        self.assertEqual(known["list_sha256"], index["index_sha256"])
+        self.assertNotIn(mcp.KNOWN_MALICIOUS_NOTICE, response["notices"])
 
 
 if __name__ == "__main__":
