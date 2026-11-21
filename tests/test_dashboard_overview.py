@@ -333,3 +333,29 @@ class OverviewTests(test_dashboard.DashboardFixture):
                         "/static/OVERVIEW.CSS"):  # fmt: skip
                 self.assertEqual(self.get(url).status_code, 404, url)
             self.assertEqual(of.call_args_list, [mock.call("depbee.dashboard")] * 2)
+
+    def test_reading_never_rolls_back_an_interrupted_write(self):
+        history.register_project(self.project)
+        crash = self.root / "recovery.db"
+        journal = self.root / "recovery.db-journal"
+        # The files as a writer that stopped halfway leaves them: copied inside its transaction,
+        # after the small cache made it write unfinished pages into the file.
+        with contextlib.closing(sqlite3.connect(self.db)) as writer:
+            writer.executescript(
+                "PRAGMA journal_mode=DELETE; PRAGMA cache_size=5; BEGIN IMMEDIATE; "
+                "UPDATE projects SET path='pending'; CREATE TABLE stress(page);"
+            )
+            writer.executemany("INSERT INTO stress VALUES (zeroblob(7000))", [()] * 70)
+            shutil.copyfile(self.db, crash)
+            shutil.copyfile(f"{self.db}-journal", journal)
+            writer.rollback()
+        before = crash.read_bytes(), journal.read_bytes()
+        self.assertNotEqual(before[0], self.db.read_bytes())  # the unfinished write is in it
+        reads = (history.list_projects, lambda: history.list_previews(1, "a" * 64, "b" * 64))
+        with mock.patch.dict("os.environ", {"DEPBEE_HISTORY_DB": str(crash)}):
+            for read in reads:
+                # Refused, not recovered: rolling back is left to the next write.
+                with self.assertRaisesRegex(sqlite3.OperationalError, "readonly"):
+                    read()
+                self.assertEqual(crash.read_bytes(), before[0])
+                self.assertEqual(journal.read_bytes(), before[1])

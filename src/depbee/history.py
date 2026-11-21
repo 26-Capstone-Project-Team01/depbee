@@ -170,9 +170,11 @@ def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=True, allow_nan=False)
 
 
-def _connect(path: Path, create: bool):
-    """A closing() connection; without create the file must exist and is never created."""
-    mode = "rwc" if create else "rw"
+def _connect(path: Path, create: bool, *, read_only: bool = False):
+    """A closing() connection; without create the file must exist and is never created. A
+    read_only one never writes the file or its journal: an interrupted write is left for the
+    next writer to roll back, and reading fails until then."""
+    mode = "ro" if read_only else "rwc" if create else "rw"
     uri = f"{path.resolve().as_uri()}?mode={mode}"
     connection = sqlite3.connect(uri, timeout=TIMEOUT, isolation_level=None, uri=True)
     return contextlib.closing(connection)
@@ -423,7 +425,7 @@ def _read(query: str, parameters: tuple = (), since: int = 1) -> list[sqlite3.Ro
     path = db_path()
     if not path.exists():
         return []
-    with _connect(path, create=False) as connection:
+    with _connect(path, create=False, read_only=True) as connection:
         if _check(connection) < since:
             return []
         connection.row_factory = sqlite3.Row
@@ -492,7 +494,7 @@ def list_previews(
     path = db_path()
     if not path.exists():
         return []
-    with _connect(path, create=False) as connection:
+    with _connect(path, create=False, read_only=True) as connection:
         if _check(connection) >= 3:
             runs = connection.execute(
                 "SELECT run_id, created_at, targets FROM previews WHERE project_id = ? AND "
