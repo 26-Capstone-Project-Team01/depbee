@@ -9,6 +9,9 @@ Every page is one console: the registered projects are tabs (_tabs), and a proje
 views, its packages, its update candidates and its history. A candidate is only ever a stored
 update preview of that project made from the files as they are now (_update_state); a GET
 reads files and the history and never runs npm or reaches the network.
+
+A project is registered by its folder's path: typed into the form, or chosen in the desktop's
+own folder dialog (.picker, a child process), which is checked as a typed one is.
 """
 
 import hashlib
@@ -19,6 +22,7 @@ import secrets
 import socket
 import sqlite3
 import stat
+import sys
 import threading
 from collections import OrderedDict
 from datetime import UTC, datetime
@@ -61,6 +65,7 @@ from ..cli import (
 from ..contracts import MAX_JSON_BYTES, GuardError, read_json
 from ..inputs.npm import MAX_NAME_LENGTH, PACKAGE_NAME
 from ..inputs.npm_cli import DEPENDENCY_FIELDS, UPDATE_NAME
+from . import picker
 
 HOST = "127.0.0.1"
 MAX_BODY = 16 * 1024  # bytes of a request body (Starlette answers 413 above it)
@@ -119,6 +124,30 @@ REGISTER_ERRORS = {
     "lockfile": "폴더에 package-lock.json 파일이 없습니다.",
     "unreadable": "경로를 확인할 수 없습니다.",
 }
+# The folder dialog gave no folder (picker.choose); both open the form for a typed path.
+PICK_ERRORS = {
+    "unavailable": "폴더 선택 창을 열 수 없습니다(데스크톱 화면이 없거나 이 Python에 tkinter가 "
+    "없음). 아래에 폴더 경로를 직접 입력하세요.",
+    "timeout": f"폴더 선택 창에서 {picker.PICK_SECONDS}초 안에 폴더를 고르지 않아 창을 닫았습니다. "
+    "다시 선택하거나 아래에 폴더 경로를 직접 입력하세요.",
+}
+PICK_OPEN_TITLE = "폴더 선택 창이 이미 열려 있습니다"
+PICK_OPEN = "먼저 연 폴더 선택 창이 아직 열려 있어 창을 새로 열지 않았습니다."
+# The dialog is not the browser's window and may open without the keyboard: the keys that switch
+# to it where this dashboard runs.
+SWITCH_KEYS = "Cmd+Tab" if sys.platform == "darwin" else "Alt+Tab"
+# This page was made while the first dialog was open and does not change when a folder is chosen
+# there, and reloading it would send the dialog's POST again: PICK_REOPEN is a link (a GET).
+PICK_OPEN_NOTE = (
+    "먼저 연 창에서 폴더를 고르거나 그 창을 닫으세요. 이 화면은 저절로 바뀌지 않으니, 폴더를 고른 "
+    "뒤 아래 링크로 프로젝트 관리를 다시 열어 등록됐는지 확인하세요. 이 화면을 새로 고치면 폴더 "
+    f"선택 요청을 다시 보내게 됩니다. 창이 보이지 않으면 {SWITCH_KEYS}으로 전환하세요."
+)
+PICK_REOPEN = "프로젝트 관리 다시 열기"
+PICK_STOPPED = (
+    "대시보드를 종료하는 중이어서 폴더 선택을 취소했고 프로젝트를 등록하지 않았습니다. 대시보드를 "
+    "다시 시작한 뒤 새 주소에서 다시 선택하세요."
+)
 SESSION_REFUSED = (
     "세션 주소가 맞지 않습니다. depbee dashboard가 이번 실행에서 출력한 주소로 여세요."
 )
@@ -241,12 +270,17 @@ class Guard:
 
 
 def build_app(
-    port: int, session: str, *, model_dir: Path | None = None, cache_dir: Path | None = None,
-    no_cache: bool = False, known_malicious_dir: Path | None = None,
+    port: int, session: str, stopping=None, *, model_dir: Path | None = None,
+    cache_dir: Path | None = None, no_cache: bool = False,
+    known_malicious_dir: Path | None = None,
 ):  # fmt: skip
     """The guarded ASGI app for 127.0.0.1:port; session is the value in the address printed at
     start (/s/<session>/), which every link, redirect and form carries. model_dir, cache_dir,
-    no_cache, known_malicious_dir: for update previews, as in depbee update."""
+    no_cache, known_malicious_dir: for update previews, as in depbee update.
+
+    stopping: a function that says whether the server of this app has been asked to end
+    (serve() gives its server's own flag). From then on the folder dialog is not opened, an open
+    one is closed, and neither registers a folder. None: nothing ends the app."""
     base = f"/s/{session}"
     scan_options = {"model_dir": model_dir, "cache_dir": cache_dir, "no_cache": no_cache}
     if known_malicious_dir is not None:  # else the options stay as before (the service's default)
@@ -289,10 +323,25 @@ def build_app(
             return _text(403, FORM_REFUSED)
         return form
 
-    def projects(request: Request, status: int = 200, error: str | None = None) -> Response:
+    def projects(request: Request, status: int = 200, error: str | None = None, *,
+                 typed: bool = False, manual: bool = False) -> Response:  # fmt: skip
+        """The management page. error: why nothing was registered; typed: it is about the path
+        typed into the form (else about the folder dialog); manual: the form for a typed path
+        is shown open."""
         # The tabs are the list: each with its recent runs for the trend table.
         return page(request, "projects.html", status, section="manage",
-                    tabs=_tabs(None, RECENT_RUNS), error=error)  # fmt: skip
+                    tabs=_tabs(None, RECENT_RUNS), error=error, typed=typed,
+                    manual=typed or manual, pick_seconds=picker.PICK_SECONDS,
+                    switch_keys=SWITCH_KEYS)  # fmt: skip
+
+    def enroll(request: Request, path: str, typed: bool) -> Response:
+        """Register the folder at path, typed or chosen in the dialog, and open its project; a
+        path that fails the registration checks registers nothing."""
+        problem = _registration_problem(path)
+        if problem:  # the input is not echoed
+            return projects(request, 400, REGISTER_ERRORS[problem], typed=typed)
+        project_id = history.register_project(Path(path))
+        return RedirectResponse(f"{base}/projects/{project_id}", 303)
 
     async def register(request: Request) -> Response:
         form = await read_form(request)
@@ -301,11 +350,44 @@ def build_app(
         paths = form.get("path", [])
         if len(paths) != 1:
             return _text(400, "경로 하나를 입력하세요.")
-        problem = _registration_problem(paths[0])
-        if problem:  # the input is not echoed
-            return projects(request, 400, REGISTER_ERRORS[problem])
-        project_id = history.register_project(Path(paths[0]))
-        return RedirectResponse(f"{base}/projects/{project_id}", 303)
+        return enroll(request, paths[0], True)
+
+    picking = threading.Lock()  # one folder dialog at a time; pages stay open meanwhile
+    # What picker.choose is given to watch: nothing in an app without a server that ends.
+    watch = () if stopping is None else (stopping,)
+
+    def ending() -> bool:
+        return stopping is not None and stopping()
+
+    async def pick(request: Request) -> Response:
+        """Open the desktop's folder dialog (POST from the management page) and register the
+        folder chosen there. The dialog runs in a child process that a worker thread waits for
+        (picker.choose). Closing it registers nothing, and so does a dialog that cannot be
+        shown or is still open at its time limit: those open the form for a typed path.
+
+        A server that has been asked to end opens no dialog, and picker.choose closes the open
+        one, so that the server does not wait for it. ending() is asked again after the answer,
+        here in the server's own thread, where the stop request is taken too: an answer that
+        comes back after that request registers nothing either."""
+        form = await read_form(request)
+        if isinstance(form, Response):
+            return form
+        if ending():
+            return _text(503, PICK_STOPPED)
+        if not picking.acquire(blocking=False):
+            return page(request, "error.html", 409, section="manage", title=PICK_OPEN_TITLE,
+                        message=PICK_OPEN, note=PICK_OPEN_NOTE, reopen=PICK_REOPEN)  # fmt: skip
+        try:
+            outcome, folder = await run_in_threadpool(picker.choose, *watch)
+        finally:
+            picking.release()
+        if outcome == "stopped" or ending():
+            return _text(503, PICK_STOPPED)
+        if outcome == "cancelled":
+            return RedirectResponse(f"{base}/", 303)
+        if outcome != "chosen":
+            return projects(request, 503, PICK_ERRORS[outcome], manual=True)
+        return enroll(request, folder, False)
 
     def project(request: Request) -> Response:
         """The packages view: what package-lock.json installs, and for each entry the candidate
@@ -551,6 +633,7 @@ def build_app(
         routes=[
             Route("/", projects),
             Route("/projects", register, methods=["POST"]),
+            Route("/projects/pick", pick, methods=["POST"]),
             Route("/projects/{project_id:int}", project),
             Route("/projects/{project_id:int}/updates", updates),
             Route("/projects/{project_id:int}/history", project_history),
@@ -993,7 +1076,12 @@ def serve(
 
     background (lifecycle.Instance): serve as the background instance instead. The address is
     not printed but published in the instance's state file once the port is bound, and the
-    instance's control endpoint, in front of the app, can end the server as Ctrl+C does."""
+    instance's control endpoint, in front of the app, can end the server as Ctrl+C does.
+
+    Either way the server is asked to end by its should_exit flag, which uvicorn's handler of
+    Ctrl+C sets as the control endpoint does. It then finishes the requests it has, and the app
+    is given that flag (build_app's stopping) so that an open folder dialog is not one of them
+    for long: it is closed, and its request registers nothing."""
     if not 0 <= port <= 65535:
         raise GuardError("--port must be between 0 and 65535")
     # Only when given, so that build_app is called as before without an index.
@@ -1002,8 +1090,8 @@ def serve(
     try:
         actual = sock.getsockname()[1]
         session = secrets.token_urlsafe(32)
-        app = build_app(actual, session, model_dir=model_dir, cache_dir=cache_dir,
-                        no_cache=no_cache, **known)  # fmt: skip
+        app = build_app(actual, session, lambda: server.should_exit, model_dir=model_dir,
+                        cache_dir=cache_dir, no_cache=no_cache, **known)  # fmt: skip
         if background is not None:
             app = background.control(app, lambda: setattr(server, "should_exit", True))
         config = uvicorn.Config(

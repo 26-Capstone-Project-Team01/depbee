@@ -1,7 +1,8 @@
 /* The depbee console. An ink band carries the registered projects as tabs and the open tab runs
    into the page below it. Colour is kept for what needs a decision: seal red for risk, honey
    for a hold. A pass stays plain ink, because a pass is no safety guarantee. Every state is
-   also said in words next to its hexagon cell. No external font, image or script. */
+   also said in words next to its hexagon cell. The one filled control on the band is the way
+   to add a project. No external font, image or script. */
 :root {
   color-scheme: light;
   --ink: #18202b;
@@ -63,7 +64,14 @@ footer { margin-top: 2.5rem; padding: 1rem 0 2rem; border-top: 1px solid var(--l
 .tab[aria-current] { background: var(--fog); color: var(--ink); --ground: var(--fog); --on: var(--ink); --dim: var(--muted); --risk: var(--seal); }
 .tab-name { max-width: 15rem; overflow: hidden; font-size: .9375rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .tab-state { grid-column: 2; color: var(--dim); font-size: .8125rem; line-height: 1.3; }
-.tab.manage { grid-template-columns: 1fr; font-size: .9375rem; font-weight: 600; }
+/* Project management, where a project is added: a filled button at the end of the tabs, and a
+   tab like the others once it is open. The plus is drawn, so the link's name stays its text. */
+.tabs li + li:last-child { margin-left: auto; }
+.tab.manage { font-size: .9375rem; font-weight: 700; }
+.tab.manage::before { content: ""; width: .75rem; height: .75rem; background: linear-gradient(currentColor, currentColor) 50% / 100% 2px no-repeat, linear-gradient(currentColor, currentColor) 50% / 2px 100% no-repeat; }
+.tab.manage:not([aria-current]) { min-height: 2.75rem; margin-bottom: .4rem; padding-block: .3rem; border-radius: .375rem; background: var(--honey); color: var(--ink); }
+.tab.manage:not([aria-current]):hover { background: #ffc83d; }
+.tab.manage:not([aria-current]):focus-visible { outline-color: var(--fog); }
 
 .project-head { margin-bottom: .5rem; }
 .path, .where { color: var(--muted); font-family: var(--mono); font-size: .875rem; overflow-wrap: anywhere; }
@@ -104,9 +112,18 @@ label, legend { font-weight: 600; }
 .field input { flex: 1 1 16rem; width: auto; }
 .actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 1rem 2rem; margin-top: .9rem; }
 .actions form:last-child { flex: 1 1 22rem; }
-.filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .6rem; margin-top: 1rem; }
+/* The package search is a bar of its own above the table it filters. */
+.filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .6rem; margin-top: 1rem; padding: .7rem .75rem .75rem; border: 1px solid var(--line); background: var(--sheet); }
 .filters label { display: block; font-size: .8125rem; }
 .filters .grow { flex: 1 1 14rem; }
+.filters button { border-color: var(--ink); }
+/* Adding a project: the folder dialog first, the path typed by hand folded under it. */
+.add { margin-top: 1rem; }
+.add.empty { padding: 1.1rem 1.4rem 1rem; background: var(--sheet); }
+.add form { margin-top: .9rem; }
+.add .primary { min-height: 3rem; padding-inline: 1.4rem; font-size: 1.0625rem; }
+.add details { margin-top: .9rem; }
+.add summary { padding-block: .65rem; }
 fieldset { margin: 1rem 0; padding: .4rem 1rem; border: 1px solid var(--line); max-width: 46rem; }
 input[type=radio], input[type=checkbox] { width: 1.1rem; height: 1.1rem; vertical-align: -.15em; accent-color: var(--ink); }
 
@@ -130,7 +147,14 @@ td ul { padding-left: 1.1rem; }
 .candidates td:nth-child(2) { min-width: 9rem; font-weight: 700; }
 .candidates td:nth-child(4) { min-width: 8.5rem; }
 .candidates td:last-child a { display: block; white-space: nowrap; }
+.candidates td:last-child a + a { margin-top: .4rem; }
 .candidates .quiet { font-family: var(--sans); font-weight: 400; }
+/* A candidate's way to its report is drawn as the action it is, like the row's button. */
+.packages td:last-child > a, .candidates td:last-child > a:first-child { display: inline-flex; align-items: center; min-height: 2.25rem; padding: .2rem .7rem; border: 1px solid var(--muted); border-radius: .375rem; background: var(--sheet); font-size: .875rem; font-weight: 600; text-decoration: none; white-space: nowrap; }
+.packages td:last-child > a:hover, .candidates td:last-child > a:first-child:hover { border-color: var(--ink); background: var(--fog); }
+.packages th, .packages td { vertical-align: middle; }
+.packages strong.known { white-space: nowrap; }
+.detectors { min-width: 9rem; max-width: 15rem; margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8125rem; list-style: none; }
 .where { display: block; font-weight: 400; }
 
 .projects { padding: 0; list-style: none; max-width: none; }
@@ -173,10 +197,104 @@ dd { margin: 0; overflow-wrap: anywhere; }
   .packages td:nth-child(2)::before { content: "설치 버전 "; color: var(--muted); font-family: var(--sans); }
   .packages td:nth-child(3) { grid-area: 3 / 1 / 4 / 3; }
   .packages td:last-child { grid-area: 4 / 1 / 5 / 3; min-width: 0; padding-top: .3rem; }
+  .packages button, .packages td:last-child > a, .candidates td:last-child > a:first-child { min-height: 2.75rem; }
+  .add .primary { width: 100%; }
   .candidates tr { grid-template-columns: minmax(0, 1fr); }
   .candidates td:nth-child(4)::before { content: "ML 위험 점수 "; color: var(--muted); }
+  .candidates td:last-child::before { content: "보고서 "; color: var(--muted); }
+  .detectors { max-width: none; }
   .candidates td:last-child a { display: inline; margin-right: .75rem; }
   dl { grid-template-columns: minmax(0, 1fr); gap: 0; }
   dd { margin-bottom: .4rem; }
   .gate { padding: .9rem; }
+}
+
+/* Pine and paper: the look of the console, appended so that it wins over the rules above by
+   order. Deep pine is the ink and the band, warm paper the page, off-white the sheets. One
+   forest teal marks what the user does next: the filled button, a link, the way to a report.
+   Honey stays the brand cell and a hold, seal red a risk. */
+:root {
+  --ink: #0f2e27;
+  --fog: #f5f1e7;
+  --sheet: #fffdf8;
+  --line: #d9d2c1;
+  --muted: #4b5c54;
+  --go: #0b6b5c;
+  --go-deep: #084b40;
+  --wash: #e7ede2;
+}
+/* The note under every page stays at the bottom of a short one. */
+body { display: flex; flex-direction: column; min-height: 100vh; }
+main { flex: 1 0 auto; }
+h1 { font-size: clamp(1.5rem, 1.2rem + 1.4vw, 1.875rem); font-weight: 800; letter-spacing: -.03em; }
+h1, h2, h3 { text-wrap: balance; }
+p { text-wrap: pretty; }
+:focus-visible { outline-width: 3px; }
+main a { color: var(--go); }
+.error { background-color: #fbeeea; }
+.error a { color: inherit; }
+input[aria-invalid=true] { border: 2px solid var(--seal); }
+.empty { border: 0; background: var(--wash); }
+.masthead { --dim: #c4d1c8; }
+.top a { display: inline-flex; align-items: center; min-height: 2.75rem; }
+.tab:not([aria-current]):hover { background: #1c4138; --ground: #1c4138; }
+button { border-color: var(--ink); font-weight: 700; }
+button:hover { background: var(--wash); }
+button.primary, .gate form > button { border-color: var(--go); background: var(--go); }
+button.primary:hover, .gate form > button:hover { border-color: var(--go-deep); background: var(--go-deep); }
+summary { padding-block: .55rem; }
+
+/* A project's three views: the open one is filled and stands on the rule the view hangs from. */
+.views { gap: .25rem; margin-top: 1.25rem; border-bottom: 2px solid var(--ink); }
+.views a { display: inline-flex; align-items: center; justify-content: center; min-height: 2.75rem; margin-bottom: 0; padding: .5rem 1.25rem; border-bottom: 0; border-radius: .375rem .375rem 0 0; color: var(--ink); font-weight: 700; }
+.views a:hover { background: var(--wash); }
+.views a[aria-current] { background: var(--ink); color: var(--sheet); }
+/* Where the update check stands, and the way on from it. */
+.state { max-width: none; padding: .6rem .9rem; background: var(--wash); color: var(--ink); }
+thead th { background: var(--wash); }
+.packages button, .packages td:last-child > a, .candidates td:last-child > a:first-child { min-height: 2.75rem; }
+.packages td:last-child > a, .candidates td:last-child > a:first-child { border-color: var(--go); font-weight: 700; }
+.packages td:last-child > a:hover, .candidates td:last-child > a:first-child:hover { border-color: var(--go-deep); background: var(--wash); color: var(--go-deep); }
+
+/* Project management in two columns from 60rem: the way to add a project, and beside it the
+   registered projects as a ruled sheet. */
+.desk { display: grid; gap: 2rem 2.5rem; align-items: start; margin-top: 1.25rem; }
+.desk > section { min-width: 0; margin-top: 0; }
+.add { padding: 1.4rem 1.5rem 1.1rem; border-top: 3px solid var(--ink); background: var(--sheet); }
+.lead { margin-bottom: 1.25rem; }
+.add .primary { display: inline-flex; align-items: center; justify-content: center; gap: .7rem; width: 100%; max-width: 22rem; min-height: 3.5rem; font-size: 1.125rem; }
+/* A folder, drawn: this button opens the desktop's folder dialog. */
+.add .primary::before { content: ""; flex: none; width: 1.3rem; height: 1.05rem; background: currentColor; clip-path: polygon(0 0, 40% 0, 52% 18%, 100% 18%, 100% 100%, 0 100%); }
+.add .note { font-size: .9375rem; }
+.add details { max-width: none; margin-top: 1.1rem; border-top: 1px solid var(--line); }
+.add .field input { flex-basis: 11rem; }
+.projects { margin: .75rem 0 0; border-top: 2px solid var(--ink); background: var(--sheet); }
+.projects li { padding: 1rem 1.25rem 1.1rem; }
+.projects li:first-child { border-top: 0; }
+/* Before the first project the two columns are one sheet: the folder button under the one
+   large title, and what a registered project is for. */
+.desk.first { gap: 0; align-items: stretch; margin-top: .25rem; border-top: 3px solid var(--ink); background: var(--sheet); }
+.first .add, .flow { padding: clamp(1.25rem, 4vw, 3rem); }
+.first .add { border-top: 0; }
+.first .add h2 { margin-bottom: .75rem; font-size: clamp(1.9rem, 1.4rem + 2.2vw, 2.75rem); font-weight: 800; letter-spacing: -.035em; line-height: 1.15; }
+.first .lead { margin-bottom: 1.5rem; font-size: 1.125rem; }
+.flow { background: var(--wash); }
+.flow h2 { margin-bottom: 1.4rem; font-size: 1.125rem; }
+.flow ol { margin: 0; padding: 0; list-style: none; counter-reset: step; }
+.flow li { position: relative; padding: 0 0 1.5rem 3.4rem; counter-increment: step; }
+.flow li:last-child { padding-bottom: 0; }
+/* The three follow one another: each in a cell of the comb, joined to the next. */
+.flow li::before { content: counter(step); position: absolute; top: 0; left: 0; display: grid; place-items: center; width: 2.25rem; height: 2.6rem; background: var(--ink); color: var(--sheet); font: 700 1rem/1 var(--mono); clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%); }
+.flow li:not(:last-child)::after { content: ""; position: absolute; top: 2.85rem; bottom: .25rem; left: calc(1.125rem - 1px); width: 2px; background: var(--muted); opacity: .4; }
+.flow h3 { margin: 0 0 .15rem; padding-top: .4rem; font-size: 1.0625rem; }
+.flow p { margin: 0; font-size: .9375rem; }
+
+@media (min-width: 60rem) {
+  .desk { grid-template-columns: minmax(0, 23rem) minmax(0, 1fr); }
+  .desk.first { grid-template-columns: minmax(0, 6fr) minmax(0, 5fr); }
+}
+@media (max-width: 46rem) {
+  .views a { flex: 1; padding-inline: .5rem; }
+  /* A run's number is the way to its report: a target a finger can hit. */
+  .scroll td > a { display: inline-block; min-width: 2.75rem; padding-block: .7rem; }
 }
