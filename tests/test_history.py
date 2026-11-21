@@ -69,6 +69,25 @@ class HistoryFixture(Fixture):
 
 
 class StoreTests(HistoryFixture):
+    def test_recent_scores_keep_zero_and_unscored_runs_distinct(self):
+        project_id = history.register_project(self.project)
+        other = self.root / "other"
+        other.mkdir()
+        history.register_project(other)
+        report = scan_project(self.project, self.base, analysis=self.analysis, model_dir=Path("m"))
+        history.record("scan", other, report)
+        recorded = history.record("scan", self.project, report)
+        report["results"][0]["score"] = 0.0
+        zero = history.record("scan", self.project, report)
+        report["results"][0]["score"] = None
+        absent = history.record("scan", self.project, report)
+        rows = history.list_run_scores(project_id)
+        self.assertEqual(
+            [(r["id"], r["peak_score"], r["scored_count"]) for r in rows],
+            [(absent, None, 0), (zero, 0.0, 1), (recorded, 0.9, 1)],
+        )
+        self.assertEqual(history.list_run_scores(project_id, limit=2), rows[:2])
+
     def test_register_record_and_read_back(self):
         project_id = history.register_project(self.project)
         self.assertEqual(sql(self.db, "PRAGMA user_version"), [(3,)])

@@ -76,7 +76,7 @@ class DashboardFixture(FormatFixture):
         return history.record(kind, self.project, report, preview)
 
     def form_session(self):
-        return re.search(r'name="session" value="([^"]+)"', self.page("/")).group(1)
+        return re.search(r'name="session" value="([^"]+)"', self.page("/?manage=1")).group(1)
 
     def post(self, path, session=None, origin=BASE, **extra):
         fields = {"path": path} if session is None else {"path": path, "session": session}
@@ -96,7 +96,7 @@ class PageTests(DashboardFixture):
                 for row in report["results"]:
                     self.assertIn(row["package"], text)
                 self.assertNotIn("확률", text)
-        projects, project, model = self.page("/"), self.page("/projects/1"), self.page("/model")
+        projects, project, model = self.page("/?manage=1"), self.page("/projects/1"), self.page("/model")
         for text in (projects, project, model):
             self.assertIn(SAFETY_NOTE.replace("'", "&#39;"), text)  # autoescaped
         self.assertIn(str(self.project.resolve()), projects)
@@ -251,8 +251,9 @@ class PageTests(DashboardFixture):
         files = [*package_dir.glob("templates/*.html"), *package_dir.glob("static/*")]
         self.assertEqual(sorted(p.name for p in files), [
             "applied.html", "apply_lines.html", "base.html", "counts.html", "error.html",
-            "history.html", "model.html", "preview.html", "project.html", "project_head.html",
-            "projects.html", "report.html", "run.html", "scanned.html", "style.css",
+            "history.html", "inspector.html", "model.html", "overview.css", "overview.html",
+            "preview.html", "project.html", "project_head.html", "projects.html",
+            "report.html", "run.html", "scanned.html", "score_history.html", "style.css",
             "trail.html", "updates.html"])  # fmt: skip
         for path in files:
             self.assertIsNone(re.search(r"https?:|//", path.read_text("utf-8")), path.name)
@@ -286,7 +287,7 @@ class ConsoleTests(DashboardFixture):
     def test_without_a_project_the_console_invites_registration(self):
         html = self.page("/")
         self.assertNotIn('<a class="tab" ', html)
-        self.assertIn(f'<a class="tab manage" href="{S}/" aria-current="page">프로젝트 관리</a>',
+        self.assertIn(f'<a class="tab manage" href="{S}/?manage=1" aria-current="page">프로젝트 관리</a>',
                       html)  # fmt: skip
         self.assertIn("등록한 프로젝트가 없습니다.", html)
         self.assertIn(f'<form method="post" action="{S}/projects">', html)
@@ -383,12 +384,12 @@ class ConsoleTests(DashboardFixture):
         for view in ("", "/updates", "/history"):
             html = self.page(f"/projects/{project}{view}")
             self.assertIn('<p class="error">프로젝트 폴더를 찾을 수 없습니다.', html)
-            self.assertIn(f'<a href="{S}/">프로젝트 관리</a>에서 새로 등록하세요.', html)
+            self.assertIn(f'<a href="{S}/?manage=1">프로젝트 관리</a>에서 새로 등록하세요.', html)
             self.assertIn(f'<a href="{S}/projects/{project}/history">기록</a>에 그대로', html)
             for form in ("/previews", "/scans", "<button"):
                 self.assertNotIn(form, html)
         self.assertIn(f'<a href="{S}/runs/{run}">#{run}</a>', html)  # the history view
-        self.assertIn("찾을 수 없음. 폴더를 원래 위치로", self.page("/"))
+        self.assertIn("찾을 수 없음. 폴더를 원래 위치로", self.page("/?manage=1"))
 
 
 def lock(example="1.1.0"):
@@ -500,6 +501,13 @@ class CandidateTests(DashboardFixture):
         ):  # fmt: skip
             self.assertIn(text, updates)
         self.assertIn('<section class="result flagged" id="r0">', self.page(f"/runs/{run}"))
+        for view in (self.packages, self.updates):
+            html = self.page(f"{view}?item={run}.0")
+            self.assertIn(f'href="{S}{view}?item={run}.0#candidate-evidence"', html)
+            self.assertEqual(html.count('id="candidate-evidence" tabindex="-1"'), 1)
+            panel = html.split('<aside class="inspector"', 1)[1].split("</aside>", 1)[0]
+            self.assertIn("node_modules/example", panel)
+            self.assertIn("synthetic evidence", panel)
 
     def test_a_check_of_named_packages_covers_only_them(self):
         first = self.check(targets=["example"])
@@ -821,7 +829,7 @@ class CandidateTests(DashboardFixture):
 
 
 class SecurityTests(DashboardFixture):
-    URLS = ("/", "/model", "/static/style.css", "/static/icon.svg", "/projects/1",
+    URLS = ("/", "/?manage=1", "/model", "/static/style.css", "/static/overview.css", "/static/icon.svg", "/projects/1",
             "/projects/1/updates", "/projects/1/history", "/runs/1")  # fmt: skip
 
     def assert_headers(self, response):
@@ -877,9 +885,11 @@ class SecurityTests(DashboardFixture):
             self.assertEqual(len(self.client.cookies), 0)
         html = self.page("/")
         self.assertIn(f'<link rel="stylesheet" href="{S}/static/style.css">', html)
-        self.assertIn(f'<a href="{S}/projects/1">', html)
-        self.assertIn(f'<form method="post" action="{S}/projects">', html)
-        self.assertIn(f'<input type="hidden" name="session" value="{SESSION}">', html)
+        self.assertIn(f'href="{S}/projects/1"', html)
+        self.assertIn(f'href="{S}/static/overview.css"', html)
+        manage = self.page("/?manage=1")
+        self.assertIn(f'<form method="post" action="{S}/projects">', manage)
+        self.assertIn(f'<input type="hidden" name="session" value="{SESSION}">', manage)
         self.assertEqual(self.get("/login").status_code, 404)  # no login step any more
 
     def test_npm_links_send_no_referrer(self):
@@ -982,7 +992,7 @@ class SecurityTests(DashboardFixture):
 
         return Server
 
-    def test_start_address_opens_the_only_project_and_keeps_management_available(self):
+    def test_start_address_opens_the_overview_and_keeps_management_available(self):
         from depbee.dashboard import app
 
         project_id = history.register_project(self.project)
@@ -998,9 +1008,9 @@ class SecurityTests(DashboardFixture):
             ):
                 app.serve(0)
             url = out.getvalue().splitlines()[0]
-            self.assertTrue(url.endswith(f"/projects/{project_id}" if only_one else "/"))
-        self.assertIn("프로젝트 등록", self.page("/"))
-        self.assertIn(f'<a class="tab manage" href="{S}/">프로젝트 관리</a>',
+            self.assertTrue(url.endswith("/"))
+        self.assertIn("프로젝트 등록", self.page("/?manage=1"))
+        self.assertIn(f'<a class="tab manage" href="{S}/?manage=1">프로젝트 관리</a>',
                       self.page(f"/projects/{project_id}"))  # fmt: skip
 
     def test_start_address_falls_back_to_project_list_on_unreadable_history(self):
@@ -1156,7 +1166,7 @@ class RegistrationTests(DashboardFixture):
         self.assertEqual(again.headers["location"], S + "/projects/1")
         (project,) = history.list_projects()
         self.assertEqual(project["path"], str(self.project.resolve()))
-        projects = self.page("/")
+        projects = self.page("/?manage=1")
         self.assertIn(str(self.project.resolve()), projects)
         # Both lines name the dashboard's buttons as well as the CLI.
         self.assertIn('등록한 뒤 프로젝트 화면의 "검사만"이나 "업데이트 확인"으로', projects)

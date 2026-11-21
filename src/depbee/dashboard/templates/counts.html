@@ -1,6 +1,7 @@
-{# One run per row: kind, time, overall status and counts per item status, as stored. #}
+{# One run per row: kind, time, overall status and counts per item status, as stored. A count
+   above zero carries its status mark; the column heading says which status it is. #}
 <div class="scroll" role="region" aria-label="실행 기록 표" tabindex="0">
-<table>
+<table class="runs">
 <thead><tr><th scope="col">실행</th><th scope="col">종류</th><th scope="col">시각</th><th scope="col">결과</th><th scope="col">위험</th><th scope="col">보류</th><th scope="col">통과</th><th scope="col">삭제</th><th scope="col">모델</th></tr></thead>
 <tbody>
 {% for run in runs %}
@@ -9,10 +10,10 @@
 <td>{{ run.kind }}</td>
 <td>{{ run.created_at|when }}</td>
 <td>{{ run.status }}{% if run.exit_code is not none %} ({{ run.exit_code }}){% endif %}</td>
-<td>{{ run.counts.flagged }}</td>
-<td>{{ run.counts.incomplete }}</td>
-<td>{{ run.counts.not_flagged }}</td>
-<td>{{ run.counts.removed }}</td>
+<td class="count">{% if run.counts.flagged %}<span class="cell risk" aria-hidden="true"></span>{% endif %}{{ run.counts.flagged }}</td>
+<td class="count">{% if run.counts.incomplete %}<span class="cell hold" aria-hidden="true"></span>{% endif %}{{ run.counts.incomplete }}</td>
+<td class="count">{% if run.counts.not_flagged %}<span class="cell pass" aria-hidden="true"></span>{% endif %}{{ run.counts.not_flagged }}</td>
+<td class="count">{{ run.counts.removed }}</td>
 <td>{{ run.model_id if run.model_id is not none else "-" }}</td>
 </tr>
 {% endfor %}

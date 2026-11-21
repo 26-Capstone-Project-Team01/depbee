@@ -93,7 +93,7 @@ class PickRouteTests(DashboardFixture):
             self.assertNotIn(upload, html)
         # With a project the same section still comes before the list.
         history.register_project(self.project)
-        html = self.page("/")
+        html = self.page("/?manage=1")
         self.assertNotIn("등록한 프로젝트가 없습니다.", html)
         self.assertLess(html.index(PICK_FORM), html.index("등록한 프로젝트 1개"))
         self.assertEqual(self.choose.call_count, 0)  # looking opens no dialog
@@ -118,9 +118,9 @@ class PickRouteTests(DashboardFixture):
     def test_closing_the_dialog_registers_and_writes_nothing(self):
         before = self.files()
         response = self.pick()
-        self.assertEqual((response.status_code, response.headers["location"]), (303, S + "/"))
+        self.assertEqual((response.status_code, response.headers["location"]), (303, S + "/?manage=1"))
         self.assert_nothing_registered(before)
-        html = self.page("/")  # where the redirect leads: the page as it was
+        html = self.page("/?manage=1")
         self.assertIn(CLOSED, html)
         self.assertNotIn('role="alert"', html)
 
@@ -202,14 +202,14 @@ class PickRouteTests(DashboardFixture):
             return "cancelled", None
 
         self.choose.side_effect = open_dialog
-        self.assertEqual(self.pick().headers["location"], S + "/")
+        self.assertEqual(self.pick().headers["location"], S + "/?manage=1")
         self.assertEqual(self.choose.call_count, 1)  # the second request opened no dialog
         again = seen["again"]
         self.assertEqual(again.status_code, 409)
         self.assertIn(f"<h1>{self.app.PICK_OPEN_TITLE}</h1>", again.text)
         self.assertIn(f'<p class="error">{self.app.PICK_OPEN}</p>', again.text)
         self.assertIn(f"<p>{self.app.PICK_OPEN_NOTE}</p>", again.text)
-        self.assertIn(f'<a class="tab manage" href="{S}/" aria-current="page">프로젝트 관리</a>',
+        self.assertIn(f'<a class="tab manage" href="{S}/?manage=1" aria-current="page">프로젝트 관리</a>',
                       again.text)  # fmt: skip
         self.assertNotIn("이력에 기록하지 않았습니다.", again.text)
         self.assertEqual(seen["page"].status_code, 200)

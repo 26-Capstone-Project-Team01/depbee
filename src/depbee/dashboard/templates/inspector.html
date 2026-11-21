@@ -1,0 +1,110 @@
+{# The inspector of a project's packages and updates views: the evidence of the candidate the view
+   opens (selected, one of the listed rows) without leaving the list. It is written right after
+   that row, whose cell holds the id the row's link names, so one address opens it under the row on
+   a narrow screen and brings the row beside it on a wide one. With no candidate to open it says
+   what would be here. Needs base, url, pick (the address of a pick up to the item's value),
+   section, project, state and, on the packages view, targets; on the updates view, previews. #}
+{% set picked = selected if selected is defined and selected else none %}
+{% if picked is not none %}
+{% set key = picked.run_id ~ "." ~ picked.position %}
+<aside class="inspector" aria-labelledby="inspector-title">
+<div class="inspect-top">
+<h2 id="inspector-title">선택한 후보</h2>
+<p class="subject"><strong>{{ picked.package }}</strong> <span class="where">{{ picked.location }}</span></p>
+<dl class="hop">
+<div><dt>사용 버전</dt><dd>{% if picked.before is none %}<span class="quiet">새로 추가</span>{% else %}{{ picked.before }}{% endif %}</dd></div>
+<div><dt>후보 버전</dt><dd>{% if picked.after is none %}<span class="quiet">삭제</span>{% else %}{{ picked.after }}{% endif %}</dd></div>
+{% if picked.compared is not none %}<div><dt>비교 버전</dt><dd>{{ picked.compared }}</dd></div>{% endif %}
+</dl>
+<p class="ruling"><span class="verdict {{ picked.cell }}"><span class="cell {{ picked.cell }}" aria-hidden="true"></span>{{ picked.label }}</span>{% if picked.known_hit %} <strong class="known">기지 악성 기록 일치</strong>{% endif %}</p>
+{# One address, three uses: it opens the evidence under the row, folds it, or shows the row. #}
+<p class="inspect-nav"><a class="when-closed" href="{{ pick }}{{ key }}#candidate-evidence">검사 근거 펼치기<span class="visually-hidden"> {{ picked.package }}</span></a><a class="when-open" href="{{ pick }}{{ key }}#picked">검사 근거 접기</a><a class="when-wide" href="{{ pick }}{{ key }}#picked">목록에서 이 행 보기</a></p>
+</div>
+<div class="inspect-body">
+{% if picked.known_hit %}<p class="error">기지 악성 기록과 일치한 버전입니다. 낮은 ML 위험 점수는 이 경고를 취소하지 않으며, 이 후보는 확인으로도 반영할 수 없습니다.</p>{% endif %}
+<section class="signal" aria-labelledby="facts-title">
+<h3 id="facts-title">확인된 사실</h3>
+{% if picked.reason is not none or picked.detail is not none or picked.alternative is not none %}
+<dl class="pairs">
+{% if picked.reason is not none %}<dt>이유</dt><dd>{{ picked.reason }}</dd>{% endif %}
+{% if picked.detail is not none %}<dt>상세</dt><dd>{{ picked.detail }}</dd>{% endif %}
+{% if picked.alternative is not none %}<dt>대안(안전 보증 아님)</dt><dd>{{ picked.alternative[0] }} ({{ picked.alternative[1] }})</dd>{% endif %}
+</dl>
+{% endif %}
+{% if picked.detectors %}
+<h4>탐지기</h4>
+<ul>
+{% for line, subs in picked.detectors %}<li>{{ line }}{% if subs %}<ul>{% for sub in subs %}<li>{{ sub }}</li>{% endfor %}</ul>{% endif %}</li>
+{% endfor %}
+</ul>
+{% endif %}
+{% if picked.evidence %}
+<h4>추출된 사실 {{ picked.evidence|length }}개</h4>
+<ul>
+{% for line in picked.evidence %}<li>{{ line }}</li>
+{% endfor %}
+</ul>
+{% else %}
+<h4>추출된 사실</h4>
+<p class="quiet">이 보고서에 추출된 사실이 없습니다.</p>
+{% endif %}
+</section>
+<section class="signal" aria-labelledby="score-title">
+<h3 id="score-title">모델 점수</h3>
+<dl class="pairs">
+<dt>ML 위험 점수</dt><dd>{{ picked.score if picked.score is not none else "-" }}</dd>
+{% if picked.get("threshold") is not none %}<dt>판정 기준 점수</dt><dd>{{ picked.threshold }}</dd>{% endif %}
+</dl>
+{% if picked.explanation or picked.rest %}
+<h4>점수에 크게 작용한 특징(+ 위험 쪽, - 정상 쪽)</h4>
+<ul class="weights">
+{% for item in picked.explanation %}<li><span>{{ item.feature }} = {{ item.value }}</span> <b>{{ item.contribution }}</b> <svg class="bar" viewBox="0 0 100 8" width="120" height="10" aria-hidden="true"><rect class="{{ 'risk' if item.risk else 'normal' }}" width="{{ item.width }}" height="8"/></svg></li>
+{% endfor %}
+</ul>
+{% if picked.rest %}<p class="note">{{ picked.rest }}</p>{% endif %}
+{% endif %}
+<p class="note">점수는 모델이 계산한 값이고 위의 사실과 따로 봅니다. 기지 악성 기록 일치와 보류는 점수와 상관없이 표시합니다.</p>
+</section>
+<section class="signal" aria-labelledby="basis-title">
+<h3 id="basis-title">검사 기준</h3>
+<dl class="pairs">
+<dt>확인한 실행</dt><dd><a href="{{ base }}/runs/{{ picked.run_id }}">#{{ picked.run_id }}</a></dd>
+<dt>모델</dt><dd>{{ picked.model_id if picked.get("model_id") is not none else "보고서에 기록 없음" }}</dd>
+<dt>기지 악성 목록 기준 시점</dt><dd>{{ picked.list_as_of|when if picked.get("list_as_of") is not none else "보고서에 기록 없음" }}</dd>
+</dl>
+</section>
+<ul class="inspect-actions">
+<li><a class="action" href="{{ base }}/runs/{{ picked.run_id }}#r{{ picked.position }}">보고서에서 전체 근거 보기<span class="visually-hidden"> {{ picked.package }}</span></a></li>
+{% if picked.npm is not none %}<li><a class="action" href="{{ picked.npm }}" rel="noreferrer noopener">npm 페이지 열기<span class="visually-hidden"> {{ picked.package }}</span></a></li>{% endif %}
+{% if section == "packages" %}
+{% if picked.package in targets and picked.location == "node_modules/" ~ picked.package %}<li><button type="submit" form="preview-project" name="packages" value="{{ picked.package }}">이 패키지 업데이트 미리보기</button></li>{% endif %}
+<li><a class="action" href="{{ url }}/updates?item={{ key }}#candidate-evidence">업데이트 화면에서 보기</a></li>
+{% else %}
+{% for kept in previews if kept.run_id == picked.run_id %}<li><a class="action" href="{{ base }}/previews/{{ kept.id }}">이 확인의 미리보기 열기</a></li>
+{% endfor %}
+{% endif %}
+</ul>
+<p class="note">반영은 업데이트 미리보기 화면에서 합니다. 미리보기는 업데이트 확인을 실행하면 열리고, 대시보드를 끄면 사라집니다.</p>
+</div>
+</aside>
+{% else %}
+<aside class="inspector idle" id="candidate-evidence" aria-labelledby="inspector-title">
+<div class="inspect-top">
+<h2 id="inspector-title">검사 근거</h2>
+</div>
+<div class="inspect-body">
+{% if section == "packages" and state.rows %}
+<p>이 목록에는 업데이트 후보가 없습니다. 이 프로젝트의 현재 후보 {{ state.rows|length }}개는 <a href="{{ url }}/updates">업데이트</a>에서 모두 봅니다.</p>
+{% else %}
+<p>지금은 열어 볼 업데이트 후보가 없습니다. 후보가 생기면 고른 후보의 판정, 탐지기 결과, 추출된 사실, ML 위험 점수가 여기에 나옵니다.</p>
+{% endif %}
+<h3>판정 표시</h3>
+<dl class="legend">
+<dt><span class="verdict risk"><span class="cell risk" aria-hidden="true"></span>위험</span></dt><dd>기지 악성 기록과 일치하거나 ML 위험 점수가 판정 기준 이상입니다.</dd>
+<dt><span class="verdict hold"><span class="cell hold" aria-hidden="true"></span>보류</span></dt><dd>검사를 끝내지 못한 항목이며 통과가 아닙니다.</dd>
+<dt><span class="verdict pass"><span class="cell pass" aria-hidden="true"></span>통과</span></dt><dd>모델의 판정일 뿐 안전 보증이 아닙니다.</dd>
+<dt><span class="verdict none"><span class="cell none" aria-hidden="true"></span>미확인</span></dt><dd>지금 파일로는 아직 확인하지 않았습니다.</dd>
+</dl>
+</div>
+</aside>
+{% endif %}

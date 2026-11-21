@@ -1,0 +1,20 @@
+{% if score_history %}
+<section class="score-history" aria-labelledby="score-history-title">
+<h2 id="score-history-title">실행별 최고 ML 위험 점수</h2>
+<p class="note">최근 10회까지 표시합니다. 실행마다 검사한 패키지나 모델이 다를 수 있습니다.</p>
+<div class="scroll" role="region" aria-labelledby="score-history-title" tabindex="0">
+<table class="stack">
+<thead><tr><th scope="col">실행</th><th scope="col">모델</th><th scope="col">점수 산출 항목</th><th scope="col">최고 점수</th></tr></thead>
+<tbody>{% for entry in score_history %}
+<tr>
+<th scope="row"><a href="{{ base }}/runs/{{ entry.id }}">#{{ entry.id }}</a> <span class="quiet">{{ entry.created_at|when }}</span></th>
+<td data-label="모델">{{ entry.model_id or '기록 없음' }}</td>
+<td data-label="점수 산출 항목">{{ entry.scored_count }}개</td>
+<td data-label="최고 점수">{% if entry.peak_score is not none %}
+<meter min="0" max="1" value="{{ entry.peak_score }}" aria-hidden="true"></meter>
+<span>{{ "%.4g"|format(entry.peak_score) }}</span>
+{% else %}점수 없음{% endif %}</td>
+</tr>{% endfor %}</tbody>
+</table></div>
+</section>
+{% endif %}
