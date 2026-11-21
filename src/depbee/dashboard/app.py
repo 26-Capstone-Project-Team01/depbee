@@ -4,10 +4,17 @@ Only depbee.dashboard.serve() imports this module. History goes through depbee.h
 connection per call), lockfile rows through service.list_dependencies(), package.json for
 individual update buttons, and every verdict,
 label and line through the depbee.cli helpers the text output uses.
+
+Every page is one console: the registered projects are tabs (_tabs), and a project has three
+views, its packages, its update candidates and its history. A candidate is only ever a stored
+update preview of that project made from the files as they are now (_update_state); a GET
+reads files and the history and never runs npm or reaches the network.
 """
 
+import hashlib
 import hmac
 import importlib.resources
+import os
 import secrets
 import socket
 import sqlite3
@@ -51,7 +58,7 @@ from ..cli import (
     _summary,
     _text_label,
 )
-from ..contracts import GuardError, read_json
+from ..contracts import MAX_JSON_BYTES, GuardError, read_json
 from ..inputs.npm import MAX_NAME_LENGTH, PACKAGE_NAME
 from ..inputs.npm_cli import DEPENDENCY_FIELDS, UPDATE_NAME
 
@@ -63,7 +70,31 @@ MAX_TARGETS = 1024  # characters of the update target names field
 KEPT_PREVIEWS = 10  # update previews kept in memory; the oldest is dropped first
 RECENT_RUNS = 10  # runs per project in the list's trend table
 MAX_ID = 2**63 - 1  # SQLite's largest integer; a larger id in a URL is simply not found
+# The history stores a lone surrogate in a result row's location as the text \udXXX, which a
+# location can also hold as it is: a stored location with this text may stand for either.
+ESCAPED_SURROGATE = "\\ud"
+# The hexagon mark (style.css .cell) next to a stored status; the words beside it say the status.
+CELLS = {"flagged": "risk", "incomplete": "hold", "not_flagged": "pass"}
+TAB_STATES = {
+    "flagged": ("risk", "위험"),
+    "incomplete": ("hold", "보류"),
+    "passed": ("pass", "통과"),
+}
+# The lockfile root entry's fields that declare a direct dependency, as the packages table
+# words them next to "직접" (inputs.npm.DEPENDENCY_FIELDS).
+DECLARED_LABELS = {
+    "dependencies": "일반",
+    "devDependencies": "개발",
+    "optionalDependencies": "선택",
+    "peerDependencies": "피어",
+}
 NPM_PAGE = "https://www.npmjs.com/package/"
+# The tab icon, the brand's hexagon cell. Served under the session like the stylesheet: without
+# it a browser asks for /favicon.ico, which has no session and is a 403 in its console.
+ICON = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#f4b10b" '
+    'stroke="#18202b" d="M8 1l6 3.5v7L8 15l-6-3.5v-7z"/></svg>'
+)
 CSP = (
     "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; "
     "frame-ancestors 'none'; base-uri 'none'"
@@ -93,10 +124,16 @@ SESSION_REFUSED = (
 )
 FORM_REFUSED = "폼의 세션 값이 맞지 않습니다. 화면을 새로 열고 다시 시도하세요."
 BUSY = "다른 검사, 업데이트 확인이나 반영이 실행 중입니다. 끝난 뒤 다시 시도하세요."
+BUSY_TITLE = "다른 작업이 실행 중입니다"
+BUSY_NOTE = (
+    "먼저 보낸 작업은 계속 실행됩니다. 끝나면 그 결과를 프로젝트의 업데이트와 기록 화면에서 볼 수 "
+    "있습니다."
+)
 PREVIEW_GONE = (
     "이 업데이트 미리보기가 없습니다(이미 반영을 시도했거나, 오래되어 지워졌거나, 대시보드를 다시 "
     "시작함). 프로젝트 화면에서 업데이트 확인을 다시 실행하세요."
 )
+PREVIEW_GONE_TITLE = "미리보기가 없습니다"
 PROJECT_MISSING = "등록한 프로젝트 폴더를 찾을 수 없습니다."
 PREVIEW_FAILED = "업데이트 확인을 끝내지 못했습니다(파일이나 데이터를 읽거나 쓰지 못함)."
 SCAN_TITLE = "검사 오류"  # error.html's heading for a scan (default: the update one)
@@ -137,12 +174,22 @@ def _finalize(value):
     return _clean(value) if isinstance(value, str) else value
 
 
+def _when(value: object) -> object:
+    """A stored UTC time (ISO 8601 with Z) as "2026-11-21 09:30 UTC"; anything else as it is."""
+    try:
+        stamp = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return value
+    return value if stamp.tzinfo is None else stamp.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+
+
 ENV = jinja2.Environment(
     loader=jinja2.PackageLoader("depbee.dashboard", "templates"),
     autoescape=True,  # set here, not left to the file extension
     finalize=_finalize,
     undefined=jinja2.StrictUndefined,
 )
+ENV.filters["when"] = _when
 
 
 def _text(status: int, text: str) -> Response:
@@ -205,13 +252,26 @@ def build_app(
     if known_malicious_dir is not None:  # else the options stay as before (the service's default)
         scan_options["known_malicious_dir"] = known_malicious_dir
 
-    def page(request: Request, name: str, status: int = 200, **context) -> Response:
+    def page(request: Request, name: str, status: int = 200, *, project: dict | None = None,
+             section: str | None = None, tabs: list[dict] | None = None, **context) -> Response:  # fmt: skip
+        """A page of the console. project: the registered project the page is about, shown as
+        the open tab (the template gets its tab); section: the view the page belongs to
+        (packages, updates, history; manage and model for the two pages outside a project)."""
+        tabs = _tabs(project) if tabs is None else tabs
         html = ENV.get_template(name).render(
-            safety_note=SAFETY_NOTE, base=base, session=session, **context
-        )
+            safety_note=SAFETY_NOTE, base=base, session=session, tabs=tabs, section=section,
+            project=next((tab for tab in tabs if tab["current"]), None), **context,
+        )  # fmt: skip
         # _finalize has escaped lone surrogates; backslashreplace keeps any left from a 500.
         body = html.encode("utf-8", "backslashreplace")
         return Response(body, status, media_type="text/html; charset=utf-8")
+
+    def stopped(request: Request, status: int, title: str, message: str, note: str | None,
+                project: dict | None = None) -> Response:  # fmt: skip
+        """A request that ran nothing (another one is running, or its preview is gone), as a
+        page with the tabs: a double click must not end on bare text with no way on."""
+        return page(request, "error.html", status, project=project, section="updates",
+                    title=title, message=message, note=note)  # fmt: skip
 
     async def read_form(request: Request) -> dict | Response:
         """The urlencoded form whose session field is this run's session, or the refusal."""
@@ -230,12 +290,9 @@ def build_app(
         return form
 
     def projects(request: Request, status: int = 200, error: str | None = None) -> Response:
-        rows = []
-        for project in history.list_projects():
-            runs = [_run_row(run) for run in history.list_runs(project["id"], RECENT_RUNS)]
-            rows.append({**project, "name": Path(project["path"]).name or project["path"],
-                         "found": _found(project["path"]), "runs": runs})  # fmt: skip
-        return page(request, "projects.html", status, projects=rows, error=error)
+        # The tabs are the list: each with its recent runs for the trend table.
+        return page(request, "projects.html", status, section="manage",
+                    tabs=_tabs(None, RECENT_RUNS), error=error)  # fmt: skip
 
     async def register(request: Request) -> Response:
         form = await read_form(request)
@@ -251,6 +308,8 @@ def build_app(
         return RedirectResponse(f"{base}/projects/{project_id}", 303)
 
     def project(request: Request) -> Response:
+        """The packages view: what package-lock.json installs, and for each entry the candidate
+        a current update check found for it, that it found none, or that nothing was checked."""
         found = _project(request.path_params["project_id"])
         if found is None:
             return _text(404, "등록된 프로젝트가 아닙니다.")
@@ -268,20 +327,57 @@ def build_app(
         dependencies, problem = _dependencies(found["path"])
         direct_count = sum(row["direct"] for row in dependencies)
         needle = query.casefold()
+        state = _update_state(found)
+        candidates = {row["location"]: row for row in state["rows"]}
         rows = [
-            row
+            {**row, "candidate": candidates.get(row["location"]),
+             "checked": state["full"] is not None or row["location"] in state["covered"],
+             "declared": ", ".join(DECLARED_LABELS[field] for field in row["declared"]),
+             "declared_as": _declared_as(row)}
             for row in dependencies
             if (scope == "all" or row["direct"] == (scope == "direct"))
             and (not needle or needle in _clean(row["name"] or "").casefold())
-        ]
+        ]  # fmt: skip
         targets = _preview_targets(found["path"]) if any(row["direct"] for row in rows) else set()
-        runs = [_run_row(run) for run in history.list_runs(found["id"])]
-        applies = [_apply_row(row) for row in history.list_applies(found["id"])]
-        return page(request, "project.html", project=found, found=_found(found["path"]),
-                    project_name=Path(found["path"]).name or found["path"], rows=rows,
+        return page(request, "project.html", project=found, section="packages", rows=rows,
                     direct_count=direct_count, nested_count=len(dependencies) - direct_count,
                     query=query, scope=scope, targets=targets, max_query=MAX_NAME_LENGTH,
-                    problem=problem, runs=runs, applies=applies, max_targets=MAX_TARGETS)  # fmt: skip
+                    problem=problem, state=state)  # fmt: skip
+
+    def updates(request: Request) -> Response:
+        """The updates view: the current candidates with their evidence, the previews this
+        process still holds (the only ones that can be applied) and the buttons that check."""
+        found = _project(request.path_params["project_id"])
+        if found is None:
+            return _text(404, "등록된 프로젝트가 아닙니다.")
+        state = _update_state(found)
+        # A copy: the request handlers of other threads add and drop previews meanwhile.
+        held = [
+            {"id": preview_id, "run_id": kept["run_id"], "created_at": kept["created_at"],
+             "lines": _preview_lines(kept["result"]["preview"], _clean)[:2],
+             "current": _made_from(kept["result"]["preview"]) == state["now"]}
+            for preview_id, kept in reversed(list(previews.items()))
+            if kept["project_id"] == found["id"]
+        ]  # fmt: skip
+        last = state["last"]
+        applied = history.list_applies(found["id"], 1) if last else []
+        applied_at = (
+            applied[0]["created_at"]
+            if applied and applied[0]["run_id"] == last["id"] and applied[0]["outcome"] == "applied"
+            else None
+        )
+        return page(request, "updates.html", project=found, section="updates", state=state,
+                    previews=held, applied_at=applied_at, max_targets=MAX_TARGETS)  # fmt: skip
+
+    def project_history(request: Request) -> Response:
+        """The history view: the project's applies and runs, each run linked to its report."""
+        found = _project(request.path_params["project_id"])
+        if found is None:
+            return _text(404, "등록된 프로젝트가 아닙니다.")
+        runs = [_run_row(run) for run in history.list_runs(found["id"])]
+        applies = [_apply_row(row) for row in history.list_applies(found["id"])]
+        return page(request, "history.html", project=found, section="history", runs=runs,
+                    applies=applies)  # fmt: skip
 
     def run(request: Request) -> Response:
         run_id = request.path_params["run_id"]
@@ -291,6 +387,7 @@ def build_app(
         preview, applied = stored["preview"], stored["apply"]
         return page(
             request, "run.html", run=_run_row(stored), project=_project(stored["project_id"]),
+            section="history",
             preview=None if preview is None else _preview_lines(preview, _clean),
             apply=None if applied is None else _apply_view(applied["apply"], CONFIRMED_STORED),
             **_report(stored["report"]),
@@ -307,7 +404,7 @@ def build_app(
         blocked, required = service.update_gate(result["report"])
         return page(
             request, "preview.html", status, preview_id=preview_id, error=error,
-            project=_project(kept["project_id"]), created_at=kept["created_at"],
+            project=_project(kept["project_id"]), section="updates", created_at=kept["created_at"],
             run_id=kept["run_id"], not_recorded=PREVIEW_NOT_RECORDED if kept["run_id"] is None
             else None, lines=_preview_lines(result["preview"], _clean),
             blocked=[_apply_item(item, _clean, _text_label) for item in blocked],
@@ -330,11 +427,13 @@ def build_app(
         if len(targets) != 1:
             return _text(400, "대상 이름 칸이 하나여야 합니다.")
         if len(targets[0]) > MAX_TARGETS:
-            return page(request, "error.html", 400, project=found, message=TARGETS_TOO_LONG)
+            return page(request, "error.html", 400, project=found, section="updates",
+                        message=TARGETS_TOO_LONG)  # fmt: skip
         if not _found(found["path"]):  # the registered path, checked as at registration
-            return page(request, "error.html", 400, project=found, message=PROJECT_MISSING)
+            return page(request, "error.html", 400, project=found, section="updates",
+                        message=PROJECT_MISSING)  # fmt: skip
         if not busy.acquire(blocking=False):
-            return _text(409, BUSY)
+            return stopped(request, 409, BUSY_TITLE, BUSY, BUSY_NOTE, found)
         try:
             outcome = await run_in_threadpool(
                 _run_preview, Path(found["path"]), targets[0].split(), scan_options
@@ -342,7 +441,8 @@ def build_app(
         finally:
             busy.release()
         if isinstance(outcome, str):
-            return page(request, "error.html", 400, project=found, message=outcome)
+            return page(request, "error.html", 400, project=found, section="updates",
+                        message=outcome)  # fmt: skip
         result, new_package, new_lock, run_id = outcome
         preview_id = secrets.token_urlsafe(16)
         previews[preview_id] = {
@@ -363,28 +463,28 @@ def build_app(
         if found is None:
             return _text(404, "등록된 프로젝트가 아닙니다.")
         if not _found(found["path"]):  # the registered path, checked as at registration
-            return page(request, "error.html", 400, project=found, message=PROJECT_MISSING,
-                        title=SCAN_TITLE)  # fmt: skip
+            return page(request, "error.html", 400, project=found, section="updates",
+                        message=PROJECT_MISSING, title=SCAN_TITLE)  # fmt: skip
         if not busy.acquire(blocking=False):
-            return _text(409, BUSY)
+            return stopped(request, 409, BUSY_TITLE, BUSY, BUSY_NOTE, found)
         try:
             outcome = await run_in_threadpool(_run_scan, Path(found["path"]), scan_options)
         finally:
             busy.release()
         if isinstance(outcome, str):
-            return page(request, "error.html", 400, project=found, message=outcome,
-                        title=SCAN_TITLE)  # fmt: skip
+            return page(request, "error.html", 400, project=found, section="updates",
+                        message=outcome, title=SCAN_TITLE)  # fmt: skip
         report, run_id = outcome
         if run_id is None:  # the result is not hidden when it could not be recorded
-            return page(request, "scanned.html", project=found, not_recorded=SCAN_NOT_RECORDED,
-                        **_report(report))  # fmt: skip
+            return page(request, "scanned.html", project=found, section="updates",
+                        not_recorded=SCAN_NOT_RECORDED, **_report(report))  # fmt: skip
         return RedirectResponse(f"{base}/runs/{run_id}", 303)
 
     def show_preview(request: Request) -> Response:
         preview_id = request.path_params["preview_id"]
         kept = previews.get(preview_id)
         if kept is None:
-            return _text(404, PREVIEW_GONE)
+            return stopped(request, 404, PREVIEW_GONE_TITLE, PREVIEW_GONE, None)
         return preview_page(request, kept, preview_id)
 
     async def apply(request: Request) -> Response:
@@ -396,7 +496,7 @@ def build_app(
         preview_id = request.path_params["preview_id"]
         kept = previews.get(preview_id)
         if kept is None:
-            return _text(404, PREVIEW_GONE)
+            return stopped(request, 404, PREVIEW_GONE_TITLE, PREVIEW_GONE, None)
         modes = form.get("mode", [])
         if len(modes) != 1 or modes[0] not in service.APPLY_MODES:
             return preview_page(request, kept, preview_id, 400, CHOOSE_MODE)
@@ -408,33 +508,40 @@ def build_app(
             return preview_page(request, kept, preview_id, 400, NPMRC_NO_INSTALL)
         found = _project(kept["project_id"])
         if found is None or not _found(found["path"]):
-            return page(request, "error.html", 400, project=found, message=PROJECT_MISSING)
+            return page(request, "error.html", 400, project=found, section="updates",
+                        message=PROJECT_MISSING)  # fmt: skip
         if not busy.acquire(blocking=False):
-            return _text(409, BUSY)
+            return stopped(request, 409, BUSY_TITLE, BUSY, BUSY_NOTE, found)
         try:
             kept = previews.pop(preview_id, None)
             if kept is None:
-                return _text(404, PREVIEW_GONE)
+                return stopped(request, 404, PREVIEW_GONE_TITLE, PREVIEW_GONE, None, found)
             outcome = await run_in_threadpool(_run_apply, Path(found["path"]), kept, mode,
                                               confirmed)  # fmt: skip
         finally:
             busy.release()
         if isinstance(outcome, str):
-            return page(request, "error.html", 500, project=found, message=outcome)
+            return page(request, "error.html", 500, project=found, section="updates",
+                        message=outcome)  # fmt: skip
         applied, recorded = outcome
         return page(
-            request, "applied.html", project=found, run_id=kept["run_id"] if recorded else None,
+            request, "applied.html", project=found, section="updates",
+            run_id=kept["run_id"] if recorded else None,
             not_recorded=None if recorded else (
                 APPLY_NOT_RECORDED if kept["run_id"] is not None else PREVIEW_NOT_RECORDED),
             apply=_apply_view(applied, CONFIRMED_HERE, RETRY_HERE),
         )  # fmt: skip
 
     def model(request: Request) -> Response:
-        return page(request, "model.html", models=_models(), limits=MODEL_LIMITS)
+        return page(request, "model.html", section="model", models=_models(),
+                    limits=MODEL_LIMITS)  # fmt: skip
 
     def style(request: Request) -> Response:
         css = importlib.resources.files("depbee.dashboard").joinpath("static", "style.css")
         return Response(css.read_bytes(), media_type="text/css; charset=utf-8")
+
+    def icon(request: Request) -> Response:
+        return Response(ICON, media_type="image/svg+xml")
 
     def failed(request: Request, exc: Exception) -> Response:
         # No exception text: it can hold paths or package strings.
@@ -445,6 +552,8 @@ def build_app(
             Route("/", projects),
             Route("/projects", register, methods=["POST"]),
             Route("/projects/{project_id:int}", project),
+            Route("/projects/{project_id:int}/updates", updates),
+            Route("/projects/{project_id:int}/history", project_history),
             Route("/projects/{project_id:int}/previews", check_update, methods=["POST"]),
             Route("/projects/{project_id:int}/scans", scan, methods=["POST"]),
             Route("/previews/{preview_id}", show_preview),
@@ -452,6 +561,7 @@ def build_app(
             Route("/runs/{run_id:int}", run),
             Route("/model", model),
             Route("/static/style.css", style),
+            Route("/static/icon.svg", icon),
         ],
         exception_handlers={Exception: failed},
         max_body_size=MAX_BODY,
@@ -499,6 +609,153 @@ def _project(project_id: int) -> dict | None:
     return next((p for p in history.list_projects() if p["id"] == project_id), None)
 
 
+def _names(paths: list[str]) -> list[str]:
+    """A tab name per registered path: the folder name, with as many parent folders in front as
+    it takes to tell it from every other registered path, joined with "/" (a backslash is drawn
+    as a won sign by Korean fonts); the path itself if it takes all of it. Names are compared as
+    the OS compares paths, so folders that differ only in case on Windows count as the same
+    name."""
+    folded = [Path(os.path.normcase(path)).parts for path in paths]
+    names = []
+    for index, path in enumerate(paths):
+        parts, own, depth = Path(path).parts, folded[index], 1
+        while depth < len(own) and any(
+            other[-depth:] == own[-depth:] for at, other in enumerate(folded) if at != index
+        ):
+            depth += 1
+        names.append("/".join(parts[-depth:]) if depth < len(parts) else path)
+    return names
+
+
+def _tabs(current: dict | None, recent: int = 1) -> list[dict]:
+    """Every registered project as a tab of the console, in registration order: the project
+    with its name (_names), whether its folder is still there, its latest runs (recent of them,
+    as _run_row) and the hexagon mark and words of its state. The state is a missing folder
+    first, else the latest run's stored status: never a new verdict."""
+    projects = history.list_projects()
+    tabs = []
+    for project, name in zip(projects, _names([p["path"] for p in projects]), strict=True):
+        runs = history.list_runs(project["id"], recent)
+        found = _found(project["path"])
+        if not found:
+            cell, state = "gone", "폴더를 찾을 수 없음"
+        elif not runs:
+            cell, state = "none", "실행 기록 없음"
+        else:
+            status = runs[0]["status"]
+            cell, short = TAB_STATES.get(status) or ("none", "-" if status is None else status)
+            state = f"최근 실행 {short}"
+        tabs.append({
+            **project, "name": name, "found": found, "cell": cell, "state": state,
+            "runs": [_run_row(run) for run in runs],
+            "current": current is not None and project["id"] == current["id"],
+        })  # fmt: skip
+    return tabs
+
+
+def _sha256(folder: str, name: str) -> str | None:
+    """SHA-256 of the regular file name in a registered folder, reached as at registration; None
+    if it is not there, cannot be read or is larger than any file depbee previews."""
+    try:
+        real = mcp._unlinked(mcp._local_path(folder, "project") / name, name)
+        if real is None:
+            return None
+        mode = real.stat()
+        if not stat.S_ISREG(mode.st_mode) or mode.st_size > MAX_JSON_BYTES:
+            return None
+        with real.open("rb") as stream:
+            return hashlib.file_digest(stream, "sha256").hexdigest()
+    except (GuardError, OSError, ValueError):
+        return None
+
+
+def _made_from(preview: object) -> tuple:
+    """The SHA-256 of the package.json and package-lock.json an update preview was made from."""
+    if not isinstance(preview, dict):
+        return (None, None)
+    return (preview.get("package_json_sha256"), preview.get("package_lock_sha256"))
+
+
+def _update_state(project: dict) -> dict:
+    """What the history says about updating the project's files as they are now; nothing here
+    runs npm or reaches the network. Only this project's update previews made from package.json
+    and package-lock.json with the SHA-256 they have now count as current checks, however many
+    other runs came after them (history.list_previews; _candidates): a result from other files
+    or from another project is never a current candidate. now: the two hashes (None for a file
+    that cannot be read); last: the newest update preview when the files can be read and none
+    is current."""
+    now = (_sha256(project["path"], "package.json"), _sha256(project["path"], "package-lock.json"))
+    readable = None not in now
+    checks = history.list_previews(project["id"], *now) if readable else []
+    newest = (
+        history.list_runs(project["id"], 1, "update_preview") if readable and not checks else []
+    )
+    return {"now": now, "readable": readable, "last": newest[0] if newest else None,
+            **_candidates(checks)}  # fmt: skip
+
+
+def _candidates(checks: list[dict]) -> dict:
+    """The update candidates of current checks (history.list_previews: newest first, down to
+    the newest check of everything). Each lockfile location takes the newest check that covers
+    it. A check covers the locations of its result rows, its targets' own locations
+    (node_modules/<name>) and, without targets, every location; a covered location without a
+    row has no candidate. Locations are compared as the lockfile and the reports spell them. A
+    stored location is that spelling unless it holds ESCAPED_SURROGATE, and only a check with
+    such a stored location has its locations read from its stored report.
+
+    Only a check that covers a location no newer check covers is used, and beyond that only the
+    stored reports of the used checks with a candidate row are read (history.get_run). checks:
+    {id, created_at, targets (the names, None for everything)} of the checks used, newest
+    first; rows: _result() views in the report order (D-13) with before, after, the run and the
+    row's position in its report (the anchor on the run page); covered: the locations the used
+    checks cover; full: the check of everything among them (as in checks), None if only named
+    packages were checked; summary: the counts as the text output words them, None without a
+    row."""
+    reports = {}  # run -> its stored report, read once
+
+    def report_of(run_id: int) -> dict:
+        if run_id not in reports:
+            reports[run_id] = history.get_run(run_id)["report"]
+        return reports[run_id]
+
+    owners = {}  # location -> (run of the newest check that covers it, its row's position or None)
+    listed = []
+    for check in checks:
+        targets = check["targets"]
+        names = [n for n in targets if isinstance(n, str)] if isinstance(targets, list) else []
+        locations = check["locations"]
+        if any(isinstance(place, str) and ESCAPED_SURROGATE in place for place in locations):
+            locations = [row["location"] for row in report_of(check["id"])["results"]]
+        for position, location in enumerate(locations):
+            owners.setdefault(location, (check["id"], position))
+        for name in names:
+            owners.setdefault(f"node_modules/{name}", (check["id"], None))
+        # Joined here: a filter's safe string would be escaped twice after _finalize.
+        listed.append({"id": check["id"], "created_at": check["created_at"],
+                       "targets": None if targets is None else ", ".join(names)})  # fmt: skip
+    used = {run_id for run_id, _ in owners.values()}
+    shown = [check for check in listed if check["id"] in used or check["targets"] is None]
+    positions = {}  # run -> the positions of its candidate rows, in report order
+    for run_id, position in owners.values():
+        if position is not None:
+            positions.setdefault(run_id, []).append(position)
+    picked = {}  # id(a candidate's report row) -> its run, its position and its report
+    for run_id, wanted in positions.items():
+        report = report_of(run_id)
+        for position in wanted:
+            picked[id(report["results"][position])] = (run_id, position, report)
+    raw = _ordered([report["results"][position] for _, position, report in picked.values()])
+    rows = []
+    for row in raw:
+        run_id, position, report = picked[id(row)]
+        rows.append({**_result(row, report), "before": row["before_version"],
+                     "after": row["after_version"], "run_id": run_id,
+                     "position": position})  # fmt: skip
+    full = shown[-1] if shown and shown[-1]["targets"] is None else None
+    return {"checks": shown, "rows": rows, "covered": set(owners), "full": full,
+            "summary": _summary(raw, False) if raw else None}  # fmt: skip
+
+
 def _dependencies(path: str) -> tuple[list[dict], str | None]:
     """The lockfile's dependencies, or a fixed message (no error text, which can hold paths)."""
     folder = Path(path)
@@ -510,9 +767,16 @@ def _dependencies(path: str) -> tuple[list[dict], str | None]:
             return [], "package-lock.json이 없습니다."
         if not stat.S_ISREG(lock.stat().st_mode):
             return [], "package-lock.json이 일반 파일이 아닙니다."
-        return service.list_dependencies(folder), None
+        return service.list_dependencies(folder, declared=True), None
     except (GuardError, OSError, ValueError, RecursionError):
         return [], "package-lock.json을 읽을 수 없습니다(지원하지 않는 형식이거나 손상됨)."
+
+
+def _declared_as(row: dict) -> str | None:
+    """The name the root declares a direct dependency under when it is not the package's own
+    name (an alias): the location says it, nothing is read out of the dependency spec."""
+    name = row["location"].removeprefix("node_modules/")
+    return name if row["direct"] and name != row["name"] else None
 
 
 def _preview_targets(path: str) -> set[str]:
@@ -604,15 +868,18 @@ def _run_apply(project: Path, kept: dict, mode: str, confirmed: bool) -> tuple |
 
 
 def _report(report: dict) -> dict:
-    """The context of report.html: the report as the text output shows it."""
+    """The context of report.html: the report as the text output shows it. Each result keeps
+    its position in the stored report, the anchor a candidate row links to."""
     package_input = report.get("input_kind") == "package"
+    position = {id(row): index for index, row in enumerate(report["results"])}
     return {
         "overall": f"{_text_label(OVERALL_LABELS, report['status'])}"
                    f" (종료 코드 {_clean(report['exit_code'])})",
         "summary": _summary(report["results"], package_input), "notices": _notices(report),
         "model_id": report.get("model_id"), "threshold": report.get("threshold"),
         "setup": _detector_setup(report, _clean), "package_input": package_input,
-        "results": [_result(row, report) for row in _ordered(report["results"])],
+        "results": [{**_result(row, report), "position": position[id(row)]}
+                    for row in _ordered(report["results"])],
     }  # fmt: skip
 
 
@@ -659,6 +926,7 @@ def _result(row: dict, report: dict) -> dict:
     return {
         "status": row["status"],
         "label": _text_label(STATUS_LABELS, row["status"]),
+        "cell": CELLS.get(row["status"], "none"),
         "package": row["package"],
         "version": row["after_version"] or row["before_version"],
         "location": row["location"],
@@ -717,11 +985,15 @@ def _models() -> list[dict]:
 
 def serve(
     port: int, *, model_dir: Path | None = None, cache_dir: Path | None = None,
-    no_cache: bool = False, known_malicious_dir: Path | None = None,
+    no_cache: bool = False, known_malicious_dir: Path | None = None, background=None,
 ) -> None:  # fmt: skip
     """Bind 127.0.0.1:port (0 picks a free one), print the session address once and serve until
     Ctrl+C, which ends with one line and no traceback. The session is in the address line only:
-    no access log, and errors never quote requests."""
+    no access log, and errors never quote requests.
+
+    background (lifecycle.Instance): serve as the background instance instead. The address is
+    not printed but published in the instance's state file once the port is bound, and the
+    instance's control endpoint, in front of the app, can end the server as Ctrl+C does."""
     if not 0 <= port <= 65535:
         raise GuardError("--port must be between 0 and 65535")
     # Only when given, so that build_app is called as before without an index.
@@ -730,21 +1002,29 @@ def serve(
     try:
         actual = sock.getsockname()[1]
         session = secrets.token_urlsafe(32)
+        app = build_app(actual, session, model_dir=model_dir, cache_dir=cache_dir,
+                        no_cache=no_cache, **known)  # fmt: skip
+        if background is not None:
+            app = background.control(app, lambda: setattr(server, "should_exit", True))
         config = uvicorn.Config(
-            build_app(actual, session, model_dir=model_dir, cache_dir=cache_dir,
-                      no_cache=no_cache, **known), host=HOST, port=actual, access_log=False,
+            app, host=HOST, port=actual, access_log=False,
             server_header=False, proxy_headers=False, log_level="warning", lifespan="off",
             ws="none",
         )  # fmt: skip
+        server = uvicorn.Server(config)
         try:
             projects = history.list_projects()
         except (history.HistoryError, OSError, sqlite3.Error, RuntimeError):
             projects = []  # The existing dashboard error page handles history read failures.
         target = f"projects/{projects[0]['id']}" if len(projects) == 1 else ""
-        print(f"http://{HOST}:{actual}/s/{session}/{target}", flush=True)
-        print("이 주소를 브라우저에서 여세요. 종료하려면 Ctrl+C를 누르세요.", flush=True)
+        url = f"http://{HOST}:{actual}/s/{session}/{target}"
+        if background is None:
+            print(url, flush=True)
+            print("이 주소를 브라우저에서 여세요. 종료하려면 Ctrl+C를 누르세요.", flush=True)
+        else:
+            background.publish(url, actual)
         try:
-            uvicorn.Server(config).run(sockets=[sock])
+            server.run(sockets=[sock])
         except KeyboardInterrupt:
             # After its graceful shutdown uvicorn re-raises the captured Ctrl+C (capture_signals).
             print(STOPPED, flush=True)

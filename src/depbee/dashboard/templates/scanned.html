@@ -1,7 +1,7 @@
 {% extends "base.html" %}
-{% block title %}depbee 검사 결과{% endblock %}
+{% block title %}검사 결과 - depbee{% endblock %}
 {% block main %}
-<p><a href="{{ base }}/projects/{{ project.id }}">{{ project.path }}</a></p>
+{% with here = "검사 결과" %}{% include "trail.html" %}{% endwith %}
 <h1>검사(scan) 결과</h1>
 <p class="error">{{ not_recorded }}</p>
 {% include "report.html" %}

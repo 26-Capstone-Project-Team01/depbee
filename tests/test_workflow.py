@@ -61,6 +61,9 @@ class Fixture(unittest.TestCase):
         os.environ.pop("DEPBEE_KNOWN_MALICIOUS_DIR", None)
         # The local history (depbee.history) stays in this run; the file is not created.
         os.environ["DEPBEE_HISTORY_DB"] = str(self.root / "history.sqlite3")
+        # So does the user's settings folder (depbee.config: assets saved by depbee setup, the
+        # background dashboard's files): a developer's own setup must not change results either.
+        os.environ["DEPBEE_CONFIG_DIR"] = str(self.root / "user")
         self.project = self.root / "project"
         self.project.mkdir()
         self.base = self.root / "base.json"

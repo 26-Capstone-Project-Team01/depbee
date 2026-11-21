@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} 기록 - depbee{% endblock %}
+{% block main %}
+{% set url = base ~ "/projects/" ~ project.id %}
+{% include "project_head.html" %}
+<section aria-labelledby="applies-title">
+<h2 id="applies-title">업데이트 반영 이력(최근순)</h2>
+{% if applies %}
+<div class="scroll" role="region" aria-labelledby="applies-title" tabindex="0">
+<table class="applies">
+<thead><tr><th scope="col">시각</th><th scope="col">방식</th><th scope="col">결과</th><th scope="col">이유</th><th scope="col">확인</th><th scope="col">백업 위치</th><th scope="col">npm ci 종료 코드</th><th scope="col">미리보기 실행</th></tr></thead>
+<tbody>
+{% for row in applies %}
+<tr>
+<td>{{ row.created_at|when }}</td>
+<td>{{ row.mode }}</td>
+<td>{{ row.outcome }}</td>
+<td>{{ row.reason }}</td>
+<td>{{ row.confirmed }}</td>
+<td>{{ row.backup if row.backup is not none else "-" }}</td>
+<td>{{ row.npm_ci_exit_code if row.npm_ci_exit_code is not none else "-" }}</td>
+<td><a href="{{ base }}/runs/{{ row.run_id }}">#{{ row.run_id }}</a></td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{% else %}
+<p class="empty">기록된 반영이 없습니다. <a href="{{ url }}/updates">업데이트</a>에서 후보를 확인하고 미리보기에서 반영하면 여기에 남습니다. CLI의 depbee update --apply도 같은 곳에 기록됩니다.</p>
+{% endif %}
+</section>
+<section aria-labelledby="runs-title">
+<h2 id="runs-title">실행 기록(최근순)</h2>
+{% if runs %}
+<p>실행 번호를 누르면 그 실행의 보고서가 열립니다.</p>
+{% include "counts.html" %}
+{% else %}
+<p class="empty">기록된 실행이 없습니다. <a href="{{ url }}/updates">업데이트</a>의 "전체 업데이트 확인"이나 "검사만"을 실행하거나, 이 폴더에서 CLI로 depbee scan이나 depbee update를 실행하면 기록됩니다.</p>
+{% endif %}
+<p class="note">프로젝트 등록 {{ project.registered_at|when }}</p>
+</section>
+{% endblock %}

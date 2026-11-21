@@ -15,10 +15,11 @@ from ..contracts import GuardError
 
 def serve(
     port: int = 0, *, model_dir: Path | None = None, cache_dir: Path | None = None,
-    no_cache: bool = False, known_malicious_dir: Path | None = None,
+    no_cache: bool = False, known_malicious_dir: Path | None = None, background=None,
 ) -> None:  # fmt: skip
     """Serve the dashboard on 127.0.0.1:port (0: a free port) until interrupted. model_dir,
-    cache_dir, no_cache, known_malicious_dir: for update previews, as in depbee update."""
+    cache_dir, no_cache, known_malicious_dir: for update previews, as in depbee update.
+    background: the lifecycle.Instance to serve as (depbee dashboard --background)."""
     try:
         app = importlib.import_module(".app", __name__)
     except ImportError as exc:
@@ -26,4 +27,4 @@ def serve(
             f'depbee dashboard needs Starlette, Jinja2 and uvicorn: pip install -e ".[web]" ({exc})'
         ) from exc
     app.serve(port, model_dir=model_dir, cache_dir=cache_dir, no_cache=no_cache,
-              known_malicious_dir=known_malicious_dir)  # fmt: skip
+              known_malicious_dir=known_malicious_dir, background=background)  # fmt: skip

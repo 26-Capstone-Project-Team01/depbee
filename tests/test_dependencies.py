@@ -48,11 +48,34 @@ class DependencyListTests(Fixture):
                      "direct": True},
                 ])  # fmt: skip
 
+    def test_declared_fields_of_each_location_only_when_asked(self):
+        root = {"dependencies": {"a": "^1.0.0", "alias": "npm:real-name@5", "real-name": "^9"},
+                "devDependencies": {"dev": "4", "b": "3"}, "optionalDependencies": {"a": "^1"},
+                "peerDependencies": {"b": "*", "ws": "*"}}  # fmt: skip
+        self.write(self.head, self.lock(**root))
+        rows = list_dependencies(self.project, declared=True)
+        self.assertEqual({row["location"]: row["declared"] for row in rows}, {
+            "node_modules/a": ["dependencies", "optionalDependencies"],  # both, in field order
+            "node_modules/a/node_modules/b": [],  # a nested copy of a declared name
+            # Declared as "alias": the package's own name (real-name) is another declaration.
+            "node_modules/alias": ["dependencies"],
+            "node_modules/b": ["devDependencies", "peerDependencies"],
+            "node_modules/dev": ["devDependencies"],
+            "node_modules/ws": ["peerDependencies"],
+        })  # fmt: skip
+        self.assertEqual([row["direct"] for row in rows], [bool(row["declared"]) for row in rows])
+        # Without the option the rows are as they were.
+        plain = list_dependencies(self.project)
+        self.assertEqual(plain, [{k: v for k, v in row.items() if k != "declared"} for row in rows])
+        self.assertEqual(set(plain[0]), {"location", "name", "version", "direct"})
+
     def test_no_root_entry_means_no_direct_dependency(self):
         lock = self.lock()
         del lock["packages"][""]
         self.write(self.head, lock)
         self.assertFalse(any(row["direct"] for row in list_dependencies(self.project)))
+        declared = list_dependencies(self.project, declared=True)
+        self.assertEqual({tuple(row["declared"]) for row in declared}, {()})
 
     def test_unreadable_lockfiles_are_errors(self):
         cases = {

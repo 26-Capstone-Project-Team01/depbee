@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}depbee 업데이트 미리보기{% endblock %}
+{% block title %}업데이트 미리보기 - depbee{% endblock %}
 {% block main %}
-{% if project is not none %}<p><a href="{{ base }}/projects/{{ project.id }}">{{ project.path }}</a></p>{% endif %}
-<h1>업데이트 미리보기({{ created_at }} UTC)</h1>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% with here = "미리보기" %}{% include "trail.html" %}{% endwith %}
+<h1>업데이트 미리보기 ({{ created_at|when }})</h1>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
 <section class="preview">
 <ul>
 {% for line in lines %}<li>{{ line }}</li>
@@ -14,8 +14,8 @@
 <p class="note">이 미리보기(새 lockfile)는 대시보드 프로세스 메모리에만 있습니다. 대시보드를 끄거나 다시 시작하면, 또는 새 미리보기가 쌓여 오래된 것부터 지워지면 사라집니다. 반영은 한 미리보기에 한 번만 시도할 수 있습니다.</p>
 </section>
 {% include "report.html" %}
-<section class="gate">
-<h2>업데이트 반영</h2>
+<section class="gate" aria-labelledby="gate-title">
+<h2 id="gate-title">업데이트 반영</h2>
 {% if blocked %}
 <p class="error">반영할 수 없습니다: {{ blocked_reason }}. 확인으로도 바꿀 수 없습니다.</p>
 <p>기지 악성 기록 일치로 거부한 항목 {{ blocked|length }}개:</p>
@@ -27,11 +27,13 @@
 <p>lockfile에서 바뀐 항목이 없어 반영할 것이 없습니다.</p>
 {% else %}
 {% if required %}
+<div class="confirm">
 <p class="warning"><strong>확인이 필요한 항목 {{ required|length }}개:</strong></p>
 <ul>
 {% for item in required %}<li>{{ item }}</li>
 {% endfor %}
 </ul>
+</div>
 {% endif %}
 <form method="post" action="{{ base }}/previews/{{ preview_id }}/apply">
 <input type="hidden" name="session" value="{{ session }}">

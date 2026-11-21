@@ -4,7 +4,9 @@ Standard library only. Reports are stored as given: verdicts, reasons and exit c
 recomputed, and nothing here detects anything. The CLI records through record(), which never
 creates the database; only register_project() does. The dashboard uses the same API. An update
 apply (service.apply_update) is stored next to its update_preview run, or added to that run
-later with record_apply() (the dashboard); never the new lockfile.
+later with record_apply() (the dashboard); never the new lockfile. An update_preview run also
+has a previews row (the hashes of the two files it was made from and its targets), so that the
+previews of given files are found without reading the stored documents (list_previews()).
 """
 
 import contextlib
@@ -18,8 +20,9 @@ from pathlib import Path
 from . import __version__
 
 # PRAGMA user_version of a depbee history database; separate from contracts.SCHEMA_VERSION.
-# 2 added the applies table; a version 1 file is upgraded in the transaction of its next write.
-USER_VERSION = 2
+# 2 added the applies table and 3 the previews table; an older file is upgraded in the
+# transaction of its next write.
+USER_VERSION = 3
 # PRAGMA application_id ("DPBE"): marks the file as a depbee history; the version alone does not.
 APPLICATION_ID = 0x44504245
 TIMEOUT = 1.5  # seconds to wait for a lock; the CLI has already printed its report
@@ -102,6 +105,29 @@ CREATE TABLE applies (
     apply TEXT NOT NULL
 );
 """
+# Version 3: one row per update_preview run with the SHA-256 of the package.json and the
+# package-lock.json its preview document says it was made from, and the document's targets as
+# JSON (NULL: a preview of everything). Its index finds a project's previews of given files
+# without reading a stored document: runs.preview lies behind runs.report, which can be large.
+# runs_by_kind finds a project's newest run of one kind without passing every newer run of the
+# other kind.
+SCHEMA_3 = """
+CREATE TABLE previews (
+    run_id INTEGER PRIMARY KEY REFERENCES runs (id),
+    project_id INTEGER NOT NULL REFERENCES projects (id),
+    created_at TEXT NOT NULL,
+    package_json_sha256 TEXT,
+    package_lock_sha256 TEXT,
+    targets TEXT
+);
+CREATE INDEX previews_by_files
+    ON previews (project_id, package_json_sha256, package_lock_sha256, run_id);
+CREATE INDEX runs_by_kind ON runs (project_id, kind, id);
+"""
+INSERT_PREVIEW = (
+    "INSERT INTO previews (run_id, project_id, created_at, package_json_sha256, "
+    "package_lock_sha256, targets) VALUES (?, ?, ?, ?, ?, ?)"
+)
 
 
 class HistoryError(Exception):
@@ -186,14 +212,49 @@ def _check(connection, create: bool = False) -> int:
     raise HistoryError("Not a depbee history database")
 
 
+def _preview_columns(preview: object) -> tuple:
+    """What the previews table keeps of an update preview document: the SHA-256 of the
+    package.json and the package-lock.json it was made from and its targets as JSON (None for a
+    preview of everything). A value that is not a string, or anything that is not a document,
+    is None: such a run is stored and never found by its files."""
+    if not isinstance(preview, dict):
+        return (None, None, None)
+    hashes = (preview.get("package_json_sha256"), preview.get("package_lock_sha256"))
+    targets = preview.get("targets")
+    return (
+        *(_text(value) if isinstance(value, str) else None for value in hashes),
+        None if targets is None else _json(targets),
+    )
+
+
+def _stored_columns(preview: str | None) -> tuple:
+    """_preview_columns() of a preview as runs.preview stores it. Text that is not JSON (never
+    written by depbee) is no document: one such row must not stop the upgrade of the file."""
+    try:
+        return _preview_columns(None if preview is None else json.loads(preview))
+    except ValueError:
+        return (None, None, None)
+
+
 def _upgrade(connection, version: int) -> None:
     """Bring a database _check() returned version for to USER_VERSION, inside the caller's write
-    transaction: the tables and both header values roll back with it."""
+    transaction: the tables, their rows and both header values roll back with it."""
     # Statement by statement: executescript() would commit outside this transaction.
-    script = (SCHEMA if version == 0 else "") + (SCHEMA_2 if version < 2 else "")
+    script = (
+        (SCHEMA if version == 0 else "")
+        + (SCHEMA_2 if version < 2 else "")
+        + (SCHEMA_3 if version < 3 else "")
+    )
     for statement in script.split(";"):
         if statement.strip():
             connection.execute(statement)
+    if 0 < version < 3:  # the update previews recorded before the previews table
+        runs = connection.execute(
+            "SELECT id, project_id, created_at, preview FROM runs WHERE kind = 'update_preview'"
+        ).fetchall()
+        connection.executemany(
+            INSERT_PREVIEW, [(*run[:3], *_stored_columns(run[3])) for run in runs]
+        )
     if version == 0:
         connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
     if version < USER_VERSION:
@@ -238,7 +299,8 @@ def record(
     the scan's --base-ref value and whether --base-lock was given (None for update previews).
     apply: the apply document of service.apply_update for this update preview, stored in the
     same transaction as its run (applies table: the original hashes from the preview, the new
-    ones of the files it replaced).
+    ones of the files it replaced). An update preview also gets its previews row there (the
+    hashes of the files it was made from and its targets), by which list_previews() finds it.
     Returns None without touching anything if there is no home directory, no database file or
     the project is not registered. Raises sqlite3.Error, HistoryError, OSError or ValueError if
     the database cannot be read or written; the caller decides how to report that.
@@ -257,12 +319,14 @@ def record(
     results = report["results"]
     counts = Counter(row.get("status") for row in results)
     model = (report.get("provenance") or {}).get("model") or {}
+    created_at = _now()
     run = (
-        kind, _now(), __version__, _text(base_ref), base_lock, _text(report.get("status")),
+        kind, created_at, __version__, _text(base_ref), base_lock, _text(report.get("status")),
         report.get("exit_code"), _text(report.get("model_id")), _text(model.get("model_sha256")),
         *(counts[status] for status in STATUSES), _json(report),
         None if preview is None else _json(preview),
     )  # fmt: skip
+    columns = _preview_columns(preview) if kind == "update_preview" else None
     # The first seven columns are result keys; the last three the detector slots' statuses.
     rows = [
         [row.get(name) for name in RESULT_COLUMNS[:7]]
@@ -291,6 +355,8 @@ def record(
                     for position, row in enumerate(rows)
                 ],
             )
+            if columns is not None:
+                connection.execute(INSERT_PREVIEW, (run_id, project_id, created_at, *columns))
             if apply is not None:
                 _insert_apply(connection, run_id, preview, apply)
         return run_id
@@ -377,17 +443,73 @@ def _run(row: sqlite3.Row) -> dict:
     return run
 
 
-def list_runs(project_id: int, limit: int | None = None) -> list[dict]:
-    """A project's runs, newest first, without the stored documents.
+def list_runs(project_id: int, limit: int | None = None, kind: str | None = None) -> list[dict]:
+    """A project's runs, newest first, without the stored documents; kind: only its scans or
+    only its update previews (KINDS).
 
     Each run has the report's status, exit_code, model_id and model_sha256 as stored, and
     counts per item status ({flagged, not_flagged, incomplete, removed}) for trends.
     """
-    query = f"SELECT {', '.join(RUN_COLUMNS)} FROM runs WHERE project_id = ? ORDER BY id DESC"
+    query = f"SELECT {', '.join(RUN_COLUMNS)} FROM runs WHERE project_id = ?"
     parameters: tuple = (project_id,)
+    if kind is not None:
+        query, parameters = query + " AND kind = ?", (*parameters, kind)
+    query += " ORDER BY id DESC"
     if limit is not None:
-        query, parameters = query + " LIMIT ?", (project_id, limit)
+        query, parameters = query + " LIMIT ?", (*parameters, limit)
     return [_run(row) for row in _read(query, parameters)]
+
+
+def list_previews(
+    project_id: int, package_json_sha256: str, package_lock_sha256: str
+) -> list[dict]:
+    """A project's update previews made from the package.json and the package-lock.json with
+    these SHA-256, newest first: {id, created_at, targets, locations}. targets is the preview's
+    (None for a preview of everything) and locations are its result rows' locations in report
+    order, as stored. The list ends with the newest preview of everything: older previews of
+    the same files are not read.
+
+    Reads the previews table and the result rows, never a stored document. A file older than
+    version 3 has no such table and is not upgraded here: there each stored preview of the
+    project is read, newest first, until that preview of everything.
+    """
+    files = (package_json_sha256, package_lock_sha256)
+    path = db_path()
+    if not path.exists():
+        return []
+    with _connect(path, create=False) as connection:
+        if _check(connection) >= 3:
+            runs = connection.execute(
+                "SELECT run_id, created_at, targets FROM previews WHERE project_id = ? AND "
+                "package_json_sha256 = ? AND package_lock_sha256 = ? ORDER BY run_id DESC",
+                (project_id, *files),
+            )
+        else:
+            stored = connection.execute(
+                "SELECT id, created_at, preview FROM runs WHERE project_id = ? AND "
+                "kind = 'update_preview' ORDER BY id DESC",
+                (project_id,),
+            )
+            runs = (
+                (run_id, created_at, columns[2])
+                for run_id, created_at, preview in stored
+                if (columns := _stored_columns(preview))[:2] == files
+            )
+        found = []
+        # shortcut: one small query per preview read; join the result rows instead if projects
+        # ever pile up thousands of previews of named packages without one of everything.
+        for run_id, created_at, targets in runs:  # read row by row, so that the break ends it
+            rows = connection.execute(
+                "SELECT location FROM results WHERE run_id = ? ORDER BY position", (run_id,)
+            )
+            found.append({
+                "id": run_id, "created_at": created_at,
+                "targets": None if targets is None else json.loads(targets),
+                "locations": [location for (location,) in rows],
+            })  # fmt: skip
+            if targets is None:
+                break
+        return found
 
 
 def _apply(row: sqlite3.Row) -> dict:

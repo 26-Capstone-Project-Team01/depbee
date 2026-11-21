@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}depbee 실행 #{{ run.id }}{% endblock %}
+{% block title %}실행 #{{ run.id }} - depbee{% endblock %}
 {% block main %}
-<p><a href="{{ base }}/projects/{{ project.id }}">{{ project.path }}</a></p>
-<h1>실행 #{{ run.id }}: {{ run.kind }}, {{ run.created_at }}</h1>
+{% with here = "실행 #" ~ run.id %}{% include "trail.html" %}{% endwith %}
+<h1>실행 #{{ run.id }}: {{ run.kind }}, {{ run.created_at|when }}</h1>
 {% if preview is not none %}
 <section class="preview">
 <h2>업데이트 미리보기</h2>

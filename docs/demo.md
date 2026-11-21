@@ -12,6 +12,7 @@
 | `update` 미리보기·반영 | `ml`, `extract` | 불필요 | 필요 | 필요 | 권장(없으면 반영마다 확인 필요) | registry |
 | 대시보드 | `web`, `ml`, `extract` | 검사만에 필요 | 업데이트 확인에 필요 | 필요 | 권장 | registry |
 | MCP | `mcp`, `ml`, `extract` | `scan_lockfile`의 기본 HEAD 기준에 필요 | 불필요 | 필요 | 권장 | registry, 에이전트 서비스 |
+| Actions 공개 시연(합성 정책) | 설치 없음 | 불필요 | 불필요 | 불필요 | 불필요(가상 목록) | github.com 열람 |
 | Actions 판정 재현 | 없음(표준 라이브러리) | 실제 보고서를 만들 때만 | 불필요 | 실제 보고서를 만들 때만 | 실제 보고서를 만들 때만 | 예시 보고서면 불필요 |
 | Actions 실제 PR | action이 설치 | runner | 불필요 | Release | Release | 공개와 Release 뒤 |
 
@@ -35,6 +36,7 @@ mkdir "$state\tmp", "$state\cache", "$state\mcp-home" | Out-Null
 $env:DEPBEE_MODEL_DIR = "<모델 폴더>"
 $env:DEPBEE_KNOWN_MALICIOUS_DIR = "<색인 폴더>"
 $env:DEPBEE_HISTORY_DB = "$state\history.sqlite3"
+$env:DEPBEE_CONFIG_DIR = "$state\config"
 $env:TMP = "$state\tmp"; $env:TEMP = "$state\tmp"; $env:TMPDIR = "$state\tmp"
 $env:PYTHONIOENCODING = 'utf-8'
 $cache = "$state\cache"
@@ -42,6 +44,7 @@ $cache = "$state\cache"
 
 - `DEPBEE_MODEL_DIR`, `DEPBEE_KNOWN_MALICIOUS_DIR`: `--model-dir`, `--known-malicious-dir`을 생략한 명령이 씁니다([실행](usage.md#실행), [기지 악성 탐지기](usage.md#기지-악성-탐지기), [색인 만들기](usage.md#색인-만들기)).
 - `DEPBEE_HISTORY_DB`: 이력이 이 파일에, 반영 백업이 그 옆 `backups\`에 생깁니다. 지정하지 않으면 홈 폴더의 기본 위치에 생깁니다([로컬 이력 저장소](usage.md#로컬-이력-저장소)).
+- `DEPBEE_CONFIG_DIR`: 사용자 설정 폴더입니다. 절대 경로여야 합니다(`$state`가 절대 경로). 지정하지 않으면 이 창의 명령도 홈 폴더(`~/.config/depbee/`)에 `depbee setup`으로 저장해 둔 모델·색인을 읽어, 아래 표와 "색인 없이" 장면의 결과가 달라집니다. 백그라운드 대시보드(`depbee dashboard --background`)의 상태 파일도 이 폴더에 생깁니다([자산 폴더 설정](usage.md#자산-폴더-설정-depbee-setup)).
 - `TMP`, `TEMP`, `TMPDIR`: tarball을 풀 임시 폴더입니다. Python은 `TMPDIR`를 `TEMP`·`TMP`보다 먼저 보므로 셋을 함께 둡니다.
 - 추출 캐시는 환경 변수로 옮길 수 없어 `--cache-dir`를 받는 명령(`scan`, `check`, `update`, `dashboard`)에 `--cache-dir $cache`를 붙입니다. 빠뜨리면 기본 위치 `~/.cache/depbee`에 쌓입니다. MCP 서버에는 이 옵션이 없어 아래 [MCP](#mcp)처럼 서버의 홈 폴더를 옮깁니다.
 - `PYTHONIOENCODING`: 결과를 파일로 돌리거나 다른 프로그램으로 넘길 때 필요합니다. 없으면 Windows에서 한글이 시스템 코드 페이지로 나갑니다.
@@ -95,7 +98,7 @@ depbee dashboard --cache-dir $cache                  # 빈 포트를 OS가 고�
 ```
 
 터미널 첫 줄의 세션 주소를 엽니다. 등록한 프로젝트가 하나라면 바로 상세 화면이 열립니다. 없거나 여러 개면 관리 화면이 열립니다.
-필요하면 프로젝트 관리에서 `<시연 폴더>`의 절대 경로를 등록합니다. 의존성 이름 검색 → 직접 의존성의 후보 확인 또는 전체 업데이트 확인 → 반영 게이트와 확인란 → lockfile 반영 → 결과와 백업 위치 → 검사만 → 실행 기록과 반영 이력.
+필요하면 프로젝트 관리에서 `<시연 폴더>`의 절대 경로를 등록합니다. 등록한 프로젝트는 위쪽 탭으로 전환합니다. 패키지 화면에서 이름 검색과 종류 확인 → 직접 의존성의 후보 확인 또는 전체 업데이트 확인 → 미리보기의 반영 게이트와 확인란 → lockfile 반영 → 결과와 백업 위치 → 업데이트 화면의 검사만 → 기록 화면의 실행 기록과 반영 이력. 업데이트 확인 뒤에는 패키지·업데이트 화면에 후보 버전과 검사 근거가 보이고, 반영해 파일이 바뀌면 그 결과는 더 이상 현재 후보로 보이지 않습니다.
 주소에 이 실행의 세션 값이 들어 있으므로 화면 공유·녹화·로그에 남기지 않고, 끝나면 Ctrl+C로 끕니다. 끄면 그 주소는 무효가 됩니다.
 
 ### MCP
@@ -121,7 +124,7 @@ depbee dashboard --cache-dir $cache                  # 빈 포트를 OS가 고�
 }
 ```
 
-JSON 문자열 안의 Windows 경로는 역슬래시를 두 번(`\\`) 씁니다. MCP 서버의 추출 캐시는 Python `Path.home()` 아래 `.cache\depbee`에 생기고, `Path.home()`은 Windows에서 `USERPROFILE`, macOS·Linux에서 `HOME`을 따릅니다. 그래서 위처럼 서버 환경의 `USERPROFILE`(macOS·Linux는 `HOME`)을 `<시연 상태 폴더>` 아래로 옮기면 캐시가 기본 위치에 생기지 않습니다.
+JSON 문자열 안의 Windows 경로는 역슬래시를 두 번(`\\`) 씁니다. MCP 서버의 추출 캐시는 Python `Path.home()` 아래 `.cache\depbee`에 생기고, `Path.home()`은 Windows에서 `USERPROFILE`, macOS·Linux에서 `HOME`을 따릅니다. 그래서 위처럼 서버 환경의 `USERPROFILE`(macOS·Linux는 `HOME`)을 `<시연 상태 폴더>` 아래로 옮기면 캐시가 기본 위치에 생기지 않습니다. 사용자 설정 폴더도 평소 것과 분리됩니다. 서버가 이 창의 `DEPBEE_CONFIG_DIR`을 물려받으면 그 폴더를, 아니면 옮긴 홈 아래 `.config\depbee`를 쓰기 때문입니다. 어느 쪽이든 홈 폴더에 저장해 둔 모델·색인 설정은 읽지 않고 위 `args`의 폴더만 씁니다.
 
 ```powershell
 cd "<시연 폴더>"
@@ -138,7 +141,29 @@ MCP 호출은 이력에 기록되지 않습니다. `scan_lockfile`은 언제나 
 
 ### GitHub Actions
 
-공개와 Release 전에도 action의 판정 단계(`src/depbee/actions.py report`, 표준 라이브러리만 씀)는 로컬에서 같은 인자로 실행할 수 있습니다. `GITHUB_STEP_SUMMARY`가 없으면 job summary가 주석 뒤에 터미널로 나옵니다.
+Actions 장면은 셋으로 나뉩니다. 공개 시연 저장소는 합성 lockfile로 정책이 PR에 어떻게 나타나는지 보여 줍니다. 로컬 판정 재현은 depbee의 판정 단계를 예시 보고서로 실행합니다. 실제 제품 검사는 저장소 공개와 Release 뒤에만 됩니다.
+
+**공개 시연 저장소(합성 정책 시연).** [depbee-actions-demo](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo)는 설치 없이 브라우저로 볼 수 있습니다. 열린 PR 세 개가 장면 하나씩이고 모두 `package-lock.json` 한 파일만 바꿉니다.
+
+| 장면 | PR | lockfile에서 바뀐 것 | Check | lockfile 줄 주석 |
+| --- | --- | --- | --- | --- |
+| 정상 버전 변경 | [#1](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/pull/1) | `ms` 2.1.1에서 2.1.3 | 성공 | 없음 |
+| 사전 배포 버전 보류 | [#2](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/pull/2) | `ms` 2.1.1에서 3.0.0-canary.1 | 성공 | 경고 `사전 배포 버전이라 보류, 통과가 아님` |
+| 가상 목록 일치 | [#3](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/pull/3) | 가상 패키지 `DEPBEE-DEMO-SENTINEL` 9.9.9 추가 | 실패 | 오류 `시연용 가상 목록과 일치(DEMO-FIXTURE-0001)` |
+
+각 PR의 **Checks** 탭에서 `fixture PR 검사 (depbee 제품 미실행)`의 job summary를, **Files changed** 탭에서 lockfile 줄의 주석을 봅니다. 세 장면과 자체 테스트를 한 번에 실행한 기록은 [Actions run 44781575143](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/actions/runs/44781575143)입니다(workflow `fixture 시연 (depbee 제품 미실행)`의 수동 실행). 가상 목록 일치 장면의 실패가 기대 결과이므로 이 실행은 전체가 실패로 표시됩니다. 다시 실행하는 방법과 실행 결과에서 확인할 것은 시연 저장소 README의 [fixture 시연의 세 장면](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo#fixture-시연의-세-장면)에 있습니다.
+
+이 시연에서 depbee 제품은 실행되지 않습니다. 시연 저장소의 fixture 게이트(`tools/fixture_gate.py`)가 lockfile의 이름과 버전을 가상 목록과 비교할 뿐이고, 기지 악성 색인 대조와 tarball 추출과 ML 위험 점수는 없습니다. 그래서 Check의 성공은 depbee가 검사해서 통과했다는 뜻이 아니며 보안 판정도 아닙니다. 이 시연이 보여 주는 것은 정책입니다. 일치는 실패이고, 보류는 경고이되 통과가 아니며, 결과는 Check와 lockfile 줄 주석과 summary와 보고서 artifact로 남습니다. 시연 저장소의 artifact는 7일 뒤 지워집니다. `DEPBEE-DEMO-SENTINEL`은 시연을 위해 지은 가상의 이름이며 실제 악성 패키지 기록이 아닙니다.
+
+**실제 제품 검사의 공개 조건.** 외부 저장소의 PR에서 depbee Action이 실제로 검사하려면 세 가지가 필요합니다.
+
+1. depbee 저장소와, 설치 단계에서 받는 depbee-analyzer 저장소가 공개돼 있습니다.
+2. 모델과 기지 악성 색인을 첨부한 공개 Release가 있습니다.
+3. workflow가 Action을 전체 커밋 SHA로 고정하고 모델과 색인의 Release 태그와 SHA-256을 지정합니다.
+
+두 저장소와 Release는 아직 공개되지 않았으므로 지금은 실제 제품 검사가 공개 PR에서 실행되지 않습니다([공개 전 제한과 미검증](ci-cd.md#공개-전-제한과-미검증)). 시연 저장소에는 이 연결(`depbee.yml`)이 준비돼 있고 PR 검사는 꺼져 있습니다. 켜는 순서는 그 저장소 README의 [제품 연동 켜기](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo#제품-연동-켜기)에 있습니다. 가상 목록 일치 장면은 실제 색인에 없는 이름이라 제품 검사에서는 재현되지 않습니다.
+
+**로컬 판정 재현.** 공개와 Release 전에도 action의 판정 단계(`src/depbee/actions.py report`, 표준 라이브러리만 씀)는 로컬에서 같은 인자로 실행할 수 있습니다. `GITHUB_STEP_SUMMARY`가 없으면 job summary가 주석 뒤에 터미널로 나옵니다.
 
 ```powershell
 cd "<depbee 폴더>"
