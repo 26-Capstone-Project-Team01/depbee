@@ -1,2 +1,6 @@
 # setuptools puts tests/test*.py in the sdist by default; test_bounded.py also imports this.
 include tests/bounded_jobs.py
+# The shipped model and index with their notice and license, as in pyproject's package-data.
+include src/depbee/assets/NOTICE.md src/depbee/assets/LICENSE-Apache-2.0.txt
+include src/depbee/assets/model/manifest.json src/depbee/assets/model/model.txt
+include src/depbee/assets/index/manifest.json src/depbee/assets/index/index.json

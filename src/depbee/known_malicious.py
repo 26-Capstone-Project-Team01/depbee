@@ -25,7 +25,7 @@ import zlib
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
-from .contracts import GuardError, _unique_object, read_json
+from .contracts import GuardError, _unique_object, check_sha256, read_json
 from .pipeline import UTC_TIME
 
 INDEX_FORMAT = "depbee-known-malicious-index"
@@ -531,21 +531,27 @@ def _state(path: Path) -> tuple[int, int]:
     return stat.st_size, stat.st_mtime_ns
 
 
-def load(directory: Path) -> KnownMaliciousIndex:
+def load(directory: Path, sha256: dict | None = None) -> KnownMaliciousIndex:
     """Check directory/manifest.json and directory/index.json and return the index.
 
     The index bytes must have the manifest's index_sha256, the manifest's copies of source,
     list_as_of and snapshot_sha256 must equal the index header, and every entry is checked before
     use. Any problem (missing or unreadable file, size, JSON, duplicate key, format, type, hash or
     copy mismatch, list_as_of) is a GuardError: a broken index is never treated as no index.
-    Both files are read and hashed on every call; the checked index of the previous call is
-    reused only for the same folder, file sizes, modification times and both hashes.
+    Both files are read once and hashed on every call, and what is parsed is what was hashed; the
+    checked index of the previous call is reused only for the same folder, file sizes,
+    modification times and both hashes.
+
+    sha256, for the index shipped with depbee (bundled.SHA256), is {"manifest.json": ...,
+    "index.json": ...}: the SHA-256 each file's bytes must have before they are parsed. A folder
+    the caller chose has none, and its index need only be the one its manifest names.
     """
     global _last
     directory = Path(directory)
     manifest_path, index_path = directory / "manifest.json", directory / "index.json"
+    fixed = (None, None) if sha256 is None else (sha256["manifest.json"], sha256["index.json"])
     try:
-        manifest, manifest_sha256 = read_json(manifest_path)
+        manifest, manifest_sha256 = read_json(manifest_path, fixed[0])
     except OSError as exc:
         raise GuardError(f"Known malicious index manifest cannot be read: {manifest_path}") from exc
     except ValueError as exc:  # GuardError, or an integer past Python's digit limit
@@ -561,7 +567,7 @@ def load(directory: Path) -> KnownMaliciousIndex:
     except OSError as exc:
         raise GuardError(f"Known malicious index cannot be read: {index_path}") from exc
     _require(len(raw) <= MAX_INDEX_BYTES, index_path, f"exceeds {MAX_INDEX_BYTES} bytes")
-    actual = hashlib.sha256(raw).hexdigest()
+    actual = check_sha256(raw, fixed[1], index_path)
     _require(actual == expected, index_path, "SHA-256 does not match the manifest's index_sha256")
     try:
         key = (str(directory.resolve()), _state(manifest_path), _state(index_path),

@@ -5,6 +5,8 @@ import importlib.util
 import json
 import math
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from test_workflow import FakePredictor, Fixture
 
@@ -127,6 +129,15 @@ class TypedModelTests(Fixture):
         from depbee.inference.lightgbm import LightGBMPredictor
 
         return LightGBMPredictor(self.root)
+
+    def test_oversized_models_are_rejected_even_if_the_file_grows_after_stat(self):
+        with mock.patch("depbee.inference.lightgbm.MAX_MODEL_BYTES", 16):
+            with self.assertRaisesRegex(GuardError, "exceeds 16 bytes"):
+                self.predictor()
+            # The directory entry looked small, but its open stream contains a larger model.
+            with mock.patch.object(Path, "stat", return_value=mock.Mock(st_size=1)):
+                with self.assertRaisesRegex(GuardError, "exceeds 16 bytes"):
+                    self.predictor()
 
     def test_typed_values_are_encoded(self):
         predictor = self.predictor()

@@ -1,8 +1,17 @@
-import hashlib
 import math
 from pathlib import Path
 
-from ..contracts import SCHEMA_VERSION, GuardError, OutOfScopeError, finite_number, read_json
+from ..contracts import (
+    SCHEMA_VERSION,
+    GuardError,
+    OutOfScopeError,
+    check_sha256,
+    finite_number,
+    read_json,
+)
+
+# Same limit as the Release model download in action.yml.
+MAX_MODEL_BYTES = 100 * 1024 * 1024
 
 
 def _name_list(manifest: dict, field: str, names: list[str]) -> frozenset[str]:
@@ -22,10 +31,17 @@ class LightGBMPredictor:
       category the model never saw is out of training scope, not a missing value.
     - ``nullable_features``: null becomes NaN, LightGBM's missing value. Training left these
       empty when there was nothing to measure. Null anywhere else is rejected.
+
+    manifest.json and model.txt are each read once, and what is parsed is what was hashed:
+    LightGBM gets the model as text, never the file's name. ``sha256``, for the model shipped
+    with depbee (bundled.SHA256), is {"manifest.json": ..., "model.txt": ...}: the SHA-256 each
+    file's bytes must have before they are parsed. A folder the caller chose has none, and its
+    model need only be the one its manifest names.
     """
 
-    def __init__(self, directory: Path):
-        manifest, manifest_hash = read_json(directory / "manifest.json")
+    def __init__(self, directory: Path, sha256: dict | None = None):
+        fixed = (None, None) if sha256 is None else (sha256["manifest.json"], sha256["model.txt"])
+        manifest, manifest_hash = read_json(directory / "manifest.json", fixed[0])
         if manifest.get("schema_version") != SCHEMA_VERSION:
             raise GuardError("Unsupported model manifest schema_version")
         if manifest.get("positive_class") != "malicious" or manifest.get("objective") != "binary":
@@ -61,8 +77,14 @@ class LightGBMPredictor:
         if not 0 < self.threshold < 1:
             raise GuardError("threshold must be between 0 and 1")
         model_path = directory / "model.txt"
+        too_large = f"LightGBM model exceeds {MAX_MODEL_BYTES} bytes: {model_path}"
+        if model_path.stat().st_size > MAX_MODEL_BYTES:
+            raise GuardError(too_large)
         with model_path.open("rb") as stream:
-            actual_hash = hashlib.file_digest(stream, "sha256").hexdigest()
+            raw = stream.read(MAX_MODEL_BYTES + 1)
+        if len(raw) > MAX_MODEL_BYTES:
+            raise GuardError(too_large)
+        actual_hash = check_sha256(raw, fixed[1], model_path)
         if manifest.get("model_sha256") != actual_hash:
             raise GuardError("Model SHA-256 does not match the manifest")
         # The verified files; the feature cache keys on them (analysis.cache).
@@ -70,9 +92,17 @@ class LightGBMPredictor:
         try:
             import lightgbm as lgb
         except ImportError as exc:
-            raise GuardError('Install ML dependencies: python -m pip install -e ".[ml]"') from exc
+            raise GuardError(
+                "depbee를 설치한 Python 환경에서 동일한 배포본과 기본 의존성 "
+                "LightGBM, NumPy를 다시 설치하세요."
+            ) from exc
         try:
-            self._booster = lgb.Booster(model_file=str(model_path))
+            # The bytes hashed above, not the path: LightGBM's own reader would open the file a
+            # second time, and on Windows it cannot open every path Python can (Korean, emoji).
+            # It takes the text as a C string, which a NUL would end before the hashed bytes do.
+            if b"\0" in raw:
+                raise GuardError("Model file contains a NUL byte")
+            self._booster = lgb.Booster(model_str=raw.decode("utf-8"))
             objective = self._booster.dump_model().get("objective", "").split()[0]
             if objective != "binary" or self._booster.num_model_per_iteration() != 1:
                 raise GuardError("Native model is not a binary classifier")

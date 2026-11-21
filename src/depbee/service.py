@@ -15,7 +15,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import __version__, config
+from . import __version__, bundled, config
 from .analysis import bounded, cache
 from .analysis.artifact import ArtifactAnalyzer
 from .contracts import GuardError, elapsed_since, parse_json
@@ -49,6 +49,10 @@ RESTORE_NOTICE = (
     "package-lock.json을 프로젝트에 복사하고, 설치한 node_modules도 되돌리려면 그 뒤 "
     "npm ci --ignore-scripts를 실행합니다."
 )
+# The environment variable of each asset folder (_sources), by its settings key, model first.
+ASSET_VARIABLES = {
+    "model_dir": "DEPBEE_MODEL_DIR", "known_malicious_dir": "DEPBEE_KNOWN_MALICIOUS_DIR",
+}  # fmt: skip
 
 
 def list_dependencies(project: Path, *, declared: bool = False) -> list[dict]:
@@ -113,15 +117,14 @@ def scan_project(
     analysis: trusted precomputed analysis JSON. extract: run depbee-analyzer instead.
     local_sources: NAME@VERSION=DIR specs under local_root (extract only).
     model_dir: trusted model directory. If None, DEPBEE_MODEL_DIR is read on each call, and if
-    that is empty or unset, the folder saved by depbee setup (_assets); none of them means no
-    model. A bad path is an error and never falls back to another model.
+    that is empty or unset, the folder saved by depbee setup, else the model shipped with depbee
+    (_sources). A bad path is an error and never falls back to another model.
     known_malicious_dir: trusted known malicious index folder (known_malicious.load), read right
     after the model. If None, DEPBEE_KNOWN_MALICIOUS_DIR is read on each call, then the folder
-    saved by depbee setup; none of them means no index (detectors.known_malicious null, as
-    before). A bad index is an error, never "no index". The same index is matched against the
-    changes and, with extract, keeps known malicious versions out of the baseline candidates
-    (D-16). The saved settings are read once for the call, so its model and index are those of
-    one saved setup.
+    saved by depbee setup, then the index shipped with depbee. A bad index is an error, never
+    "no index" and never another index. The same index is matched against the changes and, with
+    extract, keeps known malicious versions out of the baseline candidates (D-16). The saved
+    settings are read once for the call, so its model and index are those of one saved setup.
     progress: called per extracted package; the caller decides how to show it.
     cache_dir, no_cache: the extracted-feature cache (default ~/.cache/depbee); see _cache_dir().
     With extract=True the report also has elapsed_seconds (in total and per result) and cache_hit.
@@ -153,31 +156,87 @@ def _assets(
     model_dir: Path | None, known_malicious_dir: Path | None
 ) -> tuple[LightGBMPredictor | None, dict]:
     """The model and the known malicious index of one request: (the predictor or None, the
-    known_malicious keyword for scan() and ExtractorAnalyzer).
-
-    Each folder is the one given, else its environment variable read on this call (empty counts
-    as unset), else the one `depbee setup` saved for the user; none of them: no model, no index.
-    The saved settings are read once, and only if a folder is still missing, so the model and
-    the index of one request are those of one saved setup even if a depbee setup replaces the
-    file meanwhile. The next request reads them again. Never read from the project being checked.
+    known_malicious keyword for scan() and ExtractorAnalyzer), each from its _sources() folder.
 
     The model is loaded first, then the index. Without an index the keyword is empty: scan() and
     ExtractorAnalyzer are then called exactly as before (a caller's own detector, as in tests,
     is not replaced by None)."""
-    folders = {}
-    for key, given, variable in (
-        ("model_dir", model_dir, "DEPBEE_MODEL_DIR"),
-        ("known_malicious_dir", known_malicious_dir, "DEPBEE_KNOWN_MALICIOUS_DIR"),
-    ):
-        from_environment = os.environ.get(variable)
-        folders[key] = given if given is not None else from_environment or None
-    if None in folders.values():
-        saved = config.load() or {}
-        folders = {key: folder or saved.get(key) for key, folder in folders.items()}
-    predictor = LightGBMPredictor(Path(folders["model_dir"])) if folders["model_dir"] else None
-    index_dir = folders["known_malicious_dir"]
-    index = load(Path(index_dir)) if index_dir else None
+    predictor, index = (
+        _load(key, source, folder) if source else None
+        for key, (source, folder) in _sources(model_dir, known_malicious_dir).items()
+    )
     return predictor, ({"known_malicious": index} if index is not None else {})
+
+
+def _sources(
+    model_dir: Path | None, known_malicious_dir: Path | None
+) -> dict[str, tuple[str | None, Path | None]]:
+    """Where each asset of one request comes from: {key: (source, folder)}, model first.
+
+    The folder given ("option"), else its environment variable read on this call ("environment";
+    empty counts as unset), else the one `depbee setup` saved for the user ("saved"), else the
+    one shipped with depbee ("bundled"). Each asset on its own: saved settings that name only
+    one of the two leave the other to the shipped one. The first source that names a folder is
+    the only one used. If what it names is gone or does not load, that is an error and never a
+    reason to use the next source: a model or an index is not replaced by another without a
+    word. (None, None) only where depbee has no shipped folder for the asset.
+
+    The saved settings are read once, and only if a folder is still missing, so the model and
+    the index of one request are those of one saved setup even if a depbee setup replaces the
+    file meanwhile. The next request reads them again. Never read from the project being checked
+    or the current folder."""
+    given = {"model_dir": model_dir, "known_malicious_dir": known_malicious_dir}
+    found, saved = {}, None
+    for key, variable in ASSET_VARIABLES.items():
+        if given[key] is not None:
+            found[key] = ("option", Path(given[key]))
+        elif os.environ.get(variable):
+            found[key] = ("environment", Path(os.environ[variable]))
+        else:
+            if saved is None:
+                saved = config.load() or {}
+            if saved.get(key):
+                found[key] = ("saved", Path(saved[key]))
+            elif key in bundled.DIRS:
+                found[key] = ("bundled", bundled.DIRS[key])
+            else:
+                found[key] = (None, None)
+    return found
+
+
+def _load(key: str, source: str, folder: Path):
+    """One asset as every scan loads it: the predictor of a model folder, or the index of a
+    known malicious folder. The shipped one must also be the released files (bundled.load)."""
+    loader = LightGBMPredictor if key == "model_dir" else load
+    return bundled.load(key, loader) if source == "bundled" else loader(folder)
+
+
+def active_assets(
+    model_dir: Path | None = None, known_malicious_dir: Path | None = None
+) -> dict:
+    """The model and the index a scan given these folders would use now, for an entry point to
+    show: {"model_dir": {source, folder, version, error}, "known_malicious_dir": {...}}.
+
+    source is "option", "environment", "saved" or "bundled" (_sources), or None with no asset.
+    Each asset is loaded as a scan loads it, so version (the model's model_id, the index's
+    list_as_of) is that of files that passed every check. One that does not load has version
+    None and error, the message a scan would stop with. Nothing is saved or changed.
+
+    Raises GuardError for settings that cannot be read, as a scan does."""
+    active = {}
+    for key, (source, folder) in _sources(model_dir, known_malicious_dir).items():
+        version = error = None
+        if source:
+            try:
+                asset = _load(key, source, folder)
+                version = asset.model_id if key == "model_dir" else asset.list_as_of
+            except (OSError, ValueError, RecursionError) as exc:  # as cli.main() reports them
+                error = str(exc) or type(exc).__name__
+        active[key] = {
+            "source": source, "folder": folder and str(folder), "version": version,
+            "error": error,
+        }  # fmt: skip
+    return active
 
 
 def setup_assets(assets_dir: Path) -> dict:
@@ -185,11 +244,12 @@ def setup_assets(assets_dir: Path) -> dict:
 
     assets_dir/model (model.txt, manifest.json) and assets_dir/index (index.json,
     manifest.json) are each loaded here as a scan loads them. A subfolder whose name is not
-    there is saved as not connected; at least one must exist. Nothing is saved, and the settings
-    of an earlier setup stay, if one fails to load (GuardError, OSError or ValueError, as from a
-    scan) or if its name is taken by something that is no folder (a file, a broken link): that
-    is a damaged asset folder, not one without that asset. Nothing is downloaded.
-    Returns config.save()'s settings with model_id and list_as_of (None if not connected).
+    there is saved as null, which leaves that asset to the one shipped with depbee (_sources);
+    at least one must exist. Nothing is saved, and the settings of an earlier setup stay, if one
+    fails to load (GuardError, OSError or ValueError, as from a scan) or if its name is taken by
+    something that is no folder (a file, a broken link): that is a damaged asset folder, not one
+    without that asset. Nothing is downloaded.
+    Returns config.save()'s settings with model_id and list_as_of (None for a null folder).
     """
     root = Path(os.path.abspath(assets_dir))
     found = {}

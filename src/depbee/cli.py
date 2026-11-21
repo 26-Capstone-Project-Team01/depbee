@@ -13,6 +13,8 @@ from . import __version__, config, terminal
 from .contracts import GuardError
 from .service import (
     APPLY_MODES,
+    ASSET_VARIABLES,
+    active_assets,
     apply_update,
     check_package,
     plan_project,
@@ -159,20 +161,29 @@ BACKGROUND_UNRESPONSIVE = (
     "마치고 종료하는 중). 잠시 뒤 다시 확인하세요."
 )
 BACKGROUND_STOPPED = "백그라운드 대시보드를 종료했습니다. 이전 주소는 더 이상 열리지 않습니다."
-# depbee setup (config, service.setup_assets).
+# depbee setup (config, service.setup_assets, service.active_assets).
 ASSET_NAMES = {"model_dir": "모델", "known_malicious_dir": "기지 악성 색인"}
-ASSET_VARIABLES = {
-    "model_dir": "DEPBEE_MODEL_DIR", "known_malicious_dir": "DEPBEE_KNOWN_MALICIOUS_DIR",
-}  # fmt: skip
+# What an asset's version is: the model's model_id, the index's list_as_of.
+VERSION_LABELS = {"model_dir": "모델 ID", "known_malicious_dir": "기준 시점"}
+# Where an asset in use comes from (service.active_assets); variable: ASSET_VARIABLES of it.
+SOURCE_LABELS = {
+    "option": "명령 옵션",
+    "environment": "환경 변수 {variable}",
+    "saved": "저장된 설정",
+    "bundled": "depbee 동봉 기본값",
+}
 SETUP_NONE = "저장된 자산 설정이 없습니다."
 SETUP_HOW = (
-    "한 번 저장하려면 depbee setup DIR을 실행하세요. DIR/model에는 model.txt와 "
-    "manifest.json, DIR/index에는 index.json과 manifest.json을 둡니다."
+    "다른 모델이나 색인을 쓰려면 depbee setup DIR을 실행하세요. DIR/model에는 model.txt와 "
+    "manifest.json, DIR/index에는 index.json과 manifest.json을 둡니다. 두 폴더 중 없는 쪽은 "
+    "depbee에 동봉된 기본값을 그대로 씁니다."
 )
-SETUP_CLEARED = "저장된 자산 설정을 지웠습니다."
-SETUP_OVERRIDDEN = (
-    "  참고: 이 터미널에는 환경 변수 {variable}의 값이 있어 저장한 {name} 폴더보다 먼저 쓰입니다."
+SETUP_CLEARED = (
+    "저장된 자산 설정을 지웠습니다. 옵션이나 환경 변수로 지정하지 않으면 모델과 기지 악성 "
+    "색인 모두 depbee에 동봉된 기본값을 씁니다."
 )
+# In place of a folder that depbee setup DIR did not save (DIR has no such subfolder).
+SETUP_DEFAULT = "저장하지 않음(depbee 동봉 기본값 사용)"
 SETUP_SAVED = (
     "이제 scan, check, update, dashboard, mcp에 --model-dir과 --known-malicious-dir을 주지 "
     "않아도 이 자산을 씁니다. 에이전트에도 경로 옵션 없이 등록합니다."
@@ -216,11 +227,18 @@ def _asset_directory(value: str) -> Path:
 
 
 def _asset_arguments(cmd: argparse.ArgumentParser) -> None:
-    cmd.add_argument("--model-dir", type=_asset_directory, help="Trusted manifest.json + model.txt")
+    cmd.add_argument(
+        "--model-dir",
+        type=_asset_directory,
+        help="Trusted manifest.json + model.txt (default: DEPBEE_MODEL_DIR, then the folder "
+        "saved by depbee setup, then the model shipped with depbee)",
+    )
     cmd.add_argument(
         "--known-malicious-dir",
         type=_asset_directory,
-        help="Trusted manifest.json + index.json of a known malicious list",
+        help="Trusted manifest.json + index.json of a known malicious list (default: "
+        "DEPBEE_KNOWN_MALICIOUS_DIR, then the folder saved by depbee setup, then the index "
+        "shipped with depbee)",
     )
 
 
@@ -328,9 +346,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     setup = commands.add_parser(
         "setup",
-        help="Save a trusted asset folder once (DIR/model and DIR/index), so that later "
-        "commands and MCP registrations need no --model-dir or --known-malicious-dir; without "
-        "DIR, show what is saved",
+        help="Show the model and the known malicious index in use: their folders, the model ID "
+        "and the list time (by default those shipped with depbee; nothing is written). With "
+        "DIR, save a trusted asset folder of your own once (DIR/model and DIR/index) for every "
+        "later command and MCP registration",
     )
     setup.add_argument(
         "assets_dir",
@@ -338,9 +357,14 @@ def _parser() -> argparse.ArgumentParser:
         type=_asset_directory,
         metavar="DIR",
         help="Folder with model/ (model.txt, manifest.json) and index/ (index.json, "
-        "manifest.json); a subfolder that does not exist is saved as not connected",
+        "manifest.json); for a subfolder that does not exist, the asset shipped with depbee "
+        "stays in use",
     )
-    setup.add_argument("--clear", action="store_true", help="Remove the saved settings")
+    setup.add_argument(
+        "--clear",
+        action="store_true",
+        help="Remove the saved settings: back to the model and index shipped with depbee",
+    )
     serve = commands.add_parser(
         "mcp",
         help="Serve the read-only check_package and scan_lockfile tools over MCP stdio "
@@ -454,16 +478,29 @@ def _notices(report: dict) -> list[tuple[str, str]]:
 
 
 def _detector_setup(report: dict, esc) -> list[str]:
-    """Which detectors besides the model ran; an unconnected one is said here, not per result."""
-    if "detectors" not in report:
-        return [f"기지 악성 목록: {NOT_CHECKED}", f"규칙: {NOT_CHECKED}"]
-    known, rules = report["detectors"]["known_malicious"], report["detectors"]["rules"]
-    return [
-        "기지 악성 목록: "
-        + (f"{esc(known['source'])}, 기준 시점 {esc(known['list_as_of'])}" if known
-           else NOT_CONFIGURED),
-        "규칙: " + (esc(rules["ruleset_version"]) if rules else NOT_CONFIGURED),
-    ]  # fmt: skip
+    """Which detectors besides the model ran; an unconnected one is said here, not per result.
+
+    Each stored entry and each field of it is read on its own, so that a broken neighbor hides
+    nothing: a field that is missing or null is said to be unknown and never filled in (no list
+    time the report does not have), an entry that is missing or not an object is NOT_CHECKED (a
+    report older than the detectors, contract 6) and only a null entry is NOT_CONFIGURED."""
+    detectors = report.get("detectors")
+
+    def entry(key: str) -> dict | str:
+        found = detectors.get(key, ()) if isinstance(detectors, dict) else ()  # (): no entry
+        if found is None:
+            return NOT_CONFIGURED
+        return found if isinstance(found, dict) else NOT_CHECKED
+
+    def field(found: dict, name: str) -> str:
+        return "확인할 수 없음" if found.get(name) is None else esc(found[name])
+
+    known, rules = entry("known_malicious"), entry("rules")
+    if isinstance(known, dict):
+        known = f"{field(known, 'source')}, 기준 시점 {field(known, 'list_as_of')}"
+    if isinstance(rules, dict):
+        rules = field(rules, "ruleset_version")
+    return [f"기지 악성 목록: {known}", f"규칙: {rules}"]
 
 
 def _ml_status(row: dict, report: dict) -> tuple[str | None, bool]:
@@ -1005,19 +1042,27 @@ def _warn_shared(folder: Path) -> None:
         print(SHARED_FOLDER.format(folder=_clean(folder)), file=sys.stderr)
 
 
-def _asset_lines(saved: dict, details: dict) -> list[str]:
-    """One line per asset of the saved settings; details: text after a connected folder."""
+def _active_lines(active: dict) -> list[str]:
+    """One line per asset in use (service.active_assets): its folder, then its version and
+    where it comes from, or why it does not load."""
     lines = []
     for key, name in ASSET_NAMES.items():
-        if saved[key] is None:
+        asset = active[key]
+        if asset["source"] is None:
             lines.append(f"  {name}: 연결 안 됨")
+            continue
+        source = SOURCE_LABELS[asset["source"]].format(variable=ASSET_VARIABLES[key])
+        if asset["error"] is None:
+            detail = f"{VERSION_LABELS[key]} {_clean(asset['version'])}, {source}"
         else:
-            lines.append(f"  {name}: {_clean(saved[key])}" + details.get(key, ""))
+            detail = f"{source}, 읽지 못함: {_clean(asset['error'])}"
+        lines.append(f"  {name}: {_clean(asset['folder'])} ({detail})")
     return lines
 
 
 def _setup(args: argparse.Namespace) -> int:
-    """depbee setup: save, show or clear the user's asset folder (config)."""
+    """depbee setup: save or clear the user's asset folder (config), or show the assets in use.
+    Showing writes nothing; it is 2 if an asset in use does not load, as a scan would be."""
     if args.clear:
         if args.assets_dir is not None:
             raise GuardError("setup takes DIR or --clear, not both")
@@ -1025,26 +1070,23 @@ def _setup(args: argparse.Namespace) -> int:
         return 0
     if args.assets_dir is None:
         saved = config.load()
-        if saved is None:
-            print(SETUP_NONE)
-            print(SETUP_HOW)
-            return 0
-        print(f"저장된 자산 설정: {_clean(config.path())}")
-        for line in _asset_lines(saved, {}):
+        active = active_assets()
+        print(SETUP_NONE if saved is None else f"저장된 자산 설정: {_clean(config.path())}")
+        for line in _active_lines(active):
             print(line)
-        for key, variable in ASSET_VARIABLES.items():
-            if os.environ.get(variable):
-                print(SETUP_OVERRIDDEN.format(variable=variable, name=ASSET_NAMES[key]))
-        _warn_shared(config.path().parent)
-        return 0
+        if saved is None:
+            print(SETUP_HOW)
+        else:
+            _warn_shared(config.path().parent)
+        return 2 if any(asset["error"] is not None for asset in active.values()) else 0
     saved = setup_assets(args.assets_dir)
     print(f"자산 설정을 저장했습니다: {_clean(saved['path'])}")
-    details = {
-        "model_dir": f" (모델 ID {_clean(saved['model_id'])})",
-        "known_malicious_dir": f" (기준 시점 {_clean(saved['list_as_of'])})",
-    }
-    for line in _asset_lines(saved, details):
-        print(line)
+    versions = {"model_dir": saved["model_id"], "known_malicious_dir": saved["list_as_of"]}
+    for key, name in ASSET_NAMES.items():
+        if saved[key] is None:
+            print(f"  {name}: {SETUP_DEFAULT}")
+        else:
+            print(f"  {name}: {_clean(saved[key])} ({VERSION_LABELS[key]} {_clean(versions[key])})")
     print(SETUP_SAVED)
     if _installed():
         launcher = _clean(_launcher())
