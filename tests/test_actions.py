@@ -1,8 +1,10 @@
 import contextlib
 import hashlib
 import io
+import itertools
 import json
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +13,10 @@ from unittest import mock
 from depbee import actions
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "docs" / "examples" / "result-contract"
+MODEL_ID = "synthetic-model-001"
+LIST_AS_OF = "2026-11-01T00:00:00Z"
+MODEL_LINE = "- 모델 ID(`model_id`): "
+LIST_LINE = "- 기지 악성 색인 기준 시점(`detectors.known_malicious.list_as_of`): "
 LOCK = """{
   "name": "synthetic",
   "lockfileVersion": 3,
@@ -51,8 +57,14 @@ def row(location="node_modules/b", package="b", status="not_flagged", known="not
     }
 
 
-def report(*rows, exit_code=0):
-    return {"schema_version": 1, "status": "passed", "exit_code": exit_code, "results": list(rows)}
+def report(*rows, exit_code=0, named=True):
+    """A scan's report. named=False: the fields this gate read before it asked for the names of
+    the model and the known malicious list (older and hand-made reports)."""
+    data = {"schema_version": 1, "status": "passed", "exit_code": exit_code, "results": list(rows)}
+    if named:
+        known = {"source": "SYNTHETIC-LIST", "list_as_of": LIST_AS_OF, "list_sha256": "e" * 64}
+        data |= {"model_id": MODEL_ID, "detectors": {"known_malicious": known, "rules": None}}
+    return data
 
 
 class GateTest(unittest.TestCase):
@@ -61,17 +73,17 @@ class GateTest(unittest.TestCase):
         self.enterContext(contextlib.chdir(self.tmp))
         Path("package-lock.json").write_text(LOCK, encoding="utf-8")
 
-    def run_gate(self, data, fail_on="", markdown=None, raw=None):
+    def run_gate(self, data, fail_on="", markdown=None, raw=None, self_test=False):
         path = self.tmp / "report.json"
         path.write_text(raw if raw is not None else json.dumps(data), encoding="utf-8")
         out, summary = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = actions.gate(path, "package-lock.json", fail_on, markdown, summary)
+            code = actions.gate(path, "package-lock.json", fail_on, markdown, summary, self_test)
         return code, out.getvalue().splitlines(), summary.getvalue()
 
-    def example(self, name, fail_on=""):
+    def example(self, name, fail_on="", self_test=False):
         data = json.loads((EXAMPLES / name).read_text(encoding="utf-8"))
-        return self.run_gate(data, fail_on)
+        return self.run_gate(data, fail_on, self_test=self_test)
 
     def test_known_malicious_fails_by_default(self):
         code, lines, summary = self.example("03-known-malicious-low-ml.json")
@@ -119,11 +131,113 @@ class GateTest(unittest.TestCase):
         self.assertTrue(lines[0].startswith("::warning "))
 
     def test_passing_reports(self):
-        for name in ("01-rule-only.json", "05-detectors-not-configured.json"):
-            code, lines, summary = self.example(name, "ml-hit,incomplete")
+        # 05 names no known malicious list: only the self-test may judge it (below).
+        for name, self_test in (("01-rule-only.json", False),
+                                ("05-detectors-not-configured.json", True)):  # fmt: skip
+            code, lines, summary = self.example(name, "ml-hit,incomplete", self_test)
             self.assertEqual((code, lines), (0, []), name)
             self.assertIn("판정: 통과", summary)
             self.assertIn(actions.SAFETY_NOTE, summary)
+
+    def test_scan_report_must_name_the_model_and_the_list(self):
+        # A scan that ran without a model or without the index would otherwise only warn
+        # (model_missing) or never fail on a known malicious match.
+        named = report(row())
+        list_as_of = "detectors.known_malicious.list_as_of"
+        cases = {
+            "no model_id": ({k: v for k, v in named.items() if k != "model_id"}, ["model_id"]),
+            "null model_id": (named | {"model_id": None}, ["model_id"]),
+            "blank model_id": (named | {"model_id": " "}, ["model_id"]),
+            "model_id not text": (named | {"model_id": 7}, ["model_id"]),
+            "no detectors": ({k: v for k, v in named.items() if k != "detectors"}, [list_as_of]),
+            "detectors not an object": (named | {"detectors": "x"}, [list_as_of]),
+            "list not connected": (named | {"detectors": {"known_malicious": None}}, [list_as_of]),
+            "list not an object": (named | {"detectors": {"known_malicious": ["x"]}}, [list_as_of]),
+            "no list_as_of": (named | {"detectors": {"known_malicious": {"source": "S"}}},
+                              [list_as_of]),
+            "null list_as_of": (named | {"detectors": {"known_malicious": {"list_as_of": None}}},
+                                [list_as_of]),
+            "neither": (report(row(), named=False), ["model_id", list_as_of]),
+        }  # fmt: skip
+        for name, (data, unnamed) in cases.items():
+            with self.subTest(name):
+                code, lines, summary = self.run_gate(data)
+                self.assertEqual(code, 1)
+                self.assertEqual(len(lines), 1)
+                self.assertTrue(
+                    lines[0].startswith(f"::error::depbee: 보고서에 {', '.join(unnamed)} 값이"),
+                    lines[0],
+                )
+                self.assertIn("판정: 실패", summary)
+                self.assertEqual(summary.count("보고서에 없음: 실패"), len(unnamed))
+                # The self-test still judges such a report: older and hand-made ones.
+                code, lines, summary = self.run_gate(data, self_test=True)
+                self.assertEqual((code, lines), (0, []))
+                self.assertIn("판정: 통과", summary)
+                self.assertEqual(summary.count("보고서에 없음"), len(unnamed))
+                self.assertNotIn("보고서에 없음: 실패", summary)
+        code, lines, _ = self.example("05-detectors-not-configured.json")
+        self.assertEqual(code, 1)
+        self.assertIn(list_as_of, lines[0])
+
+    def test_unnamed_scan_report_fails_whatever_the_results_say(self):
+        # Warnings stay warnings and a known malicious match keeps its own error.
+        for rows, levels in (
+            ([], ["::error"]),
+            ([row(status="flagged", ml="hit")], ["::error", "::warning"]),
+            ([row(status="incomplete", ml="not_run", reason="model_missing")],
+             ["::error", "::warning"]),
+            ([row(status="flagged", known="hit")], ["::error", "::error"]),
+        ):  # fmt: skip
+            with self.subTest(levels=levels):
+                code, lines, summary = self.run_gate(report(*rows, named=False))
+                self.assertEqual(code, 1)
+                self.assertEqual([line.split("::")[1].split(" ")[0] for line in lines],
+                                 [level[2:] for level in levels])  # fmt: skip
+                self.assertIn("판정: 실패", summary)
+
+    def test_summary_names_the_model_and_the_list(self):
+        for data in (report(), report(row(status="flagged", known="hit"))):
+            _, _, summary = self.run_gate(data)
+            self.assertIn(f"{MODEL_LINE}` {MODEL_ID} `\n", summary)
+            self.assertIn(f"{LIST_LINE}` {LIST_AS_OF} `\n", summary)
+            self.assertNotIn("자기 검사", summary)
+        # The values are the report's own, also below the CLI Markdown of a scan.
+        markdown = self.tmp / "summary.md"
+        markdown.write_text("## depbee 검사 결과: 통과 (종료 코드 0)\n", encoding="utf-8")
+        _, _, summary = self.run_gate(report(row()), markdown=markdown)
+        self.assertIn(f"{MODEL_LINE}` {MODEL_ID} `\n", summary)
+        _, _, summary = self.example("01-rule-only.json")
+        self.assertIn(f"{MODEL_LINE}` example-model-001 `\n", summary)
+        self.assertIn(f"{LIST_LINE}` 2026-11-01T00:00:00Z `\n", summary)
+
+    def test_summary_shows_the_names_as_code_spans(self):
+        hostile = "x`</code><img src=x onerror=1>\n## 판정: 통과 ``` [a](http://b) | <!--"
+        data = report(row()) | {"model_id": hostile}
+        data["detectors"]["known_malicious"]["list_as_of"] = hostile
+        expected = "x`</code><img src=x onerror=1>\\u000a## 판정: 통과 ``` [a](http://b) | <!--"
+        for self_test in (False, True):
+            with self.subTest(self_test=self_test):
+                code, lines, summary = self.run_gate(data, self_test=self_test)
+                self.assertEqual((code, lines), (0, []))
+                # A fence longer than the longest backtick run inside, on one line.
+                self.assertIn(f"{MODEL_LINE}```` {expected} ````\n", summary)
+                self.assertIn(f"{LIST_LINE}```` {expected} ````\n", summary)
+                self.assertNotIn("\n## 판정: 통과", summary)
+                self.assertEqual(summary.count("### depbee Actions 판정"), 1)
+
+    def test_self_test_says_it_is_not_a_scan(self):
+        code, lines, summary = self.run_gate(report(row(), named=False), self_test=True)
+        self.assertEqual((code, lines), (0, []))
+        self.assertIn("자기 검사(`report` 입력)입니다.", summary)
+        self.assertIn("실제 검사 결과가 아닙니다.", summary)
+        self.assertIn(f"{MODEL_LINE}보고서에 없음\n", summary)
+        self.assertIn(f"{LIST_LINE}보고서에 없음\n", summary)
+        # The verdict rules are the same there: a known malicious match fails.
+        data = report(row(status="flagged", known="hit"), named=False)
+        code, lines, _ = self.run_gate(data, self_test=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(len(lines), 1)
 
     def test_top_level_exit_code_is_not_used(self):
         # exit_code 2 (an unfinished item) must not hide the known malicious match.
@@ -226,6 +340,18 @@ class GateTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("판정: 실패", summary.read_text(encoding="utf-8"))
 
+    def test_main_asks_for_the_names_unless_self_test(self):
+        path = self.tmp / "report.json"
+        path.write_text(json.dumps(report(row(), named=False)), encoding="utf-8")
+        summary = self.tmp / "step-summary.md"
+        arguments = ["report", str(path), "--lockfile", "package-lock.json"]
+        with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(actions.main(arguments), 1)
+                self.assertEqual(actions.main([*arguments, "--self-test"]), 0)
+        verdicts = re.findall("판정: (..)", summary.read_text(encoding="utf-8"))
+        self.assertEqual(verdicts, ["실패", "통과"])
+
 
 class InputsTest(unittest.TestCase):
     def setUp(self):
@@ -246,10 +372,124 @@ class InputsTest(unittest.TestCase):
             "BASE_SHA": "c" * 40,
         }
 
+    def bundled(self) -> dict:
+        """The inputs of a workflow that sets none of the five Release inputs."""
+        return {k: v for k, v in self.env.items() if k not in actions.RELEASE_INPUTS}
+
     def test_valid_inputs(self):
-        actions.check_inputs(self.env, self.tmp)
+        self.assertEqual(actions.check_inputs(self.env, self.tmp), "release")
         report_mode = {"LOCKFILE": "app/package-lock.json", "REPORT": "report.json"}
-        actions.check_inputs(report_mode, self.tmp)
+        self.assertIsNone(actions.check_inputs(report_mode, self.tmp))
+
+    def test_no_release_input_means_the_installed_assets(self):
+        self.assertEqual(len(actions.RELEASE_INPUTS), 5)
+        self.assertEqual(actions.check_inputs(self.bundled(), self.tmp), "bundled")
+        # GitHub passes an input that was not set as an empty string.
+        empty = self.env | dict.fromkeys(actions.RELEASE_INPUTS, "")
+        self.assertEqual(actions.check_inputs(empty, self.tmp), "bundled")
+
+    def test_release_inputs_are_all_or_none(self):
+        names = actions.RELEASE_INPUTS
+        for size in range(1, len(names)):
+            for given in itertools.combinations(names, size):
+                missing = ", ".join(n.lower().replace("_", "-") for n in names if n not in given)
+                for unset in ({}, dict.fromkeys(set(names) - set(given), "")):
+                    env = self.bundled() | {name: self.env[name] for name in given} | unset
+                    with (
+                        self.subTest(given=given, unset=unset),
+                        self.assertRaises(actions.ActionError) as caught,
+                    ):
+                        actions.check_inputs(env, self.tmp)
+                    message = str(caught.exception)
+                    self.assertIn("all five or not at all", message)
+                    self.assertTrue(message.endswith(f"missing: {missing}"), message)
+
+    def test_release_input_errors_name_the_input(self):
+        cases = [
+            ("MODEL_VERSION", "a/b", "model-version must be a Release tag name: 'a/b'"),
+            ("MODEL_SHA256", "A" * 64, "model-sha256 must be 64 lowercase hex digits"),
+            ("MANIFEST_SHA256", "b" * 63, "manifest-sha256 must be 64 lowercase hex digits"),
+            ("KNOWN_MALICIOUS_VERSION", " ", "known-malicious-version must be a Release tag name"),
+            ("KNOWN_MALICIOUS_SHA256", "d" * 65, "known-malicious-sha256 must be 64 lowercase"),
+        ]
+        for name, value, message in cases:
+            with self.subTest(name=name), self.assertRaises(actions.ActionError) as caught:
+                actions.check_inputs(self.env | {name: value}, self.tmp)
+            self.assertIn(message, str(caught.exception))
+        # Blank values are values: never read as "no Release inputs".
+        blank = self.env | dict.fromkeys(actions.RELEASE_INPUTS, " ")
+        with self.assertRaisesRegex(actions.ActionError, "model-version must be"):
+            actions.check_inputs(blank, self.tmp)
+
+    def test_base_commit_and_limits_are_checked_in_both_modes(self):
+        for env in (self.env, self.bundled()):
+            for sha in ("c" * 40, "0123456789abcdef" * 4):
+                actions.check_inputs(env | {"BASE_SHA": sha}, self.tmp)
+            cases = [("BASE_SHA", ""), ("BASE_SHA", "main"), ("BASE_SHA", "c" * 39),
+                     ("BASE_SHA", "C" * 40), ("BASE_SHA", "c" * 40 + "\n"), ("MAX_CHANGES", "0"),
+                     ("LOCKFILE", "app/yarn.lock"), ("FAIL_ON", "all")]  # fmt: skip
+            for name, value in cases:
+                with self.subTest(name=name, value=value), self.assertRaises(actions.ActionError):
+                    actions.check_inputs(env | {name: value}, self.tmp)
+            missing = {k: v for k, v in env.items() if k != "BASE_SHA"}
+            with self.assertRaisesRegex(actions.ActionError, "pull_request"):
+                actions.check_inputs(missing, self.tmp)
+
+    def run_inputs(self, env):
+        """main(["inputs"]) with only these variables: (exit status, GITHUB_OUTPUT lines, stdout)."""
+        output = self.tmp / "github-output.txt"
+        output.unlink(missing_ok=True)
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, env | {"GITHUB_OUTPUT": str(output)}, clear=True),
+            mock.patch.object(actions, "tree_digest", return_value="f" * 64) as digest,
+            contextlib.chdir(self.tmp),
+            contextlib.redirect_stdout(out),
+        ):
+            code = actions.main(["inputs"])
+        self.digested = digest.call_args_list
+        written = output.read_text(encoding="utf-8").splitlines() if output.exists() else []
+        return code, written, out.getvalue()
+
+    def test_inputs_command_writes_the_asset_source_and_cache_identity(self):
+        code, written, _ = self.run_inputs(self.env)
+        self.assertEqual((code, written), (0, ["assets=release", f"identity={'a' * 64}"]))
+        self.assertEqual(self.digested, [])
+        # Without a Release hash the cache is kept apart by this depbee package's own files.
+        code, written, _ = self.run_inputs(self.bundled())
+        self.assertEqual((code, written), (0, ["assets=bundled", f"identity=bundled-{'f' * 64}"]))
+        self.assertEqual(self.digested, [mock.call(Path(actions.__file__).resolve().parent)])
+        # Self-test: nothing is scanned, so no asset source. A rejected input writes nothing.
+        report_mode = {"LOCKFILE": "app/package-lock.json", "REPORT": "report.json"}
+        self.assertEqual(self.run_inputs(report_mode)[:2], (0, []))
+        code, written, out = self.run_inputs(self.bundled() | {"MODEL_SHA256": "a" * 64})
+        self.assertEqual((code, written), (1, []))
+        self.assertIn("::error::depbee action: Release inputs must be given all five", out)
+        self.assertIn("missing: model-version, manifest-sha256, known-malicious-version", out)
+
+    def test_tree_digest(self):
+        def digest(files):
+            root = Path(tempfile.mkdtemp(dir=self.tmp))
+            for name, data in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_bytes(data)
+            return actions.tree_digest(root)
+
+        base = {"cli.py": b"code", "assets/model/model.txt": b"model", "assets/index.json": b"[]"}
+        self.assertRegex(digest(base), "^[0-9a-f]{64}$")
+        self.assertEqual(digest(base), digest(dict(reversed(base.items()))))
+        cache = {"__pycache__/cli.cpython-313.pyc": b"1", "assets/__pycache__/x.pyc": b"2"}
+        self.assertEqual(digest(base | cache), digest(base))
+        others = [
+            base | {"assets/model/model.txt": b"other model"},
+            base | {"assets/index.json": b"[1]"},
+            base | {"cli.py": b"code "},
+            base | {"new.py": b""},
+            {"cli.py": b"code", "assets/model.txt": b"model", "assets/index.json": b"[]"},
+            # The same bytes split between a name and its content otherwise.
+            {"cli.py": b"code", "assets/model/model.tx": b"tmodel", "assets/index.json": b"[]"},
+        ]
+        self.assertEqual(len({digest(files) for files in [base, *others]}), len(others) + 1)
 
     def test_invalid_inputs(self):
         cases = {
@@ -276,10 +516,12 @@ class InputsTest(unittest.TestCase):
                 actions.check_inputs(missing, self.tmp)
 
     def test_report_mode_does_not_check_the_index_inputs(self):
-        # The self-test (ci.yml, uses: ./) gives only lockfile and report.
+        # The self-test (ci.yml, uses: ./) gives only lockfile and report. One written for an
+        # earlier version may still give Release inputs, all, some or malformed: none is read.
         report_mode = {"LOCKFILE": "app/package-lock.json", "REPORT": "report.json",
                        "KNOWN_MALICIOUS_VERSION": "../x", "KNOWN_MALICIOUS_SHA256": "x"}  # fmt: skip
-        actions.check_inputs(report_mode, self.tmp)
+        self.assertIsNone(actions.check_inputs(report_mode, self.tmp))
+        self.assertIsNone(actions.check_inputs(self.env | {"REPORT": "report.json"}, self.tmp))
 
     def test_paths_are_checked_as_the_shell_reads_them(self):
         # Review F1: Linux dirname keeps "\" in a name and reads "-..." as an option, so such
@@ -446,20 +688,100 @@ class ActionFileTest(unittest.TestCase):
         end = self.text.find("\n    - ", start)
         return self.text[start : end if end != -1 else None]
 
+    def test_release_inputs_are_optional_and_downloads_need_all_of_them(self):
+        # No Release input has a default or is called required: a workflow gives none of them.
+        for name in actions.RELEASE_INPUTS:
+            name = name.lower().replace("_", "-")
+            # The input's own lines: those indented deeper than its key.
+            block = re.search(rf"^  {name}:\n((?:    .*\n)+)", self.text, re.MULTILINE).group(1)
+            with self.subTest(name):
+                self.assertIn("Optional, all five Release inputs or none.", block)
+                self.assertNotIn("default:", block)
+                self.assertNotIn("equired", block)
+        setup = self.step("Check depbee inputs")
+        for name in actions.RELEASE_INPUTS:
+            self.assertIn(f"{name}: ${{{{ inputs.{name.lower().replace('_', '-')} }}}}", setup)
+        # Only the release source (all five inputs, written by the input check) downloads.
+        for name in ("Download and verify the model",
+                     "Download and verify the known malicious index"):  # fmt: skip
+            self.assertTrue(
+                self.step(name).startswith("    - if: steps.setup.outputs.assets == 'release'\n"),
+                name,
+            )
+        self.assertEqual(self.text.count("releases/download/"), 2)
+        self.assertEqual(self.text.count("curl "), 2)
+
+    def test_scan_uses_only_trusted_assets_and_settings(self):
+        scan = self.step("Scan with depbee")
+        self.assertIn("ASSETS: ${{ steps.setup.outputs.assets }}", scan)
+        self.assertIn("DEPBEE_CONFIG_DIR: ${{ steps.setup.outputs.out }}/config", scan)
+        self.assertIn('mkdir "$out/config"', self.step("Check depbee inputs"))
+        unset = scan.index("unset DEPBEE_MODEL_DIR DEPBEE_KNOWN_MALICIOUS_DIR\n")
+        run = scan.index("python -I -m depbee scan ")
+        self.assertLess(unset, run)
+        # The Release folders only for the release source; any other source but bundled stops.
+        chosen = scan[unset:run]
+        self.assertIn(
+            'assets=()\n        if [ "$ASSETS" = release ]; then\n'
+            '          assets=(--model-dir "$OUT/model" --known-malicious-dir "$OUT/known-malicious")\n'
+            '        else\n          test "$ASSETS" = bundled\n        fi\n',
+            chosen,
+        )
+        self.assertIn('--base-ref "$BASE_SHA" --extract "${assets[@]}"', scan)
+        self.assertEqual(self.text.count("--model-dir"), 1)
+        self.assertEqual(self.text.count("--known-malicious-dir"), 1)
+        # The report of a scan is written by depbee into the run's own folder; only the
+        # self-test copies a given one, and only that one is judged without the names.
+        self.assertIn('--output "$OUT/report.json"', scan)
+        self.assertEqual(self.text.count("cp -- "), 1)
+        self.assertIn(
+            'if [ -n "$REPORT" ]; then\n          cp -- "$REPORT" "$OUT/report.json"', scan
+        )
+        decide = self.step("Decide from the report")
+        self.assertIn("REPORT: ${{ inputs.report }}", decide)
+        self.assertIn('report "$OUT/report.json"\n        ${REPORT:+--self-test}\n', decide)
+        self.assertEqual(self.text.count("--self-test"), 2)  # that line and its comment
+
+    def test_depbee_runs_installed_and_isolated_from_the_pull_request(self):
+        install = self.step("Install depbee")
+        self.assertIn('cd "$OUT"\n', install)
+        self.assertIn(
+            'python -I -m pip install --disable-pip-version-check --no-input "$GITHUB_ACTION_PATH[',
+            install,
+        )
+        self.assertEqual(self.text.count("pip install"), 1)
+        # Every Python start is isolated (-I) and depbee is the installed module, not a script
+        # found on PATH or a folder of the pull request.
+        starts = re.findall(r"^ *[^# ].*\bpython .*$|^ *python .*$", self.text, re.MULTILINE)
+        self.assertEqual(len(starts), 8)
+        for line in starts:
+            self.assertRegex(
+                line, r'python -I (-m (pip|depbee) |"\$GITHUB_ACTION_PATH/src/depbee/)'
+            )
+        self.assertNotRegex(self.text, r"(?m)^\s*(if )?depbee (plan|scan)\b")
+        # No step builds or installs the project being checked.
+        self.assertNotRegex(self.text, r"(?m)^\s*(if )?(npm|npx|node|yarn|pnpm|make)\b")
+        # The base is the pull request's base commit, in the check, the plan and the scan.
+        base = "BASE_SHA: ${{ github.event.pull_request.base.sha }}"
+        for name in ("Check depbee inputs", "Count changed lockfile entries", "Scan with depbee"):
+            self.assertIn(base, self.step(name), name)
+        self.assertEqual(self.text.count('--base-ref "$BASE_SHA"'), 2)
+        # Third-party actions are pinned to full commit ids.
+        uses = re.findall(r"uses: (\S+)", self.text)
+        self.assertEqual(len(uses), 4)
+        for action in uses:
+            self.assertRegex(action, r"^actions/[a-z/-]+@[0-9a-f]{40}$")
+        self.assertNotIn("secrets.", self.text)
+        self.assertNotIn("GITHUB_TOKEN", self.text)
+
     def test_index_inputs_and_steps(self):
-        self.assertIn("  known-malicious-version:\n    description: >-\n      Required.", self.text)
-        self.assertIn("  known-malicious-sha256:\n    description: Required.", self.text)
         names = ["Check depbee inputs", "Install depbee", "Download and verify the model",
                  "Download and verify the known malicious index", "Count changed lockfile entries",
                  "Scan with depbee", "Decide from the report"]  # fmt: skip
         positions = [self.text.index(f"name: {name}\n") for name in names]
         self.assertEqual(positions, sorted(positions))
-        setup = self.step("Check depbee inputs")
-        self.assertIn("KNOWN_MALICIOUS_VERSION: ${{ inputs.known-malicious-version }}", setup)
-        self.assertIn("KNOWN_MALICIOUS_SHA256: ${{ inputs.known-malicious-sha256 }}", setup)
         model = self.step("Download and verify the model")
         index = self.step("Download and verify the known malicious index")
-        self.assertTrue(index.startswith("    - if: inputs.report == ''\n"), index[:40])
         curl = (
             "curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https'"
         )
@@ -478,11 +800,18 @@ class ActionFileTest(unittest.TestCase):
         self.assertIn(verify, index)
         scan = self.step("Scan with depbee")
         self.assertIn('--model-dir "$OUT/model" --known-malicious-dir "$OUT/known-malicious"', scan)
-        # The feature cache holds no detector results: its keys stay without the index.
+        # The feature cache holds no detector results: its keys stay without the index. They
+        # have the trusted model's identity from the input check, never an empty hash input.
         keys = [line for line in self.text.splitlines() if "key:" in line or "keys:" in line]
         self.assertEqual(len(keys), 3)
+        prefix = (
+            "depbee-${{ runner.os }}-${{ steps.setup.outputs.identity }}-"
+            "${{ steps.setup.outputs.extractor }}-"
+        )
         for line in keys:
             self.assertNotIn("known-malicious", line)
+            self.assertNotIn("inputs.", line)
+            self.assertIn(f"key: {prefix}", line.replace("restore-keys", "key"))
 
 
 if __name__ == "__main__":

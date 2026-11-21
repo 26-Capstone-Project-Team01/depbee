@@ -16,20 +16,29 @@ inputs:
   max-changes:
     description: Fail without scanning when more lockfile entries than this changed.
     default: '20'
-  # The next five are required (the input check step fails without them). Not marked
-  # `required: true`: GitHub does not enforce it, and the self-test below the report input skips them.
+  # The next five are optional, all or none (the input check step fails on some of them).
+  # None: the model and the known malicious index inside the depbee this action installs.
+  # All five: those files of depbee Releases instead, each checked against its SHA-256 here.
   model-version:
-    description: Required. Tag of the depbee Release that holds model.txt and manifest.json.
+    description: >-
+      Optional, all five Release inputs or none. Tag of the depbee Release that holds model.txt
+      and manifest.json.
   model-sha256:
-    description: Required. Expected SHA-256 of model.txt (64 lowercase hex digits).
+    description: >-
+      Optional, all five Release inputs or none. Expected SHA-256 of model.txt (64 lowercase hex
+      digits).
   manifest-sha256:
-    description: Required. Expected SHA-256 of manifest.json (64 lowercase hex digits).
+    description: >-
+      Optional, all five Release inputs or none. Expected SHA-256 of manifest.json (64 lowercase
+      hex digits).
   known-malicious-version:
     description: >-
-      Required. Tag of the depbee Release that holds known-malicious-index.json and
-      known-malicious-manifest.json (may differ from model-version).
+      Optional, all five Release inputs or none. Tag of the depbee Release that holds
+      known-malicious-index.json and known-malicious-manifest.json (may differ from model-version).
   known-malicious-sha256:
-    description: Required. Expected SHA-256 of known-malicious-index.json (64 lowercase hex digits).
+    description: >-
+      Optional, all five Release inputs or none. Expected SHA-256 of known-malicious-index.json
+      (64 lowercase hex digits).
   report:
     description: >-
       Self-test only (depbee CI). Path of an existing report.json to judge instead of scanning;
@@ -57,9 +66,12 @@ runs:
         REPORT: ${{ inputs.report }}
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
       # -I: files in the checked-out pull request must not shadow Python imports.
+      # For a scan, inputs also writes the outputs assets (release: all five Release inputs,
+      # bundled: none) and identity (the trusted model's part of the cache key).
       run: |
         python -I "$GITHUB_ACTION_PATH/src/depbee/actions.py" inputs
         out=$(mktemp -d "$RUNNER_TEMP/depbee.XXXXXX")
+        mkdir "$out/config"
         echo "out=$out" >> "$GITHUB_OUTPUT"
         if [ -z "$REPORT" ]; then
           commit=$(sed -n 's/.*"depbee-analyzer @ git+[^"@]*@\([0-9a-f]\{40\}\)".*/\1/p' "$GITHUB_ACTION_PATH/pyproject.toml")
@@ -67,14 +79,18 @@ runs:
           echo "extractor=$commit" >> "$GITHUB_OUTPUT"
         fi
 
+    # Only this action's own source is installed, from the new folder of this run and not from the
+    # checked-out pull request: nothing there is the current folder of pip, a build or git.
     - if: inputs.report == ''
       name: Install depbee
       shell: bash
-      run: >-
-        python -I -m pip install --disable-pip-version-check --no-input
-        "$GITHUB_ACTION_PATH[extract,ml]"
+      env:
+        OUT: ${{ steps.setup.outputs.out }}
+      run: |
+        cd "$OUT"
+        python -I -m pip install --disable-pip-version-check --no-input "$GITHUB_ACTION_PATH[extract]"
 
-    - if: inputs.report == ''
+    - if: steps.setup.outputs.assets == 'release'
       name: Download and verify the model
       shell: bash
       env:
@@ -93,7 +109,7 @@ runs:
           "$OUT/model/model.txt" "$MODEL_SHA256" "$OUT/model/manifest.json" "$MANIFEST_SHA256"
 
     # No hash input for the manifest: depbee checks it against the verified index.
-    - if: inputs.report == ''
+    - if: steps.setup.outputs.assets == 'release'
       name: Download and verify the known malicious index
       shell: bash
       env:
@@ -120,10 +136,11 @@ runs:
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
         OUT: ${{ steps.setup.outputs.out }}
       # A failed or empty dirname must stop here: an empty project argument means the current folder.
+      # python -I -m depbee: the depbee installed above, never a module of the pull request.
       run: |
         project=$(dirname -- "$LOCKFILE")
         test -n "$project"
-        depbee plan "$project" --base-ref "$BASE_SHA" --output "$OUT/plan.json" > /dev/null
+        python -I -m depbee plan "$project" --base-ref "$BASE_SHA" --output "$OUT/plan.json" > /dev/null
         python -I "$GITHUB_ACTION_PATH/src/depbee/actions.py" count "$OUT/plan.json" "$MAX_CHANGES"
 
     # Performance only: depbee checks each entry's model and extractor identity before using it.
@@ -131,8 +148,8 @@ runs:
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/depbee-cache
-        key: depbee-${{ runner.os }}-${{ inputs.model-sha256 }}-${{ steps.setup.outputs.extractor }}-${{ github.run_id }}-${{ github.run_attempt }}
-        restore-keys: depbee-${{ runner.os }}-${{ inputs.model-sha256 }}-${{ steps.setup.outputs.extractor }}-
+        key: depbee-${{ runner.os }}-${{ steps.setup.outputs.identity }}-${{ steps.setup.outputs.extractor }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: depbee-${{ runner.os }}-${{ steps.setup.outputs.identity }}-${{ steps.setup.outputs.extractor }}-
 
     - name: Scan with depbee
       shell: bash
@@ -142,6 +159,9 @@ runs:
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
         OUT: ${{ steps.setup.outputs.out }}
         CACHE: ${{ runner.temp }}/depbee-cache
+        ASSETS: ${{ steps.setup.outputs.assets }}
+        # The empty folder made for this run: no settings saved by `depbee setup` choose the assets.
+        DEPBEE_CONFIG_DIR: ${{ steps.setup.outputs.out }}/config
       # The exit code is only logged: the next step decides from the report's per-result fields.
       run: |
         if [ -n "$REPORT" ]; then
@@ -149,11 +169,19 @@ runs:
           : > "$OUT/summary.md"
           exit 0
         fi
+        # Nothing outside this action chooses the model or the index: the Release folders verified
+        # above, else the pair inside the installed depbee, which checks it against fixed hashes.
+        unset DEPBEE_MODEL_DIR DEPBEE_KNOWN_MALICIOUS_DIR
+        assets=()
+        if [ "$ASSETS" = release ]; then
+          assets=(--model-dir "$OUT/model" --known-malicious-dir "$OUT/known-malicious")
+        else
+          test "$ASSETS" = bundled
+        fi
         mkdir -p "$CACHE"
         project=$(dirname -- "$LOCKFILE")
         test -n "$project"
-        if depbee scan "$project" --base-ref "$BASE_SHA" --extract \
-          --model-dir "$OUT/model" --known-malicious-dir "$OUT/known-malicious" \
+        if python -I -m depbee scan "$project" --base-ref "$BASE_SHA" --extract "${assets[@]}" \
           --cache-dir "$CACHE" \
           --format markdown --output "$OUT/report.json" > "$OUT/summary.md"; then
           code=0
@@ -166,7 +194,7 @@ runs:
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/depbee-cache
-        key: depbee-${{ runner.os }}-${{ inputs.model-sha256 }}-${{ steps.setup.outputs.extractor }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: depbee-${{ runner.os }}-${{ steps.setup.outputs.identity }}-${{ steps.setup.outputs.extractor }}-${{ github.run_id }}-${{ github.run_attempt }}
 
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
@@ -179,7 +207,11 @@ runs:
       env:
         LOCKFILE: ${{ inputs.lockfile }}
         FAIL_ON: ${{ inputs.fail-on }}
+        REPORT: ${{ inputs.report }}
         OUT: ${{ steps.setup.outputs.out }}
+      # A scan's report must name its model and known malicious list or the step fails. Only the
+      # self-test's given report (--self-test, added when the report input is set) may lack them.
       run: >-
         python -I "$GITHUB_ACTION_PATH/src/depbee/actions.py" report "$OUT/report.json"
+        ${REPORT:+--self-test}
         --lockfile "$LOCKFILE" --fail-on "$FAIL_ON" --markdown "$OUT/summary.md"
