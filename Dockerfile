@@ -74,7 +74,6 @@ RUN --mount=type=secret,id=gh_token \
          }; f' \
       -c credential.useHttpPath=true \
       -c http.followRedirects=false \
-      # No --depth: pip cannot install from a shallow mirror (Git refuses to update shallow roots).
       fetch --quiet --no-tags "$ANALYZER_URL" "$(cat commit):refs/heads/pinned" \
  || { if test -s /run/secrets/gh_token; \
       then echo "depbee-analyzer: not fetched although a gh_token secret was given (Git's error is above). The token must be able to read $ANALYZER_URL." >&2; \
@@ -88,7 +87,9 @@ COPY --from=analyzer /analyzer /analyzer
 # Git takes that URL from the mirror: file is the one transport allowed, so nothing but the
 # fetched commit can be installed. pip never sees the rewrite and records the canonical URL and
 # commit (direct_url.json), which depbee checks before it reuses extracted features.
+# Fetch the pinned commit's full ancestry; pip's clone must use only objects in this mirror.
 RUN GIT_CONFIG_GLOBAL=/analyzer/gitconfig GIT_ALLOW_PROTOCOL=file GIT_TERMINAL_PROMPT=0 \
+    GIT_NO_LAZY_FETCH=1 \
     python -m pip --python /opt/depbee/bin/python install \
       --disable-pip-version-check --no-input --no-cache-dir ".[extract,mcp]"
 
