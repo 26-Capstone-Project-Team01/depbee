@@ -74,7 +74,8 @@ RUN --mount=type=secret,id=gh_token \
          }; f' \
       -c credential.useHttpPath=true \
       -c http.followRedirects=false \
-      fetch --quiet --no-tags --depth=1 "$ANALYZER_URL" "$(cat commit):refs/heads/pinned" \
+      # No --depth: pip cannot install from a shallow mirror (Git refuses to update shallow roots).
+      fetch --quiet --no-tags "$ANALYZER_URL" "$(cat commit):refs/heads/pinned" \
  || { if test -s /run/secrets/gh_token; \
       then echo "depbee-analyzer: not fetched although a gh_token secret was given (Git's error is above). The token must be able to read $ANALYZER_URL." >&2; \
       else echo "depbee-analyzer: not fetched, and no gh_token secret was given (Git's error is above). While $ANALYZER_URL is private, build with --secret id=gh_token,env=GH_TOKEN, or build --target core, which needs no analyzer." >&2; \
