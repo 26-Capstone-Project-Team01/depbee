@@ -63,6 +63,8 @@ docker run --rm --mount "type=bind,source=$project,target=/project,readonly" dep
 
 프로젝트는 컨테이너의 `/project`에 읽기 전용으로 연결합니다. `plan`은 버전 변경 목록을 출력하고 `scan`은 기본 색인으로 대조합니다. `--extract` 없는 `scan`에서 ML 분석이 필요한 변경은 보류로 표시될 수 있습니다. `check`와 `scan --extract`는 정적 분석용 메타데이터와 tarball을 받기 위해 npm registry로 HTTPS 연결이 필요합니다. 패키지 이름과 버전만 검사하는 `check`에는 마운트가 필요 없습니다. [Docker bind mount](https://docs.docker.com/engine/storage/bind-mounts/)
 
+Linux에서 이미지의 기본 사용자(`10001:10001`)는 마운트한 디렉터리를 통과하고 lockfile을 읽을 수 있어야 합니다. Git HEAD와 비교하려면 `.git` 아래 디렉터리와 Git 객체에도 같은 접근 권한이 필요합니다. 프로젝트 소유자만 접근할 수 있는 폴더(0700)나 파일(0600)은 일반 Linux Docker에서 소유자 계정의 Bash로 `docker run` 뒤에 `--user "$(id -u):$(id -g)" -e HOME=/tmp`를 추가해 검사할 수 있습니다. Docker가 사용자 ID를 재매핑하는 환경에서는 컨테이너에서 읽을 수 있는 사본과 `--base-lock`을 사용하세요.
+
 ## 비교 기준 lockfile
 
 기본 비교 대상은 Git HEAD에 커밋한 `package-lock.json`입니다. 이미지의 Git은 소유자가 다른 마운트를 읽을 수 있도록 `/project` 한 곳만 `safe.directory`로 설정합니다. 직접 관리하는 저장소 루트를 이 위치에 연결하세요. npm 프로젝트가 저장소의 하위 폴더라면 저장소 루트를 마운트하고 `plan /project/<하위 폴더>`처럼 실행합니다.
