@@ -2,6 +2,8 @@
 
 설치본에 든 기본 자산과 사용자 지정, 명령별 옵션, 업데이트 반영 조건과 백업·복구, 이력 보관 방식, MCP 설정을 설명합니다. 처음 실행하는 명령은 [빠른 시작](../README.md), 네 진입점을 순서대로 실행하는 예시는 [진입점별 시연](demo.md)에 있습니다.
 
+Docker 이미지로 CLI 검사와 MCP를 실행하는 방법은 [Docker로 실행하기](docker.md)에 있습니다.
+
 분석기는 Python 배포와 실행 명령에서 `depbee-analyzer`, import에서 `depbee_analyzer`를 사용합니다. 이전 배포명은 `feature-extractor`, import는 `feature_extractor`였습니다. 새 환경에서는 depbee의 `[extract]` 옵션이 지정한 커밋을 설치합니다. 저장된 결과와 이력에서 분석기의 출처를 읽을 때는 기존 JSON 키 `provenance.feature_extractor`를 사용합니다.
 
 ## 기본 자산
