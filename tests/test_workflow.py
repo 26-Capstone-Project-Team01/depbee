@@ -427,6 +427,36 @@ class GitBaseTests(Fixture):
         self.assertEqual(run.call_args_list[1].args[0][-1], BLOB)
         self.assertEqual({c.args[1] for c in run.call_args_list}, {project})
 
+    def test_a_given_git_folder_is_the_only_repository_git_reads(self):
+        # git_dir: a Git folder the caller has chosen and checked (dashboard.mounted). Git then
+        # looks for no repository of its own, and nothing it inherits or finds names another.
+        repo = self.root / "repo"
+        project = repo / "하위 폴더 a"
+        project.mkdir(parents=True)
+        for folder in (repo, project):
+            shutil.copyfile(self.head, folder / "package-lock.json")
+        git_dir = repo / ".git"
+        os.environ.update(dict.fromkeys(REPOSITORY_VARIABLES, str(self.root / "other" / ".git")))
+        blobs = {project: f"{COMMIT}:하위 폴더 a/package-lock.json",
+                 repo: f"{COMMIT}:package-lock.json"}  # fmt: skip
+        for folder, blob in blobs.items():
+            with self.subTest(folder=folder.name):
+                run = self.git(*self.committed(self.base.read_bytes()))
+                request = plan_project(folder, git_dir=git_dir)
+                self.assertEqual(request["request_id"], self.request()["request_id"])
+                self.assertEqual(run.call_args_list[1].args[0][-3:], ["cat-file", "blob", blob])
+                for call in run.call_args_list:
+                    argv, cwd, _, env = call.args
+                    self.assertEqual((argv[:3], cwd), (GIT_OPTIONS, folder))
+                    self.assertEqual(
+                        {name: env.get(name) for name in REPOSITORY_VARIABLES},
+                        {"GIT_DIR": str(git_dir), "GIT_COMMON_DIR": str(git_dir),
+                         "GIT_WORK_TREE": str(repo), "GIT_INDEX_FILE": None,
+                         "GIT_OBJECT_DIRECTORY": None, "GIT_ALTERNATE_OBJECT_DIRECTORIES": None},
+                    )  # fmt: skip
+        self.git(*self.committed(self.base.read_bytes()))
+        self.assertEqual(scan_project(project, git_dir=git_dir), scan(self.request(), None, None))
+
     def test_scan_project_and_cli_read_base_ref(self):
         self.git(*self.committed(self.base.read_bytes()))
         self.assertEqual(scan_project(self.project, base_ref="v1"), scan(self.request(), None, None))

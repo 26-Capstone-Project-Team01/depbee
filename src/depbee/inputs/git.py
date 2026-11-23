@@ -244,7 +244,11 @@ def _run(
     return proc.returncode, captured["stdout"], captured["stderr"]
 
 
-def _git(project: Path, *args: str, limit: int = _LINE_LIMIT) -> tuple[int, bytes, bytes]:
+def _git(
+    project: Path, *args: str, limit: int = _LINE_LIMIT, git_dir: Path | None = None
+) -> tuple[int, bytes, bytes]:
+    """Run Git in project with the fixed options. git_dir: the Git folder to read, chosen by
+    the caller; Git then looks for no repository itself (read_base_lock())."""
     windows = os.name == "nt"
     # On Windows a git.cmd or git.bat would pass the arguments through cmd.exe; run git.exe only.
     git = shutil.which("git.exe" if windows else "git")
@@ -259,6 +263,11 @@ def _git(project: Path, *args: str, limit: int = _LINE_LIMIT) -> tuple[int, byte
     # The option makes a Git too old to know it exit with an error instead of fetching, and the
     # forced variable overrides an inherited GIT_NO_LAZY_FETCH=0.
     env = {k: v for k, v in os.environ.items() if k not in _REPOSITORY_VARIABLES}
+    if git_dir is not None:
+        # Set, these end Git's own search (parent folders, a .git file) and take the place of
+        # the commondir file and core.worktree, which could each name another folder.
+        env["GIT_DIR"] = env["GIT_COMMON_DIR"] = str(git_dir)
+        env["GIT_WORK_TREE"] = str(git_dir.parent)
     env["GIT_NO_LAZY_FETCH"] = "1"
     # Grafts rewrite parents (HEAD~1) and --no-replace-objects does not turn them off. An empty
     # graft file replaces the default <git dir>/info/grafts path, so that file is ignored too.
@@ -283,19 +292,28 @@ def _detail(stderr: bytes) -> str:
     return f": {text[:300]}" if text else ""
 
 
-def read_base_lock(project: Path, ref: str) -> bytes:
-    """Raw bytes of project/package-lock.json as committed in ref (any commit-ish)."""
+def read_base_lock(project: Path, ref: str, git_dir: Path | None = None) -> bytes:
+    """Raw bytes of project/package-lock.json as committed in ref (any commit-ish).
+
+    git_dir: the .git folder of project or of a folder above it, which the caller has chosen
+    and checked. Git is then given that repository and its folder as the work tree instead of
+    looking for one, and the file is named by its path from there. None: Git finds the
+    repository from project, as git does in a terminal."""
     if not ref or ref.startswith("-"):
         raise GuardError(f"Invalid Git ref: {ref!r}")
     code, out, err = _git(
-        project, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{commit}}"
-    )
+        project, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{commit}}",
+        git_dir=git_dir,
+    )  # fmt: skip
     commit = out.decode("ascii", "replace").strip()
     if code or not _COMMIT.fullmatch(commit):
         raise GuardError(f"Git cannot resolve {ref} to a commit in {project}{_detail(err)}")
     # Git resolves ./ against cwd (the project) into the path from the repository root.
+    lock = "./package-lock.json"
+    if git_dir is not None:
+        lock = (project.relative_to(git_dir.parent) / "package-lock.json").as_posix()
     code, out, err = _git(
-        project, "cat-file", "blob", f"{commit}:./package-lock.json", limit=MAX_JSON_BYTES
+        project, "cat-file", "blob", f"{commit}:{lock}", limit=MAX_JSON_BYTES, git_dir=git_dir
     )
     if code:
         raise GuardError(f"No package-lock.json for {project} in Git ref {ref}{_detail(err)}")

@@ -135,11 +135,13 @@ def _unsupported(before: dict | None, after: dict | None) -> str | None:
 
 
 def build_request(
-    project: Path, base_lock: Path | None = None, *, base_ref: str | None = None
-) -> dict:
+    project: Path, base_lock: Path | None = None, *, base_ref: str | None = None,
+    git_dir: Path | None = None,
+) -> dict:  # fmt: skip
     """Compare project/package-lock.json with base_lock, else with its copy in Git base_ref.
 
     base_ref defaults to HEAD. Either way the base bytes get the same checks and SHA-256.
+    git_dir: the Git folder to read base_ref from instead of the one Git finds (read_base_lock).
     """
     if base_lock is not None and base_ref is not None:
         raise GuardError("Use either a base lockfile or a Git base ref, not both")
@@ -150,7 +152,7 @@ def build_request(
         base = read_json(base_lock)
     else:
         ref = "HEAD" if base_ref is None else base_ref
-        base = parse_json(read_base_lock(project, ref), f"{ref}:{head_lock}")
+        base = parse_json(read_base_lock(project, ref, git_dir), f"{ref}:{head_lock}")
     before, base_hash = _snapshot(base)
     after, head_hash = _snapshot(read_json(head_lock))
     changes = []
