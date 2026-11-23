@@ -15,7 +15,13 @@
 <input type="hidden" name="session" value="{{ session }}">
 <button class="primary" type="submit" aria-describedby="pick-hint" data-busy-label="폴더 선택 창을 확인하세요…">프로젝트 폴더 선택</button>
 </form>
+{# contained (app.page): in a container the button lists the mounted folders (mounted.html)
+   and opens no folder dialog on this PC, so the two hints say what each one does there. #}
+{% if contained %}
+<p class="note" id="pick-hint">컨테이너에 연결한 폴더의 목록을 엽니다. 호스트의 폴더 선택 창은 열지 않으며, 연결하지 않은 호스트 폴더는 보이지 않습니다.</p>
+{% else %}
 <p class="note" id="pick-hint">이 PC에서 폴더를 열어 파일을 읽습니다.</p>
+{% endif %}
 <details{% if manual %} open{% endif %}>
 <summary>폴더 경로 직접 입력</summary>
 {% if error and typed %}<p class="error" id="path-error" role="alert">{{ error }}</p>{% endif %}
@@ -27,8 +33,12 @@
 <button type="submit">등록</button>
 </div>
 </form>
+{% if contained %}
+<p class="note" id="path-hint">컨테이너 안의 경로를 적습니다. 프로젝트 폴더 선택의 목록에 나오는 경로이며, 호스트의 경로와 연결하지 않은 폴더는 등록할 수 없습니다. 등록만 하고 검사는 하지 않습니다. 등록한 뒤 프로젝트 화면의 "검사만"이나 "업데이트 확인"으로 검사할 수 있습니다. 같은 폴더를 다시 등록하면 처음 등록한 프로젝트가 열립니다.</p>
+{% else %}
 <p class="note" id="path-hint">등록만 하고 검사는 하지 않습니다. 등록한 뒤 프로젝트 화면의 "검사만"이나 "업데이트 확인"으로 검사할 수 있습니다. 이 폴더에서 CLI로 실행한 depbee scan·depbee update 검사도 기록됩니다. 같은 폴더를 다시 등록하면 처음 등록한 프로젝트가 열립니다.</p>
 <p class="note">폴더 선택 창을 열 수 없거나 시간 안에 고르지 않으면 이 폴더 경로 직접 입력이 열립니다. 창은 {{ pick_seconds }}초 뒤 닫히며, 보이지 않거나 키보드 입력을 받지 않으면 {{ switch_keys }}으로 전환하세요.</p>
+{% endif %}
 </details>
 </section>
 {% if tabs %}

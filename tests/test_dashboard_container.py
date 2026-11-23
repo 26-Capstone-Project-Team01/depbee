@@ -98,6 +98,11 @@ class ContainerFixture(DashboardFixture):
         values = re.findall(r'<input type="hidden" name="path" value="([^"]*)">', page)
         return [html.unescape(value) for value in values]
 
+    def unhinted(self, page):
+        """The page without its note paragraphs. The hints of the folder button and of the typed
+        path are among them, and they alone differ between a container's page and a desktop's."""
+        return re.sub(r'<p class="note"[^>]*>[^<]*</p>\n', "", page)
+
     def assert_outside(self, path):
         response = self.register(str(path))
         self.assertEqual(response.status_code, 400, path)
@@ -284,10 +289,32 @@ class PickerTests(ContainerFixture):
         self.assertIn(f'<form method="post" action="{S}/projects/pick">', first)
         self.assertEqual(self.register(str(self.add("app-a"))).status_code, 303)
         manage = self.page("/?manage=1")
+        # Word for word, but for the hints of the folder button and of the typed path, which say
+        # where the dashboard runs (the next test).
         del os.environ[VARIABLE]
-        self.assertEqual(manage, self.page("/?manage=1"))
+        self.assertEqual(self.unhinted(manage), self.unhinted(self.page("/?manage=1")))
         history.db_path().unlink()
-        self.assertEqual(first, self.page("/"))
+        self.assertEqual(self.unhinted(first), self.unhinted(self.page("/")))
+
+    def test_the_management_page_says_what_the_folder_button_does_in_a_container(self):
+        # What only a desktop's page says: this PC, and the folder dialog's limit and keys.
+        desktop_only = ("이 PC에서 폴더를 열어", "폴더 선택 창을 열 수 없거나",
+                        f"{picker.PICK_SECONDS}초 뒤 닫히며", self.app.SWITCH_KEYS)  # fmt: skip
+        self.assertEqual(self.register(str(self.add("app-a"))).status_code, 303)
+        page = self.page("/?manage=1")
+        self.assertIn(f'<form method="post" action="{S}/projects/pick">', page)
+        self.assertIn('id="pick-hint">컨테이너에 연결한 폴더의 목록을 엽니다.', page)
+        self.assertIn('id="path-hint">컨테이너 안의 경로를 적습니다.', page)
+        # The button and the typed path are still described by one hint each.
+        self.assertEqual((page.count('id="pick-hint"'), page.count('id="path-hint"')), (1, 1))
+        for words in desktop_only:
+            self.assertNotIn(words, page)
+        # A desktop keeps its own words and is told nothing of a container.
+        del os.environ[VARIABLE]
+        desktop = self.page("/?manage=1")
+        for words in desktop_only:
+            self.assertIn(words, desktop)
+        self.assertNotIn("컨테이너", desktop)
 
     def test_the_list_names_the_mounted_folders_and_marks_the_projects(self):
         project = self.add("app-a")
@@ -359,14 +386,29 @@ class PickerTests(ContainerFixture):
         self.assertEqual(self.register(str(self.mount)).headers["location"], S + "/")
         self.assertEqual(self.register(str(self.mount)).headers["location"], S + "/projects/1")
 
-    def test_nothing_mounted_says_how_to_mount(self):
+    def test_how_to_mount_a_folder_is_said_once_and_read_only(self):
+        def option(page):
+            """The docker run option a page shows: one, whatever the page lists."""
+            (shown,) = re.findall(r'<p class="path">(--mount [^<]*)</p>', page)
+            return html.unescape(shown)
+
+        def expected(top):
+            source = "source=<호스트의 프로젝트 폴더>"
+            return f'--mount "type=bind,{source},target={top}/<별칭>,readonly"'
+
         page = self.listed()
         self.assertIn("연결한 프로젝트 폴더가 없습니다.", page)
-        self.assertIn(f"target={self.mount}/&lt;이름&gt;", page)
+        self.assertEqual(option(page), expected(self.mount))
         self.assertEqual(self.forms(page), [])
-        os.environ[VARIABLE] = str(self.root / "not-there")
+        # Below a list of folders and in an opened folder it is the same read-only option.
+        self.add("app-a")
+        for at in (None, "app-a"):
+            self.assertEqual(option(self.listed(at)), expected(self.mount))
+        missing = self.root / "not-there"
+        os.environ[VARIABLE] = str(missing)
         page = self.listed()
         self.assertIn('role="alert">컨테이너에 연결한 폴더를 찾을 수 없습니다.</p>', page)
+        self.assertEqual(option(page), expected(missing))
         self.assertEqual(self.forms(page), [])
         self.assertEqual(self.get("/projects/mounted?at=project").status_code, 404)
 
@@ -534,6 +576,30 @@ class ProblemTests(ContainerFixture):
                 with self.subTest(kind=kind, entry="the file"), reported(lock, mode):
                     self.assertEqual(mounted.problem(lock, stat.S_ISREG), "link")
                     self.assertIsNone(mounted.problem(app))
+
+
+class InstallChoiceTests(ScreenFixture):
+    """The apply form of a preview: a container says by the install choice itself what its
+    install does to the mounted folder. A desktop's form says nothing of it."""
+
+    def test_a_container_says_by_the_install_choice_what_it_installs(self):
+        preview = f"/previews/{self.preview_id()}"
+        desktop = self.page(preview)
+        os.environ[VARIABLE] = str(self.root)  # the registered project is a mounted folder now
+        page = self.page(preview)
+        choices = page.partition("<legend>반영 방식</legend>")[2].partition("</fieldset>")[0]
+        radio = '<input type="radio" id="mode-install" name="mode" value="install"'
+        self.assertIn(f'{radio} aria-describedby="install-note">', choices)
+        note = re.search(r'<p class="note" id="install-note">([^<]+)</p>', choices)
+        self.assertLess(choices.index(radio), note.start())  # right below the choice it is about
+        for words in ("컨테이너의 Linux용 npm", "node_modules", "lockfile 반영을 고르고",
+                      "호스트에서 npm ci --ignore-scripts", "readonly"):  # fmt: skip
+            self.assertIn(words, note[1])
+        self.assertEqual(page.count("install-note"), 2)  # the note, and the one choice it is for
+        # A desktop installs for itself and is told nothing of it.
+        self.assertIn(f"{radio}>", desktop)
+        for words in ("install-note", "Linux", "컨테이너"):
+            self.assertNotIn(words, desktop)
 
 
 class StoredOutsideTests(ScreenFixture):

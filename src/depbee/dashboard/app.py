@@ -374,10 +374,13 @@ def build_app(
              section: str | None = None, tabs: list[dict] | None = None, **context) -> Response:  # fmt: skip
         """A page of the console. project: the registered project the page is about, shown as
         the open tab (the template gets its tab); section: the view the page belongs to
-        (packages, updates, history; manage and model for the two pages outside a project)."""
+        (packages, updates, history; manage and model for the two pages outside a project).
+        Every template also gets contained: this dashboard is a container's (.mounted), where
+        a page says what choosing a folder and installing do there, not on a desktop."""
         tabs = _tabs(project) if tabs is None else tabs
         html = ENV.get_template(name).render(
             safety_note=SAFETY_NOTE, base=base, session=session, tabs=tabs, section=section,
+            contained=mounted.root() is not None,
             project=next((tab for tab in tabs if tab["current"]), None), **context,
         )  # fmt: skip
         # _finalize has escaped lone surrogates; backslashreplace keeps any left from a 500.

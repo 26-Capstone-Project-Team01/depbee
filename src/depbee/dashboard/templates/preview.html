@@ -40,7 +40,9 @@
 <fieldset>
 <legend>반영 방식</legend>
 {% for mode, label in modes %}
-<p><input type="radio" id="mode-{{ mode }}" name="mode" value="{{ mode }}"{% if mode == "install" and npmrc %} disabled{% endif %}{% if loop.first %} checked{% endif %}> <label for="mode-{{ mode }}">{{ label }}</label></p>
+<p><input type="radio" id="mode-{{ mode }}" name="mode" value="{{ mode }}"{% if mode == "install" and npmrc %} disabled{% endif %}{% if loop.first %} checked{% endif %}{% if contained and mode == "install" %} aria-describedby="install-note"{% endif %}> <label for="mode-{{ mode }}">{{ label }}</label></p>
+{# contained (app.page): a container installs with its own Linux npm into the mounted folder. #}
+{% if contained and mode == "install" %}<p class="note" id="install-note">설치까지는 이 컨테이너의 Linux용 npm이 연결한 프로젝트 폴더의 node_modules를 지우고 Linux용으로 다시 설치합니다. 호스트가 Windows나 macOS이면 lockfile 반영을 고르고, 설치는 호스트에서 npm ci --ignore-scripts로 하세요. readonly로 연결한 프로젝트에는 어느 방식도 반영되지 않고 파일은 그대로 남습니다.</p>{% endif %}
 {% endfor %}
 </fieldset>
 {% if npmrc %}<p class="warning">{{ npmrc }}</p>{% endif %}
