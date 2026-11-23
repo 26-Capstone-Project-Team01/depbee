@@ -293,7 +293,8 @@ class PageTests(DashboardFixture):
         # script file, and no template holds a script or a handler of its own.
         self.assertEqual(re.findall(r"<script[^>]*>[^<]*", text),
                          ['<script src="{{ base }}/static/app.js" defer>'] * 2)  # fmt: skip
-        self.assertEqual([p.name for p in files if "<script" in p.read_text("utf-8")],
+        # By name: a folder lists its files in an order of its own (not by name on Linux).
+        self.assertEqual(sorted(p.name for p in files if "<script" in p.read_text("utf-8")),
                          ["base.html", "start.html"])  # fmt: skip
         self.assertIsNone(re.search(r"\son[a-z]+=|javascript:", text))
         # The script sends no request, reads no answer and writes no markup: a form is still
