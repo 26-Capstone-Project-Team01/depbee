@@ -373,7 +373,9 @@ class PickerTests(ContainerFixture):
             page = self.page(url)
             self.assertIn(local, page, url)
             self.assertEqual(restore in page, url in views, url)
-            for words in ("컨테이너", "별칭", "docker"):
+            # "docker run", the footer's own words: these pages show the project's path, and a
+            # checkout can be in a folder named after Docker.
+            for words in ("컨테이너", "별칭", "docker run"):
                 self.assertNotIn(words, page, url)
 
     def test_the_list_names_the_mounted_folders_and_marks_the_projects(self):
