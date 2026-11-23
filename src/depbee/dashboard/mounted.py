@@ -5,8 +5,14 @@ where they are mounted. DEPBEE_CONTAINER_PROJECTS, which the image sets to /proj
 one folder they are mounted under and makes the dashboard a container's. It then listens on
 every interface of the container, at a port that is published to the host's 127.0.0.1 under the
 same number (app.serve). Its "프로젝트 폴더 선택" opens the folders below that folder instead of a
-dialog (listing()). And no folder outside it is registered or used as a project, however its
-path was given: typed, sent in a form, behind a link or kept in the history (holds()).
+dialog (listing()).
+
+And a project there is only what the mounted folder really holds. Whenever the dashboard is
+about to register, list, read, check, scan or apply something, the folder and each file it
+reads must be in the mounted folder as they are spelled, with no link on the way (problem()),
+and the Git folder a scan reads must be the project's own (repository()). That is asked each
+time, not once at registration: what a folder holds can change. A path outside the mounted
+folder, such as one an older history kept, is refused by its spelling and never looked at.
 
 Without the variable, as on a desktop, nothing here applies. Nothing here registers, reads or
 writes a project.
@@ -18,6 +24,7 @@ from pathlib import Path
 
 from .. import mcp
 from ..contracts import GuardError
+from ..inputs.npm_cli import is_link
 
 VARIABLE = "DEPBEE_CONTAINER_PROJECTS"
 # Every interface of the container: Docker sends the published port to its own, never to the
@@ -49,13 +56,63 @@ def _top() -> Path | None:
     return real if real is not None and stat.S_ISDIR(real.stat().st_mode) else None
 
 
-def holds(real: Path) -> bool:
-    """real, a path whose links are resolved (mcp._unlinked), is the mounted folder or lies
-    below it. Always True outside a container, where any local folder is a project's."""
-    if root() is None:
-        return True
+def problem(path: Path, kind=stat.S_ISDIR) -> str | None:
+    """Why a container's dashboard may not use path as it is spelled, or None when it may:
+
+    "outside": it is not the mounted folder or a path below it. That is told from the spelling
+    alone (a relative path and one with ".." are outside), so nothing of such a path is ever
+    looked at. "link": a part of it below the mounted folder is a link (symlink, junction),
+    which is not read: where it leads does not matter. "missing": a part of it is not there.
+    "kind": it is there but not what kind says, a folder (stat.S_ISREG: a regular file).
+
+    Each part is looked at with lstat, which follows nothing."""
     top = _top()
-    return top is not None and real.is_relative_to(top)
+    if top is None or not path.is_absolute() or ".." in path.parts or not path.is_relative_to(top):
+        return "outside"
+    current, mode = top, None
+    for part in path.relative_to(top).parts:
+        current = current / part
+        try:
+            mode = os.lstat(current)
+        except (OSError, ValueError):  # ValueError: a name no file system holds (a NUL in it)
+            return "missing"
+        if is_link(mode):
+            return "link"
+    # Without a part the path is the mounted folder itself, which _top() found to be a folder.
+    return None if kind(stat.S_IFDIR if mode is None else mode.st_mode) else "kind"
+
+
+def repository(project: Path) -> Path:
+    """The Git folder a scan of project reads HEAD's lockfile from: the .git of project or of
+    the nearest folder above it, no further up than the mounted folder. project: a folder that
+    problem() has passed.
+
+    Git is handed this folder (inputs.git.read_base_lock) and so finds no repository of its
+    own, neither above the mounted folder nor through a .git file. The folder must hold its
+    objects itself: a commondir file, an alternates file or a linked objects folder would have
+    Git read another folder's, and a worktree's or a submodule's .git is a file that names
+    one. Any of them is a GuardError before Git runs, with nothing they name looked at."""
+    top = _top()
+    for folder in (project, *project.parents):
+        git_dir = folder / ".git"
+        entry = problem(git_dir)
+        if entry != "missing":
+            break
+        if folder == top:
+            raise GuardError(
+                f"Git cannot resolve HEAD to a commit in {project}: no .git folder at or above "
+                "it in the mounted folder"
+            )
+    pointers = (git_dir / "commondir", git_dir / "objects" / "info" / "alternates")
+    own = entry is None and problem(git_dir / "objects") is None
+    if not own or any(problem(pointer, stat.S_ISREG) != "missing" for pointer in pointers):
+        raise GuardError(
+            f"The .git of {folder} is not a Git folder with its own objects (it is a link, a "
+            ".git file of a worktree or submodule, or it names another folder in commondir or "
+            "alternates). A container's dashboard reads Git history only from such a folder "
+            "in the mounted folder: scan with depbee scan --base-lock instead"
+        )
+    return git_dir
 
 
 def _plain(part: str) -> bool:
@@ -79,7 +136,7 @@ def _listed(entry: os.DirEntry) -> bool:
         and not name.startswith(".")
         and name != "node_modules"
         and entry.is_dir(follow_symlinks=False)
-        and not mcp._is_link(entry.stat(follow_symlinks=False))
+        and not is_link(entry.stat(follow_symlinks=False))
     )
 
 
@@ -101,11 +158,9 @@ def listing(at: str) -> dict | None:
         top = _top()
         if top is None:
             return None
+        # A name such as C: would replace top in the join on Windows: problem() sees that too.
         folder = top.joinpath(*parts)
-        # The join must only have added the names: on Windows one like C: would replace top.
-        if folder.parts != (*top.parts, *parts) or mcp._unlinked(folder, "folder") != folder:
-            return None
-        if not stat.S_ISDIR(os.lstat(folder).st_mode):
+        if problem(folder) is not None:
             return None
         with os.scandir(folder) as entries:
             names = sorted((entry.name for entry in entries if _listed(entry)), key=str.casefold)

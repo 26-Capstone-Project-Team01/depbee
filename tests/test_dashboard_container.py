@@ -3,11 +3,13 @@ the folder button, and what may be registered or used as a project.
 
 Synthetic folders in each test run's folder stand for the mounted ones (DEPBEE_CONTAINER_PROJECTS
 names one of them); no container, no desktop dialog, no server (a stand-in for uvicorn.Server),
-no npm and no registry. Real links are made where the system lets a test make them, which an
-ordinary Windows account does not; the registration checks also run on links that os.lstat and
-os.readlink are made to report (test_mcp.ResponseTests.links).
+no npm, no Git and no registry. Real links are made where the system lets a test make them,
+which an ordinary Windows account does not, and only to synthetic files of the test run. What a
+link does to a check is tested on entries that os.lstat is made to report as links
+(test_apply.reported): nothing is linked there, and fenced() fails a test that looks behind one.
 """
 
+import builtins
 import contextlib
 import html
 import io
@@ -15,11 +17,12 @@ import json
 import os
 import re
 import shutil
+import stat
 from pathlib import Path
 from unittest import mock
 from urllib.parse import quote
 
-import test_mcp
+from test_apply import LINKS, reported
 from test_dashboard import BASE, PORT, SESSION, DashboardFixture, S, ScreenFixture
 
 from depbee import history, service
@@ -28,6 +31,35 @@ from depbee.contracts import GuardError
 from depbee.dashboard import lifecycle, mounted, picker
 
 VARIABLE = "DEPBEE_CONTAINER_PROJECTS"
+LINK = LINKS["symlink"]
+
+
+@contextlib.contextmanager
+def fenced(*roots, look=False):
+    """No file-system call may name one of roots or anything below it: os.stat, os.readlink,
+    os.scandir, os.listdir and every open fail the test there, and os.lstat too unless look
+    (lstat reads the entry itself, never what a link names). Yields the calls that tried,
+    which stay empty: a handler that swallowed the failure is still found out."""
+    roots = [Path(root) for root in roots]
+    tried = []
+
+    def guard(real, name):
+        def call(target, *args, **kwargs):
+            if isinstance(target, (str, os.PathLike)):
+                path = Path(target)
+                if any(path == root or root in path.parents for root in roots):
+                    tried.append((name, str(path)))
+                    raise AssertionError(f"{name} looked at {path}")
+            return real(target, *args, **kwargs)
+
+        return call
+
+    names = [(os, "stat"), (os, "readlink"), (os, "scandir"), (os, "listdir"), (os, "open"),
+             (io, "open"), (builtins, "open"), *([] if look else [(os, "lstat")])]  # fmt: skip
+    with contextlib.ExitStack() as stack:
+        for owner, name in names:
+            stack.enter_context(mock.patch.object(owner, name, guard(getattr(owner, name), name)))
+        yield tried
 
 
 class ContainerFixture(DashboardFixture):
@@ -169,7 +201,7 @@ class ServeTests(ContainerFixture):
         bound.assert_not_called()  # refused before anything listens
         os.environ[VARIABLE] = ""
         self.assertIsNone(mounted.root())
-        self.assertTrue(mounted.holds(self.project))
+        self.assertTrue(self.app._found(str(self.project)))  # a desktop's folder, as before
 
 
 class PickerTests(ContainerFixture):
@@ -424,34 +456,84 @@ class ConfinementTests(ContainerFixture):
             with self.subTest(at=at):
                 self.assertNotIn(f"at={at}", page)
                 self.assertEqual(self.get(f"/projects/mounted?at={at}").status_code, 404)
-        for path in (self.mount / "escape", swapped, self.mount / "inner" / ".." / "escape"):
+        # A link is refused wherever it leads: the folder it names is registered by its own
+        # path, as the list offers it.
+        links = (self.mount / "escape", swapped, self.mount / "inner" / ".." / "escape",
+                 self.mount / "inner", self.mount / "inner" / ".." / "app-a")  # fmt: skip
+        for path in links:
             with self.subTest(path=path.name):
                 self.assert_outside(path)
         self.assertEqual(history.list_projects(), [])
-        # A link that stays inside is the folder it leads to.
-        self.assertEqual(self.register(str(self.mount / "inner")).status_code, 303)
-        self.assertEqual([project["path"] for project in history.list_projects()], [str(inside)])
+        self.assertEqual(self.register(str(inside)).status_code, 303)
 
-    def test_reported_links_are_resolved_before_the_folder_is_placed(self):
+    def test_an_entry_reported_as_a_link_is_refused_and_never_read(self):
         inside = self.add("app-a")
-        cases = {
-            "a folder link out": ({self.mount / "escape": str(self.project)},
-                                  self.mount / "escape", "outside"),
-            "a lockfile link out": ({inside / "package-lock.json": str(self.head)},
-                                    inside, "outside"),
-            "a folder link that stays inside": ({self.mount / "inner": str(inside)},
-                                                self.mount / "inner", None),
-        }  # fmt: skip
-        for label, (links, path, problem) in cases.items():
-            lstat, readlink, follow = test_mcp.ResponseTests.links(self, links)
-            with self.subTest(label), mock.patch("os.lstat", lstat), \
-                    mock.patch("os.readlink", readlink), \
-                    mock.patch("pathlib.Path.stat", autospec=True, side_effect=follow):  # fmt: skip
-                self.assertEqual(self.app._registration_problem(str(path)), problem)
-                # Nor does the list open a link or a folder behind one (the stand-in for
-                # os.lstat fails the test if anything behind a link is looked at).
-                for at in ("escape", "escape/below", "inner", "inner/below"):
-                    self.assertIsNone(mounted.listing(at), at)
+        entry = self.mount / "entry"
+        entry.mkdir()
+        for kind, mode in LINKS.items():
+            with self.subTest("a linked folder", kind=kind), reported(entry, mode), \
+                    fenced(entry, look=True) as tried:  # fmt: skip
+                for path in (entry, entry / "app"):
+                    self.assertEqual(self.app._registration_problem(str(path)), "outside")
+                    self.assertFalse(self.app._found(str(path)))
+                for at in ("entry", "entry/app"):
+                    self.assertIsNone(mounted.listing(at))
+                self.assertEqual(tried, [])
+            lock = inside / "package-lock.json"
+            with self.subTest("a linked lockfile", kind=kind), reported(lock, mode), \
+                    fenced(lock, look=True) as tried:  # fmt: skip
+                self.assertEqual(self.app._registration_problem(str(inside)), "outside")
+                self.assertIsNone(self.app._sha256(str(inside), "package-lock.json"))
+                (row,) = [row for row in mounted.listing("")["folders"] if row["name"] == "app-a"]
+                self.assertFalse(row["project"])
+                self.assertEqual(tried, [])
+        self.assertIsNone(self.app._registration_problem(str(inside)))
+
+
+class ProblemTests(ContainerFixture):
+    """mounted.problem(): what a container's dashboard may use as it is spelled."""
+
+    def test_a_path_outside_the_mounted_folder_is_told_from_its_spelling_alone(self):
+        self.add("app")
+        outside = [self.project, self.project / "package-lock.json", self.root, self.root.parent,
+                   Path(str(self.mount) + "-2"), self.mount / ".." / "project",
+                   self.mount / "app" / ".." / ".." / "project", self.mount / "app" / "..",
+                   Path("app"), Path("projects") / "app", Path(self.mount.anchor)]  # fmt: skip
+        top = mounted._top()  # the mounted folder itself is looked at, not the path asked about
+        looked = AssertionError("the file system was looked at")
+        with mock.patch.object(mounted, "_top", return_value=top), \
+                mock.patch("os.lstat", side_effect=looked), \
+                mock.patch("os.stat", side_effect=looked), \
+                mock.patch("os.readlink", side_effect=looked):  # fmt: skip
+            for path in outside:
+                with self.subTest(path=str(path)[-40:]):
+                    self.assertEqual(mounted.problem(path), "outside")
+                    self.assertEqual(mounted.problem(path, stat.S_ISREG), "outside")
+        # Without a mounted folder that is there, every path is outside it.
+        os.environ[VARIABLE] = str(self.root / "not-there")
+        self.assertEqual(mounted.problem(self.mount / "app"), "outside")
+
+    def test_what_is_in_the_mounted_folder_is_looked_at_and_never_followed(self):
+        app = self.add("app")
+        lock = app / "package-lock.json"
+        with mock.patch("os.readlink", side_effect=AssertionError("a link was read")):
+            self.assertIsNone(mounted.problem(self.mount))
+            self.assertIsNone(mounted.problem(app))
+            self.assertIsNone(mounted.problem(lock, stat.S_ISREG))
+            self.assertEqual(mounted.problem(app, stat.S_ISREG), "kind")
+            self.assertEqual(mounted.problem(lock), "kind")
+            self.assertEqual(mounted.problem(self.mount, stat.S_ISREG), "kind")
+            for missing in (app / "none", self.mount / "none" / "app", lock / "below"):
+                self.assertEqual(mounted.problem(missing), "missing")
+                self.assertEqual(mounted.problem(missing, stat.S_ISREG), "missing")
+            for kind, mode in LINKS.items():
+                with self.subTest(kind=kind), reported(app, mode), fenced(app, look=True) as tried:
+                    self.assertEqual(mounted.problem(app), "link")
+                    self.assertEqual(mounted.problem(lock, stat.S_ISREG), "link")
+                    self.assertEqual(tried, [])
+                with self.subTest(kind=kind, entry="the file"), reported(lock, mode):
+                    self.assertEqual(mounted.problem(lock, stat.S_ISREG), "link")
+                    self.assertIsNone(mounted.problem(app))
 
 
 class StoredOutsideTests(ScreenFixture):
@@ -473,15 +555,20 @@ class StoredOutsideTests(ScreenFixture):
         held = self.preview_id()  # made while the folder was still a project's
         os.environ[VARIABLE] = str(self.mount)
         path = str(self.project)
-        self.assertFalse(self.app._found(path))
-        self.assertIsNone(self.app._sha256(path, "package-lock.json"))
-        self.assertIn("폴더를 찾을 수 없음", self.page("/?manage=1"))
-        self.assertIn(
-            "프로젝트 폴더를 찾을 수 없습니다.", self.page(f"/projects/{self.project_id}")
-        )
-        for response in (self.check(), self.scan(), self.apply(held)):
-            self.assertEqual(response.status_code, 400)
-            self.assertIn(self.app.PROJECT_MISSING, response.text)
+        # Its path is outside by its spelling: the folder and its files are not even looked at.
+        with fenced(self.project) as tried:
+            self.assertFalse(self.app._found(path))
+            self.assertIsNone(self.app._sha256(path, "package-lock.json"))
+            self.assertEqual(self.app._preview_targets(path), set())
+            self.assertIn("폴더를 찾을 수 없음", self.page("/?manage=1"))
+            self.assertIn("폴더를 찾을 수 없습니다.", self.page("/"))
+            for view in ("", "/updates", "/history"):
+                self.assertIn("프로젝트 폴더를 찾을 수 없습니다.",
+                              self.page(f"/projects/{self.project_id}{view}"))  # fmt: skip
+            for response in (self.check(), self.scan(), self.apply(held)):
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(self.app.PROJECT_MISSING, response.text)
+            self.assertEqual(tried, [])
         self.assertEqual((self.preview_files.call_count, self.scan_project.call_count,
                           self.apply_preview.call_count), (1, 0, 0))  # fmt: skip
         self.assertEqual(len(history.list_runs(self.project_id)), 1)  # still there to read
@@ -491,3 +578,129 @@ class StoredOutsideTests(ScreenFixture):
         self.assertEqual(self.scan().status_code, 303)
         self.assertEqual(self.apply(held).status_code, 200)
         self.assertEqual(service.apply_preview.call_count, 1)
+
+
+class LiveInputTests(ScreenFixture):
+    """A project registered in the mounted folder (self.inside): each time it is used, its
+    folder, its two files and its Git folder must still be the project's own. The services
+    are replaced (ScreenFixture), so a test sees whether one was handed the project at all."""
+
+    FILES = ("package-lock.json", "package.json")
+
+    def setUp(self):
+        super().setUp()
+        self.scan_project = self.patch_service("scan_project", lambda *a, **k: self.report)
+        self.mount = self.root / "projects"
+        self.inside = self.mount / "app"
+        self.git_dir = self.inside / ".git"
+        (self.git_dir / "objects").mkdir(parents=True)
+        lock = {**self.new, "packages": {"": {"dependencies": {"example": "^1.0.0"}},
+                                         **self.new["packages"]}}  # fmt: skip
+        self.write(self.inside / "package-lock.json", lock)
+        self.write(self.inside / "package.json", {"name": "app", "dependencies": {"example": "^1"}})
+        os.environ[VARIABLE] = str(self.mount)
+        self.project_id = history.register_project(self.inside)
+        self.url = f"/projects/{self.project_id}"
+        self.target = 'name="packages" value="example"'  # the row's update check button
+
+    def scan(self):
+        return self.client.post(f"{S}{self.url}/scans", data={"session": SESSION},
+                                headers={"origin": BASE}, follow_redirects=False)  # fmt: skip
+
+    def handed(self):
+        """How often each service was given the project."""
+        return (self.preview_files.call_count, self.scan_project.call_count,
+                self.apply_preview.call_count)  # fmt: skip
+
+    def test_a_project_of_its_own_files_is_read_checked_scanned_and_applied(self):
+        page = self.page(self.url)
+        self.assertIn("직접 1개, 중첩 0개", page)
+        self.assertIn(self.target, page)
+        for name in self.FILES:
+            self.assertEqual(len(self.app._sha256(str(self.inside), name)), 64)
+        held = self.preview_id()
+        self.assertEqual(self.scan().status_code, 303)
+        self.assertEqual(self.apply(held).status_code, 200)
+        self.assertEqual(self.handed(), (1, 1, 1))
+        project = Path(str(self.inside))
+        self.assertEqual(self.previewed[0][0], project)
+        self.assertEqual(self.applied[0]["project"], project)
+        # Git is told which folder to read: the project's own, inside the mounted folder.
+        scanned = self.scan_project.call_args
+        self.assertEqual(scanned.args, (project, None))
+        self.assertEqual((scanned.kwargs["git_dir"], scanned.kwargs["base_ref"]),
+                         (self.git_dir, None))  # fmt: skip
+        # A desktop leaves the repository to Git, as before.
+        del os.environ[VARIABLE]
+        self.assertEqual(self.scan().status_code, 303)
+        self.assertNotIn("git_dir", self.scan_project.call_args.kwargs)
+
+    def test_a_file_that_is_no_longer_the_projects_own_is_not_read_or_handed_on(self):
+        held = self.preview_id()
+        a_folder = os.stat_result((stat.S_IFDIR | 0o755, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        for name in self.FILES:
+            file = self.inside / name
+            for kind, mode in {**LINKS, "a folder": a_folder}.items():
+                with self.subTest(name, kind=kind), reported(file, mode), \
+                        fenced(file, look=True) as tried, \
+                        mock.patch.object(service, "list_dependencies",
+                                          wraps=service.list_dependencies) as listed:  # fmt: skip
+                    page = self.page(self.url)
+                    lockfile = name == "package-lock.json"
+                    self.assertEqual("package-lock.json이 일반 파일이 아닙니다." in page, lockfile)
+                    self.assertEqual(listed.call_count, 0 if lockfile else 1)
+                    self.assertNotIn(self.target, page)
+                    self.assertIsNone(self.app._sha256(str(self.inside), name))
+                    self.page(self.url + "/updates")
+                    refused = [self.check(), self.apply(held), *([self.scan()] if lockfile else [])]
+                    for response in refused:
+                        self.assertEqual(response.status_code, 400)
+                        self.assertIn(self.app.INPUT_REFUSED, response.text)
+                    self.assertEqual(self.handed(), (1, 0, 0))
+                    self.assertEqual(tried, [])
+        # The preview was not used up: once the files are the project's own again, it applies.
+        self.assertEqual(self.apply(held).status_code, 200)
+        self.assertEqual(self.handed(), (1, 0, 1))
+
+    def test_git_is_given_only_a_git_folder_of_its_own_in_the_mounted_folder(self):
+        def refused(case, why="is not a Git folder with its own objects"):
+            response = self.scan()
+            self.assertEqual(response.status_code, 400, case)
+            self.assertIn(why, response.text, case)
+            self.assertEqual(self.scan_project.call_count, 0, case)
+
+        objects = self.git_dir / "objects"
+        # Entries that would send Git to another folder: pointer files, and links.
+        pointers = {"commondir": self.git_dir / "commondir",
+                    "alternates": objects / "info" / "alternates"}  # fmt: skip
+        for case, pointer in pointers.items():
+            pointer.parent.mkdir(exist_ok=True)
+            pointer.write_text("../../elsewhere\n", encoding="utf-8")
+            refused(case)
+            pointer.unlink()
+        for kind, mode in LINKS.items():
+            for entry in (self.git_dir, objects, pointers["commondir"], pointers["alternates"]):
+                with reported(entry, mode), fenced(entry, look=True) as tried:
+                    refused(f"{entry.name} as a {kind}")
+                    self.assertEqual(tried, [])
+        shutil.rmtree(objects)
+        refused("no objects folder")
+        # A .git file names a Git folder somewhere else (a worktree, a submodule).
+        shutil.rmtree(self.git_dir)
+        self.git_dir.write_text("gitdir: ../elsewhere/.git/worktrees/app\n", encoding="utf-8")
+        with fenced(self.git_dir, look=True) as tried:
+            refused("a .git file")
+            self.assertEqual(tried, [])
+        self.git_dir.unlink()
+        # No Git folder in the mounted folder: one above it is not looked for.
+        above = self.root / ".git"
+        (above / "objects").mkdir(parents=True)
+        with fenced(above) as tried:
+            refused("a Git folder above the mounted folder",
+                    "no .git folder at or above it in the mounted folder")  # fmt: skip
+            self.assertEqual(tried, [])
+        # The nearest one at or above the project, up to the mounted folder itself, is used.
+        nearest = self.mount / ".git"
+        (nearest / "objects").mkdir(parents=True)
+        self.assertEqual(self.scan().status_code, 303)
+        self.assertEqual(self.scan_project.call_args.kwargs["git_dir"], nearest)

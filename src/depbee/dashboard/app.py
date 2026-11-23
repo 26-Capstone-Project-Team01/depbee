@@ -17,7 +17,9 @@ that first project comes back to the overview (enroll); a later one opens its ow
 A project is registered by its folder's path: typed into the form, or chosen in the desktop's
 own folder dialog (.picker, a child process), which is checked as a typed one is. In a container
 (.mounted) the dialog's button opens the folders mounted into it instead, and only a folder
-among those is registered or used.
+among those is registered or used: each time a project is listed, checked, scanned or applied
+there, its folder, the files read and the Git folder are looked at again (_found, _refused,
+mounted.repository), and a link is never followed.
 
 The pages work without a script. The one script (static/app.js, from under the session like the
 stylesheets) only marks a button whose request is running, stops a second request meanwhile and
@@ -182,7 +184,7 @@ REGISTER_ERRORS = {
     "folder": "폴더를 찾을 수 없습니다.",
     "lockfile": "폴더에 package-lock.json 파일이 없습니다.",
     "unreadable": "경로를 확인할 수 없습니다.",
-    "outside": "컨테이너에 연결한 프로젝트 폴더 밖의 경로는 등록할 수 없습니다(밖을 가리키는 링크 "
+    "outside": "컨테이너에 연결한 프로젝트 폴더 밖의 경로는 등록할 수 없습니다(링크를 거치는 경로 "
     "포함).",
 }
 # The container's folder picker (.mounted) was asked for something it does not list.
@@ -227,6 +229,12 @@ PREVIEW_GONE = (
 )
 PREVIEW_GONE_TITLE = "미리보기가 없습니다"
 PROJECT_MISSING = "등록한 프로젝트 폴더를 찾을 수 없습니다."
+# A container's dashboard found package.json or package-lock.json to be a link or no file
+# (_refused): nothing read it, and nothing ran.
+INPUT_REFUSED = (
+    "프로젝트의 package.json이나 package-lock.json이 링크이거나 일반 파일이 아니어서 읽지 "
+    "않았습니다. 컨테이너의 대시보드는 연결한 폴더 안에 있는 실제 파일만 읽습니다."
+)
 PREVIEW_FAILED = "업데이트 확인을 끝내지 못했습니다(파일이나 데이터를 읽거나 쓰지 못함)."
 SCAN_TITLE = "검사 오류"  # error.html's heading for a scan (default: the update one)
 SCAN_FAILED = "검사를 끝내지 못했습니다(파일이나 데이터를 읽거나 쓰지 못함)."
@@ -644,6 +652,9 @@ def build_app(
         if not _found(found["path"]):  # the registered path, checked as at registration
             return page(request, "error.html", 400, project=found, section="updates",
                         message=PROJECT_MISSING)  # fmt: skip
+        if _refused(found["path"], "package.json", "package-lock.json"):
+            return page(request, "error.html", 400, project=found, section="updates",
+                        message=INPUT_REFUSED)  # fmt: skip
         if not busy.acquire(blocking=False):
             return stopped(request, 409, BUSY_TITLE, BUSY, BUSY_NOTE, found)
         try:
@@ -684,6 +695,9 @@ def build_app(
         if not _found(found["path"]):  # the registered path, checked as at registration
             return page(request, "error.html", 400, project=found, section="updates",
                         message=PROJECT_MISSING, title=SCAN_TITLE)  # fmt: skip
+        if _refused(found["path"], "package-lock.json"):
+            return page(request, "error.html", 400, project=found, section="updates",
+                        message=INPUT_REFUSED, title=SCAN_TITLE)  # fmt: skip
         if not busy.acquire(blocking=False):
             return stopped(request, 409, BUSY_TITLE, BUSY, BUSY_NOTE, found)
         try:
@@ -729,6 +743,10 @@ def build_app(
         if found is None or not _found(found["path"]):
             return page(request, "error.html", 400, project=found, section="updates",
                         message=PROJECT_MISSING)  # fmt: skip
+        # Looked at again here: the files may have changed since the preview read them.
+        if _refused(found["path"], "package.json", "package-lock.json"):
+            return page(request, "error.html", 400, project=found, section="updates",
+                        message=INPUT_REFUSED)  # fmt: skip
         if not busy.acquire(blocking=False):
             return stopped(request, 409, BUSY_TITLE, BUSY, BUSY_NOTE, found)
         try:
@@ -799,21 +817,36 @@ def build_app(
 
 
 def _found(path: str) -> bool:
-    """The registered folder still exists, looked at as at registration (no share or device; in
-    a container, among the mounted folders)."""
+    """The registered folder still exists, looked at as at registration (no share or device).
+    In a container it is a folder of the mounted one as it is spelled (mounted.problem): a path
+    outside that folder, as an older history may hold, is not looked at."""
     try:
+        if mounted.root() is not None:
+            return mounted.problem(Path(path)) is None
         real = mcp._unlinked(mcp._local_path(path, "project"), "project")
-        return real is not None and stat.S_ISDIR(real.stat().st_mode) and mounted.holds(real)
+        return real is not None and stat.S_ISDIR(real.stat().st_mode)
     except (GuardError, OSError, ValueError):
         return False
+
+
+def _refused(path: str, *names: str) -> bool:
+    """A container's dashboard must not read one of the files names of the registered folder at
+    path: it is there, but not as a regular file of the mounted folder itself (a link, or
+    something that is no file: mounted.problem). Asked each time before a file is read or a
+    service is given the folder, since the file may have changed since it was last read. A
+    missing file is not refused: its reader's own error says that it is missing. Always False
+    on a desktop, which reads a file through its links as before."""
+    return mounted.root() is not None and any(
+        mounted.problem(Path(path) / name, stat.S_ISREG) not in (None, "missing") for name in names
+    )
 
 
 def _registration_problem(text: str) -> str | None:
     """A REGISTER_ERRORS key, or None for an absolute local folder with a regular
     package-lock.json file. The MCP path checks: shares, device paths, reserved names and links
     to them are refused before anything behind them is touched. In a container the folder and
-    its lockfile, links resolved, must also be among the mounted folders (mounted.holds): a
-    folder outside them is refused before its lockfile is looked for."""
+    its lockfile must be in the mounted folder as they are spelled (mounted.problem): a path
+    outside it is refused before anything of it is looked at, and a link wherever it leads."""
     if len(text) > MAX_PATH:
         return "long"
     try:
@@ -823,14 +856,19 @@ def _registration_problem(text: str) -> str | None:
     if not path.is_absolute():
         return "absolute"
     try:
+        if mounted.root() is not None:
+            for target, kind, missing in ((path, stat.S_ISDIR, "folder"),
+                                          (path / "package-lock.json", stat.S_ISREG, "lockfile")):  # fmt: skip
+                problem = mounted.problem(target, kind)
+                if problem in ("outside", "link"):
+                    return "outside"
+                if problem is not None:
+                    return missing
+            return None
         folder = mcp._unlinked(path, "path")
-        if folder is not None and not mounted.holds(folder):
-            return "outside"
         if folder is None or not stat.S_ISDIR(folder.stat().st_mode):
             return "folder"
         lock = mcp._unlinked(path / "package-lock.json", "package-lock.json")
-        if lock is not None and not mounted.holds(lock):
-            return "outside"
         if lock is None or not stat.S_ISREG(lock.stat().st_mode):
             return "lockfile"
     except GuardError:
@@ -974,8 +1012,10 @@ def _sha256(folder: str, name: str) -> str | None:
     """SHA-256 of the regular file name in a registered folder, reached as at registration; None
     if it is not there, cannot be read or is larger than any file depbee previews."""
     try:
+        if _refused(folder, name):
+            return None
         real = mcp._unlinked(mcp._local_path(folder, "project") / name, name)
-        if real is None or not mounted.holds(real):
+        if real is None:
             return None
         mode = real.stat()
         if not stat.S_ISREG(mode.st_mode) or mode.st_size > MAX_JSON_BYTES:
@@ -1167,6 +1207,8 @@ def _dependencies(path: str) -> tuple[list[dict], str | None]:
     if not _found(path):
         return [], "프로젝트 폴더를 찾을 수 없습니다."
     try:
+        if _refused(path, "package-lock.json"):
+            return [], "package-lock.json이 일반 파일이 아닙니다."
         lock = mcp._unlinked(folder / "package-lock.json", "package-lock.json")
         if lock is None:
             return [], "package-lock.json이 없습니다."
@@ -1187,6 +1229,8 @@ def _declared_as(row: dict) -> str | None:
 def _preview_targets(path: str) -> set[str]:
     """Peer-only entries in the lockfile cannot be targeted by npm update."""
     try:
+        if _refused(path, "package.json"):
+            return set()
         manifest = mcp._unlinked(Path(path) / "package.json", "package.json")
         if manifest is None or not stat.S_ISREG(manifest.lstat().st_mode):
             return set()
@@ -1241,9 +1285,12 @@ def _run_preview(project: Path, names: list[str], options: dict) -> tuple | str:
 def _run_scan(project: Path, options: dict) -> tuple | str:
     """(report, run id or None) of service.scan_project with extraction against Git HEAD,
     recorded as depbee scan records it without base options; or the error page's message
-    (a GuardError's own, else fixed). Runs in a worker thread."""
+    (a GuardError's own, else fixed). Runs in a worker thread. In a container Git is handed the
+    project's own Git folder (mounted.repository) and looks for no other."""
     try:
-        report = service.scan_project(project, None, base_ref=None, extract=True, **options)
+        chosen = {} if mounted.root() is None else {"git_dir": mounted.repository(project)}
+        report = service.scan_project(project, None, base_ref=None, extract=True, **options,
+                                      **chosen)  # fmt: skip
     except GuardError as exc:
         return str(exc)
     except (OSError, ValueError, RecursionError):
