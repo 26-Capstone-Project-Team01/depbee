@@ -126,6 +126,22 @@ class RenderedTests(FormatFixture):
         for inert in ("`", "[link]", "evil.test"):
             self.assertNotIn(inert, plain)
 
+    def test_markdown_location_spells_a_newline_and_its_typed_escape_apart(self):
+        # Escaped for the output, a real newline is the six characters the other location holds.
+        report = self.scored(2e-07)
+        (row,) = report["results"]
+        real, typed = "node_modules/a\nb", "node_modules/a\\u000ab"
+        report["results"] = [{**row, "location": real},
+                             {**row, "location": typed, "score": 4e-07}]  # fmt: skip
+        kept = copy.deepcopy(report)
+        markdown = capture(_print_markdown, report)
+        shown = {real: "` node_modules/a\\u000ab `", typed: "` node_modules/a\\\\u000ab `"}
+        for location, score in ((real, "2e-07"), (typed, "4e-07")):
+            # Each spelling is in one table row and under its own row's stored value.
+            self.assertEqual(markdown.count(f" | {shown[location]} |\n"), 1)
+            self.assertIn(f"\n- 점수 원값: {score}\n- 위치: {shown[location]}\n", markdown)
+        self.assertEqual(report, kept)  # only the Markdown spelling differs, never the report
+
     def test_exact_zero_and_exact_scores_have_no_separate_stored_value(self):
         for score, shown in ((0.0, "0"), (-0.0, "0"), (0.9, "0.900")):
             with self.subTest(score=score):

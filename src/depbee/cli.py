@@ -754,6 +754,13 @@ def _cell(text: str) -> str:
     return text.replace("|", "\\|")
 
 
+def _md_location(location: object) -> str:
+    """A lockfile location as a Markdown code span that spells no two locations alike: each
+    backslash is doubled before _md. Otherwise a control character, which _clean writes as a
+    backslash and its code, would read as a location that holds those very characters."""
+    return _md(str(location).replace("\\", "\\\\"))
+
+
 def _print_markdown(report: dict) -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="backslashreplace")
@@ -810,7 +817,7 @@ def _print_markdown(report: dict) -> None:
         cells += [
             score if score is not None else "-",
             _md_label(REASON_LABELS, row["reason"]) if row.get("reason") else "-",
-            _md(row["location"]),
+            _md_location(row["location"]),
         ]
         if timed:
             seconds = row.get("elapsed_seconds")
@@ -838,12 +845,12 @@ def _markdown_details(row: dict, report: dict) -> list[str]:
     lines = ["", f"### {_md_label(STATUS_LABELS, row['status'])}: {target}", ""]
     if raw:
         # Rows of one package and version share the heading: the location says whose value it is.
-        lines += [f"- 점수 원값: {raw}", f"- 위치: {_md(row['location'])}"]
+        lines += [f"- 점수 원값: {raw}", f"- 위치: {_md_location(row['location'])}"]
     if alternative:
         # The heading has no location and rows without details have no section, so say which.
         lines.append(
             f"- 대안(안전 보증 아님): {_md(alternative[0])}"
-            f" ({alternative[1]}, 위치 {_md(row['location'])})"
+            f" ({alternative[1]}, 위치 {_md_location(row['location'])})"
         )
     if row.get("detail"):
         lines.append(f"- 상세: {_md(row['detail'])}")
