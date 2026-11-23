@@ -175,7 +175,11 @@ footer p { margin: 0; }
 .views a[aria-current] { border-bottom-color: var(--honey); font-weight: 800; }
 .trail ol { display: flex; flex-wrap: wrap; gap: .1rem .5rem; max-width: none; margin: 0 0 .5rem; padding: 0; color: var(--muted); font-size: .875rem; list-style: none; }
 .trail li + li::before { content: "/"; margin-right: .5rem; }
+/* A long name breaks inside its own step: it never pushes the page sideways. */
+.trail li { min-width: 0; overflow-wrap: anywhere; }
 .trail a { display: inline-block; padding-block: .35rem; }
+/* A trail of folders (the container's folder picker): its steps are paths. */
+.trail.paths { font-family: var(--mono); }
 
 /* A view's list and what stands above it: the search, the candidates-only filter beside it,
    and the line that says what is known of the candidates. */

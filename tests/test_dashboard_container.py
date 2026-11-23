@@ -198,6 +198,50 @@ class PickerTests(ContainerFixture):
             self.assertNotIn("location", refused.headers)
         self.assertEqual(history.list_projects(), [])
 
+    def test_the_start_pages_button_reaches_the_mounted_folders_and_their_way_back(self):
+        project = self.add("app-a")
+        start = self.page("/")
+        self.assertIn('<body class="start">', start)
+        # The start page's one form is the folder button's: in a container it leads to the list.
+        self.assertEqual(re.findall(r'<form method="post" action="([^"]*)">', start),
+                         [S + "/projects/pick"])  # fmt: skip
+        self.assertEqual(self.pick().headers["location"], S + "/projects/mounted")
+        page = self.listed()
+        # Nothing is registered yet: the way back is the start page, as it was, and the typed
+        # path has its place here, since project management opens only once a project is there.
+        self.assertIn(f'<a href="{S}/">처음 화면으로 돌아가기</a>', page)
+        self.assertNotIn("프로젝트 관리로 돌아가기", page)
+        self.assertIn(f'<form method="post" action="{S}/projects">\n<input type="hidden" '
+                      f'name="session" value="{SESSION}">\n<label for="path">', page)  # fmt: skip
+        self.assertIn('<input id="path" name="path" type="text" maxlength="1024" required>', page)
+        self.assertEqual(self.page("/"), start)
+        self.assertEqual(self.page("/?manage=1"), start)
+        # That typed path is checked as every other: outside is refused, inside is registered.
+        self.assert_outside(self.project)
+        self.assertEqual(history.list_projects(), [])
+        self.assertEqual(self.register(str(project)).headers["location"], S + "/projects/1")
+        # With a project the way back is project management, whose folder button leads here too.
+        page = self.listed()
+        self.assertIn(f'<a href="{S}/?manage=1">프로젝트 관리로 돌아가기</a>', page)
+        self.assertNotIn("처음 화면으로 돌아가기", page)
+        self.assertIn(f'<form method="post" action="{S}/projects/pick">', self.page("/?manage=1"))
+        self.assertEqual(self.pick().headers["location"], S + "/projects/mounted")
+        self.assertEqual(self.choose.call_count, 0)
+
+    def test_on_a_desktop_the_start_pages_button_opens_the_dialog_and_closing_it_comes_back(self):
+        del os.environ[VARIABLE]
+        start = self.page("/")
+        self.choose.side_effect = None
+        self.choose.return_value = ("cancelled", None)
+        closed = self.pick()
+        self.assertEqual((closed.status_code, closed.headers["location"]),
+                         (303, S + "/?manage=1"))  # fmt: skip
+        self.assertEqual(self.choose.call_count, 1)
+        # Nothing registered: that address is the start page again, and no list of folders.
+        self.assertEqual(self.page("/?manage=1"), start)
+        self.assertEqual(history.list_projects(), [])
+        self.assertEqual(self.get("/projects/mounted").status_code, 404)
+
     def test_the_first_page_and_the_management_page_are_the_ones_a_desktop_shows(self):
         first = self.page("/")
         self.assertIn(f'<form method="post" action="{S}/projects/pick">', first)
