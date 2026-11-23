@@ -544,8 +544,10 @@ def apply_preview(
     confirm, a project .npmrc with mode install (refused: npm ci would read it), or when the
     project no longer passes read_project(), its two files differ from the preview's hashes or
     new_lock from preview.new_package_lock_sha256, or when the new files fail the same checks
-    (npm_cli.check_files). Mode install also refuses a new lockfile entry without integrity and
-    a scratch folder (temporary folder for npm's missing paths) that lands inside the project.
+    (npm_cli.check_files). Mode install also refuses a node_modules that is not a folder of the
+    project itself (npm_cli.check_install_dir: npm ci empties it, and a link would lead that
+    elsewhere), a new lockfile entry without integrity and a scratch folder (temporary folder
+    for npm's missing paths) that lands inside the project.
     Otherwise the two original files go to a new backup folder next to the history file first,
     then each changed file is written to a temporary file in the project and swapped in with
     os.replace(). Mode install then runs npm ci --ignore-scripts (npm_cli.clean_install) and
@@ -595,6 +597,8 @@ def apply_preview(
         return done("refused", "project_npmrc")
     try:
         package_bytes, lock_bytes, _ = npm_cli.read_project(project)
+        if mode == "install":
+            npm_cli.check_install_dir(project)
     except (GuardError, OSError, ValueError) as exc:
         return done("refused", "project_unsupported", str(exc))
     if (_sha256(package_bytes), _sha256(lock_bytes)) != (

@@ -4,7 +4,8 @@ For the preview npm only ever runs as `--version` and `update --package-lock-onl
 --ignore-scripts` in that folder, never in the project: no node_modules and no lifecycle scripts.
 With registry-only inputs npm 11.6.1 fetched package metadata and no tarball (docs/validation.md).
 Git never runs because npm's git setting points to a file that does not exist. Only an apply with
-install (clean_install) runs `npm ci --ignore-scripts` in the project itself.
+install (clean_install) runs `npm ci --ignore-scripts` in the project itself, and only when the
+node_modules it empties first is the project's own folder (check_install_dir).
 
 Known exception (not blocked, not run): a registry package fetched during the update may depend on
 a hosted Git commit (40-character sha). npm 11.6.1 then downloads that commit's tarball from the
@@ -21,6 +22,7 @@ import base64
 import os
 import re
 import shutil
+import stat
 from pathlib import Path
 
 from ..contracts import MAX_JSON_BYTES, GuardError, parse_json
@@ -77,6 +79,33 @@ REGISTRY_TARBALL = "https://registry.npmjs.org/"
 _FILE_SUFFIX = re.compile(r"[.](?:tgz|tar.gz|tar)\Z", re.IGNORECASE)
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _NPM_VERSION = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?")
+# Windows reparse tag bit of tags that name another path (IsReparseTagNameSurrogate).
+NAME_SURROGATE = 0x20000000
+
+
+def is_link(mode: os.stat_result) -> bool:
+    """An os.lstat result of a symlink, or on Windows of a name-surrogate reparse point (symlink,
+    junction): an entry that names another path. Other reparse points (such as Cloud Files
+    placeholders) are plain files and folders here."""
+    return stat.S_ISLNK(mode.st_mode) or bool(
+        (getattr(mode, "st_reparse_tag", 0) or 0) & NAME_SURROGATE
+    )
+
+
+def check_install_dir(project: Path) -> None:
+    """GuardError unless project/node_modules is a folder of the project itself, or not there
+    yet. npm ci removes what that folder holds before it installs (npm 11.6.1
+    lib/commands/ci.js 90-95), and through a link (symlink, junction) that would be what the
+    folder the link names holds. It is looked at with lstat and never followed."""
+    try:
+        mode = os.lstat(project / "node_modules")
+    except FileNotFoundError:
+        return
+    if is_link(mode) or not stat.S_ISDIR(mode.st_mode):
+        raise GuardError(
+            "install needs node_modules to be a folder of the project itself, not a link or a "
+            "file: apply the lockfile only and install yourself"
+        )
 
 
 def _regular_file(path: Path) -> bytes:
@@ -338,13 +367,14 @@ def clean_install(project: Path, scratch: Path) -> tuple[str, int]:
     project is the absolute project folder, checked by read_project() and without a project
     .npmrc (the caller refuses one). scratch is an absolute, new folder depbee made, which the
     caller has checked is outside the project: the missing Git program and global config file
-    are named inside it. npm ci removes
-    what node_modules holds before it installs.
+    are named inside it. npm ci removes what node_modules holds before it installs, so that
+    folder is looked at once more here, where npm is started (check_install_dir).
     """
     npm, env = _npm(), _environment()
     no_git, no_global = scratch / "no-git" / "git", scratch / "no-globalconfig" / "npmrc"
     if not (project.is_absolute() and scratch.is_absolute()) or os.path.lexists(no_git.parent):
         raise GuardError("npm needs an absolute project and a new, absolute scratch folder")
+    check_install_dir(project)
     # As in update_lock(), plus globalconfig: with a CLI prefix npm reads <prefix>/etc/npmrc as
     # the global config (@npmcli/config lib/index.js 296-312), here a file of the project.
     pinned = (

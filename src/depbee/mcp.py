@@ -30,6 +30,7 @@ from .cli import (
     _split_package,
 )
 from .contracts import GuardError
+from .inputs.npm_cli import is_link as _is_link
 
 # What an agent waits for in one tool call, not a bound on the work: a late call gives an error,
 # never a verdict, and starts no further change, but the work already running goes on with no
@@ -42,8 +43,6 @@ MAX_PACKAGES = 20
 MAX_TEXT = 256
 # Links followed in one path input (as POSIX SYMLOOP_MAX), so a loop ends in an error.
 MAX_LINKS = 40
-# Windows reparse tag bit of tags that name another path (IsReparseTagNameSurrogate).
-NAME_SURROGATE = 0x20000000
 # The prefix os.readlink puts on a local Windows target (\\?\C:\... or \??\C:\...); without it the
 # drive path is checked like an input. \\?\UNC\... and other forms keep it and are refused.
 _READLINK_DRIVE = re.compile(r"\A(?:\\\\\?\\|\\\?\?\\)(?=[A-Za-z]:\\)")
@@ -229,15 +228,6 @@ def _unlinked(path: Path, name: str) -> Path | None:
             current = Path(target.anchor)
         pending = [*((part, True) for part in parts), *pending]
     return current
-
-
-def _is_link(mode: os.stat_result) -> bool:
-    """A symlink, or on Windows a name-surrogate reparse point (symlink, junction): one that
-    names another path. Other reparse points (such as Cloud Files placeholders) are plain files
-    and folders here."""
-    return stat.S_ISLNK(mode.st_mode) or bool(
-        (getattr(mode, "st_reparse_tag", 0) or 0) & NAME_SURROGATE
-    )
 
 
 def _limit(index: int, total: int, change: dict) -> None:
