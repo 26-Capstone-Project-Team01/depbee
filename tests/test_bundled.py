@@ -11,6 +11,7 @@ No network; nothing is downloaded.
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tomllib
@@ -89,20 +90,26 @@ class ShippedFilesTests(unittest.TestCase):
         self.assertNotIn("—", notice)
 
     @unittest.skipUnless((REPOSITORY / "pyproject.toml").is_file(), "not run from a source tree")
-    def test_the_package_ships_exactly_these_files_and_needs_no_private_repository(self):
+    def test_the_package_ships_exactly_these_files_and_pins_the_public_analyzer(self):
         project = tomllib.loads((REPOSITORY / "pyproject.toml").read_text("utf-8"))
         shipped = sorted(f"assets/{name}" for name in (*bundled.SHA256, *EXTRA))
         self.assertEqual(sorted(project["tool"]["setuptools"]["package-data"]["depbee"]), shipped)
         listed = (REPOSITORY / "MANIFEST.in").read_text("utf-8").split()
         for name in shipped:  # the sdist
             self.assertIn(f"src/depbee/{name}", listed)
-        # The base install scores with the shipped model; only [extract] needs the private
-        # analyzer repository, and the older extra names still install.
+        # The base install scores with the shipped model; only [extract] brings the analyzer,
+        # and the older extra names still install.
         base = project["project"]["dependencies"]
         extras = project["project"]["optional-dependencies"]
         self.assertEqual(sorted(d.split(">")[0] for d in base), ["lightgbm", "numpy"])
-        private = [name for name, needs in extras.items() if "depbee-analyzer" in str(needs)]
-        self.assertEqual(private, ["extract"])
+        analyzer = {name: needs for name, needs in extras.items() if "depbee-analyzer" in str(needs)}
+        self.assertEqual(list(analyzer), ["extract"])
+        # One pin: the team's public repository over HTTPS at a full commit id. An image build
+        # and an action run fetch it without credentials, and the installed identity
+        # (extractor._installed_identity) and action.yml's cache key read this exact form.
+        (pin,) = analyzer["extract"]
+        self.assertRegex(pin, r"^depbee-analyzer @ git\+https://github\.com/"
+                              r"26-Capstone-Project-Team01/depbee-analyzer@[0-9a-f]{40}$")  # fmt: skip
         self.assertLessEqual({"ml", "extract", "mcp", "web"}, set(extras))
         attributes = REPOSITORY / ".gitattributes"
         if attributes.is_file():  # not in an sdist
@@ -128,6 +135,17 @@ class ShippedFilesTests(unittest.TestCase):
                 with self.subTest(str(path)):
                     self.assertTrue(any(path.match(pattern) for pattern in named),
                                     ".dockerignore does not name it")  # fmt: skip
+
+    @unittest.skipUnless((REPOSITORY / "Dockerfile").is_file(), "not run from a checkout")
+    def test_the_image_build_can_receive_no_credential(self):
+        # The default build installs the pinned public analyzer anonymously. No instruction
+        # takes a build argument or mounts a secret, and the default target (the last stage)
+        # is the one with the analyzer; core stays a target of its own.
+        text = (REPOSITORY / "Dockerfile").read_text("utf-8")
+        self.assertNotRegex(text, r"(?m)^\s*(ARG\b|RUN\s+--mount)")
+        stages = re.findall(r"(?m)^FROM \S+ AS (\S+)$", text)
+        self.assertEqual(stages[-1], "full")
+        self.assertIn("core", stages)
 
 
 class ShippedDefaultTests(Fixture):
