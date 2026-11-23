@@ -7,12 +7,15 @@
 <link rel="stylesheet" href="{{ base }}/static/style.css">
 {% if section == "overview" %}<link rel="stylesheet" href="{{ base }}/static/overview.css">{% endif %}
 <link rel="icon" type="image/svg+xml" href="{{ base }}/static/icon.svg">
+{# The one script: it marks a running request and moves the focus after a check. Every page
+   works without it. #}
+<script src="{{ base }}/static/app.js" defer></script>
 </head>
 {# shell: a view with the inspector beside its list says class="split" (docs/dashboard-design.md). #}
 <body{% block shell %}{% endblock %}>
 <a class="skip" href="#main">본문으로 건너뛰기</a>
 {# The rail, a bar on a narrow screen: the brand, the registered projects as tabs (links, the
-   open one marked aria-current, no script), then project management and the model page. #}
+   open one marked aria-current), then the overview, project management and the model page. #}
 <header class="masthead">
 <a class="brand" href="{{ base }}/"><span class="comb" aria-hidden="true"><span></span><span></span><span></span></span><span class="wordmark">depbee</span> <span class="brand-note">npm 업데이트 검사</span></a>
 <nav class="tabs" aria-label="프로젝트">
@@ -30,7 +33,6 @@
 <a class="tab manage" href="{{ base }}/?manage=1"{% if section == "manage" %} aria-current="page"{% endif %}>프로젝트 관리</a>
 <a href="{{ base }}/model"{% if section == "model" %} aria-current="page"{% endif %}>모델 정보</a>
 </nav>
-<span class="hive" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span></span>
 </header>
 <main id="main">
 {% block main %}{% endblock %}
@@ -38,5 +40,7 @@
 <footer>
 <p class="note">{{ safety_note }} 이 화면은 이 PC의 127.0.0.1에서만 열립니다. 주소에 이번 실행의 세션 값이 들어 있으니 다른 사람에게 보이지 않게 합니다.</p>
 </footer>
+{# What the script says while a request runs and after a check, for a screen reader. #}
+<p class="visually-hidden" id="live" role="status" aria-live="polite"></p>
 </body>
 </html>

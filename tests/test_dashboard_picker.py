@@ -18,7 +18,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from test_dashboard import BASE, PORT, SESSION, DashboardFixture, S
+from test_dashboard import BASE, PORT, SESSION, DashboardFixture, S, assert_one_script
 from test_workflow import Fixture
 
 from depbee import history
@@ -67,10 +67,23 @@ class PickRouteTests(DashboardFixture):
         self.assertEqual(self.files(), before)
 
     def test_the_dialog_comes_first_and_the_typed_path_is_folded_under_it(self):
+        # Before the first project the dialog's form is all there is (the start page): the same
+        # address and the same field as project management's, and no typed path beside it.
         html = self.page("/")
-        self.assertIn("등록한 프로젝트가 없습니다.", html)
-        button = ('<button class="primary" type="submit" aria-describedby="pick-hint">'
-                  "프로젝트 폴더 선택</button>")  # fmt: skip
+        self.assertIn(f'{PICK_FORM}\n<input type="hidden" name="session" value="{SESSION}">\n'
+                      '<button type="submit" ', html)  # fmt: skip
+        self.assertEqual((html.count("<form "), html.count("<button ")), (1, 1))
+        self.assertNotIn(PATH_FORM, html)
+        self.assertNotIn("<details", html)
+        for upload in ('type="file"', "webkitdirectory", "multipart", "enctype"):
+            self.assertNotIn(upload, html)
+        self.assertEqual(self.choose.call_count, 0)  # looking opens no dialog
+        # With a project, project management has the dialog first and the typed path under it.
+        history.register_project(self.project)
+        html = self.page("/?manage=1")
+        self.assertNotIn("등록한 프로젝트가 없습니다.", html)
+        button = ('<button class="primary" type="submit" aria-describedby="pick-hint" '
+                  'data-busy-label="폴더 선택 창을 확인하세요…">프로젝트 폴더 선택</button>')  # fmt: skip
         self.assertIn(f'{PICK_FORM}\n<input type="hidden" name="session" value="{SESSION}">\n'
                       f"{button}\n</form>", html)  # fmt: skip
         self.assertIn(
@@ -91,10 +104,7 @@ class PickRouteTests(DashboardFixture):
         # A folder is never uploaded: no file input, no multipart form.
         for upload in ('type="file"', "webkitdirectory", "multipart", "enctype"):
             self.assertNotIn(upload, html)
-        # With a project the same section still comes before the list.
-        history.register_project(self.project)
-        html = self.page("/?manage=1")
-        self.assertNotIn("등록한 프로젝트가 없습니다.", html)
+        # The section comes before the list of the registered projects.
         self.assertLess(html.index(PICK_FORM), html.index("등록한 프로젝트 1개"))
         self.assertEqual(self.choose.call_count, 0)  # looking opens no dialog
 
@@ -120,9 +130,18 @@ class PickRouteTests(DashboardFixture):
         response = self.pick()
         self.assertEqual((response.status_code, response.headers["location"]), (303, S + "/?manage=1"))
         self.assert_nothing_registered(before)
+        # With nothing registered that address is the start page again: the button, no message.
+        html = self.page("/?manage=1")
+        self.assertIn('<body class="start">', html)
+        self.assertIn(PICK_FORM, html)
+        self.assertNotIn('role="alert"', html)
+        # With a project it is project management, the typed path folded as before.
+        history.register_project(self.project)
+        self.assertEqual(self.pick().headers["location"], S + "/?manage=1")
         html = self.page("/?manage=1")
         self.assertIn(CLOSED, html)
         self.assertNotIn('role="alert"', html)
+        self.assertEqual(len(history.list_projects()), 1)
 
     def test_a_dialog_that_cannot_open_or_runs_out_of_time_opens_the_typed_path(self):
         before = self.files()
@@ -174,7 +193,7 @@ class PickRouteTests(DashboardFixture):
                 self.assertIn('<p class="error" role="alert">' + message, html)
                 if len(path) > 10:
                     self.assertNotIn(path, html)  # the answer is not echoed
-                self.assertNotIn("<script", html)
+                assert_one_script(self, html)
                 self.assertNotIn("alert(1)", html)
                 # The dialog's button is what to use again: the typed path stays folded.
                 self.assertIn(CLOSED, html)

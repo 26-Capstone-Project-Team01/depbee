@@ -1,51 +1,50 @@
-/* The depbee workbench (docs/dashboard-design.md). Three zones on a wide screen: an ink rail with
-   the brand and the registered projects, a light work surface with the open project's list, and
-   the inspector of the candidate picked in that list. Honey is the brand and marks what is
-   picked or open, and nothing else. A verdict has its own colour and its own cell shape, and is
-   always said in words beside it. No external font, image or script. */
+/* The depbee workbench (docs/dashboard-design.md). A light grey-white page, paper sheets laid on
+   it and ink for the text, the rules and the filled buttons. Three zones on a wide screen: a rail
+   with the brand and the registered projects, a work surface with the open project's list, and
+   the inspector of the candidate picked in that list. Honey is the brand and marks what is picked
+   or open, and nothing else; it fills the whole page only before the first project (.start). A
+   verdict has its own colour and its own cell shape, and is always said in words beside it. No
+   external font or image; the one script is static/app.js. */
 :root {
   color-scheme: light;
-  /* Ink: the rail, the text and the filled buttons. */
-  --ink: #14203a;
-  --ink-2: #213158;
-  --ink-line: #3a4a72;
-  --on-ink: #f0f3f9;
-  --on-ink-dim: #b6c1d8;
-  /* The work surface and the sheets laid on it. */
-  --surface: #f3f5f9;
-  --sheet: #fff;
-  --head: #e8ecf3;
-  --line: #d3d9e4;
-  --muted: #55607a;
-  --link: #1c49b0;
-  /* Honey: the brand, and the open project, view and candidate. */
-  --honey: #f4b223;
-  --honey-wash: #fff2c9;
-  /* Verdicts: risk, hold (also what needs a decision) and pass. */
-  --risk: #b3261e;
-  --risk-wash: #fdecea;
-  --hold: #5a3ea6;
-  --hold-wash: #efeafb;
-  --pass: #1e6b58;
-  --pass-wash: #e6f2ee;
+  /* Ink: the text, the heavy rule on top of a sheet and the filled buttons. */
+  --ink: #16181b;
+  --ink-2: #2c3035;
+  /* The page, the sheets laid on it, a quiet band, a hairline and a firmer rule. */
+  --surface: #eceeed;
+  --sheet: #fdfcf8;
+  --head: #e2e5e2;
+  --line: #d6d8d3;
+  --line-2: #b4b8b1;
+  --muted: #5a5f66;
+  /* Honey: the brand, and the open project, view, filter and candidate. */
+  --honey: #f0ae18;
+  --honey-wash: #fcefc2;
+  /* Verdicts: risk, hold (also what needs a decision) and pass; fail is an apply that broke. */
+  --risk: #aa2a1f;
+  --risk-wash: #f8e6e2;
+  --hold: #5a3fa6;
+  --hold-wash: #ece8f8;
+  --pass: #1c6a4d;
+  --pass-wash: #e3f0ea;
+  --fail: #8a4712;
   --sans: "Pretendard Variable", Pretendard, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", "Noto Sans CJK KR", system-ui, sans-serif;
-  /* Identifiers (package names, versions, lockfile locations, paths, hashes): every character
-     has to be told apart, as a look-alike name is how a bad package gets in. */
+  /* Identifiers (package names, versions, lockfile locations, paths, hashes, exact scores):
+     every character has to be told apart, as a look-alike name is how a bad package gets in. */
   --mono: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, "DejaVu Sans Mono", "Liberation Mono", "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", monospace;
   --hex: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
   --rail: 15rem;
   --inspect: clamp(20rem, 28vw, 27rem);
-  /* What a status cell is drawn on and with; the rail and the sheets set their own. */
+  /* What a status cell is drawn on and with; a sheet sets its own. */
   --ground: var(--surface);
-  --on: var(--ink);
   --dim: var(--muted);
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 body { min-height: 100vh; margin: 0; background: var(--surface); color: var(--ink); font: 1rem/1.6 var(--sans); word-break: keep-all; overflow-wrap: break-word; }
-a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: .2em; }
+a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .22em; }
 a:hover { text-decoration-thickness: 2px; }
-/* Two colours, so that one of them shows on the rail, on a sheet and on honey alike. */
+/* Two colours, so that one of them shows on the page, on a sheet and on honey alike. */
 :focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; box-shadow: 0 0 0 2px var(--honey); }
 h1, h2, h3, h4 { line-height: 1.3; letter-spacing: -.015em; overflow-wrap: anywhere; }
 h1 { margin: 0 0 .15rem; font-size: 1.5rem; font-weight: 800; }
@@ -57,14 +56,15 @@ section { margin-top: 1.5rem; }
 dt { color: var(--muted); font-weight: 600; }
 dd { margin: 0; overflow-wrap: anywhere; }
 summary { width: fit-content; padding-block: .55rem; font-weight: 700; cursor: pointer; }
-.skip { position: absolute; top: -5rem; left: 1rem; z-index: 3; padding: .6rem 1rem; background: var(--honey); color: var(--ink); font-weight: 700; }
+.skip { position: absolute; top: -5rem; left: 1rem; z-index: 3; padding: .6rem 1rem; background: var(--honey); font-weight: 700; }
 .skip:focus { top: 0; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .note, .quiet, .unknown, .tally { color: var(--muted); }
 .note, .tally { font-size: .875rem; }
 
-/* Status cells. One hexagon, five fillings: solid is a risk, half filled a hold, a dot a pass,
-   hollow nothing known yet, struck through a folder that is gone. */
+/* Status cells. One hexagon: solid is a risk or a refusal, half filled a hold, a dot a pass,
+   hollow nothing known yet, struck through a folder that is gone or an apply that failed,
+   barred files that are no longer the ones that were checked. */
 .cell { position: relative; display: inline-block; flex: none; width: .8125rem; height: .9375rem; background: var(--stroke); clip-path: var(--hex); --stroke: var(--dim); }
 .cell::after { content: ""; position: absolute; inset: 2px; background: var(--ground); clip-path: var(--hex); }
 .cell.risk { --stroke: var(--risk); }
@@ -75,8 +75,12 @@ summary { width: fit-content; padding-block: .55rem; font-weight: 700; cursor: p
 .cell.pass::after { background: radial-gradient(circle, var(--pass) 0 30%, var(--ground) 34%); }
 .cell.gone { --stroke: var(--risk); }
 .cell.gone::after { background: linear-gradient(135deg, var(--ground) 40%, var(--risk) 40% 60%, var(--ground) 60%); }
+.cell.fail { --stroke: var(--fail); }
+.cell.fail::after { background: linear-gradient(135deg, var(--ground) 40%, var(--fail) 40% 60%, var(--ground) 60%); }
+.cell.stale { --stroke: var(--fail); }
+.cell.stale::after { background: repeating-linear-gradient(90deg, var(--fail) 0 12%, var(--ground) 12% 36%); }
 .verdict, .unknown { display: inline-flex; align-items: center; gap: .35rem; font-size: .875rem; white-space: nowrap; }
-.verdict { padding: .1rem .5rem .1rem .4rem; border-radius: .25rem; background: var(--ground); color: var(--tone); font-weight: 700; --ground: var(--head); --tone: var(--muted); }
+.verdict { padding: .1rem .5rem .1rem .4rem; border-radius: 3px; background: var(--ground); color: var(--tone); font-weight: 700; --ground: var(--head); --tone: var(--muted); }
 .verdict.risk { --ground: var(--risk-wash); --tone: var(--risk); }
 .verdict.hold { --ground: var(--hold-wash); --tone: var(--hold); }
 .verdict.pass { --ground: var(--pass-wash); --tone: var(--pass); }
@@ -88,53 +92,72 @@ strong.known, .flag { color: var(--risk); font-weight: 700; }
 .error, .warning.risk { color: var(--risk); font-weight: 700; }
 .warning { border-left-color: var(--hold); background: var(--hold-wash); }
 .warning.risk { border-left-color: var(--risk); background: var(--risk-wash); }
-.error a { color: inherit; }
 li.warning { margin-block: .35rem; list-style: none; }
 input[aria-invalid=true] { border: 2px solid var(--risk); }
 /* Nothing here yet: a hollow cell. */
-.empty { position: relative; max-width: 46rem; margin: .75rem 0; padding: .9rem 1rem .9rem 2.9rem; background: var(--head); }
+.empty { position: relative; max-width: 46rem; margin: .75rem 0; padding: .9rem 1rem .9rem 2.9rem; border-top: 2px solid var(--ink); background: var(--sheet); }
 .empty::before, .empty::after { content: ""; position: absolute; top: 1rem; left: 1rem; width: 1.1rem; height: 1.27rem; background: var(--muted); clip-path: var(--hex); }
-.empty::after { top: calc(1rem + 2px); left: calc(1rem + 2px); width: calc(1.1rem - 4px); height: calc(1.27rem - 4px); background: var(--head); }
+.empty::after { top: calc(1rem + 2px); left: calc(1rem + 2px); width: calc(1.1rem - 4px); height: calc(1.27rem - 4px); background: var(--sheet); }
 
 button, input, select { color: inherit; font: inherit; }
-button, .action { display: inline-flex; align-items: center; justify-content: center; min-height: 2.75rem; padding: .4rem .9rem; border: 1px solid var(--ink); border-radius: .375rem; background: var(--sheet); color: var(--ink); font-weight: 700; text-decoration: none; white-space: nowrap; cursor: pointer; }
-button:hover, .action:hover { background: var(--head); }
-button.primary, .gate form > button { background: var(--ink); color: #fff; }
+button, .action, .toggle { display: inline-flex; align-items: center; justify-content: center; gap: .45rem; min-height: 2.75rem; padding: .4rem .9rem; border: 1px solid var(--ink); border-radius: 3px; background: var(--sheet); color: var(--ink); font-weight: 700; text-decoration: none; white-space: nowrap; cursor: pointer; }
+button:hover, .action:hover, .toggle:hover { background: #f1f0ea; }
+button.primary, .gate form > button { background: var(--ink); color: var(--sheet); }
 button.primary:hover, .gate form > button:hover { background: var(--ink-2); }
-input[type=text], input[type=search], select { min-height: 2.75rem; padding: .4rem .7rem; border: 1px solid var(--muted); border-radius: .375rem; background: var(--sheet); }
+/* A request is running (app.js): the button that sent it says so, and every button that would
+   send another is set aside until the answer comes. The ring turns only where motion is wanted. */
+button[aria-disabled=true] { border-color: var(--line-2); background: transparent; color: var(--muted); cursor: default; }
+button.primary[aria-disabled=true], .gate form > button[aria-disabled=true] { border-color: var(--muted); background: var(--muted); color: var(--sheet); }
+button[aria-busy=true] { cursor: progress; }
+button[aria-busy=true]::before { content: ""; flex: none; width: .8em; height: .8em; border: 2px solid; border-right-color: transparent; border-radius: 50%; background: none; clip-path: none; }
+@keyframes turn { to { transform: rotate(1turn); } }
+input[type=text], input[type=search], select { min-height: 2.75rem; padding: .4rem .7rem; border: 1px solid var(--muted); border-radius: 3px; background: var(--sheet); }
 input[type=text], input[type=search] { width: 100%; }
 input[type=radio], input[type=checkbox] { width: 1.1rem; height: 1.1rem; vertical-align: -.15em; accent-color: var(--ink); }
 label, legend { font-weight: 600; }
-fieldset { max-width: 46rem; margin: 1rem 0; padding: .4rem 1rem; border: 1px solid var(--line); }
+fieldset { max-width: 46rem; margin: 1rem 0; padding: .4rem 1rem; border: 1px solid var(--line-2); }
 .field { display: flex; flex-wrap: wrap; gap: .5rem; max-width: 46rem; margin-top: .25rem; }
 .field input { flex: 1 1 11rem; width: auto; }
 
-/* The shell. Narrow: a bar with the brand, the open project and the two pages outside a project;
-   the other projects are on the project management page. */
-.masthead { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .75rem; padding: .4rem .75rem; background: var(--ink); color: var(--on-ink); --ground: var(--ink); --dim: var(--on-ink-dim); --risk: #ff8f82; --hold: #c9b9ff; --pass: #84d8c0; }
-.masthead a { color: inherit; text-decoration: none; }
-.masthead :focus-visible { outline-color: #fff; }
+/* Before the first project: the whole page is honey and holds one button. */
+body.start { display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; min-height: 100vh; min-height: 100dvh; background: var(--honey); }
+/* grid-column: the shell's wide layout puts every main in its second column, beside the rail. */
+.start main { display: grid; grid-column: 1; place-items: center; width: 100%; max-width: none; padding: 1.5rem; }
+.start form { width: min(100%, 22rem); }
+.start button { gap: .9rem; width: 100%; min-height: 4.5rem; padding: 1rem 1.5rem; border: 0; border-radius: .5rem; background: var(--ink); color: var(--sheet); font-size: 1.375rem; font-weight: 800; letter-spacing: -.02em; }
+.start button:hover { background: var(--ink-2); }
+/* A plus, drawn: the button's name stays its text. */
+.start button::before { content: ""; flex: none; width: 1.1rem; height: 1.1rem; background: linear-gradient(currentColor, currentColor) 50% / 100% 3px no-repeat, linear-gradient(currentColor, currentColor) 50% / 3px 100% no-repeat; }
+.start button[aria-busy=true]::before { width: 1.1rem; height: 1.1rem; border-width: 3px; }
+.start button[aria-disabled=true] { background: var(--ink-2); color: var(--sheet); }
+/* On honey the honey band of the ring is lost: a paper band takes its place. */
+.start :focus-visible { outline-offset: 5px; box-shadow: 0 0 0 5px var(--sheet); }
+
+/* The shell. Narrow: a bar with the brand, the open project and the pages outside a project;
+   the other projects are on the overview and the project management page. */
+.masthead { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .75rem; padding: .4rem .75rem; border-bottom: 1px solid var(--line-2); }
+.masthead a { text-decoration: none; }
 .brand { display: inline-flex; align-items: center; gap: .55rem; min-height: 2.75rem; }
 .wordmark { font-size: 1.25rem; font-weight: 800; letter-spacing: -.03em; }
-.brand-note, .rail-title, .hive { display: none; }
-/* The brand: three cells of a comb. */
+.brand-note, .rail-title { display: none; }
+/* The brand: three cells of a comb, one honey, one outlined, one ink. */
 .comb { position: relative; flex: none; width: 1.75rem; height: 1.75rem; }
 .comb span { position: absolute; width: .82rem; height: .95rem; background: var(--honey); clip-path: var(--hex); }
-.comb span:nth-child(2) { left: .93rem; background: #ffd670; }
-.comb span:nth-child(3) { top: .78rem; left: .465rem; background: #d99812; }
+.comb span:nth-child(2) { left: .93rem; background: var(--ink); }
+.comb span:nth-child(2)::after { content: ""; position: absolute; inset: 1.5px; background: var(--surface); clip-path: var(--hex); }
+.comb span:nth-child(3) { top: .78rem; left: .465rem; background: var(--ink); }
 .tabs { flex: 1 1 9rem; min-width: 0; }
 .tabs ul { display: flex; gap: .25rem; max-width: none; margin: 0; padding: 0; list-style: none; }
 .tabs li { display: none; min-width: 0; }
 .tabs li.here { display: block; }
-.tab { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 0 .5rem; min-height: 2.75rem; padding: .3rem .7rem; border-radius: .375rem; }
-.tab-name { overflow: hidden; font-size: .9375rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
-.tab-state { grid-column: 2; overflow: hidden; color: var(--dim); font-size: .8125rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
-.tab:hover, .aux a:hover { background: var(--ink-2); --ground: var(--ink-2); }
-.tab[aria-current], .aux a[aria-current] { background: var(--ink-2); box-shadow: inset 0 -3px 0 var(--honey); --ground: var(--ink-2); }
+.tab { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 0 .5rem; min-height: 2.75rem; padding: .3rem .7rem; }
+.tab-name { overflow: hidden; font-family: var(--mono); font-size: .9375rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.tab-state { grid-column: 2; overflow: hidden; color: var(--muted); font-size: .8125rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.tab:hover, .aux a:hover { background: var(--head); --ground: var(--head); }
+.tab[aria-current], .aux a[aria-current] { background: var(--sheet); box-shadow: inset 0 -3px 0 var(--honey); font-weight: 800; --ground: var(--sheet); }
 .aux { display: flex; flex-wrap: wrap; gap: .25rem; }
-.aux a { display: inline-flex; align-items: center; gap: .4rem; min-height: 2.75rem; padding: .3rem .5rem; border-radius: .375rem; font-size: .8125rem; font-weight: 700; }
+.aux a { display: inline-flex; align-items: center; gap: .4rem; min-height: 2.75rem; padding: .3rem .5rem; font-size: .8125rem; font-weight: 600; }
 /* Project management is where a project is added: a drawn plus, the link's name stays its text. */
-.aux .manage { border: 1px solid var(--ink-line); }
 .aux .manage::before { content: ""; width: .7rem; height: .7rem; background: linear-gradient(currentColor, currentColor) 50% / 100% 2px no-repeat, linear-gradient(currentColor, currentColor) 50% / 2px 100% no-repeat; }
 main { max-width: 104rem; padding: 1rem .75rem 1.5rem; }
 footer { padding: .9rem .75rem 1.5rem; border-top: 1px solid var(--line); }
@@ -142,36 +165,43 @@ footer p { margin: 0; }
 
 /* The head of a project's views, and the way back from a page under them. */
 .project-head { margin-bottom: 1rem; }
+.project-head h1 { font-family: var(--mono); }
 .path, .where { color: var(--muted); font-family: var(--mono); font-size: .8125rem; overflow-wrap: anywhere; }
 .path { margin: 0; }
 .where { display: block; font-weight: 400; }
-.views { display: flex; gap: .25rem; margin-top: .9rem; border-bottom: 2px solid var(--ink); }
-.views a { display: inline-flex; flex: 1; align-items: center; justify-content: center; min-height: 2.75rem; padding: .4rem .75rem; border-radius: .375rem .375rem 0 0; color: var(--ink); font-weight: 700; text-decoration: none; }
-.views a:hover { background: var(--head); }
-.views a[aria-current] { background: var(--ink); box-shadow: inset 0 -3px 0 var(--honey); color: #fff; }
+.views { display: flex; gap: 1.5rem; margin-top: .9rem; border-bottom: 1px solid var(--line-2); }
+.views a { display: inline-flex; flex: 1; align-items: center; justify-content: center; min-height: 2.75rem; margin-bottom: -1px; padding: .4rem .25rem; border-bottom: 3px solid transparent; font-weight: 600; text-decoration: none; }
+.views a:hover { border-bottom-color: var(--line-2); }
+.views a[aria-current] { border-bottom-color: var(--honey); font-weight: 800; }
 .trail ol { display: flex; flex-wrap: wrap; gap: .1rem .5rem; max-width: none; margin: 0 0 .5rem; padding: 0; color: var(--muted); font-size: .875rem; list-style: none; }
 .trail li + li::before { content: "/"; margin-right: .5rem; }
 .trail a { display: inline-block; padding-block: .35rem; }
 
-/* A view's list and what stands above it. */
+/* A view's list and what stands above it: the search, the candidates-only filter beside it,
+   and the line that says what is known of the candidates. */
 .bench { margin-top: 1rem; }
 .pane { margin-top: 1.25rem; }
 .bench > .pane:first-child { margin-top: 0; }
 .pane-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem 1rem; }
 .pane-head h2 { margin: 0; }
 .tally { margin: .2rem 0 0; }
-.state { max-width: none; margin: .75rem 0 0; padding: .55rem .8rem; border-left: 4px solid var(--ink); background: var(--head); font-size: .9375rem; }
-.filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .5rem; margin-top: .75rem; }
+.tools { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .5rem; margin-top: .75rem; }
+.filters { display: flex; flex: 1 1 18rem; flex-wrap: wrap; align-items: flex-end; gap: .5rem; max-width: 34rem; }
 .filters label { display: block; color: var(--muted); font-size: .8125rem; }
-.filters .grow { flex: 1 1 12rem; }
+.filters .grow { flex: 1 1 10rem; }
+/* The filter is a link that looks like the switch it is: on, it is honey under an ink border. */
+.toggle[aria-current] { padding-inline: calc(.9rem - 1px); border-width: 2px; background: var(--honey-wash); box-shadow: inset 0 -3px 0 var(--honey); }
+.toggle.off { border-color: var(--line-2); background: transparent; color: var(--muted); font-weight: 600; cursor: default; }
+.state { max-width: none; margin: .75rem 0 0; padding: .55rem .8rem; border-left: 3px solid var(--ink); background: var(--head); font-size: .9375rem; }
+.state:focus-visible { outline-offset: 3px; }
 .filter-summary { font-size: .875rem; }
 .reading { max-width: none; }
 .reading .note { max-width: 46rem; }
 
-/* Tables are sheets: a quiet head, hairlines between rows. */
-table { width: 100%; margin: .75rem 0; border: 1px solid var(--line); border-collapse: collapse; background: var(--sheet); font-size: .9375rem; line-height: 1.45; --ground: var(--sheet); }
-th, td { padding: .5rem .75rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
-thead th { background: var(--head); color: var(--muted); font-size: .8125rem; font-weight: 600; white-space: nowrap; }
+/* Tables are ledgers on paper: a heavy rule on top, a quiet head, hairlines between rows. */
+table { width: 100%; margin: .75rem 0; border: 0; border-top: 2px solid var(--ink); border-collapse: collapse; background: var(--sheet); font-size: .9375rem; line-height: 1.45; --ground: var(--sheet); }
+th, td { padding: .55rem .8rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+thead th { color: var(--muted); font-size: .8125rem; font-weight: 600; white-space: nowrap; }
 td p, td ul { margin: 0 0 .25rem; }
 td ul { padding-left: 1.1rem; }
 .scroll { max-width: 100%; margin: .75rem 0; overflow-x: auto; }
@@ -187,7 +217,7 @@ meter::-moz-meter-bar { background: var(--ink); }
 
 /* The packages: what is installed, and in the last cell the candidate of a current check. The
    candidate itself is the link that picks it; the picked one is honey with an ink border. */
-.packages thead th { position: sticky; top: 0; z-index: 1; }
+.packages thead th { position: sticky; top: 0; z-index: 1; background: var(--sheet); box-shadow: inset 0 -1px 0 var(--line-2); }
 .packages th, .packages td { vertical-align: middle; }
 .packages td:nth-child(3) { color: var(--muted); }
 .packages tr:not(.inspect) > td:last-child > * { margin: .15rem .5rem .15rem 0; vertical-align: middle; }
@@ -195,49 +225,68 @@ meter::-moz-meter-bar { background: var(--ink); }
 .packages tr:not(.inspect) > td:last-child > a:not(.pick), .candidates tr:not(.inspect) > td:last-child > a:not(.pick) { display: inline-flex; align-items: center; min-height: 2.25rem; }
 .packages strong.known { white-space: nowrap; }
 .move { font-weight: 700; }
-.pick { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .15rem .45rem; min-height: 2.25rem; padding: .15rem .55rem; border: 1px solid var(--muted); border-radius: .5rem; background: var(--sheet); color: var(--ink); font-size: .875rem; font-weight: 700; text-decoration: none; }
-.pick:hover { border-color: var(--ink); background: var(--honey-wash); }
+.pick { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .15rem .45rem; min-height: 2.25rem; padding: .15rem .55rem; border: 1px solid var(--line-2); border-radius: 3px; background: var(--sheet); font-size: .875rem; font-weight: 700; text-decoration: none; }
+.pick:hover { border-color: var(--ink); }
 .pick[aria-current] { padding: calc(.15rem - 1px) calc(.55rem - 1px); border: 2px solid var(--ink); background: var(--honey); }
-.packages tbody tr:not(.inspect):hover > * { background: #f8f9fc; }
-.packages tbody tr:has(.pick[aria-current]) > * { background: var(--honey-wash); }
+/* On honey a verdict keeps its shape and its words, in ink. */
+.pick[aria-current] .verdict { background: none; --ground: var(--honey); --tone: var(--ink); }
+.pick[aria-current] .cell { --stroke: var(--ink); --risk: var(--ink); --hold: var(--ink); --pass: var(--ink); }
+/* The row itself is painted, so that it is one piece where its cells stand apart (narrow). */
+.packages tbody tr:not(.inspect):hover { background: #f6f5ef; }
+.packages tbody tr:has(.pick[aria-current]) { background: var(--honey-wash); }
 .packages tbody tr:has(.pick[aria-current]) > th { box-shadow: inset 4px 0 0 var(--honey); }
 
 /* The update candidates: one sheet a candidate, at every width. */
 .candidates, .candidates tbody { display: block; }
 .candidates { border: 0; background: none; }
 .candidates thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.candidates tr { display: grid; grid-template-columns: minmax(0, 1fr); gap: .4rem 1rem; margin-bottom: .5rem; padding: .8rem 1rem; border: 1px solid var(--line); border-radius: .5rem; background: var(--sheet); }
+.candidates tr { display: grid; grid-template-columns: minmax(0, 1fr); gap: .4rem 1rem; margin-bottom: .5rem; padding: .8rem 1rem; border: 1px solid var(--line); border-top: 2px solid var(--ink); background: var(--sheet); }
 .candidates th, .candidates td { display: block; padding: 0; border: 0; }
 .candidates tbody th { font-size: .9375rem; }
 .candidates td:nth-child(2) { font-weight: 700; }
-.candidates td:nth-child(4)::before { content: "ML 위험 점수 "; color: var(--muted); font-size: .8125rem; }
+.candidates td:nth-child(4) { font-family: var(--mono); font-size: .875rem; }
+.candidates td:nth-child(4)::before { content: "ML 위험 점수 "; color: var(--muted); font-family: var(--sans); font-size: .8125rem; }
 .candidates .quiet { font-family: var(--sans); font-weight: 400; }
 .candidates tr:not(.inspect) > td:last-child { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem 1rem; }
-.candidates tr:has(.pick[aria-current]) { border-color: var(--ink); background: var(--honey-wash); box-shadow: inset 4px 0 0 var(--honey); }
+.candidates tr:has(.pick[aria-current]) { border-color: var(--ink); background: var(--honey-wash); box-shadow: inset 4px 0 0 var(--honey); --ground: var(--honey-wash); }
 .detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8125rem; list-style: none; }
 
 /* The inspector. It is written right after the row it is about, in a cell of its own: under
-   that row and folded until the address names it (narrow), a panel beside the list (wide). */
+   that row and folded until the address names it (narrow), a panel beside the list (wide).
+   What it says first is whether the candidate could be applied; then each detector alone. */
 .stack .inspect > td { padding: 0; border: 0; background: none; }
 .candidates tr.inspect { display: block; margin: 0; padding: 0; border: 0; background: none; box-shadow: none; }
 #candidate-evidence { scroll-margin-top: 7.5rem; }
 #picked { scroll-margin-top: 6rem; }
-.inspector { display: block; margin: .25rem 0 .75rem; padding: .85rem 1rem 1rem; border: 1px solid var(--line); border-top: 4px solid var(--honey); background: var(--sheet); font: .9375rem/1.6 var(--sans); --ground: var(--sheet); }
-.inspector.idle { border-top-color: var(--muted); }
-.inspector h2 { margin: 0; color: var(--muted); font-size: .8125rem; }
+.inspector { display: block; margin: .25rem 0 .75rem; padding: .85rem 1rem 1rem; border: 1px solid var(--line-2); border-top: 3px solid var(--honey); background: var(--sheet); font: .9375rem/1.6 var(--sans); --ground: var(--sheet); }
+.inspector.idle { border-top-color: var(--line-2); }
+.inspector h2 { margin: 0; color: var(--muted); font-size: .8125rem; font-weight: 600; }
 .subject { margin: .15rem 0 0; }
-.subject strong { display: block; font: 700 1.125rem/1.3 var(--mono); overflow-wrap: anywhere; }
-.hop { display: flex; flex-wrap: wrap; gap: .4rem 1.5rem; margin: .7rem 0 .5rem; }
+.subject strong { display: block; font: 700 1.125rem/1.35 var(--mono); overflow-wrap: anywhere; }
+.hop { display: flex; flex-wrap: wrap; gap: .4rem 1.5rem; margin: .6rem 0 0; }
 .hop dt { font-size: .8125rem; }
 .hop dd { font: 700 1rem/1.4 var(--mono); }
-.ruling { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem; margin: .5rem 0 0; }
+.ruling { margin-top: .9rem; padding-top: .8rem; border-top: 2px solid var(--ink); }
+.decision { display: flex; align-items: center; gap: .5rem; margin: 0; color: var(--tone); font-size: 1.375rem; font-weight: 800; line-height: 1.3; letter-spacing: -.02em; --tone: var(--muted); }
+.decision.risk { --tone: var(--risk); }
+.decision.hold { --tone: var(--hold); }
+.decision.pass { --tone: var(--pass); }
+.decision .cell { width: 1.25rem; height: 1.44rem; }
+.decision .cell::after { inset: 3px; }
+.why { margin: .3rem 0 0; }
 .inspect-nav { margin: .35rem 0 0; }
 .inspect-nav a { display: inline-flex; align-items: center; min-height: 2.75rem; font-weight: 700; }
-.signal { margin-top: 1rem; padding-top: .8rem; border-top: 1px solid var(--line); }
-.signal h3, .idle h3 { margin: 0 0 .4rem; }
+.signal { margin-top: .9rem; padding-top: .7rem; border-top: 1px solid var(--line); }
+.signal h3, .idle h3 { margin: 0 0 .3rem; }
+.signal h3 { color: var(--muted); font-size: .875rem; font-weight: 600; }
 .signal h4 { color: var(--muted); font-size: .8125rem; }
 .signal ul { margin: .2rem 0; padding-left: 1.1rem; }
-.pairs, .result dl { display: grid; grid-template-columns: minmax(6rem, max-content) minmax(0, 1fr); gap: .25rem .9rem; }
+.finding { display: flex; align-items: center; gap: .4rem; margin: 0; }
+.signal .note { margin: .25rem 0 0; }
+.pairs, .result dl { display: grid; grid-template-columns: minmax(6rem, max-content) minmax(0, 1fr); gap: .25rem .9rem; margin: 0; }
+/* A score is read digit by digit: the short form and the stored value are both set in mono. */
+.signal .pairs dd { font-family: var(--mono); font-size: .875rem; font-variant-numeric: tabular-nums; }
+.signal .pairs dd .verdict, .signal .pairs dd strong { font-family: var(--sans); }
 .weights { padding: 0; list-style: none; }
 .weights li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 .6rem; padding: .25rem 0; }
 .weights b { font-family: var(--mono); font-size: .875rem; }
@@ -251,10 +300,10 @@ meter::-moz-meter-bar { background: var(--ink); }
 
 /* The updates view: what can be run, the previews still open, then the candidates. */
 .jobs { display: grid; gap: .75rem; }
-.jobs section, .held { margin-top: 0; padding: .9rem 1.1rem 1rem; border: 1px solid var(--line); background: var(--sheet); }
+.jobs section, .held { margin-top: 0; padding: .9rem 1.1rem 1rem; border: 1px solid var(--line); border-top: 2px solid var(--ink); background: var(--sheet); }
 .jobs h2 { font-size: 1rem; }
 .jobs p { margin-top: 0; font-size: .875rem; }
-.held { margin-top: .75rem; border-left: 4px solid var(--ink); }
+.held { margin-top: .75rem; }
 .actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .75rem 1.5rem; }
 .actions form:last-child { flex: 1 1 16rem; }
 .previews { padding-left: 1.1rem; }
@@ -264,21 +313,19 @@ meter::-moz-meter-bar { background: var(--ink); }
 /* Project management: adding a project, compact, and the registered ones. */
 .desk { display: grid; gap: 1.5rem 2rem; align-items: start; margin-top: 1rem; }
 .desk > section { min-width: 0; margin-top: 0; }
-.add { padding: 1.1rem 1.25rem 1rem; border: 1px solid var(--line); border-top: 4px solid var(--ink); background: var(--sheet); }
+.add { padding: 1.1rem 1.25rem 1rem; border: 1px solid var(--line); border-top: 2px solid var(--ink); background: var(--sheet); }
 .first .add h2 { font-size: 1.5rem; font-weight: 800; }
 .lead { margin: 0 0 .9rem; }
 .add form { margin-top: .8rem; }
 .add .primary { gap: .6rem; width: 100%; max-width: 20rem; min-height: 3rem; }
 /* A folder, drawn: this button opens the desktop's folder dialog. */
 .add .primary::before { content: ""; flex: none; width: 1.3rem; height: 1.05rem; background: currentColor; clip-path: polygon(0 0, 40% 0, 52% 18%, 100% 18%, 100% 100%, 0 100%); }
+.add .primary[aria-busy=true]::before { width: 1rem; height: 1rem; background: none; clip-path: none; }
 .add details { max-width: none; margin: .8rem 0 0; border-top: 1px solid var(--line); }
-.next ol { margin: 0; padding-left: 1.3rem; }
-.next li { margin-bottom: .6rem; font-size: .9375rem; }
-.next strong { display: block; }
 .projects { display: grid; gap: .75rem; max-width: none; margin: .75rem 0 0; padding: 0; list-style: none; }
-.projects li { padding: .9rem 1.1rem 1rem; border: 1px solid var(--line); background: var(--sheet); --ground: var(--sheet); }
-.projects h3 { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .55rem; margin: 0; }
-.project-state { color: var(--muted); font-size: .8125rem; font-weight: 600; }
+.projects li { padding: .9rem 1.1rem 1rem; border: 1px solid var(--line); border-top: 2px solid var(--ink); background: var(--sheet); --ground: var(--sheet); }
+.projects h3 { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .55rem; margin: 0; font-family: var(--mono); }
+.project-state { color: var(--muted); font-family: var(--sans); font-size: .8125rem; font-weight: 600; }
 .projects details { max-width: none; }
 .latest { display: flex; flex-wrap: wrap; gap: .4rem 1.5rem; max-width: none; margin: .6rem 0; }
 .latest dt { font-size: .8125rem; }
@@ -287,13 +334,13 @@ meter::-moz-meter-bar { background: var(--ink); }
 .project-links .note { margin-left: auto; }
 
 /* The model page: what decides a verdict first, then what identifies the model. */
-.model-sheet { padding: 1rem 1.1rem; border: 1px solid var(--line); border-top: 4px solid var(--ink); background: var(--sheet); }
+.model-sheet { padding: 1rem 1.1rem; border: 1px solid var(--line); border-top: 2px solid var(--ink); background: var(--sheet); }
 .model-sheet h2 { font-family: var(--mono); }
 .identity { max-width: none; }
 .identity dd { font-family: var(--mono); font-size: .8125rem; }
 
 /* A report: the overall result, then each item with what was found beside what was scored. */
-.summary, section.preview, section.apply { padding: .9rem 1.1rem 1rem; border: 1px solid var(--line); border-top: 4px solid var(--ink); background: var(--sheet); }
+.summary, section.preview, section.apply { padding: .9rem 1.1rem 1rem; border: 1px solid var(--line); border-top: 2px solid var(--ink); background: var(--sheet); }
 .summary { margin-top: 1rem; }
 .summary ul { max-width: none; margin: 0; padding: 0; list-style: none; }
 .summary li { margin: 0; padding: .35rem 0; border-top: 1px solid var(--line); }
@@ -310,9 +357,9 @@ meter::-moz-meter-bar { background: var(--ink); }
 .evidence { display: grid; gap: 1rem 2rem; }
 .evidence > * { min-width: 0; }
 .side { margin: 0 0 .5rem; padding-bottom: .25rem; border-bottom: 2px solid var(--ink); font-size: .8125rem; font-weight: 700; }
-.result dl { margin: 0; }
 .result table { width: auto; margin: .3rem 0; border: 0; }
 .bars td { padding: .15rem .6rem .15rem 0; border: 0; }
+.scored dd { font-family: var(--mono); font-size: .875rem; }
 .gate { padding: 1rem 1.1rem 1.1rem; border: 2px solid var(--ink); background: var(--sheet); }
 .gate .confirm ul { margin-top: 0; }
 
@@ -327,6 +374,9 @@ meter::-moz-meter-bar { background: var(--ink); }
   .scroll .stack { min-width: 0; }
   .score-history tr { grid-template-columns: minmax(0, 1fr); }
   .packages tbody th { grid-area: 1 / 1; }
+  /* The picked row is a block here: its honey edge runs down the whole of it. */
+  .packages tbody tr:has(.pick[aria-current]) { box-shadow: inset 4px 0 0 var(--honey); }
+  .packages tbody tr:has(.pick[aria-current]) > th { box-shadow: none; }
   .packages td:nth-child(4) { grid-area: 1 / 2; text-align: right; }
   .packages td:nth-child(2) { grid-area: 2 / 1 / 3 / 3; }
   .packages td:nth-child(2)::before { content: "사용 버전 "; color: var(--muted); font-family: var(--sans); }
@@ -339,7 +389,8 @@ meter::-moz-meter-bar { background: var(--ink); }
   /* A run's number is the way to its report: a target a finger can hit. */
   .scroll td > a { display: inline-block; min-width: 2.75rem; padding-block: .7rem; }
 }
-/* Below the wide layout the inspector opens where it is written, when the address names it. */
+/* Below the wide layout the inspector opens where it is written, when the address names it.
+   Folded, it still says whether the candidate could be applied and why. */
 @media (max-width: 63.99rem) {
   .packages tr:not(.inspect) > td:last-child > a:not(.pick),
   .candidates tr:not(.inspect) > td:last-child > a:not(.pick) {
@@ -357,9 +408,13 @@ meter::-moz-meter-bar { background: var(--ink); }
 @media (min-width: 46rem) {
   main { padding: 1.5rem 1.5rem 2rem; }
   footer { padding-inline: 1.5rem; }
-  .views a { flex: none; padding-inline: 1.25rem; }
+  .masthead { padding-inline: 1.5rem; }
+  .views a { flex: none; padding-inline: .5rem; }
   .aux a { padding-inline: .7rem; font-size: .875rem; }
   /* A version and a kind stay whole: their columns keep the width of what they hold. */
+  /* A name is not squeezed to a few letters, and a candidate with its mark is one line. */
+  .packages th:first-child { width: 20%; }
+  .packages th:last-child { width: 14rem; }
   .packages th:nth-child(2) { width: 6.5rem; }
   .packages td:nth-child(4) { white-space: nowrap; }
   .packages td:nth-child(4) .where { white-space: normal; }
@@ -379,7 +434,7 @@ meter::-moz-meter-bar { background: var(--ink); }
 @media (min-width: 60rem) {
   .jobs { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); }
   .desk { grid-template-columns: minmax(0, 22rem) minmax(0, 1fr); }
-  .desk.first { grid-template-columns: minmax(0, 26rem) minmax(0, 24rem); }
+  .desk.first { grid-template-columns: minmax(0, 26rem); }
   .evidence { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
 }
 /* Wide: the inspector is a panel beside the list, and its cell under the picked row has no
@@ -388,7 +443,7 @@ meter::-moz-meter-bar { background: var(--ink); }
   body.split main, body.split footer { padding-right: calc(var(--inspect) + 1.5rem); }
   #candidate-evidence, #picked { scroll-margin-top: 35vh; }
   #candidate-evidence:focus-visible { outline: 0; box-shadow: none; }
-  .inspector { position: fixed; top: 0; right: 0; bottom: 0; z-index: 2; width: var(--inspect); margin: 0; padding: 1.1rem 1.25rem 2rem; overflow-y: auto; overscroll-behavior: contain; border-width: 4px 0 0 1px; }
+  .inspector { position: fixed; top: 0; right: 0; bottom: 0; z-index: 2; width: var(--inspect); margin: 0; padding: 1.1rem 1.25rem 2rem; overflow-y: auto; overscroll-behavior: contain; border-width: 3px 0 0 1px; }
   .inspect-nav .when-open, .inspect-nav .when-closed { display: none; }
 }
 @media (min-width: 64rem) and (max-width: 79.99rem) {
@@ -397,34 +452,22 @@ meter::-moz-meter-bar { background: var(--ink); }
 /* Widest: the bar becomes the rail, with every project listed under the brand. */
 @media (min-width: 80rem) {
   body { display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); grid-template-rows: 1fr auto; }
-  .masthead { position: sticky; top: 0; grid-row: 1 / span 2; flex-flow: column nowrap; align-items: stretch; gap: 0; height: 100vh; padding: 1.1rem .75rem 1rem; overflow-y: auto; }
+  .masthead { position: sticky; top: 0; grid-row: 1 / span 2; flex-flow: column nowrap; align-items: stretch; gap: 0; height: 100vh; padding: 1.1rem .75rem 1rem; overflow-y: auto; border-right: 1px solid var(--line-2); border-bottom: 0; }
   .brand, .aux { flex: none; }
   .brand { flex-wrap: wrap; gap: .1rem .6rem; padding: 0 .35rem 1.1rem; }
   .wordmark { font-size: 1.375rem; }
-  .brand-note { display: block; flex-basis: 100%; color: var(--dim); font-size: .8125rem; }
-  .rail-title { display: block; margin: 0 .35rem .35rem; color: var(--dim); font-size: .8125rem; font-weight: 600; }
+  .brand-note { display: block; flex-basis: 100%; color: var(--muted); font-size: .8125rem; }
+  .rail-title { display: block; margin: 0 .35rem .35rem; color: var(--muted); font-size: .8125rem; font-weight: 600; }
   .tabs { flex: none; }
   .tabs ul { flex-direction: column; gap: 2px; }
   .tabs li { display: block; }
   .tab { padding: .45rem .6rem .5rem .8rem; }
   .tab[aria-current], .aux a[aria-current] { box-shadow: inset 4px 0 0 var(--honey); }
-  .aux { flex-direction: column; margin: .9rem 0 0; padding-top: .9rem; border-top: 1px solid var(--ink-line); }
+  .aux { flex-direction: column; margin: .9rem 0 0; padding-top: .9rem; border-top: 1px solid var(--line-2); }
   .aux a { padding-left: .8rem; }
-  /* A piece of comb at the foot of the rail: hollow cells and one filled. */
-  .hive { position: relative; display: block; flex: none; width: 8.1rem; height: 7.7rem; margin: auto 0 0 .35rem; padding-top: 2rem; box-sizing: content-box; }
-  .hive span { position: absolute; bottom: 4.7rem; left: 0; width: 2.6rem; height: 3rem; background: var(--ink-line); clip-path: var(--hex); }
-  .hive span::after { content: ""; position: absolute; inset: 2px; background: var(--ink); clip-path: var(--hex); }
-  .hive span:nth-child(2) { left: 2.75rem; }
-  .hive span:nth-child(3) { left: 5.5rem; }
-  .hive span:nth-child(4) { bottom: 2.35rem; left: 1.375rem; }
-  .hive span:nth-child(5) { bottom: 2.35rem; left: 4.125rem; }
-  .hive span:nth-child(5)::after { background: var(--honey); }
-  .hive span:nth-child(6) { bottom: 0; left: 2.75rem; }
   main, footer { grid-column: 2; }
-}
-@media (min-width: 80rem) and (max-height: 42rem) {
-  .hive { display: none; }
 }
 @media (prefers-reduced-motion: no-preference) {
   html { scroll-behavior: smooth; }
+  button[aria-busy=true]::before { animation: turn .8s linear infinite; }
 }

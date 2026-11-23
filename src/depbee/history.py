@@ -557,52 +557,37 @@ def list_applies(project_id: int, limit: int | None = None) -> list[dict]:
     return [_apply(row) for row in _read(query, parameters, since=2)]
 
 
-def latest_applies() -> dict[int, dict]:
-    """Each project's most recently recorded update apply that changed its files, by project
-    id: {run_id, created_at, mode, outcome} of the last applies row written for it with the
-    outcome applied. An apply that was refused, failed or found nothing to change is not one,
-    and a later one of those does not hide it; an older preview that was applied after a newer
-    one counts by its apply, and created_at is when it was applied. A project without such an
-    apply has no entry, and a file older than version 2 has none at all: it has no applies table
-    and is not upgraded here.
+def latest_applies(*, applied: bool = True) -> dict[int, dict]:
+    """Each project's most recently recorded update apply, by project id: the last applies row
+    written for it as {run_id, created_at, mode, outcome, reason} with the SHA-256 the apply
+    stored (package_json_sha256 of the package.json its preview was made from, and
+    new_package_json_sha256 and new_package_lock_sha256 of the files it replaced, None for a
+    file it left as it was).
+
+    applied (the default): the last apply that changed the project's files (outcome applied).
+    One that was refused, failed or found nothing to change is not one, and a later one of
+    those does not hide it. Without it: the last attempt, whatever its outcome. Either way an
+    older preview that was applied after a newer one counts by its apply, and created_at is
+    when that was. A project without such an apply has no entry, and a file older than version
+    2 has none at all: it has no applies table and is not upgraded here.
 
     One pass over the applies for all the projects together, each with the project of its run,
     then the row of each project's greatest apply id. No stored document is read and no run
     that was never applied; asked project by project instead, every project that applied
     nothing would pass the applies of all the others."""
-    columns = ("run_id", "created_at", "mode", "outcome")
+    columns = ("run_id", "created_at", "mode", "outcome", "reason", "package_json_sha256",
+               "new_package_json_sha256", "new_package_lock_sha256")  # fmt: skip
+    only = "WHERE a.outcome = 'applied' " if applied else ""
     # CROSS JOIN keeps applies the outer loop. Left to choose, SQLite walks the runs of every
     # project, which are many more than the applies.
     rows = _read(
         f"SELECT r.project_id, {', '.join(f'a.{name}' for name in columns)} "
         "FROM applies a CROSS JOIN runs r ON r.id = a.run_id WHERE a.id IN ("
         "SELECT MAX(a.id) FROM applies a CROSS JOIN runs r ON r.id = a.run_id "
-        "WHERE a.outcome = 'applied' GROUP BY r.project_id)",
+        f"{only}GROUP BY r.project_id)",
         since=2,
     )
     return {row["project_id"]: {name: row[name] for name in columns} for row in rows}
-
-
-def latest_preview_only(project_id: int) -> dict | None:
-    """The project's newest update preview that no apply was recorded for, as list_runs() gives
-    a run: an update_preview run without an applies row of any outcome (applied, unchanged,
-    refused or failed alike). None if each of the project's previews has one. A file older than
-    version 2 has no applies table and is not upgraded here: every preview in it is one.
-
-    Walks the project's previews newest first and stops at the first that the applies' index of
-    runs does not have: no stored document is read and no other project's rows."""
-    rows = _read(
-        f"SELECT {', '.join(RUN_COLUMNS)} FROM runs WHERE project_id = ? "
-        "AND kind = 'update_preview' AND NOT EXISTS (SELECT 1 FROM applies WHERE run_id = runs.id) "
-        "ORDER BY id DESC LIMIT 1",
-        (project_id,),
-        since=2,
-    )
-    if rows:
-        return _run(rows[0])
-    if _read("SELECT 1", since=2):  # the file has an applies table: each preview has a row
-        return None
-    return next(iter(list_runs(project_id, 1, "update_preview")), None)
 
 
 def get_run(run_id: int) -> dict | None:
