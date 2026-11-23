@@ -174,11 +174,18 @@ $alias = "$(Split-Path -Leaf $project)-$hash"
 ```sh
 # 대시보드에서 볼 npm 프로젝트 루트에서 실행
 project="$PWD"
-hash="$(printf '%s' "$project" | sha256sum | cut -c1-8)"
-alias="$(basename "$project")-$hash"
+hash="$({ printf '%s' "$project" | sha256sum || printf '%s' "$project" | shasum -a 256; } 2>/dev/null)"
+if [[ "$hash" =~ ^[0-9a-f]{64} ]]; then
+    alias="$(basename "$project")-${hash:0:8}"
+else
+    unset project alias
+    echo 'sha256sum과 shasum으로 경로 해시를 만들지 못했습니다. 아래의 "별칭을 직접 정합니다"를 따르세요.' >&2
+fi
 ```
 
 별칭은 컨테이너 안에서 이 프로젝트를 가리키는 이름입니다. 폴더 이름에 폴더 절대 경로의 SHA-256 앞 8자리를 붙여 만듭니다(예: `shop-api-1a2b3c4d`). 같은 폴더에서는 늘 같은 별칭이 나오고, 이름이 같은 다른 폴더에서는 다른 별칭이 나옵니다. [프로젝트 별칭과 이력](#프로젝트-별칭과-이력)
+
+Bash 블록은 `sha256sum`을 쓰고, 없으면 `shasum -a 256`을 씁니다. 출력이 16진수 64자로 시작할 때만 별칭을 만듭니다. 그렇지 않으면 안내를 출력하고 `project`와 `alias`를 지웁니다. 두 변수가 비어 있으면 그 변수를 쓰는 아래의 `docker run` 명령은 컨테이너를 만들지 못하고 Docker의 오류로 끝납니다. 그때는 [별칭을 직접 정합니다](#프로젝트-별칭과-이력).
 
 두 셸에서 같은 명령으로 시작합니다.
 
@@ -245,14 +252,16 @@ Git을 실행하기 전에 `.git/objects`의 항목을 모두 한 번씩 확인�
 
 [대시보드](#대시보드)의 `$alias`는 폴더의 절대 경로로 만들므로 이름이 같은 다른 폴더와 겹치지 않습니다. 폴더를 옮기면 별칭이 달라집니다. 같은 폴더도 다른 셸에서 다른 표기의 경로로 실행하면 별칭이 달라집니다(예: PowerShell의 `C:\work\app`과 WSL의 `/mnt/c/work/app`). 그럴 때는 아래 두 방법 중 하나를 씁니다.
 
-**별칭을 직접 정합니다.** 프로젝트마다 다른 이름을 하나 정해 계속 씁니다. `$alias`를 만드는 줄만 바꿉니다.
+**별칭을 직접 정합니다.** 프로젝트마다 다른 이름을 하나 정해 계속 씁니다. [대시보드](#대시보드)의 변수 블록 대신 아래 두 줄을 실행하고, `docker run` 명령은 그대로 씁니다. `shop-api` 자리에 이 프로젝트만 쓰는 이름을 적습니다. Bash에 `sha256sum`과 `shasum`이 모두 없을 때도 이 방법을 씁니다.
 
 ```powershell
-$alias = 'shop-api'    # PowerShell
+$project = (Get-Location).Path
+$alias = 'shop-api'
 ```
 
 ```sh
-alias='shop-api'       # Bash
+project="$PWD"
+alias='shop-api'
 ```
 
 **이력 볼륨을 나눕니다.** 볼륨마다 등록, 기록, 백업, 캐시가 따로 있습니다. 기록이 섞이면 안 되는 프로젝트 묶음마다 볼륨 이름을 다르게 줍니다.

@@ -129,14 +129,18 @@ docker run --rm -it -p 127.0.0.1:5757:5757 --mount "type=bind,source=$project,ta
 
 ```sh
 project="$PWD"
-hash="$(printf '%s' "$project" | sha256sum | cut -c1-8)"
-alias="$(basename "$project")-$hash"
-docker run --rm -it -p 127.0.0.1:5757:5757 --mount "type=bind,source=$project,target=/projects/$alias,readonly" --mount type=volume,source=depbee-home,target=/home/depbee depbee:local dashboard
+hash="$({ printf '%s' "$project" | sha256sum || printf '%s' "$project" | shasum -a 256; } 2>/dev/null)"
+if [[ "$hash" =~ ^[0-9a-f]{64} ]]; then
+    alias="$(basename "$project")-${hash:0:8}"
+    docker run --rm -it -p 127.0.0.1:5757:5757 --mount "type=bind,source=$project,target=/projects/$alias,readonly" --mount type=volume,source=depbee-home,target=/home/depbee depbee:local dashboard
+else
+    echo 'sha256sum과 shasum으로 경로 해시를 만들지 못해 컨테이너를 시작하지 않았습니다. docs/docker.md의 "별칭을 직접 정합니다"를 따르세요.' >&2
+fi
 ```
 
 출력된 `http://127.0.0.1:5757/s/...` 주소를 브라우저에서 열어 연결한 폴더를 등록하고, Ctrl+C로 종료합니다. 읽기 전용 연결에서는 조회, 검사만, 업데이트 확인까지 할 수 있습니다.
 
-이력은 프로젝트를 컨테이너 경로(`/projects/<별칭>`)로 구분합니다. 같은 볼륨에서 다른 프로젝트를 이미 쓴 별칭에 연결하면 이전 프로젝트의 기록이 그 프로젝트의 기록으로 보입니다. 위의 `$alias`는 폴더 이름에 절대 경로의 해시를 붙여 폴더마다 다른 별칭을 만듭니다. [프로젝트 별칭과 이력](docs/docker.md#프로젝트-별칭과-이력)
+이력은 프로젝트를 컨테이너 경로(`/projects/<별칭>`)로 구분합니다. 같은 볼륨에서 다른 프로젝트를 이미 쓴 별칭에 연결하면 이전 프로젝트의 기록이 그 프로젝트의 기록으로 보입니다. 위의 `$alias`는 폴더 이름에 절대 경로의 해시를 붙여 폴더마다 다른 별칭을 만듭니다. Bash 블록은 `sha256sum`을 쓰고 없으면 `shasum`을 쓰며, 온전한 해시를 얻지 못하면 컨테이너를 시작하지 않습니다. 그때는 별칭을 직접 정합니다. [프로젝트 별칭과 이력](docs/docker.md#프로젝트-별칭과-이력)
 
 [CLI 검사](docs/docker.md#cli-검사) · [MCP 등록](docs/docker.md#claude-code에-stdio-mcp-서버-등록) · [프로젝트 여러 개](docs/docker.md#프로젝트-여러-개) · [쉼표가 있는 경로](docs/docker.md#쉼표가-있는-경로) · [읽기 전용 연결과 반영](docs/docker.md#읽기-전용-연결과-반영) · [포트](docs/docker.md#포트) · [종료](docs/docker.md#종료)
 
