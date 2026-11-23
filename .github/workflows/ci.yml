@@ -124,9 +124,10 @@ jobs:
           lockfile: examples/project/package-lock.json
           report: bundled-report.json
 
-  # The public image stage: the wheel with the CLI and the MCP server, without the private
-  # analyzer. Built with no credentials and never pushed, then run the way it is used: its own
-  # entrypoint and user, no network, a read-only root and only the synthetic examples mounted.
+  # The public image stage: the wheel with the CLI, the MCP server and the dashboard, without the
+  # private analyzer. Built with no credentials and never pushed, then run the way it is used:
+  # its own entrypoint and user, no network, a read-only root and only the synthetic examples
+  # mounted.
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -241,4 +242,65 @@ jobs:
           assert sorted(tool["name"] for tool in tools) == ["check_package", "scan_lockfile"]
           server.stdin.close()
           assert server.wait() == 0  # The server ends when its client closes stdin.
+          PY
+      # The dashboard as docs/docker.md starts it: the image's own port, published on the runner's
+      # 127.0.0.1 alone under the same number, and the synthetic example mounted under /projects.
+      # What the pages do is tested in tests/; this is the image: the web extra, the templates,
+      # where it listens, the address it prints and the folder it registers from.
+      - name: Open the dashboard through a port published on 127.0.0.1
+        shell: bash
+        run: |
+          docker run --rm -d --name depbee-dashboard -p 127.0.0.1:5757:5757 \
+            --mount "type=bind,source=$PWD/examples/project,target=/projects/example,readonly" \
+            depbee:ci dashboard
+          trap 'docker stop depbee-dashboard > /dev/null' EXIT
+          python3 -I - <<'PY'
+          import http.client
+          import re
+          import subprocess
+          import time
+          from urllib.parse import urlencode
+
+          def printed():
+              """The address line, once the server has printed it (never echoed: it is a secret)."""
+              for _ in range(120):
+                  logs = subprocess.run(["docker", "logs", "depbee-dashboard"], capture_output=True, text=True)
+                  for line in logs.stdout.splitlines():
+                      if line.startswith("http://"):
+                          return line
+                  time.sleep(0.5)
+              raise SystemExit("The dashboard printed no address")
+
+          address = re.fullmatch(r"http://127\.0\.0\.1:5757(/s/([A-Za-z0-9_-]{43}))/", printed())
+          assert address, "not this host's 127.0.0.1 at the published port with a session"
+          base, session = address[1], address[2]
+
+          def call(method, url, host="127.0.0.1:5757", **form):
+              """(status, Location, body) of one request to the published port."""
+              body = urlencode({"session": session, **form}) if method == "POST" else None
+              headers = {"Host": host}
+              if body:
+                  headers |= {"Origin": "http://127.0.0.1:5757",
+                              "Content-Type": "application/x-www-form-urlencoded"}
+              connection = http.client.HTTPConnection("127.0.0.1", 5757, timeout=30)
+              connection.request(method, url, body, headers)
+              response = connection.getresponse()
+              return response.status, response.getheader("location"), response.read().decode()
+
+          status, _, page = call("GET", base + "/")
+          assert status == 200 and f'action="{base}/projects/pick"' in page, status
+          assert call("GET", base + "/", host="localhost:5757")[0] == 400
+          assert call("GET", "/s/" + "A" * 43 + "/")[0] == 403
+          # The folder button leads to the mounted folders, which offer the example alone.
+          assert call("POST", base + "/projects/pick")[:2] == (303, base + "/projects/mounted")
+          status, _, page = call("GET", base + "/projects/mounted")
+          assert status == 200, status
+          assert re.findall(r'name="path" value="([^"]*)"', page) == ["/projects/example"], page
+          assert call("GET", base + "/projects/mounted?at=..")[0] == 404
+          for outside in ("/project", "/etc", "/home/depbee", "/projects/../etc"):
+              assert call("POST", base + "/projects", path=outside)[0] == 400, outside
+          assert call("POST", base + "/projects", path="/projects/example")[:2] == (303, base + "/projects/1")
+          status, _, page = call("GET", base + "/projects/1")
+          assert status == 200 and "example-package" in page, status
+          print("The dashboard answered on 127.0.0.1:5757 and registered /projects/example alone")
           PY
