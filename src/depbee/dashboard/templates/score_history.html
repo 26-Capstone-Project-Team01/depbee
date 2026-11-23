@@ -12,7 +12,7 @@
 <td data-label="점수 산출 항목">{{ entry.scored_count }}개</td>
 <td data-label="최고 점수">{% if entry.peak_score is not none %}
 <meter min="0" max="1" value="{{ entry.peak_score }}" aria-hidden="true"></meter>
-<span>{{ "%.4g"|format(entry.peak_score) }}</span>
+<span>{{ entry.peak_score|score(entry.threshold) }}</span>
 {% else %}점수 없음{% endif %}</td>
 </tr>{% endfor %}</tbody>
 </table></div>

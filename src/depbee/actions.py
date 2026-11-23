@@ -13,6 +13,7 @@ import json
 import os
 import re
 import sys
+from decimal import Decimal
 from pathlib import Path, PurePosixPath
 
 # Known malicious matches always fail; these can be added with the fail-on input.
@@ -35,6 +36,8 @@ ASSETS = {
 }
 LOCKFILE_NAME = "package-lock.json"
 SAFETY_NOTE = "'통과'는 모델의 판정일 뿐 패키지가 안전하다는 보증이 아닙니다."
+# A score below this would read as 0 in three decimals.
+SMALL_SCORE = Decimal("0.001")
 
 
 class ActionError(Exception):
@@ -52,6 +55,59 @@ def _md(value: object) -> str:
     text = _clean(value)
     fence = "`" * (max((len(run) for run in re.findall("`+", text)), default=0) + 1)
     return f"{fence} {text} {fence}"
+
+
+# The ML risk score as people read it. The CLI and the dashboard import these from here, the one
+# module that must also run alone, so that every output follows one rule. They only format a
+# stored number: no status is decided here, and ml.status stays what the scan stored.
+
+
+def _stored(value: object) -> Decimal | None:
+    """A stored number as the decimal its JSON writes (the repr round trip, no digit added).
+    None for anything else, NaN and the infinities included."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    number = Decimal(repr(value))
+    return number if number.is_finite() else None
+
+
+def plain_number(value: object) -> str:
+    """A stored number in full and without an exponent (1e-06 is 0.000001), so that a threshold
+    and a score are compared digit by digit. Mark a missing threshold explicitly."""
+    number = _stored(value)
+    return "기록 없음" if number is None else f"{number:f}"
+
+
+def score_text(score: float, threshold: object = None) -> str:
+    """An ML risk score for people: 0 for zero, <0.001 below that, else three decimals.
+
+    threshold: the report's own, if it has one. The short form is kept only while it reads
+    against the threshold as the stored score does. When it would land on the other side, read
+    as equal to a threshold the score differs from, or say neither (<0.001 with a threshold
+    below 0.001), the stored score is shown in full instead.
+    """
+    stored, limit = _stored(score), _stored(threshold)
+    if stored is None:
+        return f"{score:.3f}"
+    if stored == 0:
+        return "0"
+    if 0 < stored < SMALL_SCORE:
+        return "<0.001" if limit is None or not 0 < limit < SMALL_SCORE else f"{stored:f}"
+    text = f"{score:.3f}"
+    shown = Decimal(text)
+    if shown != 0 and (
+        limit is None or (shown > limit) - (shown < limit) == (stored > limit) - (stored < limit)
+    ):
+        return text
+    return f"{stored:f}"
+
+
+def score_raw(score: float, threshold: object = None) -> str | None:
+    """The stored score as the report's JSON writes it (repr), for the details of an item whose
+    score_text() is not that very value: rounded, or only said to be below 0.001. Else None."""
+    text = score_text(score, threshold)
+    exact = not text.startswith("<") and Decimal(text) == _stored(score)
+    return None if exact else repr(score)
 
 
 def _data(text: str) -> str:
@@ -197,9 +253,10 @@ def count_changes(plan: Path, limit: int) -> int:
     return len(changes)
 
 
-def load_report(path: Path) -> tuple[list[dict], dict]:
-    """The results of a depbee report, checked for the fields this gate reads, and its ASSETS
-    fields as the scan wrote them (None for one that is absent, empty or no string)."""
+def load_report(path: Path) -> tuple[list[dict], dict, object]:
+    """The results of a depbee report, checked for the fields this gate reads, its ASSETS
+    fields as the scan wrote them (None for one that is absent, empty or no string) and its
+    threshold as stored (None if absent), which only words a score (score_text)."""
     report = json.loads(path.read_text(encoding="utf-8"))
     rows = report.get("results") if isinstance(report, dict) else None
     if not isinstance(rows, list):
@@ -227,7 +284,7 @@ def load_report(path: Path) -> tuple[list[dict], dict]:
         name: value if isinstance(value, str) and value.strip() else None
         for name, value in zip(ASSETS, found, strict=True)
     }
-    return rows, assets
+    return rows, assets, report.get("threshold")
 
 
 def find_line(lines: list[str], location: str) -> int | None:
@@ -246,11 +303,13 @@ def decide(
     lockfile: str,
     lines: list[str],
     self_test: bool = False,
+    threshold: object = None,
 ):
     """Return (failed, annotations, summary lines) from the per-result fields and the names of
     the model and the known malicious list in the report (assets, from load_report).
 
-    The top-level exit_code is not used: 2 (unfinished) would hide 1 (risk).
+    The top-level exit_code is not used: 2 (unfinished) would hide 1 (risk). threshold (the
+    report's, from load_report) only words the score of an ML hit; it decides nothing.
     """
     annotations, counts = [], {"known": 0, "ml": 0, "pending": 0}
     # A scan whose report names no model or no known malicious list checked nothing with them, so
@@ -280,7 +339,8 @@ def decide(
         if ml:
             score = row.get("score")
             number = isinstance(score, int | float) and not isinstance(score, bool)
-            reasons.append("ML 위험 점수 기준 이상" + (f"({score:.3f})" if number else ""))
+            shown = f"({score_text(score, threshold)})" if number else ""
+            reasons.append("ML 위험 점수 기준 이상" + shown)
         if pending:
             reasons.append(f"보류({row.get('reason') or '이유 없음'}), 통과가 아님")
         fails = known or (ml and "ml-hit" in fail_on) or (pending and "incomplete" in fail_on)
@@ -331,13 +391,14 @@ def gate(
     """
     try:
         fail_on = parse_fail_on(fail_on_text)
-        rows, assets = load_report(report)
+        rows, assets, threshold = load_report(report)
         lockfile = PurePosixPath(lockfile.replace("\\", "/")).as_posix()
         try:
             lines = Path(lockfile).read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeDecodeError):
             lines = []  # annotations fall back to the whole file
-        failed, annotations, lines_out = decide(rows, assets, fail_on, lockfile, lines, self_test)
+        failed, annotations, lines_out = decide(rows, assets, fail_on, lockfile, lines, self_test,
+                                                threshold)  # fmt: skip
         # Written by the depbee CLI from the same report; it already escapes package data.
         cli_markdown = markdown.read_text(encoding="utf-8") if markdown is not None else ""
     except (ActionError, OSError, ValueError, RecursionError) as exc:

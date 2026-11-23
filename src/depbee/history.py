@@ -463,18 +463,25 @@ def list_runs(project_id: int, limit: int | None = None, kind: str | None = None
 
 
 def list_run_scores(project_id: int, limit: int = 10) -> list[dict]:
-    """Stored peak ML score and scored item count for each recent run, newest first."""
+    """Stored peak ML score and scored item count for each recent run, newest first, with the
+    threshold of that run's stored report (None if it has none): the one a reader compares the
+    peak with. Reads the stored reports of these runs alone."""
     rows = _read(
-        """SELECT recent.id, recent.created_at, recent.model_id,
+        """SELECT recent.id, recent.created_at, recent.model_id, recent.report,
                   MAX(item.score) AS peak_score, COUNT(item.position) AS scored_count
-           FROM (SELECT id, created_at, model_id FROM runs
+           FROM (SELECT id, created_at, model_id, report FROM runs
                  WHERE project_id = ? ORDER BY id DESC LIMIT ?) AS recent
            LEFT JOIN results AS item ON item.run_id = recent.id
                 AND typeof(item.score) IN ('real', 'integer') AND item.score BETWEEN 0 AND 1
            GROUP BY recent.id ORDER BY recent.id DESC""",
         (project_id, limit),
     )
-    return [dict(row) for row in rows]
+    found = []
+    for row in rows:
+        run = dict(row)
+        run["threshold"] = json.loads(run.pop("report")).get("threshold")
+        found.append(run)
+    return found
 
 
 def list_previews(

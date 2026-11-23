@@ -39,6 +39,7 @@ from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route
 
 from .. import history, mcp, service
+from ..actions import plain_number, score_text
 from ..cli import (
     APPLY_REASON_LABELS,
     MODE_LABELS,
@@ -223,6 +224,9 @@ ENV = jinja2.Environment(
     undefined=jinja2.StrictUndefined,
 )
 ENV.filters["when"] = _when
+# A stored threshold in full, and a stored score worded against one, as the text output has them.
+ENV.filters["plain"] = plain_number
+ENV.filters["score"] = score_text
 
 
 def _text(status: int, text: str) -> Response:
@@ -491,7 +495,8 @@ def build_app(
             request, "run.html", run=_run_row(stored), project=_project(stored["project_id"]),
             section="history",
             preview=None if preview is None else _preview_lines(preview, _clean),
-            apply=None if applied is None else _apply_view(applied["apply"], CONFIRMED_STORED),
+            apply=None if applied is None else _apply_view(
+                applied["apply"], CONFIRMED_STORED, threshold=stored["report"].get("threshold")),
             **_report(stored["report"]),
         )  # fmt: skip
 
@@ -504,14 +509,15 @@ def build_app(
                      error: str | None = None) -> Response:  # fmt: skip
         result = kept["result"]
         blocked, required = service.update_gate(result["report"])
+        threshold = result["report"].get("threshold")
         return page(
             request, "preview.html", status, preview_id=preview_id, error=error,
             project=_project(kept["project_id"]), section="updates", created_at=kept["created_at"],
             run_id=kept["run_id"], not_recorded=PREVIEW_NOT_RECORDED if kept["run_id"] is None
             else None, lines=_preview_lines(result["preview"], _clean),
-            blocked=[_apply_item(item, _clean, _text_label) for item in blocked],
+            blocked=[_apply_item(item, _clean, _text_label, threshold) for item in blocked],
             blocked_reason=APPLY_REASON_LABELS["known_malicious_hit"],
-            required=[_apply_item(item, _clean, _text_label) for item in required],
+            required=[_apply_item(item, _clean, _text_label, threshold) for item in required],
             changed=bool(result["report"]["results"]),
             npmrc=NPMRC_NO_INSTALL if result["preview"]["project_npmrc_ignored"] else None,
             modes=list(MODE_LABELS.items()), **_report(result["report"]),
@@ -631,7 +637,8 @@ def build_app(
             run_id=kept["run_id"] if recorded else None,
             not_recorded=None if recorded else (
                 APPLY_NOT_RECORDED if kept["run_id"] is not None else PREVIEW_NOT_RECORDED),
-            apply=_apply_view(applied, CONFIRMED_HERE, RETRY_HERE),
+            apply=_apply_view(applied, CONFIRMED_HERE, RETRY_HERE,
+                              kept["result"]["report"].get("threshold")),
         )  # fmt: skip
 
     def model(request: Request) -> Response:
@@ -1040,8 +1047,11 @@ def _report(report: dict) -> dict:
     }  # fmt: skip
 
 
-def _apply_view(applied: dict, confirmed: str, retry: str | None = None) -> dict:
-    """An apply document as cli._apply_lines shows it, with the dashboard's wording."""
+def _apply_view(
+    applied: dict, confirmed: str, retry: str | None = None, threshold: object = None
+) -> dict:
+    """An apply document as cli._apply_lines shows it, with the dashboard's wording. threshold:
+    the threshold of the report it was decided from."""
     return {
         "outcome": _text_label(OUTCOME_LABELS, applied["outcome"]),
         "lines": _apply_lines(
@@ -1051,6 +1061,7 @@ def _apply_view(applied: dict, confirmed: str, retry: str | None = None) -> dict
             reasons=DASHBOARD_REASONS,
             confirmed=confirmed,
             retry=retry,
+            threshold=threshold,
         ),  # fmt: skip
     }
 
@@ -1076,7 +1087,8 @@ def npm_link(name: object) -> str | None:
 
 
 def _result(row: dict, report: dict) -> dict:
-    """One result as the text output shows it; the facts and the model's explanation apart."""
+    """One result as the text output shows it; the facts and the model's explanation apart.
+    score_raw: the stored score as the report's JSON writes it, None without one."""
     explanation = row.get("explanation") or []
     scale = max((abs(item["contribution"]) for item in explanation), default=0) or 1
     alternative = _alternative(row)
@@ -1089,6 +1101,7 @@ def _result(row: dict, report: dict) -> dict:
         "location": row["location"],
         "npm": npm_link(row["package"]),
         "score": _ml_score(row, _text_label, report),
+        "score_raw": None if row.get("score") is None else repr(row["score"]),
         "compared": row.get("compared_version"),
         "reason": _text_label(REASON_LABELS, row["reason"]) if row.get("reason") else None,
         "alternative": None if alternative is None else (alternative[0], alternative[1]),
@@ -1106,7 +1119,7 @@ def _result(row: dict, report: dict) -> dict:
             }
             for item in explanation
         ],
-        "rest": _rest_line(row) if row.get("explanation_rest") else None,
+        "rest": _rest_line(row, report.get("threshold")) if row.get("explanation_rest") else None,
     }
 
 

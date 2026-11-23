@@ -9,7 +9,7 @@
 <li>{{ summary }}</li>
 {% for emphasized, rest in notices %}<li class="warning{% if known and loop.first %} risk{% endif %}"><strong>{{ emphasized }}</strong> {{ rest }}</li>
 {% endfor %}
-{% if model_id %}<li>모델: {{ model_id }}, 판정 기준 점수 {{ threshold }}</li>{% endif %}
+{% if model_id %}<li>모델: {{ model_id }}, 판정 기준 점수 {{ threshold|plain }}</li>{% endif %}
 {% for line in setup %}<li>{{ line }}</li>
 {% endfor %}
 <li>범위: {% if package_input %}lockfile 없이 registry 정보로 이 버전 하나만{% else %}lockfile에서 바뀐 의존성만{% endif %} 검사했습니다. 프로젝트 전체의 안전성 평가가 아닙니다.</li>
@@ -50,6 +50,8 @@
 {% if row.score is not none %}
 <dl>
 <dt>ML 위험 점수</dt><dd>{{ row.score }}</dd>
+{# Always on the page as text: the stored value that the line above rounds or shortens. #}
+{% if row.score_raw is not none %}<dt>점수 원값</dt><dd>{{ row.score_raw }}</dd>{% endif %}
 </dl>
 {% endif %}
 {% if row.explanation or row.rest %}
