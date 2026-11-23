@@ -15,7 +15,7 @@ import shutil
 import sys
 import tomllib
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest import mock
 
 from test_config import ML, NO_ML, NativeAssets, run_cli
@@ -109,6 +109,25 @@ class ShippedFilesTests(unittest.TestCase):
             kept = [line.split()[0] for line in attributes.read_text("utf-8").splitlines()
                     if line.endswith(" -text")]  # fmt: skip
             self.assertEqual(sorted(kept), sorted(f"src/depbee/assets/{n}" for n in bundled.SHA256))
+
+    @unittest.skipUnless((REPOSITORY / ".dockerignore").is_file(), "not run from a checkout")
+    def test_the_docker_build_context_admits_every_file_of_the_package_data(self):
+        # .dockerignore admits only what it names, and the image installs depbee from that.
+        # Package data it does not name is in the wheel of a host install and missing in the
+        # image, whose build still succeeds: the dashboard's script once was, and there the
+        # pages answered while the script's address alone failed.
+        project = tomllib.loads((REPOSITORY / "pyproject.toml").read_text("utf-8"))
+        lines = (REPOSITORY / ".dockerignore").read_text("utf-8").splitlines()
+        named = [line[1:] for line in lines if line.startswith("!")]
+        for package, patterns in project["tool"]["setuptools"]["package-data"].items():
+            folder = REPOSITORY / "src" / package.replace(".", "/")
+            shipped = [file for pattern in patterns for file in folder.glob(pattern)]
+            self.assertTrue(shipped, package)
+            for file in shipped:
+                path = PurePosixPath(file.relative_to(REPOSITORY).as_posix())
+                with self.subTest(str(path)):
+                    self.assertTrue(any(path.match(pattern) for pattern in named),
+                                    ".dockerignore does not name it")  # fmt: skip
 
 
 class ShippedDefaultTests(Fixture):

@@ -5,6 +5,7 @@
 `.github/workflows/ci.yml`의 `checks` job은 이 도구 자체의 Linux/Windows, Python 3.11/3.13 검사다.
 lint·회귀 테스트·native LightGBM 합성 테스트·wheel/sdist 빌드를 수행한다.
 `action` job은 아래 GitHub Action을 예시 보고서와 설치본의 내장 자산으로 검사한다(자기 검사 절).
+`docker` job은 자격 증명 없이 빌드한 `core` 이미지를 실행해 CLI, MCP, 대시보드, 이미지의 npm을 검사한다(Docker 이미지 검사 절).
 Action은 확인한 commit SHA로 고정했고 권한은 contents:read다.
 의존성은 pyproject의 범위로 설치한다. 첫 환경 검증 후 팀 공통 lock/constraints를 도입한다.
 
@@ -211,6 +212,17 @@ CLI 종료 코드 0/1/2의 의미는 그대로다.
 - 분석기 없이 depbee만 설치해 예시 프로젝트를 내장 자산으로 scan하고(추출이 없어 항목은 보류), 보고서의 `model_id`·모델 해시·색인 기준 시점·색인 해시가 설치본의 manifest와 같은지, 그 보고서가 scan 보고서 판정을 통과하는지 확인한다.
 - `uses: ./`를 `report` 입력(위 scan의 보고서)으로 실행해 입력 검사, summary, artifact, 경고 주석의 배선을 확인한다. 이 실행의 summary에 설치본의 모델 ID와 색인 기준 시점이 나온다. `report`가 있으면 설치·다운로드·변경 수·캐시·scan 단계는 건너뛰고 Release 입력도 검사하지 않는다.
 - 판정 모듈의 단위 테스트는 `tests/test_actions.py`이다(적대적 패키지 이름 이스케이프, lockfile 줄 찾기, Release 입력의 전부·전무·부분·형식 오류, 두 모드의 기준 커밋 검사, 모델 ID와 색인 기준 시점이 없는 scan 보고서의 실패와 자기 검사 호환, summary의 code span 표시, 캐시 신원 계산, 경로 입력의 링크 workspace 경계(심볼릭 링크는 POSIX, junction은 Windows에서 돎), `verify` 여러 쌍, `action.yml` 단계 순서·조건·인자를 텍스트로 확인 포함).
+
+### Docker 이미지 검사 (depbee CI `docker` job)
+
+분석기가 비공개라 CI는 자격 증명이 필요 없는 `core` 단계만 빌드한다(`docker build --target core`). secret을 쓰지 않고 이미지를 push하지 않는다. 컨테이너에는 합성 예시와 그 예시로 만든 임시 Git 저장소만 읽기 전용으로 연결한다.
+
+- CLI와 MCP: 네트워크 없이 읽기 전용 루트로 예시 프로젝트를 scan해 보고서의 모델과 색인이 이미지에 든 것인지 확인한다. 소유자가 다른 Git 저장소의 HEAD를 기준으로 `plan`이 되는지, stdio MCP가 초기화되고 도구 두 개를 내는지도 확인한다.
+- 대시보드: 문서의 실행 방식(호스트의 `127.0.0.1`에만 같은 번호로 게시한 포트, `/projects` 아래의 읽기 전용 연결, 홈 볼륨)으로 띄운다. 출력한 주소, Host와 세션 검사, 연결한 폴더 목록, 그 밖의 경로 거부를 확인한다.
+- 등록한 프로젝트: 빈 볼륨의 첫 등록은 현황판(첫 화면)으로 이어져야 한다. 현황판에 나온 그 프로젝트의 링크를 열어 lockfile의 패키지가 보이는지 확인한다. 검사만 요청이 `/projects` 아래 저장소의 HEAD lockfile을 읽은 뒤 분석기가 없다는 오류로 끝나는지도 확인한다.
+- 홈 볼륨: 첫 컨테이너를 종료해 지운 뒤 같은 볼륨으로 새 컨테이너를 만든다. 등록한 프로젝트가 그대로 보이고 열리는지, 같은 폴더를 다시 등록하면 프로젝트가 늘지 않고 그 프로젝트의 화면으로 이어지는지 확인한다.
+- 이미지의 npm: PATH에 `npm`과 `npx`가 없는지 확인한다. depbee가 업데이트 확인 때 쓰는 호출(`inputs.npm_cli`)이 Node.js 24.11.0의 npm 11.6.1을 찾아, 의존성 없는 임시 프로젝트의 lockfile을 네트워크 없이 다시 쓰는지 확인한다.
+- CI가 하지 않는 것: 기본 `full` 이미지의 빌드, 실제 업데이트 확인과 검사만. 비공개 분석기의 읽기 권한과 npm registry 다운로드가 필요하다. 권한이 있는 PC에서 [정해 둔 정상 예시](docker.md#전체-이미지-확인)로 확인하고 결과를 `docs/validation.md`에 남긴다.
 
 ## CI 신뢰 경계
 

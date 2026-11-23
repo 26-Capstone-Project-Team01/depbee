@@ -13,7 +13,7 @@ import subprocess
 from unittest import mock
 
 import test_dashboard  # the module: its test classes, imported by name, would run again here
-from test_detectors import KnownList
+from test_detectors import ADVISORY, KnownList, Rules, rule
 from test_output_formats import older
 
 from depbee import history, service
@@ -189,3 +189,173 @@ class InspectorTests(test_dashboard.DashboardFixture):
             row = self.selected(self.updates, self.keys["example"])
             self.assertEqual([row[key] for key in CHECKED_WITH],
                              ["unit-test", 0.5, KnownList.list_as_of])  # fmt: skip
+
+    def test_the_candidates_only_filter_and_the_search_narrow_the_list_together(self):
+        # A later check of other alone found nothing: other is installed and has no candidate.
+        self.check({**self.report, "results": []}, targets=["other"], changed_count=0)
+        for query, expected in (
+            ("", ["example", "inner", "other"]),
+            ("only=1", ["example", "inner"]),
+            ("only=1&q=IN", ["inner"]),
+            ("q=IN&only=1", ["inner"]),  # in either order
+            ("only=1&scope=direct", ["example"]),
+            ("only=1&scope=nested&q=inner", ["inner"]),
+            ("only=1&q=other", []),  # found by the search, but it has no candidate
+            ("q=other", ["other"]),
+        ):
+            with self.subTest(query=query):
+                context = self.context(f"{self.packages}?{query}")
+                self.assertEqual([row["name"] for row in context["rows"]], expected)
+                # The count is of the whole list, and the search is kept as it was given.
+                self.assertEqual((context["candidate_count"], context["only"]),
+                                 (2, "only=1" in query))  # fmt: skip
+                self.assertEqual(context["query"], "IN" if "q=IN" in query else
+                                 "inner" if "q=inner" in query else
+                                 "other" if "q=other" in query else "")  # fmt: skip
+        # The view opens one of the rows the filter leaves.
+        row = self.selected(f"{self.packages}?only=1&item={self.keys['inner']}")
+        self.assertEqual(row["package"], "inner")
+        self.assertIsNone(self.selected(f"{self.packages}?only=1&q=other&item={self.keys['inner']}"))
+        for query in ("only=0", "only=", "only=true", "only=1&only=1", "only=1&only=0"):
+            self.assertEqual(self.get(f"{self.packages}?{query}").status_code, 400, query)
+
+    def test_a_filter_with_no_candidate_to_show_is_off(self):
+        # No current check: nothing is known, and an address kept from before lists everything.
+        self.head.write_bytes(self.head.read_bytes() + b"\n")
+        context = self.context(f"{self.packages}?only=1")
+        self.assertEqual((context["only"], context["candidate_count"], context["state"]["checks"],
+                          len(context["rows"])), (False, 0, [], 3))  # fmt: skip
+        # A check of everything that found nothing: 0 is known, and the list is still whole.
+        run = self.check({**self.report, "results": []}, targets=None, changed_count=0)
+        context = self.context(f"{self.packages}?only=1")
+        self.assertEqual((context["only"], context["candidate_count"], len(context["rows"]),
+                          [check["id"] for check in context["state"]["checks"]]),
+                         (False, 0, 3, [run]))  # fmt: skip
+
+    def scanned(self, *signal, **detectors):
+        """A report of example 1.1.0 to 1.2.0 as setUp's are: scanned while the lockfile is the
+        one an update would write, which is then put back as it is now, byte for byte."""
+        self.save_locks()
+        try:
+            return self.scan_with(*signal, **detectors)
+        finally:
+            self.write(self.head, self.old)
+
+    def decided(self, report):
+        (row,) = report["results"]
+        decision = self.app._decision(row)
+        # Never a rule of its own: what the update gate says of the report.
+        refused, confirm = service.update_gate(report)
+        self.assertEqual(decision["key"], "refused" if refused else "confirm" if confirm else
+                         "free")  # fmt: skip
+        return decision["cell"], decision["label"], decision["why"]
+
+    def test_whether_a_candidate_could_be_applied_is_what_the_update_gate_says_of_it(self):
+        listed, clean = KnownList((ADVISORY,)), KnownList()
+        confirm = self.app.CONFIRM_WHY
+        self.assertEqual(self.decided(self.scanned(0.1, known_malicious=clean)),
+                         ("pass", "반영 가능", self.app.FREE_WHY))  # fmt: skip
+        # A known malicious match is refused whatever the score, and the score stays as it is.
+        low = self.scanned(0.1, known_malicious=listed)
+        self.assertEqual(self.decided(low), ("risk", "반영 거부", self.app.REFUSED_WHY))
+        self.assertEqual((low["results"][0]["score"], low["results"][0]["ml"]["status"]),
+                         (0.1, "not_hit"))  # fmt: skip
+        self.assertEqual(self.decided(self.scanned(0.9, known_malicious=listed))[1], "반영 거부")
+        # What needs the user's confirmation says each cause, in the words of the gate.
+        for report, causes in (
+            (self.scanned(0.9, known_malicious=clean), "ML 위험 점수 기준 이상"),
+            (self.scanned(0.9), "ML 위험 점수 기준 이상; 기지 악성 목록 미확인"),
+            (self.scanned(0.1), "기지 악성 목록 미확인"),
+            (self.scanned(analyzer=False, known_malicious=clean),
+             "보류(통과가 아님), 이유: 분석 결과 없음"),
+            (older(self.scanned(0.1)), "기지 악성 목록 미확인"),  # no slot is no not_hit
+            (self.scanned(0.1, known_malicious=KnownList(error=RuntimeError("x"))),
+             "보류(통과가 아님), 이유: 연결된 탐지기 실패; 기지 악성 목록 미확인"),
+        ):  # fmt: skip
+            with self.subTest(causes=causes):
+                self.assertEqual(self.decided(report), ("hold", "확인 필요", f"{confirm}: {causes}."))
+        # An entry that is removed installs nothing; a match would still refuse it.
+        gone = self.scanned(0.1, known_malicious=clean)
+        gone["results"][0].update(status="removed", after_version=None, score=None,
+                                  ml={"status": "not_run"})  # fmt: skip
+        self.assertEqual(self.decided(gone), ("pass", "반영 가능", self.app.REMOVED_WHY))
+        gone["results"][0]["known_malicious"]["status"] = "hit"
+        self.assertEqual(self.decided(gone)[1], "반영 거부")
+
+    def test_each_detector_says_its_own_result_beside_the_decision(self):
+        rules = Rules((rule("hit"), rule("failed", "R2", detail="timeout")))
+        report = self.scanned(0.1, known_malicious=KnownList((ADVISORY,)), rules=rules)
+        row = self.app._result(report["results"][0], report)
+        # Refused by the list; the model's low score and the rules' result are still theirs.
+        self.assertEqual((row["decision"]["label"], row["label"], row["score"], row["score_raw"]),
+                         ("반영 거부", "위험", "0.100 (기준 미만)", "0.1"))  # fmt: skip
+        self.assertEqual(row["known"], {
+            "cell": "risk", "status": "일치", "note": None,
+            "lines": ["EXAMPLE-ADVISORY-0001 (버전 목록에 있음, 영향 버전 1.1.0)"]})  # fmt: skip
+        self.assertEqual((row["rules"]["cell"], row["rules"]["status"]),
+                         ("risk", "적중, 실패 1개"))  # fmt: skip
+        self.assertEqual(len(row["rules"]["lines"]), 2)
+        self.assertIn("EXAMPLE-RULE-0001", row["rules"]["lines"][0])
+        self.assertIn("판정에 쓰지 않는 표시입니다.", row["rules"]["note"])
+        # Each slot is worded as the report words it (cli._detector_lines), and no more.
+        self.assertEqual([line for line, _ in row["detectors"]],
+                         [f"기지 악성: {row['known']['status']}",
+                          f"규칙: {row['rules']['status']}", row["rules"]["note"]])  # fmt: skip
+        self.assertEqual([subs for _, subs in row["detectors"]],
+                         [row["known"]["lines"], row["rules"]["lines"], []])  # fmt: skip
+        # A detector that is not connected did not run, and one that an older report does not
+        # have is unknown: neither is a "found nothing".
+        report = self.scanned(0.1, known_malicious=KnownList())
+        row = self.app._result(report["results"][0], report)
+        self.assertEqual(row["known"], {"cell": None, "status": "미적중", "lines": [],
+                                        "note": None})  # fmt: skip
+        self.assertEqual(row["rules"], {"cell": "none", "status": "미실행 (탐지기 연결 안 됨)",
+                                        "lines": [], "note": None})  # fmt: skip
+        old = older(report)
+        row = self.app._result(old["results"][0], old)
+        for slot in ("known", "rules"):
+            self.assertEqual(row[slot], {"cell": "none", "status": "확인 안 됨", "lines": [],
+                                         "note": None})  # fmt: skip
+        failed = self.scanned(0.1, known_malicious=KnownList(error=RuntimeError("x")))
+        row = self.app._result(failed["results"][0], failed)
+        self.assertEqual((row["known"]["cell"], row["known"]["status"].split(" ")[0]),
+                         ("hold", "실패"))  # fmt: skip
+
+    def test_the_inspector_says_the_decision_first_and_then_each_detector_alone(self):
+        tiny = 3.950535635136895e-07  # a real low score: its stored digits stay on the page
+        report = self.rows(self.scanned(tiny, known_malicious=KnownList((ADVISORY,))), "other")
+        run = self.check(report, targets=["other"])
+        for view in (self.packages, self.updates):
+            html = self.page(f"{view}?item={run}.0")
+            panel = html.split('<aside class="inspector"', 1)[1].split("</aside>", 1)[0]
+            marks = ['<p class="decision risk"><span class="cell risk" aria-hidden="true"></span>'
+                     "반영 거부</p>", f'<p class="why">{self.app.REFUSED_WHY}</p>',
+                     '<h3 id="known-title">기지 악성 색인</h3>', "<b>일치</b>",
+                     "EXAMPLE-ADVISORY-0001 (버전 목록에 있음, 영향 버전 1.1.0)",
+                     '<h3 id="rules-title">정적 규칙</h3>', "<b>미실행 (탐지기 연결 안 됨)</b>",
+                     "실행하지 않은 것은 통과가 아닙니다.", '<h3 id="score-title">ML 모델</h3>',
+                     "<dt>ML 위험 점수</dt><dd>&lt;0.001 (기준 미만)</dd>",
+                     f"<dt>점수 원값</dt><dd>{tiny!r}</dd>", "<dt>판정 기준 점수</dt><dd>0.5</dd>",
+                     "<dt>모델</dt><dd>unit-test</dd>", "synthetic evidence",
+                     '<h3 id="basis-title">저장된 보고서</h3>',
+                     f'<a href="{test_dashboard.S}/runs/{run}">#{run}</a>']  # fmt: skip
+            places = [panel.find(mark) for mark in marks]
+            self.assertNotIn(-1, places, view)
+            self.assertEqual(places, sorted(places), view)  # in this order
+            # The versions are the stored strings, each in full.
+            self.assertIn("<dt>사용 버전</dt><dd>1.0.0</dd>", panel)
+            self.assertIn("<dt>후보 버전</dt><dd>1.1.0</dd>", panel)
+            self.assertIn("이 화면에서는 반영하지 않습니다.", panel)
+            self.assertNotIn("<form", panel if view == self.updates else "")
+        # The list says the same decision in the candidate's own cell.
+        cell = self.page(self.packages).split(f"item={run}.0#candidate-evidence", 1)[1]
+        self.assertIn('<span class="verdict risk"><span class="cell risk" aria-hidden="true">'
+                      "</span>반영 거부</span>", cell.split("</a>", 1)[0])  # fmt: skip
+        # A candidate without a score says so, and that it is no 0.
+        unscored = self.rows(self.scanned(analyzer=False, known_malicious=KnownList()), "other")
+        run = self.check(unscored, targets=["other"])
+        panel = self.page(f"{self.updates}?item={run}.0").split('<aside class="inspector"', 1)[1]
+        self.assertIn("<dt>ML 위험 점수</dt><dd>없음(미실행)</dd>", panel)
+        self.assertIn("점수가 없는 것은 0점이 아닙니다.", panel)
+        self.assertNotIn("점수 원값", panel)
+        self.assertIn('<p class="decision hold">', panel)

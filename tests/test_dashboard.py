@@ -15,8 +15,10 @@ import re
 import sqlite3
 import sys
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
 from unittest import mock
+from urllib.parse import urlencode
 
 import test_mcp
 from test_apply import ApplyFixture, sha
@@ -35,6 +37,8 @@ PORT = 48213
 BASE = f"http://127.0.0.1:{PORT}"
 SESSION = "synthetic-session-value-for-tests-only-0123456789"
 S = f"/s/{SESSION}"  # every page, form and link is under this prefix
+# The one script element a page has: the file under the session, never a script of the page's own.
+SCRIPT = f'<script src="{S}/static/app.js" defer></script>'
 WEB_MODULES = ("starlette", "jinja2", "uvicorn", "markupsafe")
 PREVIEW = {
     "targets": ["example"], "npm_version": "11.6.1", "package_json_sha256": "0" * 64,
@@ -42,6 +46,29 @@ PREVIEW = {
     "package_json_changed": False, "changed_count": 1, "project_npmrc_ignored": False,
     "notices": ["미리보기만 했고 프로젝트 파일은 아무것도 바꾸지 않았습니다."],
 }  # fmt: skip
+
+
+class Elements(HTMLParser):
+    """The elements of a page as (tag, {attribute: value}), in the page's order."""
+
+    def __init__(self, html):
+        super().__init__()
+        self.found = []
+        self.feed(html)
+
+    def handle_starttag(self, tag, attrs):
+        self.found.append((tag, dict(attrs)))
+
+
+def assert_one_script(case, html):
+    """A page of the dashboard runs the one script file and nothing else: no second script
+    element, none that a package string wrote, and no handler in an attribute."""
+    case.assertEqual((html.count("<script"), html.count(SCRIPT)), (1, 1))
+    elements = Elements(html).found
+    case.assertEqual([attrs for tag, attrs in elements if tag == "script"],
+                     [{"src": f"{S}/static/app.js", "defer": None}])  # fmt: skip
+    case.assertEqual([name for _, attrs in elements for name in attrs if name.startswith("on")],
+                     [])  # fmt: skip
 
 
 @unittest.skipUnless(WEB, NO_WEB)
@@ -64,11 +91,12 @@ class DashboardFixture(FormatFixture):
         response = self.get(url)
         self.assertEqual(response.status_code, 200, url)
         self.assertNotIn("set-cookie", response.headers)
-        # Every link and form of the dashboard keeps the session prefix; the skip link stays on
-        # the page it is on.
-        for target in re.findall(r'(?:href|action)="([^"]*)"', response.text):
+        # Every link, form and file of the dashboard keeps the session prefix; the skip link
+        # stays on the page it is on.
+        for target in re.findall(r'(?:href|action|src)="([^"]*)"', response.text):
             if target != "#main" and not target.startswith("https://www.npmjs.com/package/"):
                 self.assertTrue(target.startswith(S + "/"), target)
+        assert_one_script(self, response.text)
         return response.text
 
     def record(self, report, kind="scan", preview=None):
@@ -250,17 +278,33 @@ class PageTests(DashboardFixture):
         package_dir = Path(self.app.__file__).parent
         files = [*package_dir.glob("templates/*.html"), *package_dir.glob("static/*")]
         self.assertEqual(sorted(p.name for p in files), [
-            "applied.html", "apply_lines.html", "base.html", "counts.html", "error.html",
-            "history.html", "inspector.html", "model.html", "overview.css", "overview.html",
-            "preview.html", "project.html", "project_head.html", "projects.html",
-            "report.html", "run.html", "scanned.html", "score_history.html", "style.css",
-            "trail.html", "updates.html"])  # fmt: skip
+            "app.js", "applied.html", "apply_lines.html", "base.html", "counts.html",
+            "error.html", "history.html", "inspector.html", "model.html", "mounted.html",
+            "overview.css", "overview.html", "preview.html", "project.html",
+            "project_head.html", "projects.html", "report.html", "run.html", "scanned.html",
+            "score_history.html", "start.html", "style.css", "trail.html", "updates.html"])  # fmt: skip
         for path in files:
             self.assertIsNone(re.search(r"https?:|//", path.read_text("utf-8")), path.name)
         text = "".join(p.read_text("utf-8") for p in files)
-        # CSP: no script, and style-src 'self' refuses a style attribute or element.
-        for refused in ("<script", "<style", " style=", "url(", "@import", "@font-face"):
+        # CSP: style-src 'self' refuses a style attribute or element.
+        for refused in ("<style", " style=", "url(", "@import", "@font-face"):
             self.assertNotIn(refused, text)
+        # script-src 'self': the two documents (the console and the start page) name the one
+        # script file, and no template holds a script or a handler of its own.
+        self.assertEqual(re.findall(r"<script[^>]*>[^<]*", text),
+                         ['<script src="{{ base }}/static/app.js" defer>'] * 2)  # fmt: skip
+        # By name: a folder lists its files in an order of its own (not by name on Linux).
+        self.assertEqual(sorted(p.name for p in files if "<script" in p.read_text("utf-8")),
+                         ["base.html", "start.html"])  # fmt: skip
+        self.assertIsNone(re.search(r"\son[a-z]+=|javascript:", text))
+        # The script sends no request, reads no answer and writes no markup: a form is still
+        # the browser's own, so every check of a request holds with the script as without it.
+        script = (package_dir / "static" / self.app.SCRIPT).read_text("utf-8")
+        for refused in ("fetch", "XMLHttpRequest", "sendBeacon", "WebSocket", "EventSource",
+                        "eval", "Function(", "innerHTML", "outerHTML", "insertAdjacent",
+                        "document.write", "import", "cookie", "localStorage", "sessionStorage",
+                        ".submit(", ".click("):  # fmt: skip
+            self.assertNotIn(refused, script)
 
 
 class ConsoleTests(DashboardFixture):
@@ -284,23 +328,50 @@ class ConsoleTests(DashboardFixture):
         self.assertIsNotNone(found, project_id)
         return found.groups()
 
-    def test_without_a_project_the_console_invites_registration(self):
-        html = self.page("/")
-        self.assertNotIn('<a class="tab" ', html)
-        self.assertIn(f'<a class="tab manage" href="{S}/?manage=1" aria-current="page">프로젝트 관리</a>',
-                      html)  # fmt: skip
-        self.assertIn("등록한 프로젝트가 없습니다.", html)
-        self.assertIn(f'<form method="post" action="{S}/projects">', html)
-        self.assertIn('<a class="skip" href="#main">본문으로 건너뛰기</a>', html)
-        self.assertIn('<main id="main">', html)
+    def test_without_a_project_the_first_page_is_one_button_that_adds_it(self):
+        for url in ("/", "/?manage=1"):  # nothing to manage yet: the same page
+            html = self.page(url)
+            elements = Elements(html).found
+            body = elements[[tag for tag, _ in elements].index("body"):]
+            # One form with one button, and nothing of the console around it: no bar, no
+            # heading, no count, no chart, no footer, no link.
+            self.assertEqual([tag for tag, _ in body],
+                             ["body", "main", "form", "input", "button", "p", "p"], url)  # fmt: skip
+            self.assertEqual(body[0][1], {"class": "start"})
+            self.assertEqual(body[2][1], {"method": "post", "action": f"{S}/projects/pick"})
+            self.assertEqual(body[3][1], {"type": "hidden", "name": "session", "value": SESSION})
+            self.assertEqual(body[4][1]["type"], "submit")
+            self.assertIn(">프로젝트 추가</button>", html)
+            # What else the page says is for a screen reader only: what the button opens, and
+            # the line the script speaks through.
+            self.assertEqual([attrs["class"] for tag, attrs in body if tag == "p"],
+                             ["visually-hidden"] * 2)  # fmt: skip
+            self.assertEqual(body[4][1]["aria-describedby"], body[5][1]["id"])
+            for absent in ("등록한 프로젝트", "프로젝트 0개", SAFETY_NOTE.replace("'", "&#39;")):
+                self.assertNotIn(absent, html)
+            self.assertIn("<title>프로젝트 추가 - depbee</title>", html)
+        self.assertFalse(self.db.exists())  # looking creates no history
         # The tab icon comes from under the session: a browser then never asks for /favicon.ico.
         self.assertIn(f'<link rel="icon" type="image/svg+xml" href="{S}/static/icon.svg">', html)
         icon = self.get("/static/icon.svg")
         self.assertEqual((icon.status_code, icon.headers["content-type"]), (200, "image/svg+xml"))
         self.assertTrue(icon.text.startswith("<svg "))
+        # The pages outside a project keep the console.
         model = self.page("/model")
+        self.assertIn('<a class="skip" href="#main">본문으로 건너뛰기</a>', model)
+        self.assertIn('<main id="main">', model)
+        self.assertNotIn('<a class="tab" ', model)
         self.assertIn(f'<a href="{S}/model" aria-current="page">모델 정보</a>', model)
         self.assertNotIn(' aria-current="page">프로젝트 관리', model)
+        # With a project the first page is the overview, and project management the place
+        # where the next one is added by the dialog or by a typed path.
+        history.register_project(self.project)
+        self.assertIn("<title>프로젝트 현황판 - depbee</title>", self.page("/"))
+        manage = self.page("/?manage=1")
+        self.assertIn(f'<a class="tab manage" href="{S}/?manage=1" aria-current="page">프로젝트 관리</a>',
+                      manage)  # fmt: skip
+        self.assertIn(f'<form method="post" action="{S}/projects/pick">', manage)
+        self.assertIn(f'<form method="post" action="{S}/projects">', manage)
 
     def test_tabs_show_each_project_its_state_and_the_open_one(self):
         flagged = history.register_project(self.project)
@@ -476,8 +547,10 @@ class CandidateTests(DashboardFixture):
         candidate = cells["node_modules/example"]
         self.assertIn('<span class="visually-hidden">후보 </span><span aria-hidden="true">→</span>'
                       " 1.2.0</span>", candidate)  # fmt: skip
-        self.assertIn('<span class="verdict risk"><span class="cell risk" aria-hidden="true">'
-                      "</span>위험</span>", candidate)  # fmt: skip
+        # Whether the candidate could be applied, as the update gate decides it: an ML hit that
+        # no known malicious list was checked against needs the user's confirmation.
+        self.assertIn('<span class="verdict hold"><span class="cell hold" aria-hidden="true">'
+                      "</span>확인 필요</span>", candidate)  # fmt: skip
         self.assertIn(f'<a href="{S}/runs/{run}#r0">근거<span class="visually-hidden"> example'
                       "</span></a>", candidate)  # fmt: skip
         for location in ("node_modules/other", "node_modules/example/node_modules/inner"):
@@ -808,6 +881,58 @@ class CandidateTests(DashboardFixture):
         self.assertIn('class="stack candidates"', self.page(self.updates))
         self.assertEqual(self.db.read_bytes(), before)  # looking does not upgrade the file
 
+    def test_the_filter_beside_the_search_keeps_the_search_and_says_what_is_known(self):
+        url = f"{S}{self.packages}"
+
+        def listed(html):
+            return re.findall(r'<tr><th scope="row">([^<]*)</th>', html)
+
+        # Nothing checked: unknown, which is not 0. An address kept from before lists it all.
+        html = self.page(f"{self.packages}?only=1")
+        self.assertIn('<span class="toggle off">후보 미확인</span>', html)
+        self.assertIn("미확인은 확인된 후보 0개와 다릅니다.", html)
+        self.assertNotIn('<a class="toggle"', html)
+        self.assertEqual(listed(html), ["example", "inner", "other"])
+        run = self.check(targets=None)  # one candidate: example
+        # Off: the link turns the filter on and keeps the search and the kind.
+        off = self.page(f"{self.packages}?q=e&scope=direct")
+        self.assertIn(f'<a class="toggle" href="{url}?q=e&amp;scope=direct&amp;only=1">확인된 후보 '
+                      '1개<span class="visually-hidden">만 보기</span></a>', off)  # fmt: skip
+        self.assertNotIn('name="only"', off)
+        self.assertIn(f'검색 결과 <strong>2개</strong>. <a href="{url}">필터 초기화</a>', off)
+        self.assertEqual(listed(off), ["example", "other"])
+        # On: both narrow the list, the link turns the filter off and keeps the search, a new
+        # search keeps the filter, and a pick keeps all three.
+        on = self.page(f"{self.packages}?q=e&scope=direct&only=1")
+        self.assertIn(f'<a class="toggle" href="{url}?q=e&amp;scope=direct" aria-current="true">'
+                      '확인된 후보 1개<span class="visually-hidden">만 보는 중입니다. 전체 패키지 '
+                      "보기</span></a>", on)  # fmt: skip
+        self.assertIn('<input type="hidden" name="only" value="1">', on)
+        self.assertIn('name="q" maxlength="214" value="e"', on)
+        self.assertIn('<option value="direct" selected>직접</option>', on)
+        self.assertIn("확인된 후보만 검색 결과 <strong>1개</strong>.", on)
+        self.assertEqual(listed(on), ["example"])
+        self.assertIn(f'href="{url}?q=e&amp;scope=direct&amp;only=1&amp;item={run}.0'
+                      '#candidate-evidence"', on)  # fmt: skip
+        # Without a search the way back is the view itself.
+        alone = self.page(f"{self.packages}?only=1")
+        self.assertIn(f'<a class="toggle" href="{url}" aria-current="true">', alone)
+        self.assertEqual(listed(alone), ["example"])
+        # A search that leaves no candidate says which of the two came up empty, and keeps both.
+        none = self.page(f"{self.packages}?q=other&only=1")
+        self.assertIn("조건에 맞는 확인된 후보가 없습니다.", none)
+        self.assertIn(f'<a class="toggle" href="{url}?q=other" aria-current="true">', none)
+        self.assertEqual(listed(none), [])
+        self.assertIn("조건에 맞는 패키지가 없습니다.", self.page(f"{self.packages}?q=missing"))
+        # A check of everything that found nothing: 0 is known, and the filter has nothing to do.
+        self.check(self.nothing(), targets=None, changed_count=0)
+        html = self.page(f"{self.packages}?only=1")
+        self.assertIn('<span class="toggle off">확인된 후보 0개</span>', html)
+        self.assertIn("바뀌는 항목이 없었습니다. 확인된 후보 0개입니다.", html)
+        self.assertNotIn("미확인은 확인된 후보 0개와 다릅니다.", html)
+        self.assertEqual(listed(html), ["example", "inner", "other"])
+        self.assertEqual(self.get(f"{self.packages}?only=2").status_code, 400)
+
     def test_candidate_strings_stay_inert(self):
         from markupsafe import escape
 
@@ -829,15 +954,19 @@ class CandidateTests(DashboardFixture):
 
 
 class SecurityTests(DashboardFixture):
-    URLS = ("/", "/?manage=1", "/model", "/static/style.css", "/static/overview.css", "/static/icon.svg", "/projects/1",
-            "/projects/1/updates", "/projects/1/history", "/runs/1")  # fmt: skip
+    URLS = ("/", "/?manage=1", "/model", "/static/style.css", "/static/overview.css",
+            "/static/app.js", "/static/icon.svg", "/projects/1", "/projects/1/updates",
+            "/projects/1/history", "/runs/1")  # fmt: skip
 
     def assert_headers(self, response):
         headers = response.headers
         self.assertEqual(headers["content-security-policy"], self.app.CSP)
-        for directive in ("default-src 'none'", "style-src 'self'", "form-action 'self'",
-                          "frame-ancestors 'none'", "base-uri 'none'"):  # fmt: skip
-            self.assertIn(directive, headers["content-security-policy"])
+        # Each source list is 'self' or 'none' alone: no inline script or style, no eval, no
+        # other host. script-src 'self' is the one file of static/.
+        self.assertEqual(sorted(headers["content-security-policy"].split("; ")), [
+            "base-uri 'none'", "default-src 'none'", "form-action 'self'",
+            "frame-ancestors 'none'", "img-src 'self'", "script-src 'self'",
+            "style-src 'self'"])  # fmt: skip
         self.assertEqual(headers["x-content-type-options"], "nosniff")
         self.assertEqual(headers["referrer-policy"], "same-origin")
         self.assertEqual(headers["cache-control"], "no-store")
@@ -929,6 +1058,41 @@ class SecurityTests(DashboardFixture):
         self.assertEqual(history.list_projects(), [])
         # GET never changes state: the form's route takes POST only.
         self.assertEqual(self.get("/projects").status_code, 405)
+
+    def test_a_post_that_the_browser_says_comes_from_elsewhere_is_refused(self):
+        form, path = self.form_session(), str(self.project)
+
+        def post(*sites):
+            """The registration form, sent with these Sec-Fetch-Site headers and its Origin."""
+            headers = [("origin", BASE), *(("sec-fetch-site", site) for site in sites)]
+            return self.client.post(S + "/projects", data={"path": path, "session": form},
+                                    headers=headers, follow_redirects=False)  # fmt: skip
+
+        # Another port of 127.0.0.1 is the same site and another origin. One header that is
+        # not the dashboard's own is enough, whatever a second one says.
+        for sites in (("cross-site",), ("same-site",), ("Cross-Site",), ("",), ("other",),
+                      ("same-origin", "cross-site"), ("cross-site", "none")):  # fmt: skip
+            with self.subTest(sites=sites):
+                response = post(*sites)
+                self.assertEqual(response.status_code, 403)
+                self.assert_headers(response)
+                self.assertEqual(history.list_projects(), [])
+        # The dashboard's own page, the user (a reload), and a browser that says nothing, which
+        # is left to the Origin check.
+        for number, sites in enumerate((("same-origin",), ("none",), ("SAME-ORIGIN",), ())):
+            with self.subTest(sites=sites):
+                response = post(*sites)
+                # The first of these registers the project; the others find it registered.
+                self.assertEqual((response.status_code, response.headers["location"]),
+                                 (303, S + ("/projects/1" if number else "/")))  # fmt: skip
+        # The header does not stand in for the Origin, and a page is opened from anywhere: its
+        # address holds the session.
+        refused = self.client.post(S + "/projects", data={"path": path, "session": form},
+                                   headers={"sec-fetch-site": "same-origin"})  # fmt: skip
+        self.assertEqual(refused.status_code, 403)
+        for url in ("/", "/static/app.js", "/projects/1"):
+            opened = self.client.get(S + url, headers={"sec-fetch-site": "cross-site"})
+            self.assertEqual(opened.status_code, 200, url)
 
     def test_large_or_odd_bodies_are_refused(self):
         form = self.form_session()
@@ -1119,7 +1283,7 @@ class EscapeTests(DashboardFixture):
                     self.check(self.page(url))
 
     def check(self, html):
-        self.assertNotIn("<script", html)
+        assert_one_script(self, html)
         self.assertNotIn("<img", html)
         self.assertNotIn("onmouseover='x", html)
         self.assertNotRegex(html, r'href="(?!/|#main"|https://www\.npmjs\.com/package/)')
@@ -1159,9 +1323,8 @@ class RegistrationTests(DashboardFixture):
 
     def test_register_and_register_again(self):
         response = self.register(str(self.project))
-        self.assertEqual(
-            (response.status_code, response.headers["location"]), (303, S + "/projects/1")
-        )
+        # The first project of all opens the overview; the same folder again, its own project.
+        self.assertEqual((response.status_code, response.headers["location"]), (303, S + "/"))
         again = self.post(str(self.project) + os.sep, self.form_session())
         self.assertEqual(again.headers["location"], S + "/projects/1")
         (project,) = history.list_projects()
@@ -1285,7 +1448,7 @@ class ScreenFixture(DashboardFixture):
 
     def assert_form(self, html, present):
         (self.assertIn if present else self.assertNotIn)(
-            '<button type="submit">반영</button>', html
+            '<button type="submit" data-busy-label="반영 중…">반영</button>', html
         )
 
     def assert_stopped(self, response, status, message):
@@ -1495,6 +1658,316 @@ class HeldPreviewTests(ScreenFixture):
         self.assertIn("<li>대상: package.json 범위 안의 전체 의존성</li>", html)
         self.assertNotIn(f"{S}/runs/", html)
         self.assertIn("아직 업데이트를 확인하지 않았습니다.", html)  # nothing stored to show
+
+
+class CheckReturnTests(ScreenFixture):
+    """A check sent from the packages view comes back to that list, at the first candidate it
+    returned among the rows the view's search and filter leave. The project installs example
+    and other (direct) and inner (under example); the faked preview names the project's two
+    files as they are, and returns a candidate for each name given to returns()."""
+
+    LOCATIONS = {"example": "node_modules/example", "other": "node_modules/other",
+                 "inner": "node_modules/example/node_modules/inner"}  # fmt: skip
+
+    def setUp(self):
+        super().setUp()
+        self.manifest = self.project / "package.json"
+        self.manifest.write_text(json.dumps(lock()["packages"][""]), encoding="utf-8")
+        self.write(self.head, lock())
+        self.packages = f"/projects/{self.project_id}"
+        (self.row,) = self.report["results"]
+
+    def returns(self, *names):
+        self.report = {**self.report, "results": [
+            {**self.row, "package": name, "location": self.LOCATIONS[name]} for name in names]}  # fmt: skip
+
+    def fake_preview(self, project, names, **options):
+        result, new_package, new_lock = super().fake_preview(project, names, **options)
+        result["preview"].update(package_json_sha256=sha(self.manifest.read_bytes()),
+                                 package_lock_sha256=sha(self.head.read_bytes()))  # fmt: skip
+        return result, new_package, new_lock
+
+    def send(self, back, packages=""):
+        """The packages view's check form: back is the view it was sent from (a list is the
+        field given more than once)."""
+        fields = [("session", SESSION), ("packages", packages),
+                  *(("back", value) for value in ([back] if isinstance(back, str) else back))]  # fmt: skip
+        return self.client.post(f"{S}{self.packages}/previews", content=urlencode(fields),
+                                headers={"origin": BASE, "content-type":
+                                         "application/x-www-form-urlencoded"},
+                                follow_redirects=False)  # fmt: skip
+
+    def landed(self, back, packages=""):
+        """(run, the address the check came back to without the session prefix): this project's
+        packages view, with the run, at the candidate it opens or at the line that says there
+        is none to open."""
+        response = self.send(back, packages)
+        self.assertEqual(response.status_code, 303, response.text)
+        run = history.list_runs(self.project_id, 1)[0]["id"]
+        location = response.headers["location"]
+        self.assertTrue(location.startswith(f"{S}{self.packages}?"), location)
+        self.assertRegex(location, rf"[?&]checked={run}#(picked|check-status)$")
+        return run, location.removeprefix(S)
+
+    def context(self, url):
+        template = mock.Mock(**{"render.return_value": "<html></html>"})
+        with mock.patch.object(self.app.ENV, "get_template", return_value=template):
+            self.assertEqual(self.get(url).status_code, 200, url)
+        return template.render.call_args.kwargs
+
+    def inspector(self, url):
+        """The inspector of the page at an address, as it is shown: the candidate that is open."""
+        return re.search(r'<aside class="inspector" .*?</aside>', self.page(url), re.S)[0]
+
+    def test_a_check_comes_back_to_the_view_it_was_sent_from(self):
+        self.returns("other", "example")
+        # Without the field (any other form): the preview's own page, as before.
+        self.assertTrue(self.check().headers["location"].startswith(f"{S}/previews/"))
+        # The search, the kind and the filter are kept. The item is the candidate the view
+        # opens: example's (the report's second row) is the first that the list shows, whatever
+        # was open before, and the address goes to it.
+        for back, query in (
+            ("", ""),
+            ("q=ex&scope=direct&only=1&item=3.0", "q=ex&scope=direct&only=1&"),
+            ("only=1&q=ex", "q=ex&only=1&"),  # written as the view's own links write it
+            ("scope=all&q=+", ""),  # nothing that narrows the list
+        ):
+            with self.subTest(back=back):
+                run, url = self.landed(back)
+                self.assertEqual(url, f"{self.packages}?{query}item={run}.1&checked={run}#picked")
+        # A search that lists none of the candidates: the address goes to the line that says so.
+        run, url = self.landed("q=%ED%95%9C%EA%B8%80+x&")
+        self.assertEqual(url, f"{self.packages}?q=%ED%95%9C%EA%B8%80+x&checked={run}#check-status")
+        # The address is always this project's packages view, built from what that view reads
+        # of the field and never from the field's text: what the view would refuse, a value
+        # that is no query of it, or a field given twice is the view without a filter.
+        for back in ("scope=evil&q=x", "q=" + "x" * 215, "only=2&q=x", "q=a&q=b",
+                     "//evil.test/x", "https://evil.test/?q=x", f"../../{SESSION}/model",
+                     "item=" + "9" * 41, "item=1.0&item=2.0", ["q=ex", "only=1"]):  # fmt: skip
+            with self.subTest(back=str(back)[:30]):
+                run, url = self.landed(back)
+                self.assertEqual(url, f"{self.packages}?item={run}.1&checked={run}#picked")
+        # Every one of these checks is held and recorded, and none of them applied anything.
+        self.assertEqual(len(history.list_runs(self.project_id)), len(self.previewed))
+        self.assertEqual(self.apply_preview.call_count, 0)
+        self.assertEqual(history.list_applies(self.project_id), [])
+
+    def test_a_check_that_was_not_recorded_or_failed_ends_where_it_did_before(self):
+        self.returns("example")
+        with mock.patch.object(history, "record", return_value=None):
+            unrecorded = self.send("q=ex")
+        # No run to come back to: the preview's page is the only place its result is.
+        self.assertEqual(unrecorded.status_code, 303)
+        self.assertTrue(unrecorded.headers["location"].startswith(f"{S}/previews/"))
+        self.preview_files.side_effect = GuardError("synthetic failure")
+        failed = self.send("q=ex")
+        self.assertEqual(failed.status_code, 400)
+        self.assertIn('<p class="error">synthetic failure</p>', failed.text)
+        self.assertEqual(self.send("q=ex", "a" * (self.app.MAX_TARGETS + 1)).status_code, 400)
+        self.assertEqual(history.list_runs(self.project_id), [])
+
+    def test_the_list_opens_the_first_candidate_the_check_returned_among_its_rows(self):
+        self.returns("other", "example")  # the report's order; the list is by location
+        run, url = self.landed("")
+        context = self.context(url)
+        returned = context["returned"]
+        self.assertEqual({key: returned[key] for key in ("id", "full", "count")},
+                         {"id": run, "full": True, "count": 2})  # fmt: skip
+        self.assertEqual((returned["first"]["package"], returned["first"] is context["selected"]),
+                         ("example", True))  # fmt: skip
+        html = self.page(url)
+        self.assertIn('<p class="state" id="check-status" tabindex="-1" data-landing="picked">',
+                      html)  # fmt: skip
+        self.assertIn(f"실행 #{run}에서 후보 2개를 확인했습니다. 목록에서 그 첫 후보를 열었습니다: "
+                      "example. 자동으로 반영하지 않습니다.", html)  # fmt: skip
+        self.assertRegex(html, rf'<a class="pick" id="picked" aria-current="true" href="{S}'
+                               rf'{self.packages}\?item={run}\.1#candidate-evidence">')  # fmt: skip
+        # The check's preview is still held, one link away: it is where an apply is decided.
+        (preview_id,) = set(re.findall(rf'href="{S}/previews/([^"]+)"', html))
+        self.assertIn(f'<a class="action" href="{S}/previews/{preview_id}">이 확인의 미리보기 열기'
+                      "</a>", html)  # fmt: skip
+        self.assertIn("이 화면에서는 반영하지 않습니다.", html)
+        self.assertEqual(self.apply_preview.call_count, 0)
+        # The search the check was sent with decides which returned candidate is the first.
+        run, url = self.landed("q=oth")
+        self.assertEqual((url, self.context(url)["selected"]["package"]),
+                         (f"{self.packages}?q=oth&item={run}.0&checked={run}#picked", "other"))  # fmt: skip
+        # No returned candidate among the rows: the line says so, and is where the focus goes.
+        run, url = self.landed("q=inner")
+        self.assertEqual(url, f"{self.packages}?q=inner&checked={run}#check-status")
+        context = self.context(url)
+        self.assertEqual((context["returned"]["count"], context["returned"]["first"],
+                          context["selected"]), (2, None, None))  # fmt: skip
+        html = self.page(url)
+        self.assertIn('id="check-status" tabindex="-1" data-landing="status">', html)
+        self.assertIn(f"실행 #{run}에서 후보 2개를 확인했지만 지금 검색과 필터로는 목록에 보이지 "
+                      f'않습니다. <a href="{S}{self.packages}">필터 초기화</a>', html)  # fmt: skip
+        self.assertNotIn('id="picked"', html)
+
+    def test_a_check_that_returned_nothing_keeps_the_candidate_that_was_open(self):
+        self.returns("other")
+        first, url = self.landed("", "other")
+        key = f"{first}.0"
+        self.assertEqual((url, self.context(url)["selected"]["package"]),
+                         (f"{self.packages}?item={key}&checked={first}#picked", "other"))  # fmt: skip
+        # A check of example alone, sent while other is open: its candidate is opened instead,
+        # and it is the one the address names.
+        self.returns("example")
+        second, url = self.landed(f"item={key}", "example")
+        context = self.context(url)
+        self.assertEqual((url, context["selected"]["package"], context["returned"]["full"]),
+                         (f"{self.packages}?item={second}.0&checked={second}#picked", "example",
+                          False))  # fmt: skip
+        # A check of inner alone finds nothing: the open candidate stays open, and the line
+        # says that this check has none. Nothing says that nothing would change at all.
+        self.returns()
+        third, url = self.landed(f"item={key}", "inner")
+        context = self.context(url)
+        self.assertEqual((url, context["selected"]["package"], context["returned"]),
+                         (f"{self.packages}?item={key}&checked={third}#check-status", "other",
+                          {"id": third, "full": False, "count": 0, "first": None}))  # fmt: skip
+        html = self.page(url)
+        self.assertIn('data-landing="status">', html)
+        self.assertIn(f"실행 #{third}에서 확인한 패키지에는 업데이트 후보가 없었습니다.", html)
+        self.assertNotIn("바뀌는 항목이 없었습니다", html)
+        # A check of everything that finds nothing says so, and that it is 0, not unknown.
+        fourth, url = self.landed("")
+        self.assertEqual(url, f"{self.packages}?checked={fourth}#check-status")
+        html = self.page(url)
+        self.assertIn(f"실행 #{fourth}에서 확인했고 바뀌는 항목이 없었습니다. 확인된 후보 "
+                      "0개입니다.", html)  # fmt: skip
+        self.assertIn('<span class="toggle off">확인된 후보 0개</span>', html)
+
+    def test_a_check_with_nothing_to_open_goes_to_its_line_not_to_the_candidate_left_open(self):
+        """The browser follows the fragment of the address a check comes back to, with the
+        script or without it. The candidate an earlier check left open keeps its link on the
+        page, so that link must not be where the address of a check with nothing to open goes."""
+        self.returns("other")
+        first, _ = self.landed("", "other")
+        item = f"item={first}.0"
+        for returned, back, said in (
+            # example alone, and nothing would change for it.
+            ((), item, "확인한 패키지에는 업데이트 후보가 없었습니다."),
+            # example alone has a candidate now, which the search of the view it was sent from
+            # leaves out.
+            (("example",), f"q=oth&{item}", "후보 1개를 확인했지만 지금 검색과 필터로는 목록에 "
+                                           "보이지 않습니다."),
+        ):  # fmt: skip
+            with self.subTest(back=back):
+                self.returns(*returned)
+                run, url = self.landed(back, "example")
+                self.assertEqual(url, f"{self.packages}?{back}&checked={run}#check-status")
+                html = self.page(url)
+                # The line is the landing, and it can take the focus the fragment gives it.
+                self.assertIn('<p class="state" id="check-status" tabindex="-1" '
+                              'data-landing="status">', html)  # fmt: skip
+                self.assertIn(f"실행 #{run}에서 {said}", html)
+                # other's candidate is still the open one, in the one link with that id.
+                self.assertEqual(html.count('id="picked"'), 1)
+                self.assertIn("<strong>other</strong>", self.inspector(url))
+
+        # The lockfile changes while a check runs: that check is one of other files, and so is
+        # every check before it. The address goes to the line, which says to check again.
+        def changed_meanwhile(project, names, **options):
+            result = self.fake_preview(project, names, **options)
+            self.head.write_bytes(self.head.read_bytes() + b"\n")
+            return result
+
+        self.preview_files.side_effect = changed_meanwhile
+        run, url = self.landed(item, "example")
+        self.assertEqual(url, f"{self.packages}?{item}&checked={run}#check-status")
+        html = self.page(url)
+        self.assertIn("바뀌었습니다. 후보를 다시 확인하세요.", html)
+        self.assertNotIn("data-landing", html)
+        self.assertNotIn('id="picked"', html)
+
+    def test_the_address_a_check_comes_back_to_opens_the_same_candidate_when_asked_again(self):
+        """A reload, a way back or a way forward asks for the address again: as the check came
+        back to it (without the script), or without the run and the fragment, which app.js
+        takes off once the focus is there. Both show the candidate the check returned, under
+        the same search and kind, and not the one that was open when the check was sent."""
+        self.returns("other")
+        first, _ = self.landed("", "other")
+        self.returns("example")
+        self.report["results"][0]["after_version"] = "1.9.0"  # not the version other would get
+        run, url = self.landed(f"q=e&scope=direct&item={first}.0", "example")
+        later = f"{self.packages}?q=e&scope=direct&item={run}.0"
+        self.assertEqual(url, f"{later}&checked={run}#picked")
+        shown = self.inspector(url)
+        self.assertIn('<p class="subject"><strong>example</strong> <span class="where">'
+                      "node_modules/example</span></p>", shown)  # fmt: skip
+        self.assertIn("<div><dt>사용 버전</dt><dd>1.0.0</dd></div>\n"
+                      "<div><dt>후보 버전</dt><dd>1.9.0</dd></div>", shown)  # fmt: skip
+        # The package, the location, the versions and every line of evidence are the same.
+        self.assertEqual(self.inspector(later), shown)
+        html = self.page(later)
+        self.assertIn('value="e" placeholder="패키지 검색">', html)
+        self.assertIn('<option value="direct" selected>', html)
+        # Without the run nothing is said of a check: nothing to announce or to focus again.
+        self.assertNotIn("data-landing", html)
+        # The view shows the candidate its address names and no other. With the one that was
+        # open when the check was sent as the item, that one is shown, and nothing is said of
+        # a check whose first candidate is not the one on the screen.
+        before = f"{self.packages}?q=e&scope=direct&item={first}.0&checked={run}"
+        self.assertIn("<strong>other</strong>", self.inspector(before))
+        self.assertNotIn("data-landing", self.page(before))
+
+    def test_a_run_that_is_no_current_check_of_the_project_is_as_no_run_at_all(self):
+        self.returns("example", "other")
+        run, _ = self.landed("")
+        twin = self.root / "twin"
+        twin.mkdir()
+        for name in ("package.json", "package-lock.json"):
+            (twin / name).write_bytes((self.project / name).read_bytes())
+        twin_id = history.register_project(twin)
+        foreign = history.record("update_preview", twin, self.report, {
+            **PREVIEW, "targets": None, "package_json_sha256": sha(self.manifest.read_bytes()),
+            "package_lock_sha256": sha(self.head.read_bytes())})  # fmt: skip
+        plain = self.context(self.packages)
+        self.assertIsNone(plain["returned"])
+        for query in (f"checked={foreign}", "checked=999", "checked=", "checked=x",
+                      f"checked={run}&checked={run}", f"checked=0{run}", f"checked={run}.0",
+                      f"checked=+{run}", "checked=" + "9" * 5000):  # fmt: skip
+            with self.subTest(query=query[:30]):
+                self.assertEqual(self.context(f"{self.packages}?{query}"), plain)
+        self.assertNotIn("data-landing", self.page(f"{self.packages}?checked=999"))
+        self.assertIsNone(self.context(f"/projects/{twin_id}?checked={run}")["returned"])
+        # Once the files change, the check is one of other files: nothing is said of it.
+        self.head.write_bytes(self.head.read_bytes() + b"\n")
+        context = self.context(f"{self.packages}?checked={run}")
+        self.assertEqual((context["returned"], context["selected"]), (None, None))
+        self.assertNotIn("data-landing", self.page(f"{self.packages}?checked={run}"))
+
+    def test_the_form_says_which_view_it_is_sent_from_and_what_its_buttons_do_meanwhile(self):
+        self.returns("example")
+        run, _ = self.landed("")
+        html = self.page(f"{self.packages}?q=ex&scope=direct&only=1")
+        form = re.search(r'<form [^>]*id="preview-project"[^>]*>(.*?)</form>', html, re.S)[1]
+        self.assertIn(f'<input type="hidden" name="session" value="{SESSION}">', form)
+        self.assertIn('<input type="hidden" name="back" value="q=ex&amp;scope=direct&amp;only=1'
+                      f'&amp;item={run}.0">', form)  # fmt: skip
+        self.assertIn('<button class="primary" type="submit" data-busy-label="후보 확인 중…" '
+                      'name="packages" value="">업데이트 후보 다시 확인</button>', form)  # fmt: skip
+        # With the button's own field: three, within what a form may send (MAX_FIELDS).
+        self.assertEqual(form.count("<input "), 2)
+        self.assertLess(form.count("<input "), self.app.MAX_FIELDS)
+        # Before the first check the button says so, and the view without a filter is empty.
+        self.head.write_bytes(self.head.read_bytes() + b"\n")
+        html = self.page(self.packages)
+        self.assertIn('<input type="hidden" name="back" value="">', html)
+        self.assertIn('name="packages" value="">업데이트 후보 확인</button>', html)
+        # Every button that starts a request that takes time says what it turns into while
+        # that request runs (app.js); a search and a typed path are at once and say nothing.
+        pages = (html, self.page(f"{self.packages}/updates"),
+                 self.page(f"/previews/{self.preview_id()}"), self.page("/?manage=1"))  # fmt: skip
+        labels = {label for page in pages for label in re.findall(
+            r'<button [^>]*data-busy-label="([^"]+)"[^>]*>', page)}  # fmt: skip
+        self.assertEqual(labels, {"후보 확인 중…", "검사 중…", "반영 중…",
+                                  "폴더 선택 창을 확인하세요…"})  # fmt: skip
+        for page in pages:
+            for button in re.findall(r"<button [^>]*>[^<]*</button>", page):
+                timed = "data-busy-label" in button
+                self.assertEqual(timed, not re.search(r">(검색|등록)</button>", button), button)
 
 
 class ScanScreenTests(ScreenFixture):

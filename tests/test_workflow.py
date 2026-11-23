@@ -6,9 +6,11 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
+import types
 import unittest
 import uuid
 from pathlib import Path
@@ -31,6 +33,30 @@ def package(version="1.0.0"):
         "resolved": f"https://registry.npmjs.org/example/-/example-{version}.tgz",
         "integrity": "sha512-test-only-not-an-archive-digest",
     }
+
+
+# What os.lstat says of an entry that names another path. No test makes a real one of these:
+# reported() gives them for a path, and nothing is behind it.
+LINKS = {
+    "symlink": os.stat_result((stat.S_IFLNK | 0o777, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
+    # A Windows junction: a folder whose reparse tag is a name surrogate (a mount point).
+    "junction": types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o777, st_reparse_tag=0xA0000003),
+}
+
+
+def reported(path, mode):
+    """os.lstat that answers mode for path and is the real one for every other path. mode: an
+    lstat result, or an exception that looking at path raises."""
+    real = os.lstat
+
+    def lstat(target, *args, **kwargs):
+        if Path(target) != path:
+            return real(target, *args, **kwargs)
+        if isinstance(mode, BaseException):
+            raise mode
+        return mode
+
+    return mock.patch("os.lstat", lstat)
 
 
 class Fixture(unittest.TestCase):
@@ -60,6 +86,8 @@ class Fixture(unittest.TestCase):
         self.addCleanup(env.stop)
         os.environ.pop("DEPBEE_MODEL_DIR", None)
         os.environ.pop("DEPBEE_KNOWN_MALICIOUS_DIR", None)
+        # Nor is a test run inside the image a container's dashboard, unless it says so.
+        os.environ.pop("DEPBEE_CONTAINER_PROJECTS", None)
         # The local history (depbee.history) stays in this run; the file is not created.
         os.environ["DEPBEE_HISTORY_DB"] = str(self.root / "history.sqlite3")
         # So does the user's settings folder (depbee.config: assets saved by depbee setup, the
@@ -604,6 +632,278 @@ class GitBaseTests(Fixture):
                 self.git(*self.committed(blob))
                 with self.assertRaises(GuardError):
                     plan_project(self.project)
+
+
+PACKED = f"# pack-refs with: peeled fully-peeled sorted \n{COMMIT} refs/heads/main\n".encode()
+OWN_CONFIG = (
+    b"[core]\n\trepositoryformatversion = 0\n\tbare = true\n"
+    b"\tcommitGraph = false\n\tmultiPackIndex = false\n"
+)
+
+
+class ChosenGitFolderTests(Fixture):
+    """read_base_lock() with git_dir, the Git folder a caller has chosen (a container's
+    dashboard): what Git is given instead of that folder, and what is refused before Git runs.
+
+    Git is replaced, as in GitBaseTests, and the Git folders are synthetic: files with the
+    names and the text of a repository's, and object files that are no Git objects."""
+
+    def git_folder(self, name="repo", head="ref: refs/heads/main\n", loose=COMMIT, packed=None):
+        """A synthetic .git in a new folder name of the test run, with an npm project in a
+        subfolder: (the .git, the project). head: the bytes of HEAD (None: no HEAD); loose: the
+        text of refs/heads/main (None: no such file); packed: the bytes of packed-refs."""
+        repo = self.root / name
+        project = repo / "하위 폴더 a"
+        project.mkdir(parents=True)
+        for folder in (repo, project):
+            shutil.copyfile(self.head, folder / "package-lock.json")
+        git_dir = repo / ".git"
+        for folder in ("objects/ab", "objects/pack", "objects/info", "refs/heads"):
+            (git_dir / folder).mkdir(parents=True)
+        (git_dir / "objects" / "ab" / ("c" * 38)).write_bytes(b"synthetic, no Git object")
+        (git_dir / "objects" / "pack" / "pack-synthetic.pack").write_bytes(b"synthetic")
+        # A repository's own config can name files anywhere. Nothing may read this one.
+        (git_dir / "config").write_bytes(b"[include]\n\tpath = /synthetic/elsewhere/config\n")
+        if head is not None:
+            (git_dir / "HEAD").write_bytes(head if isinstance(head, bytes) else head.encode())
+        if loose is not None:
+            (git_dir / "refs" / "heads" / "main").write_text(loose + "\n", encoding="utf-8")
+        if packed is not None:
+            (git_dir / "packed-refs").write_bytes(packed)
+        return git_dir, project
+
+    def read(self, git_dir, project, replies=None, **options):
+        """plan_project(project, git_dir=git_dir) with Git replaced: (the request, the Git
+        calls, the files of git_dir that were opened). A call is (argv, the folder Git ran in,
+        its environment, that folder's files then: {name: bytes, or None for a folder})."""
+        calls, opened = [], []
+        replies = iter(replies or (COMMIT_LINE, (0, self.base.read_bytes(), b"")))
+
+        def run(argv, cwd, limit, env=None, **kwargs):
+            files = {path.relative_to(cwd).as_posix(): None if path.is_dir() else path.read_bytes()
+                     for path in sorted(Path(cwd).rglob("*"))}  # fmt: skip
+            calls.append((argv, Path(cwd), env, files))
+            return next(replies)
+
+        def reading(path, *args, **kwargs):
+            opened.append(Path(path).relative_to(git_dir).as_posix())
+            return open(path, *args, **kwargs)
+
+        with mock.patch("depbee.inputs.git.shutil.which", return_value=FAKE_GIT), \
+                mock.patch("depbee.inputs.git._run", side_effect=run), \
+                mock.patch("depbee.inputs.git.open", reading, create=True):  # fmt: skip
+            request = plan_project(project, git_dir=git_dir, **options)
+        return request, calls, opened
+
+    def refused(self, git_dir, project, why, **options):
+        """The read is a GuardError that says why, Git is never run and nothing is left."""
+        with mock.patch("depbee.inputs.git.shutil.which", return_value=FAKE_GIT), \
+                mock.patch("depbee.inputs.git._run") as run, \
+                self.assertRaises(GuardError) as caught:  # fmt: skip
+            plan_project(project, git_dir=git_dir, **options)
+        self.assertIn(why, str(caught.exception))
+        run.assert_not_called()
+        self.assertEqual(list(self.root.glob("depbee_git_*")), [])
+
+    def test_git_is_given_a_folder_of_depbees_own_and_the_chosen_folders_objects(self):
+        os.environ.update(dict.fromkeys(REPOSITORY_VARIABLES, str(self.root / "other" / ".git")))
+        commit = COMMIT.encode() + b"\n"
+        cases = {
+            # name: (the Git folder, HEAD as Git gets it, packed-refs as Git gets it, opened)
+            "a loose ref": ({}, commit, None, ["HEAD", "refs/heads/main"]),
+            "a detached HEAD": ({"head": COMMIT + "\n", "loose": None}, commit, None, ["HEAD"]),
+            "an id in capitals": ({"head": COMMIT.upper() + "\n"}, commit, None, ["HEAD"]),
+            "a packed ref": ({"loose": None, "packed": PACKED}, b"ref: refs/heads/main\n", PACKED,
+                             ["HEAD", "packed-refs"]),
+            "a loose ref before a packed one": ({"packed": PACKED}, commit, None,
+                                                ["HEAD", "refs/heads/main"]),
+            "a ref that names a ref": ({"loose": "ref: refs/heads/other", "packed": PACKED},
+                                       b"ref: refs/heads/other\n", PACKED,
+                                       ["HEAD", "refs/heads/main", "packed-refs"]),
+        }  # fmt: skip
+        for case, (folder, head, packed, expected) in cases.items():
+            with self.subTest(case):
+                git_dir, project = self.git_folder(case, **folder)
+                request, calls, opened = self.read(git_dir, project)
+                self.assertEqual(request["request_id"], self.request()["request_id"])
+                self.assertEqual(opened, expected)  # never the repository's config
+                files = {"HEAD": head, "config": OWN_CONFIG, "refs": None,
+                         **({} if packed is None else {"packed-refs": packed})}  # fmt: skip
+                for argv, own, env, found in calls:
+                    self.assertEqual(argv[:3], GIT_OPTIONS)
+                    self.assertFalse(own.is_relative_to(git_dir.parent))
+                    self.assertEqual(
+                        {name: env.get(name) for name in REPOSITORY_VARIABLES},
+                        {"GIT_DIR": str(own), "GIT_COMMON_DIR": str(own),
+                         "GIT_OBJECT_DIRECTORY": str(git_dir / "objects"), "GIT_WORK_TREE": None,
+                         "GIT_INDEX_FILE": None, "GIT_ALTERNATE_OBJECT_DIRECTORIES": None},
+                    )  # fmt: skip
+                    # No config file but the one in its folder: not the machine's or the user's.
+                    self.assertEqual((env["GIT_CONFIG_NOSYSTEM"], env["GIT_CONFIG_GLOBAL"]),
+                                     ("1", os.devnull))  # fmt: skip
+                    self.assertEqual(found, files)
+                self.assertEqual([call[0][3:] for call in calls], [
+                    ["rev-parse", "--verify", "--quiet", "--end-of-options", "HEAD^{commit}"],
+                    ["cat-file", "blob", f"{COMMIT}:하위 폴더 a/package-lock.json"],
+                ])  # fmt: skip
+                self.assertFalse(calls[0][1].exists())  # removed once the lockfile is read
+        # The project at the top of its repository, and through the scan.
+        git_dir, project = self.git_folder("top")
+        _, calls, _ = self.read(git_dir, git_dir.parent)
+        self.assertEqual(calls[1][0][-1], f"{COMMIT}:package-lock.json")
+        with mock.patch("depbee.inputs.git.shutil.which", return_value=FAKE_GIT), \
+                mock.patch("depbee.inputs.git._run",
+                           side_effect=[COMMIT_LINE, (0, self.base.read_bytes(), b"")]):  # fmt: skip
+            report = scan_project(project, git_dir=git_dir)
+        self.assertEqual(report, scan(self.request(), None, None))
+
+    def test_a_branch_whose_part_ends_with_a_dot_is_read(self):
+        # Git takes release./stable: only the whole name of a ref may not end with a dot.
+        head, commit = "ref: refs/heads/release./stable\n", COMMIT.encode() + b"\n"
+        git_dir, project = self.git_folder("loose", head=head, loose=None)
+        ref = git_dir / "refs" / "heads" / "release." / "stable"
+        ref.parent.mkdir()
+        ref.write_bytes(commit)
+        request, calls, opened = self.read(git_dir, project)
+        self.assertEqual(request["request_id"], self.request()["request_id"])
+        self.assertEqual(opened, ["HEAD", "refs/heads/release./stable"])
+        self.assertEqual([call[3]["HEAD"] for call in calls], [commit, commit])
+        packed = PACKED.replace(b"refs/heads/main", b"refs/heads/release./stable")
+        git_dir, project = self.git_folder("packed", head=head, loose=None, packed=packed)
+        _, calls, opened = self.read(git_dir, project)
+        self.assertEqual(opened, ["HEAD", "packed-refs"])
+        self.assertEqual([(call[3]["HEAD"], call[3]["packed-refs"]) for call in calls],
+                         [(head.encode(), packed)] * 2)  # fmt: skip
+
+    def test_a_ref_that_is_nowhere_is_gits_to_say(self):
+        # Not there is not an error of the look: Git gets the name and answers as it always does.
+        git_dir, project = self.git_folder(loose=None)
+        unborn = [(128, b"", b"fatal: Needed a single revision\n")]
+        with self.assertRaisesRegex(GuardError, "Git cannot resolve HEAD to a commit"):
+            self.read(git_dir, project, replies=unborn)
+        self.assertEqual(list(self.root.glob("depbee_git_*")), [])
+
+    def test_only_head_is_read_from_a_chosen_folder(self):
+        git_dir, project = self.git_folder()
+        for ref in ("main", "HEAD~1", "refs/heads/main"):
+            with self.subTest(ref=ref):
+                self.refused(git_dir, project, "Only HEAD is read from a chosen Git folder",
+                             base_ref=ref)  # fmt: skip
+
+    def test_a_head_that_names_anything_but_a_commit_or_a_ref_is_refused(self):
+        no_ref = "holds neither a SHA-1 commit id nor the name of a ref below refs/"
+        heads = [
+            "ref: ../../elsewhere/HEAD", "ref: refs/../../elsewhere", "ref: /absolute/ref",
+            "ref: refs/heads/.invalid",  # what a reftable repository's HEAD says
+            "ref: refs\\heads\\main", "ref: refs/heads/a..b", "ref: refs/heads/main.lock",
+            "ref: refs/heads/a.lock/b", "ref: refs/heads/main.", "ref: refs/heads/a./b.",
+            "ref: refs/heads/", "ref: refs", "ref: heads/main", "ref: refs/heads/a b",
+            "ref: refs/heads/a@{1}", "ref:", "a" * 64,  # a SHA-256 id
+            COMMIT[:39], COMMIT + "0", "not a ref", "",
+        ]  # fmt: skip
+        for number, head in enumerate(heads):
+            with self.subTest(head=head):
+                git_dir, project = self.git_folder(f"head-{number}", head=head)
+                self.refused(git_dir, project, "HEAD " + no_ref)
+        git_dir, project = self.git_folder("bytes", head=b"ref: refs/heads/\xff\n")
+        self.refused(git_dir, project, "HEAD names a ref whose name is not UTF-8 text")
+        git_dir, project = self.git_folder("no-head", head=None)
+        self.refused(git_dir, project, "it has no HEAD")
+        git_dir, project = self.git_folder("long-head", head="ref: refs/heads/" + "a" * 5000)
+        self.refused(git_dir, project, "HEAD is larger than 4096 bytes")
+        git_dir, project = self.git_folder("loose", loose="no id")
+        self.refused(git_dir, project, "refs/heads/main " + no_ref)
+        git_dir, project = self.git_folder("loop", loose="ref: refs/heads/other")
+        (git_dir / "refs" / "heads" / "other").write_text("ref: refs/heads/main\n")
+        self.refused(git_dir, project, "HEAD leads through more than 5 symbolic refs")
+        git_dir, project = self.git_folder("packed", loose=None, packed=PACKED)
+        with mock.patch.object(git_input, "MAX_PACKED_REFS_BYTES", len(PACKED) - 1):
+            self.refused(git_dir, project, f"packed-refs is larger than {len(PACKED) - 1} bytes")
+        # The limit is on a packed-refs that is copied: with a loose ref it is not read at all.
+        git_dir, project = self.git_folder("unread", packed=PACKED)
+        with mock.patch.object(git_input, "MAX_PACKED_REFS_BYTES", len(PACKED) - 1):
+            self.assertEqual(self.read(git_dir, project)[2], ["HEAD", "refs/heads/main"])
+        # A SHA-256 repository whose refs are packed is told as one, with the way on, before
+        # Git runs: Git would only say that it cannot resolve HEAD.
+        long_ids = PACKED.replace(COMMIT.encode(), b"a" * 64)
+        git_dir, project = self.git_folder("sha256", loose=None, packed=long_ids)
+        self.refused(git_dir, project, "packed-refs holds SHA-256 object ids. Git is given only "
+                     "HEAD and the object files that this Git folder holds itself; scan with "
+                     "depbee scan --base-lock instead")  # fmt: skip
+
+    def test_a_link_or_a_failed_look_on_the_way_to_a_ref_is_refused(self):
+        git_dir, project = self.git_folder(packed=PACKED)
+        heads = git_dir / "refs" / "heads"
+        for kind, mode in LINKS.items():
+            for entry, name in ((git_dir / "HEAD", "HEAD"), (git_dir / "refs", "refs/heads/main"),
+                                (heads, "refs/heads/main"), (heads / "main", "refs/heads/main")):  # fmt: skip
+                with self.subTest(kind=kind, entry=entry.name), reported(entry, mode), \
+                        mock.patch("os.readlink", side_effect=AssertionError("a link was read")):  # fmt: skip
+                    self.refused(git_dir, project, f"{name} is a link or is no file")
+        # Something that is there but cannot be looked at is not taken for something missing:
+        # the loose ref would otherwise be passed over for the packed one.
+        for failure in (PermissionError(13, "synthetic"), OSError(5, "synthetic")):
+            for entry in (git_dir / "HEAD", heads / "main", git_dir / "objects"):
+                with self.subTest(failure=type(failure).__name__, entry=entry.name), \
+                        reported(entry, failure):  # fmt: skip
+                    self.refused(git_dir, project,
+                                 f"it could not be looked at ({type(failure).__name__})")  # fmt: skip
+        with mock.patch("os.scandir", side_effect=PermissionError(13, "synthetic")), \
+                mock.patch("depbee.inputs.git._run") as run, \
+                self.assertRaisesRegex(GuardError, r"could not be looked at \(PermissionError\)"):  # fmt: skip
+            plan_project(project, git_dir=git_dir)
+        run.assert_not_called()
+
+    def test_an_objects_folder_git_could_leave_is_refused(self):
+        git_dir, project = self.git_folder("none")
+        shutil.rmtree(git_dir / "objects")
+        self.refused(git_dir, project, "it has no objects folder")
+        (git_dir / "objects").write_bytes(b"a file")
+        self.refused(git_dir, project, "objects is a link or is no folder")
+        git_dir, project = self.git_folder("linked")
+        for kind, mode in LINKS.items():
+            with self.subTest(kind=kind), reported(git_dir / "objects", mode):
+                self.refused(git_dir, project, "objects is a link or is no folder")
+        git_dir, project = self.git_folder("alternates")
+        (git_dir / "objects" / "info" / "alternates").write_bytes(b"/synthetic/elsewhere/objects\n")
+        self.refused(git_dir, project, "objects/info/alternates names another object store")
+        # It is asked for by the name Git uses: a folder may hold it under a spelling that only
+        # the folder takes for the same name, and a failed look is not an absent file.
+        git_dir, project = self.git_folder("named")
+        alternates = git_dir / "objects" / "info" / "alternates"
+        with reported(alternates, os.lstat(git_dir / "HEAD")):
+            self.refused(git_dir, project, "objects/info/alternates names another object store")
+        with reported(alternates, PermissionError(13, "synthetic")):
+            self.refused(git_dir, project, "it could not be looked at (PermissionError)")
+        git_dir, project = self.git_folder("many")
+        with mock.patch.object(git_input, "MAX_OBJECT_ENTRIES", 4):  # it holds five entries
+            self.refused(git_dir, project, "holds more than 4 files and folders (git gc")
+        with mock.patch.object(git_input, "MAX_OBJECT_ENTRIES", 5):
+            self.assertEqual(len(self.read(git_dir, project)[1]), 2)
+
+    def test_a_real_link_or_fifo_among_the_objects_is_refused(self):
+        # What the directory itself says of such an entry: a junction on Windows, a symlink and
+        # a FIFO elsewhere. Each leads only to a synthetic folder of this test run.
+        git_dir, project = self.git_folder()
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "kept").write_bytes(b"synthetic")
+        link = git_dir / "objects" / "pack" / "linked"
+        try:
+            if os.name == "nt":
+                import _winapi
+
+                _winapi.CreateJunction(str(elsewhere), str(link))
+            else:
+                os.symlink(elsewhere, link, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"no link for this account ({type(exc).__name__})")
+        self.refused(git_dir, project, "objects/pack/linked is a link or is no file")
+        os.rmdir(link) if os.name == "nt" else os.unlink(link)
+        self.assertEqual([entry.name for entry in elsewhere.iterdir()], ["kept"])
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(git_dir / "objects" / "ab" / "fifo")
+            self.refused(git_dir, project, "objects/ab/fifo is a link or is no file")
 
 
 REAL_POPEN = subprocess.Popen

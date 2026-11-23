@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>프로젝트 추가 - depbee</title>
+<link rel="stylesheet" href="{{ base }}/static/style.css">
+<link rel="icon" type="image/svg+xml" href="{{ base }}/static/icon.svg">
+<script src="{{ base }}/static/app.js" defer></script>
+</head>
+{# The page before the first project (app.home): the one thing to do here, and nothing around
+   it. The button sends the same form as project management's, the one entry for choosing a
+   folder (app.pick), so whatever chooses the folder behind that address answers here too. A
+   closed dialog comes back to this page; one that cannot be used opens project management with
+   the typed path. In a container that entry opens the mounted folders instead (mounted.html),
+   whose last link comes back here. The page is the same in both but for what the button's
+   hint and its words while the request runs name (contained, app.page): a container opens no
+   dialog on this PC, so there they name the list of the folders mounted into it. #}
+<body class="start">
+<main id="main">
+<form method="post" action="{{ base }}/projects/pick">
+<input type="hidden" name="session" value="{{ session }}">
+<button type="submit" aria-describedby="start-hint" data-busy-label="{{ "연결한 폴더 목록을 여는 중…" if contained else "폴더 선택 창을 확인하세요…" }}">프로젝트 추가</button>
+</form>
+<p class="visually-hidden" id="start-hint">package-lock.json이 있는 npm 프로젝트 폴더를 {{ "컨테이너에 연결한 폴더 목록에서" if contained else "이 PC에서" }} 고릅니다.</p>
+</main>
+<p class="visually-hidden" id="live" role="status" aria-live="polite"></p>
+</body>
+</html>

@@ -8,11 +8,13 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 from pathlib import Path
 from unittest import mock
 
 from test_history import sql
 from test_update import ERROR_SECRET, UpdateFixture, sri
+from test_workflow import LINKS, reported
 
 from depbee import history, service
 from depbee.cli import CONFIRM_OPTION
@@ -580,6 +582,91 @@ class InstallTests(ApplyFixture):
     def test_clean_install_needs_absolute_folders(self):
         with self.assertRaisesRegex(GuardError, "absolute"):
             service.npm_cli.clean_install(Path("relative"), self.root)
+
+    def npm_in_project(self):
+        """The npm calls made in the project itself (the preview's run in its own folder)."""
+        return [call for call in self.calls if call["cwd"] == self.upd.absolute()]
+
+    def test_install_refuses_a_node_modules_that_is_not_the_projects_own_folder(self):
+        # npm ci empties node_modules before it installs (npm 11.6.1 lib/commands/ci.js 90-95):
+        # through a link that would be the folder the link names.
+        installed = self.upd / "node_modules"
+        installed.mkdir()
+        (installed / "kept.txt").write_text("synthetic", encoding="utf-8")
+        a_file = os.stat_result((stat.S_IFREG | 0o644, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        for case, mode in {**LINKS, "a file": a_file}.items():
+            with self.subTest(case), reported(installed, mode), \
+                    mock.patch.object(service, "_backup", wraps=service._backup) as backup, \
+                    mock.patch.object(service, "_replace", wraps=service._replace) as replace:  # fmt: skip
+                apply = self.apply("install")["apply"]
+                self.assertEqual((apply["outcome"], apply["reason"]),
+                                 ("refused", "project_unsupported"))  # fmt: skip
+                self.assertIn("node_modules", apply["error"])
+                backup.assert_not_called()
+                replace.assert_not_called()
+                self.assertEqual((self.ci_calls, self.npm_in_project()), ([], []))
+                self.assertFalse(self.backups.exists())
+                for name, data in self.original.items():
+                    self.assertEqual((self.upd / name).read_bytes(), data, name)
+                self.assertEqual([entry.name for entry in installed.iterdir()], ["kept.txt"])
+        # Writing the lockfile alone runs no npm in the project, so it is not refused.
+        with reported(installed, LINKS["symlink"]):
+            self.assert_applied(self.apply("lockfile")["apply"])
+        self.assertEqual(self.npm_in_project(), [])
+        for name, data in self.original.items():
+            (self.upd / name).write_bytes(data)
+        shutil.rmtree(self.backups)
+        # The project's own folder is installed into as before.
+        self.assert_applied(self.apply("install")["apply"])
+        self.assertEqual(len(self.ci_calls), 1)
+
+    def test_a_real_link_named_node_modules_is_refused_and_what_it_names_is_kept(self):
+        # What os.lstat really says of a link here: a junction on Windows, a symlink elsewhere.
+        # npm is the fixture's stand-in, so nothing is removed whatever the outcome.
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "kept.txt").write_text("synthetic", encoding="utf-8")
+        link = self.upd / "node_modules"
+        try:
+            if os.name == "nt":
+                import _winapi
+
+                _winapi.CreateJunction(str(elsewhere), str(link))
+            else:
+                os.symlink(elsewhere, link, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"no link for this account ({type(exc).__name__})")
+        self.addCleanup(lambda: os.rmdir(link) if os.name == "nt" else os.unlink(link))
+        apply = self.apply("install")["apply"]
+        self.assertEqual((apply["outcome"], apply["reason"]), ("refused", "project_unsupported"))
+        self.assertIn("node_modules", apply["error"])
+        self.assertEqual((self.ci_calls, self.npm_in_project()), ([], []))
+        self.assertFalse(self.backups.exists())
+        for name, data in self.original.items():
+            self.assertEqual((self.upd / name).read_bytes(), data, name)
+        self.assertEqual([entry.name for entry in elsewhere.iterdir()], ["kept.txt"])
+
+    def test_npm_ci_is_not_started_once_node_modules_has_become_a_link(self):
+        # Looked at again where npm is started: the files are replaced by then.
+        installed = self.upd / "node_modules"
+        installed.mkdir()
+        real, looks = os.lstat, []
+
+        def lstat(target, *args, **kwargs):
+            if Path(target) == installed:
+                looks.append(target)
+                if len(looks) > 1:
+                    return LINKS["symlink"]
+            return real(target, *args, **kwargs)
+
+        with mock.patch("os.lstat", lstat):
+            apply = self.apply("install")["apply"]
+        self.assertEqual((apply["outcome"], apply["reason"]), ("failed", "install_failed"))
+        self.assertIn("node_modules", apply["error"])
+        self.assertEqual((self.ci_calls, self.npm_in_project()), ([], []))
+        self.assertEqual([file["path"] for file in apply["files"]], ["package-lock.json"])
+        self.assertTrue(Path(apply["backup"]).is_dir())
+        self.assertIn(RESTORE_NOTICE, apply["notices"])
 
 
 class CliTests(ApplyFixture):

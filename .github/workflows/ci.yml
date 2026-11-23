@@ -124,9 +124,10 @@ jobs:
           lockfile: examples/project/package-lock.json
           report: bundled-report.json
 
-  # The public image stage: the wheel with the CLI and the MCP server, without the private
-  # analyzer. Built with no credentials and never pushed, then run the way it is used: its own
-  # entrypoint and user, no network, a read-only root and only the synthetic examples mounted.
+  # The public image stage: the wheel with the CLI, the MCP server and the dashboard, without the
+  # private analyzer. Built with no credentials and never pushed, then run the way it is used:
+  # its own entrypoint and user, no network, a read-only root and only the synthetic examples
+  # mounted.
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -184,6 +185,8 @@ jobs:
           cp examples/project/package-lock.json "$project/package-lock.json"
           # mktemp made the folder 0700, and the image's user reads it as "other".
           chmod -R a+rX "$project"
+          # The dashboard steps below mount the same project under /projects.
+          echo "GIT_PROJECT=$project" >> "$GITHUB_ENV"
           owner="$(stat -c %u "$project")"
           image_user="$(docker image inspect --format '{{.Config.User}}' depbee:ci)"
           echo "fixture owner UID $owner, image user $image_user"
@@ -241,4 +244,164 @@ jobs:
           assert sorted(tool["name"] for tool in tools) == ["check_package", "scan_lockfile"]
           server.stdin.close()
           assert server.wait() == 0  # The server ends when its client closes stdin.
+          PY
+      # The dashboard as docs/docker.md starts it: the image's own port, published on the runner's
+      # 127.0.0.1 alone under the same number, the Git project of the step above mounted read-only
+      # under /projects, and a volume for the home folder. What the pages do is tested in tests/;
+      # this is the image: the web extra, the templates and the script file they name, where it
+      # listens, the address it prints, the folder it registers from, the Git it reads that
+      # folder's HEAD with, and the volume a second container, made anew from the image, knows
+      # the registered project from.
+      - name: Open the dashboard through a port published on 127.0.0.1, then in a new container
+        shell: bash
+        run: |
+          docker volume rm --force depbee-ci-home > /dev/null  # the checks below start it empty
+          python3 -I - <<'PY'
+          import http.client
+          import os
+          import re
+          import subprocess
+          import time
+          from pathlib import Path
+          from urllib.parse import urlencode
+
+          def docker(*arguments, check=True):
+              done = subprocess.run(["docker", *arguments], check=check, capture_output=True, text=True)
+              return done.stdout
+
+          def started(name):
+              """A container started as docs/docker.md says: (the path of its address, its
+              session). The address line is never echoed: it is a secret."""
+              project = f"type=bind,source={os.environ['GIT_PROJECT']},target=/projects/example,readonly"
+              docker("run", "--rm", "-d", "--name", name, "-p", "127.0.0.1:5757:5757",
+                     "--mount", project, "--mount", "type=volume,source=depbee-ci-home,target=/home/depbee",
+                     "depbee:ci", "dashboard")
+              for _ in range(120):
+                  for line in docker("logs", name).splitlines():
+                      if line.startswith("http://"):
+                          address = re.fullmatch(r"http://127\.0\.0\.1:5757(/s/([A-Za-z0-9_-]{43}))/", line)
+                          assert address, "not this host's 127.0.0.1 at the published port with a session"
+                          return address[1], address[2]
+                  time.sleep(0.5)
+              raise SystemExit("The dashboard printed no address")
+
+          def call(method, url, host="127.0.0.1:5757", header="location", **form):
+              """(status, the header named, body) of one request to the published port."""
+              body = urlencode({"session": session, **form}) if method == "POST" else None
+              headers = {"Host": host}
+              if body:
+                  headers |= {"Origin": "http://127.0.0.1:5757",
+                              "Content-Type": "application/x-www-form-urlencoded"}
+              connection = http.client.HTTPConnection("127.0.0.1", 5757, timeout=30)
+              connection.request(method, url, body, headers)
+              response = connection.getresponse()
+              return response.status, response.getheader(header), response.read().decode()
+
+          def script(page):
+              """The script file a page names, read as a browser reads it: from under the
+              session, as a script, and the checked-out file byte for byte. An image built
+              without that file still answers every page. Only this address fails there, and
+              with it all the script does."""
+              (source,) = re.findall(r'<script\b[^>]*\ssrc="([^"]*)"', page)
+              name = re.fullmatch(re.escape(base) + r"/static/([^/]+)", source)
+              # This session's own file and no script of the page's own beside it. The session
+              # is a secret, so a failure shows the address without it.
+              assert name and page.count("<script") == 1, source.removeprefix(base)
+              status, kind, body = call("GET", source, header="content-type")
+              assert (status, kind) == (200, "text/javascript; charset=utf-8"), (status, kind)
+              file = Path("src/depbee/dashboard/static", name[1]).read_bytes()
+              assert file and body.encode() == file, f"{name[1]} is not the checked-out file"
+
+          def links():
+              """The project links on the session's first page, which lists what is registered."""
+              status, _, page = call("GET", base + "/")
+              assert status == 200, status
+              return set(re.findall(rf'href="({re.escape(base)}/projects/\d+)"', page))
+
+          def usable(link):
+              """The project behind its link: its page lists the lockfile's package, and a scan
+              of it reads HEAD's lockfile under /projects and stops at the analyzer alone, which
+              this stage leaves out (the error names the extra that brings it)."""
+              status, _, page = call("GET", link)
+              assert status == 200 and "example-package" in page, status
+              status, _, page = call("POST", link + "/scans")
+              assert status == 400 and "[extract]" in page, status
+
+          def register(first):
+              """Register the example and return its project link, read from the first page.
+              first: nothing was registered before, as on a new volume. That first project of
+              all must land on the overview, the first page, which lists it. Registering a
+              folder that is a project already must land on that project itself."""
+              status, landed, _ = call("POST", base + "/projects", path="/projects/example")
+              (link,) = links()
+              assert (status, landed) == (303, base + "/" if first else link), (status, landed)
+              return link
+
+          try:
+              base, session = started("depbee-dashboard")
+              status, _, page = call("GET", base + "/")
+              assert status == 200 and f'action="{base}/projects/pick"' in page, status
+              script(page)  # the page before the first project, a document of its own
+              assert links() == set()  # a new volume knows no project
+              assert call("GET", base + "/", host="localhost:5757")[0] == 400
+              assert call("GET", "/s/" + "A" * 43 + "/")[0] == 403
+              # The folder button leads to the mounted folders, which offer the example alone.
+              assert call("POST", base + "/projects/pick")[:2] == (303, base + "/projects/mounted")
+              status, _, page = call("GET", base + "/projects/mounted")
+              assert status == 200, status
+              assert re.findall(r'name="path" value="([^"]*)"', page) == ["/projects/example"], page
+              assert call("GET", base + "/projects/mounted?at=..")[0] == 404
+              for outside in ("/project", "/etc", "/home/depbee", "/projects/../etc"):
+                  assert call("POST", base + "/projects", path=outside)[0] == 400, outside
+              # The first project of the new volume lands on the overview, whose link opens it.
+              usable(register(first=True))
+              script(call("GET", base + "/")[2])  # the console around every other page
+              print("The dashboard answered on 127.0.0.1:5757 and registered /projects/example alone")
+
+              # --rm: the first container goes with all it wrote outside the volume, and the
+              # next one has only the volume to know the project from.
+              docker("stop", "depbee-dashboard")
+              first = base
+              base, session = started("depbee-dashboard-again")
+              assert base != first  # each container prints an address of its own
+              (link,) = links()
+              usable(link)
+              # The same folder is still that project: registering it again adds no second one.
+              assert register(first=False) == link
+              print("A new container read the registered project from the home volume")
+          finally:
+              docker("rm", "--force", "depbee-dashboard", "depbee-dashboard-again", check=False)
+          PY
+      # The npm the image ships for the update check, run as depbee runs it (inputs.npm_cli):
+      # node with the npm-cli.js copied next to it, and no npm command on PATH. A scratch project
+      # without dependencies needs no registry, so this runs offline like the scans above. The
+      # check that follows an update needs the private analyzer, which this stage leaves out
+      # (docs/ci-cd.md).
+      - name: Run the bundled npm offline, as an update check does
+        shell: bash
+        run: |
+          docker run --rm -i --network none --read-only --tmpfs /tmp \
+            --entrypoint python depbee:ci -I - <<'PY'
+          import json
+          import shutil
+          import subprocess
+          import tempfile
+          from pathlib import Path
+
+          from depbee.inputs import npm_cli
+
+          assert shutil.which("npm") is None and shutil.which("npx") is None
+          node = subprocess.run(["node", "--version"], capture_output=True, text=True, check=True)
+          work = Path(tempfile.mkdtemp()) / "project"
+          work.mkdir()
+          root = {"name": "synthetic-example-only", "version": "1.0.0"}
+          (work / "package.json").write_text(json.dumps(root))
+          lock = {**root, "lockfileVersion": 3, "packages": {"": root}}
+          (work / "package-lock.json").write_text(json.dumps(lock))
+          npm = npm_cli.update_lock(work, [])  # npm --version, then the lock-only update
+          written = json.loads((work / "package-lock.json").read_bytes())
+          print(node.stdout.strip(), npm, written)
+          # The versions docs/docker.md names, and a lockfile that npm itself wrote.
+          assert (node.stdout.strip(), npm) == ("v24.11.0", "11.6.1")
+          assert written == {**lock, "requires": True}
           PY

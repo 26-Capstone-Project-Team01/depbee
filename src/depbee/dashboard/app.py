@@ -5,15 +5,25 @@ connection per call), lockfile rows through service.list_dependencies(), package
 individual update buttons, and every verdict,
 label and line through the depbee.cli helpers the text output uses.
 
-Every page is one console: the registered projects are tabs (_tabs), and a project has three
-views, its packages, its update candidates and its history. A candidate is only ever a stored
-update preview of that project made from the files as they are now (_update_state); a GET
-reads files and the history and never runs npm or reaches the network. The session's first page
-is the overview of the registered projects (_portfolio): the management page while none is
-registered, and whenever the address asks for it (?manage=1).
+Every page but the first is one console: the registered projects are tabs (_tabs), and a
+project has three views, its packages, its update candidates and its history. A candidate is
+only ever a stored update preview of that project made from the files as they are now
+(_update_state); a GET reads files and the history and never runs npm or reaches the network.
+The session's first page is the overview of the registered projects (_portfolio, _chart), and
+the management page when the address asks for it (?manage=1). While no project is registered it
+is the start page instead: one button that adds the first one, and nothing else. Registering
+that first project comes back to the overview (enroll); a later one opens its own project.
 
 A project is registered by its folder's path: typed into the form, or chosen in the desktop's
-own folder dialog (.picker, a child process), which is checked as a typed one is.
+own folder dialog (.picker, a child process), which is checked as a typed one is. In a container
+(.mounted) the dialog's button opens the folders mounted into it instead, and only a folder
+among those is registered or used: each time a project is listed, checked, scanned or applied
+there, its folder, the files read and the Git folder are looked at again (_found, _refused,
+mounted.repository), and a link is never followed.
+
+The pages work without a script. The one script (static/app.js, from under the session like the
+stylesheets) only marks a button whose request is running, stops a second request meanwhile and
+moves the focus to the first candidate a check returned.
 """
 
 import hashlib
@@ -25,15 +35,16 @@ import socket
 import stat
 import sys
 import threading
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, urlencode
 
 import jinja2
 import uvicorn
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import QueryParams
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route
@@ -42,10 +53,15 @@ from .. import history, mcp, service
 from ..actions import plain_number, score_text
 from ..cli import (
     APPLY_REASON_LABELS,
+    CAUSE_LABELS,
+    KNOWN_STATUS_LABELS,
     MODE_LABELS,
+    NOT_CHECKED,
+    NOT_CONFIGURED,
     OUTCOME_LABELS,
     OVERALL_LABELS,
     REASON_LABELS,
+    RULE_STATUS_LABELS,
     SAFETY_NOTE,
     STATUS_LABELS,
     _alternative,
@@ -61,13 +77,15 @@ from ..cli import (
     _ordered,
     _preview_lines,
     _rest_line,
+    _slot,
     _summary,
     _text_label,
+    _unchecked,
 )
 from ..contracts import MAX_JSON_BYTES, GuardError, read_json
 from ..inputs.npm import MAX_NAME_LENGTH, PACKAGE_NAME
 from ..inputs.npm_cli import DEPENDENCY_FIELDS, UPDATE_NAME
-from . import picker
+from . import mounted, picker
 
 HOST = "127.0.0.1"
 MAX_BODY = 16 * 1024  # bytes of a request body (Starlette answers 413 above it)
@@ -77,6 +95,7 @@ MAX_TARGETS = 1024  # characters of the update target names field
 KEPT_PREVIEWS = 10  # update previews kept in memory; the oldest is dropped first
 RECENT_RUNS = 10  # runs per project in the list's trend table
 MAX_ID = 2**63 - 1  # SQLite's largest integer; a larger id in a URL is simply not found
+MAX_ITEM = 40  # characters of a candidate's key (<run id>.<position>) carried through a check
 # The history stores a lone surrogate in a result row's location as the text \udXXX, which a
 # location can also hold as it is: a stored location with this text may stand for either.
 ESCAPED_SURROGATE = "\\ud"
@@ -87,6 +106,38 @@ TAB_STATES = {
     "incomplete": ("hold", "보류"),
     "passed": ("pass", "통과"),
 }
+# The overview's state of a project (_portfolio), in the order its chart lists them, what needs
+# a look first: the hexagon mark, the words, and whether the chart lists the state while no
+# project is in it. The first three are the stored status of the project's newest run.
+STATES = {
+    "risk": ("risk", "위험", True),
+    "hold": ("hold", "보류", True),
+    "pass": ("pass", "통과", True),
+    "none": ("none", "미검사", True),
+    "stale": ("stale", "파일 바뀜", False),
+    "gone": ("gone", "폴더 없음", False),
+    "unknown": ("none", "알 수 없음", False),
+}
+# The mark of a stored apply outcome on the overview: only an apply that changed the files is a
+# success, a refusal stops and a failure is told from it by its own mark.
+APPLY_CELLS = {"applied": "pass", "refused": "risk", "failed": "fail"}
+# Whether one candidate could be applied (_decision), worded as the update gate decides it.
+DECISIONS = {
+    "refused": ("risk", "반영 거부"),
+    "confirm": ("hold", "확인 필요"),
+    "free": ("pass", "반영 가능"),
+}
+REFUSED_WHY = (
+    "기지 악성 색인과 일치한 버전입니다. 낮은 ML 위험 점수는 이 거부를 취소하지 않으며, 확인으로도 "
+    "반영할 수 없습니다."
+)
+CONFIRM_WHY = "반영하려면 사용자 확인이 필요합니다"
+FREE_WHY = (
+    "기지 악성 색인과 일치하지 않고 ML 위험 점수가 판정 기준 미만입니다. 검사 결과일 뿐 안전 보증이 "
+    "아닙니다."
+)
+FREE_OTHER_WHY = "거부하거나 확인할 사유가 없습니다. 검사 결과일 뿐 안전 보증이 아닙니다."
+REMOVED_WHY = "삭제되는 항목이라 새로 설치되는 것이 없습니다."
 # The lockfile root entry's fields that declare a direct dependency, as the packages table
 # words them next to "직접" (inputs.npm.DEPENDENCY_FIELDS).
 DECLARED_LABELS = {
@@ -96,19 +147,24 @@ DECLARED_LABELS = {
     "peerDependencies": "피어",
 }
 NPM_PAGE = "https://www.npmjs.com/package/"
-# The stylesheets, each under its own route /static/<name>: nothing else of static/ is served,
-# and no file name is ever taken from a request.
+# The stylesheets and the one script, each under its own route /static/<name>: nothing else of
+# static/ is served, and no file name is ever taken from a request.
 STYLES = ("style.css", "overview.css")
+SCRIPT = "app.js"
 # The tab icon, the brand's hexagon cell. Served under the session like the stylesheet: without
 # it a browser asks for /favicon.ico, which has no session and is a 403 in its console.
 ICON = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#f4b10b" '
     'stroke="#18202b" d="M8 1l6 3.5v7L8 15l-6-3.5v-7z"/></svg>'
 )
+# script-src 'self' is the one script file (SCRIPT): no inline script or handler ever runs.
 CSP = (
-    "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; "
-    "frame-ancestors 'none'; base-uri 'none'"
+    "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; "
+    "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
 )
+# What a browser says of where a request comes from (Sec-Fetch-Site): the dashboard's own page,
+# or the user (the address bar, a reload). A browser that sends nothing is left to Origin.
+OWN_SITES = (b"same-origin", b"none")
 # no-referrer would make a form POST's Origin "null" (Fetch 3.2), which the POST check refuses.
 SECURITY_HEADERS = [
     (b"content-security-policy", CSP.encode()),
@@ -128,7 +184,11 @@ REGISTER_ERRORS = {
     "folder": "폴더를 찾을 수 없습니다.",
     "lockfile": "폴더에 package-lock.json 파일이 없습니다.",
     "unreadable": "경로를 확인할 수 없습니다.",
+    "outside": "컨테이너에 연결한 프로젝트 폴더 밖의 경로는 등록할 수 없습니다(링크를 거치는 경로 "
+    "포함).",
 }
+# The container's folder picker (.mounted) was asked for something it does not list.
+MOUNTED_MISSING = "컨테이너에 연결한 프로젝트 폴더 안의 폴더가 아닙니다."
 # The folder dialog gave no folder (picker.choose); both open the form for a typed path.
 PICK_ERRORS = {
     "unavailable": "폴더 선택 창을 열 수 없습니다(데스크톱 화면이 없거나 이 Python에 tkinter가 "
@@ -169,6 +229,12 @@ PREVIEW_GONE = (
 )
 PREVIEW_GONE_TITLE = "미리보기가 없습니다"
 PROJECT_MISSING = "등록한 프로젝트 폴더를 찾을 수 없습니다."
+# A container's dashboard found package.json or package-lock.json to be a link or no file
+# (_refused): nothing read it, and nothing ran.
+INPUT_REFUSED = (
+    "프로젝트의 package.json이나 package-lock.json이 링크이거나 일반 파일이 아니어서 읽지 "
+    "않았습니다. 컨테이너의 대시보드는 연결한 폴더 안에 있는 실제 파일만 읽습니다."
+)
 PREVIEW_FAILED = "업데이트 확인을 끝내지 못했습니다(파일이나 데이터를 읽거나 쓰지 못함)."
 SCAN_TITLE = "검사 오류"  # error.html's heading for a scan (default: the update one)
 SCAN_FAILED = "검사를 끝내지 못했습니다(파일이나 데이터를 읽거나 쓰지 못함)."
@@ -190,6 +256,13 @@ PREVIEW_NOT_RECORDED = (
 )
 APPLY_NOT_RECORDED = (
     "반영 기록을 로컬 이력에 남기지 못했습니다. 위 결과와 백업 위치는 실제로 일어난 일입니다."
+)
+STARTED = "이 주소를 브라우저에서 여세요. 종료하려면 Ctrl+C를 누르세요."
+# In a container the address is the host's, where the port has to be published under its number.
+CONTAINER_STARTED = (
+    "이 주소를 호스트의 브라우저에서 여세요. 컨테이너의 {port}번 포트를 호스트의 127.0.0.1에만 "
+    "같은 번호로 게시해야 열립니다(docker run -p 127.0.0.1:{port}:{port}). 종료하려면 Ctrl+C를 "
+    "누르거나 docker stop을 실행하세요."
 )
 STOPPED = "대시보드를 종료했습니다. 위 주소는 더 이상 열리지 않습니다."
 # _apply_lines wording without the CLI option: a dashboard apply, and a stored one (CLI or here).
@@ -237,9 +310,10 @@ class Guard:
     """Wraps the whole app. Every request: exactly one Host header equal to 127.0.0.1:<port>
     (any case), else 400; a path under /s/<session>/ with this run's session (compared with
     hmac.compare_digest), else 403; a request other than GET or HEAD also needs Origin exactly
-    http://127.0.0.1:<port>, else 403 (the form handlers check the form's session field). The
-    app sees the path without the /s/<session> prefix. Cookies are neither read nor set. Every
-    response, errors included, gets SECURITY_HEADERS."""
+    http://127.0.0.1:<port> and, when the browser says where the request comes from
+    (Sec-Fetch-Site), one of OWN_SITES, else 403 (the form handlers check the form's session
+    field). The app sees the path without the /s/<session> prefix. Cookies are neither read nor
+    set. Every response, errors included, gets SECURITY_HEADERS."""
 
     def __init__(self, app, port: int, session: str):
         self.app, self.session = app, session.encode()
@@ -270,10 +344,12 @@ class Guard:
         given = parts[2].encode("utf-8", "replace") if len(parts) == 4 else b""
         if parts[:2] != ["", "s"] or not hmac.compare_digest(given, self.session):
             return (403, SESSION_REFUSED), ""
-        if scope["method"] not in ("GET", "HEAD") and [v for n, v in headers if n == b"origin"] != [
-            self.origin
-        ]:
-            return (403, "다른 출처의 요청은 받지 않습니다."), ""
+        if scope["method"] not in ("GET", "HEAD"):
+            sites = [value.lower() for name, value in headers if name == b"sec-fetch-site"]
+            if [v for n, v in headers if n == b"origin"] != [self.origin] or any(
+                site not in OWN_SITES for site in sites
+            ):
+                return (403, "다른 출처의 요청은 받지 않습니다."), ""
         return None, "/" + parts[3]
 
 
@@ -298,10 +374,13 @@ def build_app(
              section: str | None = None, tabs: list[dict] | None = None, **context) -> Response:  # fmt: skip
         """A page of the console. project: the registered project the page is about, shown as
         the open tab (the template gets its tab); section: the view the page belongs to
-        (packages, updates, history; manage and model for the two pages outside a project)."""
+        (packages, updates, history; manage and model for the two pages outside a project).
+        Every template also gets contained: this dashboard is a container's (.mounted), where
+        a page says what choosing a folder and installing do there, not on a desktop."""
         tabs = _tabs(project) if tabs is None else tabs
         html = ENV.get_template(name).render(
             safety_note=SAFETY_NOTE, base=base, session=session, tabs=tabs, section=section,
+            contained=mounted.root() is not None,
             project=next((tab for tab in tabs if tab["current"]), None), **context,
         )  # fmt: skip
         # _finalize has escaped lone surrogates; backslashreplace keeps any left from a 500.
@@ -343,25 +422,33 @@ def build_app(
                     switch_keys=SWITCH_KEYS)  # fmt: skip
 
     def home(request: Request) -> Response:
-        """The session's first page: the overview of the registered projects. It is the
-        management page while no project is registered, and whenever the address asks for it
-        (?manage=1): a closed folder dialog and the link of a refused one lead there, so that a
-        registration that did not happen never ends on the overview."""
-        if request.query_params.getlist("manage") != ["1"]:
-            tabs = _tabs(None)
-            if tabs:
-                return page(request, "overview.html", section="overview", tabs=tabs,
-                            portfolio=_portfolio(tabs))  # fmt: skip
-        return projects(request)
+        """The session's first page. While no project is registered it is the start page,
+        whatever the address asks for: one button that sends the form of pick, and no console
+        around it. From then on it is the overview of the registered projects, and the
+        management page when the address asks for it (?manage=1): a closed folder dialog and
+        the link of a refused one lead there, so that a registration that did not happen never
+        ends on the overview."""
+        tabs = _tabs(None)
+        if not tabs:
+            return page(request, "start.html", section="start", tabs=tabs)
+        if request.query_params.getlist("manage") == ["1"]:
+            return projects(request)
+        portfolio = _portfolio(tabs)
+        return page(request, "overview.html", section="overview", tabs=tabs,
+                    portfolio=portfolio, chart=_chart(portfolio))  # fmt: skip
 
     def enroll(request: Request, path: str, typed: bool) -> Response:
-        """Register the folder at path, typed or chosen in the dialog, and open its project; a
-        path that fails the registration checks registers nothing."""
+        """Register the folder at path, however it was given (the dialog, the container's list
+        of mounted folders, a typed path); a path that fails the registration checks registers
+        nothing. The first project of all opens the overview, where it stands with nothing
+        inspected yet: the start page's one button ends there. Every later registration opens
+        its own project, as does registering a folder again."""
         problem = _registration_problem(path)
         if problem:  # the input is not echoed
             return projects(request, 400, REGISTER_ERRORS[problem], typed=typed)
+        first = not history.list_projects()
         project_id = history.register_project(Path(path))
-        return RedirectResponse(f"{base}/projects/{project_id}", 303)
+        return RedirectResponse(f"{base}/" if first else f"{base}/projects/{project_id}", 303)
 
     async def register(request: Request) -> Response:
         form = await read_form(request)
@@ -388,10 +475,15 @@ def build_app(
         A server that has been asked to end opens no dialog, and picker.choose closes the open
         one, so that the server does not wait for it. ending() is asked again after the answer,
         here in the server's own thread, where the stop request is taken too: an answer that
-        comes back after that request registers nothing either."""
+        comes back after that request registers nothing either.
+
+        A container has no desktop: there the same button leads to the folders mounted into it
+        (mounted_folders), and no dialog is ever started."""
         form = await read_form(request)
         if isinstance(form, Response):
             return form
+        if mounted.root() is not None:
+            return RedirectResponse(f"{base}/projects/mounted", 303)
         if ending():
             return _text(503, PICK_STOPPED)
         if not picking.acquire(blocking=False):
@@ -409,61 +501,82 @@ def build_app(
             return projects(request, 503, PICK_ERRORS[outcome], manual=True)
         return enroll(request, folder, False)
 
-    def project(request: Request) -> Response:
-        """The packages view: what package-lock.json installs, and for each entry the candidate
-        a current update check found for it, that it found none, or that nothing was checked.
-        selected: the candidate opened beside the list, one of the rows the filter leaves."""
-        found = _project(request.path_params["project_id"])
-        if found is None:
-            return _text(404, "등록된 프로젝트가 아닙니다.")
-        params = request.query_params
-        query = params.get("q", "").strip()
-        scope = params.get("scope", "all")
-        if (
-            len(params.getlist("q")) > 1
-            or len(params.getlist("scope")) > 1
-            or len(query) > MAX_NAME_LENGTH
-            or not query.isprintable()
-            or scope not in ("all", "direct", "nested")
-        ):
-            return _text(400, "패키지 이름이나 의존성 종류를 확인하세요.")
-        dependencies, problem = _dependencies(found["path"])
-        direct_count = sum(row["direct"] for row in dependencies)
-        needle = query.casefold()
-        state = _update_state(found)
-        candidates = {row["location"]: row for row in state["rows"]}
-        rows = [
-            {**row, "candidate": candidates.get(row["location"]),
-             "checked": state["full"] is not None or row["location"] in state["covered"],
-             "declared": ", ".join(DECLARED_LABELS[field] for field in row["declared"]),
-             "declared_as": _declared_as(row)}
-            for row in dependencies
-            if (scope == "all" or row["direct"] == (scope == "direct"))
-            and (not needle or needle in _clean(row["name"] or "").casefold())
-        ]  # fmt: skip
-        targets = _preview_targets(found["path"]) if any(row["direct"] for row in rows) else set()
-        shown = [row["candidate"] for row in rows if row["candidate"] is not None]
-        return page(request, "project.html", project=found, section="packages", rows=rows,
-                    direct_count=direct_count, nested_count=len(dependencies) - direct_count,
-                    query=query, scope=scope, targets=targets, max_query=MAX_NAME_LENGTH,
-                    problem=problem, state=state, selected=_selected(params, shown))  # fmt: skip
+    def mounted_folders(request: Request) -> Response:
+        """The container's folder picker: the folders below the mounted one that the at query
+        names (mounted.listing), each project among them with the form that registers its path
+        as a typed one is registered. It lists names and registers nothing; outside a container
+        there is no such page."""
+        top, given = mounted.root(), request.query_params.getlist("at")
+        if top is None or len(given) > 1:
+            return _text(404, MOUNTED_MISSING)
+        view = mounted.listing(given[0] if given else "")
+        if view is None and given not in ([], [""]):
+            return _text(404, MOUNTED_MISSING)
+        # Without a view the mounted folder itself is not there: the page says how to mount one.
+        return page(request, "mounted.html", section="manage", root=str(top), view=view)
 
-    def updates(request: Request) -> Response:
-        """The updates view: the current candidates with their evidence, the previews this
-        process still holds (the only ones that can be applied) and the buttons that check.
-        selected: the candidate opened beside the list."""
-        found = _project(request.path_params["project_id"])
-        if found is None:
-            return _text(404, "등록된 프로젝트가 아닙니다.")
-        state = _update_state(found)
-        # A copy: the request handlers of other threads add and drop previews meanwhile.
-        held = [
+    def held(found: dict, state: dict) -> list[dict]:
+        """The update previews of the project that this process still holds, newest first: the
+        only ones that can be applied. A copy: the request handlers of other threads add and
+        drop previews meanwhile."""
+        return [
             {"id": preview_id, "run_id": kept["run_id"], "created_at": kept["created_at"],
              "lines": _preview_lines(kept["result"]["preview"], _clean)[:2],
              "current": _made_from(kept["result"]["preview"]) == state["now"]}
             for preview_id, kept in reversed(list(previews.items()))
             if kept["project_id"] == found["id"]
         ]  # fmt: skip
+
+    def project(request: Request) -> Response:
+        """The packages view: what package-lock.json installs, and for each entry the candidate
+        a current update check found for it, that it found none, or that nothing was checked.
+        The search, the kind and the candidates-only filter narrow the list together (_filters).
+        selected: the candidate opened beside the list, one of the rows the filters leave: the
+        one the address names (_selected), which after a check is the first one that check
+        returned (_landing); returned: what the check that sent the browser here found
+        (_returned)."""
+        found = _project(request.path_params["project_id"])
+        if found is None:
+            return _text(404, "등록된 프로젝트가 아닙니다.")
+        params = request.query_params
+        filters = _filters(params)
+        if filters is None:
+            return _text(400, "패키지 이름이나 의존성 종류를 확인하세요.")
+        query, scope, only = filters
+        dependencies, problem = _dependencies(found["path"])
+        direct_count = sum(row["direct"] for row in dependencies)
+        state = _update_state(found)
+        candidates = {row["location"]: row for row in state["rows"]}
+        # Counted over the whole list, whatever the search leaves of it. Without a candidate
+        # the filter is off: an address kept from before never empties the list.
+        candidate_count = sum(row["location"] in candidates for row in dependencies)
+        only = only and candidate_count > 0
+        rows = [
+            {**row, "candidate": candidates.get(row["location"]),
+             "checked": state["full"] is not None or row["location"] in state["covered"],
+             "declared": ", ".join(DECLARED_LABELS[field] for field in row["declared"]),
+             "declared_as": _declared_as(row)}
+            for row in _listed(dependencies, query, scope)
+            if not only or row["location"] in candidates
+        ]  # fmt: skip
+        targets = _preview_targets(found["path"]) if any(row["direct"] for row in rows) else set()
+        shown = [row["candidate"] for row in rows if row["candidate"] is not None]
+        selected = _selected(params, shown)
+        returned = _returned(params, state, shown, selected)
+        return page(request, "project.html", project=found, section="packages", rows=rows,
+                    direct_count=direct_count, nested_count=len(dependencies) - direct_count,
+                    query=query, scope=scope, only=only, candidate_count=candidate_count,
+                    targets=targets, max_query=MAX_NAME_LENGTH, problem=problem, state=state,
+                    returned=returned, selected=selected, previews=held(found, state))  # fmt: skip
+
+    def updates(request: Request) -> Response:
+        """The updates view: the current candidates with their evidence, the previews this
+        process still holds (held) and the buttons that check. selected: the candidate opened
+        beside the list."""
+        found = _project(request.path_params["project_id"])
+        if found is None:
+            return _text(404, "등록된 프로젝트가 아닙니다.")
+        state = _update_state(found)
         last = state["last"]
         applied = history.list_applies(found["id"], 1) if last else []
         applied_at = (
@@ -472,7 +585,7 @@ def build_app(
             else None
         )
         return page(request, "updates.html", project=found, section="updates", state=state,
-                    previews=held, applied_at=applied_at, max_targets=MAX_TARGETS,
+                    previews=held(found, state), applied_at=applied_at, max_targets=MAX_TARGETS,
                     selected=_selected(request.query_params, state["rows"]))  # fmt: skip
 
     def project_history(request: Request) -> Response:
@@ -540,6 +653,9 @@ def build_app(
         if not _found(found["path"]):  # the registered path, checked as at registration
             return page(request, "error.html", 400, project=found, section="updates",
                         message=PROJECT_MISSING)  # fmt: skip
+        if _refused(found["path"], "package.json", "package-lock.json"):
+            return page(request, "error.html", 400, project=found, section="updates",
+                        message=INPUT_REFUSED)  # fmt: skip
         if not busy.acquire(blocking=False):
             return stopped(request, 409, BUSY_TITLE, BUSY, BUSY_NOTE, found)
         try:
@@ -559,6 +675,13 @@ def build_app(
         }  # fmt: skip
         while len(previews) > KEPT_PREVIEWS:
             previews.popitem(last=False)
+        # Sent from the packages view and recorded: back to that list, where the first candidate
+        # this check returned is opened (_landing). The preview stays held and nothing is
+        # applied. Any other check opens its preview, as before.
+        back = _back(form)
+        if back is not None and run_id is not None:
+            landing = await run_in_threadpool(_landing, found, back, run_id)
+            return RedirectResponse(f"{base}/projects/{found['id']}?{landing}", 303)
         return RedirectResponse(f"{base}/previews/{preview_id}", 303)
 
     async def scan(request: Request) -> Response:
@@ -573,6 +696,9 @@ def build_app(
         if not _found(found["path"]):  # the registered path, checked as at registration
             return page(request, "error.html", 400, project=found, section="updates",
                         message=PROJECT_MISSING, title=SCAN_TITLE)  # fmt: skip
+        if _refused(found["path"], "package-lock.json"):
+            return page(request, "error.html", 400, project=found, section="updates",
+                        message=INPUT_REFUSED, title=SCAN_TITLE)  # fmt: skip
         if not busy.acquire(blocking=False):
             return stopped(request, 409, BUSY_TITLE, BUSY, BUSY_NOTE, found)
         try:
@@ -618,6 +744,10 @@ def build_app(
         if found is None or not _found(found["path"]):
             return page(request, "error.html", 400, project=found, section="updates",
                         message=PROJECT_MISSING)  # fmt: skip
+        # Looked at again here: the files may have changed since the preview read them.
+        if _refused(found["path"], "package.json", "package-lock.json"):
+            return page(request, "error.html", 400, project=found, section="updates",
+                        message=INPUT_REFUSED)  # fmt: skip
         if not busy.acquire(blocking=False):
             return stopped(request, 409, BUSY_TITLE, BUSY, BUSY_NOTE, found)
         try:
@@ -645,14 +775,14 @@ def build_app(
         return page(request, "model.html", section="model", models=_models(),
                     limits=MODEL_LIMITS)  # fmt: skip
 
-    def style(name: str):
-        """The handler of one stylesheet of STYLES: the file is the route's own."""
+    def asset(name: str, media_type: str):
+        """The handler of one file of static/ (STYLES, SCRIPT): the file is the route's own."""
 
-        def stylesheet(request: Request) -> Response:
-            css = importlib.resources.files("depbee.dashboard").joinpath("static", name)
-            return Response(css.read_bytes(), media_type="text/css; charset=utf-8")
+        def served(request: Request) -> Response:
+            file = importlib.resources.files("depbee.dashboard").joinpath("static", name)
+            return Response(file.read_bytes(), media_type=media_type)
 
-        return stylesheet
+        return served
 
     def icon(request: Request) -> Response:
         return Response(ICON, media_type="image/svg+xml")
@@ -666,6 +796,7 @@ def build_app(
             Route("/", home),
             Route("/projects", register, methods=["POST"]),
             Route("/projects/pick", pick, methods=["POST"]),
+            Route("/projects/mounted", mounted_folders),
             Route("/projects/{project_id:int}", project),
             Route("/projects/{project_id:int}/updates", updates),
             Route("/projects/{project_id:int}/history", project_history),
@@ -675,7 +806,8 @@ def build_app(
             Route("/previews/{preview_id}/apply", apply, methods=["POST"]),
             Route("/runs/{run_id:int}", run),
             Route("/model", model),
-            *(Route(f"/static/{name}", style(name)) for name in STYLES),
+            *(Route(f"/static/{name}", asset(name, "text/css; charset=utf-8")) for name in STYLES),
+            Route(f"/static/{SCRIPT}", asset(SCRIPT, "text/javascript; charset=utf-8")),
             Route("/static/icon.svg", icon),
         ],
         exception_handlers={Exception: failed},
@@ -686,18 +818,37 @@ def build_app(
 
 
 def _found(path: str) -> bool:
-    """The registered folder still exists, looked at as at registration (no share or device)."""
+    """The registered folder still exists, looked at as at registration (no share or device).
+    In a container it is a folder of the mounted one as it is spelled (mounted.problem): a path
+    outside that folder, as an older history may hold, is not looked at."""
     try:
+        if mounted.root() is not None:
+            return mounted.problem(Path(path)) is None
         real = mcp._unlinked(mcp._local_path(path, "project"), "project")
         return real is not None and stat.S_ISDIR(real.stat().st_mode)
     except (GuardError, OSError, ValueError):
         return False
 
 
+def _refused(path: str, *names: str) -> bool:
+    """A container's dashboard must not read one of the files names of the registered folder at
+    path: it is there, but not as a regular file of the mounted folder itself (a link, or
+    something that is no file), or it cannot be looked at (mounted.problem). Asked each time
+    before a file is read or a service is given the folder, since the file may have changed
+    since it was last read. Only a file that is really missing is not refused: its reader's own
+    error says that it is missing. Always False on a desktop, which reads a file through its
+    links as before."""
+    return mounted.root() is not None and any(
+        mounted.problem(Path(path) / name, stat.S_ISREG) not in (None, "missing") for name in names
+    )
+
+
 def _registration_problem(text: str) -> str | None:
     """A REGISTER_ERRORS key, or None for an absolute local folder with a regular
     package-lock.json file. The MCP path checks: shares, device paths, reserved names and links
-    to them are refused before anything behind them is touched."""
+    to them are refused before anything behind them is touched. In a container the folder and
+    its lockfile must be in the mounted folder as they are spelled (mounted.problem): a path
+    outside it is refused before anything of it is looked at, and a link wherever it leads."""
     if len(text) > MAX_PATH:
         return "long"
     try:
@@ -707,6 +858,15 @@ def _registration_problem(text: str) -> str | None:
     if not path.is_absolute():
         return "absolute"
     try:
+        if mounted.root() is not None:
+            for target, kind, missing in ((path, stat.S_ISDIR, "folder"),
+                                          (path / "package-lock.json", stat.S_ISREG, "lockfile")):  # fmt: skip
+                problem = mounted.problem(target, kind)
+                if problem in ("outside", "link"):
+                    return "outside"
+                if problem is not None:
+                    return "unreadable" if problem == "unreadable" else missing
+            return None
         folder = mcp._unlinked(path, "path")
         if folder is None or not stat.S_ISDIR(folder.stat().st_mode):
             return "folder"
@@ -770,35 +930,92 @@ def _tabs(current: dict | None, recent: int = 1) -> list[dict]:
 
 def _portfolio(tabs: list[dict]) -> list[dict]:
     """The overview's row of each registered project (tabs: _tabs()): its id, name, path and
-    whether its folder is found, with three things the history says of it, each None when the
-    project has none. scan: its newest scan. preview: its newest update preview that no apply
-    was recorded for (history.latest_preview_only()), so a preview that was applied, refused or
-    failed is not shown as one still to look at. Both are a _run_row() with the tab cell of the
-    stored status. apply: its most recently recorded apply that changed its files
-    (history.latest_applies(), the mode and outcome worded as in the history view); the applies
-    that did not are in the project's history view and on their runs.
+    whether its folder is found, with what the history says of it.
 
-    Each run is found on its own, however many other runs came after it, and the applies are
-    read once for all the projects. Only stored run and apply columns are read: no report or
-    apply document, and no list of runs."""
-    portfolio, applies = [], history.latest_applies()
+    run: its newest run, a scan or an update preview alike (a _run_row(), None without one).
+    state: that run's stored status as one of STATES, with cell and label: gone for a folder
+    that is not found, whatever was stored; none without a run; stale for an update preview
+    that the project's files no longer are (_stale); unknown for a status that is not one of
+    the three a report has. Never a new verdict.
+
+    attempt: its most recently recorded apply, whatever the outcome (history.latest_applies):
+    {run_id, created_at, mode, outcome and reason worded as in the history view, cell, applied
+    (it changed the files)}, None if nothing was ever tried. success: the last apply that did
+    change the files, {run_id, created_at}, only when the newest attempt is not that one.
+
+    The newest run is the one the tab already has, and both kinds of apply are read once for
+    all the projects. Only stored run and apply columns are read, no report or apply document;
+    the two project files are hashed only for a project whose newest run is an update preview."""
+    portfolio = []
+    attempts, successes = history.latest_applies(applied=False), history.latest_applies()
     for tab in tabs:
-        row = {key: tab[key] for key in ("id", "name", "path", "found")}
-        (scan,) = history.list_runs(tab["id"], 1, "scan") or [None]
-        for name, run in (("scan", scan), ("preview", history.latest_preview_only(tab["id"]))):
-            row[name] = run and {**_run_row(run),
-                                 "cell": (TAB_STATES.get(run["status"]) or ("none",))[0]}  # fmt: skip
-        applied = applies.get(tab["id"])
-        row["apply"] = applied and {**applied, "mode": _text_label(MODE_LABELS, applied["mode"]),
-                                    "outcome": _text_label(OUTCOME_LABELS, applied["outcome"])}  # fmt: skip
+        run = tab["runs"][0] if tab["runs"] else None
+        attempt, success = attempts.get(tab["id"]), successes.get(tab["id"])
+        if not tab["found"]:
+            state = "gone"
+        elif run is None:
+            state = "none"
+        elif tab["cell"] == "none":  # a run, but its stored status is none of TAB_STATES
+            state = "unknown"
+        elif run["preview"] and _stale(tab, run["id"], success):
+            state = "stale"
+        else:
+            state = tab["cell"]
+        cell, label, _ = STATES[state]
+        row = {**{key: tab[key] for key in ("id", "name", "path", "found")},
+               "state": state, "cell": cell, "label": label, "run": run,
+               "attempt": None, "success": None}  # fmt: skip
+        if attempt is not None:
+            applied = attempt["outcome"] == "applied"
+            reason = attempt["reason"]
+            row["attempt"] = {
+                "run_id": attempt["run_id"], "created_at": attempt["created_at"],
+                "mode": _text_label(MODE_LABELS, attempt["mode"]),
+                "outcome": _text_label(OUTCOME_LABELS, attempt["outcome"]),
+                "reason": None if reason is None else _text_label(DASHBOARD_REASONS, reason),
+                "cell": APPLY_CELLS.get(attempt["outcome"], "none"), "applied": applied,
+            }  # fmt: skip
+            if not applied and success is not None:
+                row["success"] = {key: success[key] for key in ("run_id", "created_at")}
         portfolio.append(row)
     return portfolio
+
+
+def _stale(project: dict, run_id: int, applied: dict | None) -> bool:
+    """Whether the project's package.json and package-lock.json are no longer the files that
+    its newest run, the update preview run_id, says something of: neither the two files it was
+    made from (history.list_previews finds it first among the previews of the files as they
+    are now) nor the two that applying it left (applied: the project's last apply that changed
+    its files, history.latest_applies). A file that cannot be read is not one of those either.
+    A scan stores no hash of its files, so this is never asked of one."""
+    now = (_sha256(project["path"], "package.json"), _sha256(project["path"], "package-lock.json"))
+    if None in now:
+        return True
+    current = history.list_previews(project["id"], *now)
+    if current and current[0]["id"] == run_id:
+        return False
+    if applied is None or applied["run_id"] != run_id:
+        return True
+    left = (applied["new_package_json_sha256"] or applied["package_json_sha256"],
+            applied["new_package_lock_sha256"])  # fmt: skip
+    return left != now
+
+
+def _chart(portfolio: list[dict]) -> list[dict]:
+    """The overview's chart: how many of the registered projects are in each state of STATES,
+    in that order, as {key, cell, label, count}. A state that says something went wrong with
+    the folder or the files is listed only while a project is in it."""
+    counts = Counter(row["state"] for row in portfolio)
+    return [{"key": key, "cell": cell, "label": label, "count": counts[key]}
+            for key, (cell, label, always) in STATES.items() if always or counts[key]]  # fmt: skip
 
 
 def _sha256(folder: str, name: str) -> str | None:
     """SHA-256 of the regular file name in a registered folder, reached as at registration; None
     if it is not there, cannot be read or is larger than any file depbee previews."""
     try:
+        if _refused(folder, name):
+            return None
         real = mcp._unlinked(mcp._local_path(folder, "project") / name, name)
         if real is None:
             return None
@@ -920,12 +1137,125 @@ def _selected(params, shown: list[dict]) -> dict | None:
     return next((row for row in shown if f"{row['run_id']}.{row['position']}" == given[0]), first)
 
 
+def _filters(params) -> tuple[str, str, bool] | None:
+    """What narrows the packages view's list, from its query: (the name searched for, the kind
+    of dependency, whether only the entries with a candidate are listed). The three apply
+    together. None for a query the view refuses: a value given twice, a name that is too long
+    or not printable, a kind that is not one of the three, or an only that is not 1."""
+    query, scope = params.get("q", "").strip(), params.get("scope", "all")
+    only = params.getlist("only")
+    if (
+        len(params.getlist("q")) > 1
+        or len(params.getlist("scope")) > 1
+        or len(query) > MAX_NAME_LENGTH
+        or not query.isprintable()
+        or scope not in ("all", "direct", "nested")
+        or only not in ([], ["1"])
+    ):
+        return None
+    return query, scope, bool(only)
+
+
+def _listed(dependencies: list[dict], query: str, scope: str) -> list[dict]:
+    """The lockfile entries the packages view lists under a search and a kind (_filters), in
+    the lockfile's order: those of the kind whose name holds the name searched for, whatever
+    its case."""
+    needle = query.casefold()
+    return [
+        row
+        for row in dependencies
+        if (scope == "all" or row["direct"] == (scope == "direct"))
+        and (not needle or needle in _clean(row["name"] or "").casefold())
+    ]
+
+
+def _back(form: dict) -> list[tuple[str, str]] | None:
+    """The query of the packages view that a check was sent from, as the pairs which that
+    view's own links write: the form's back field, read as the view reads its address
+    (_filters), with the candidate it had open (item). None without the field: the check was
+    not sent from that view.
+
+    The redirect after the check is always an address of that view, built from these pairs and
+    never from the field's text: a field the view would refuse is the view without a filter."""
+    given = form.get("back")
+    if given is None:
+        return None
+    params = QueryParams(given[0] if len(given) == 1 else "")
+    query, scope, only = _filters(params) or ("", "all", False)
+    pairs = []
+    if query:
+        pairs.append(("q", query))
+    if scope != "all":
+        pairs.append(("scope", scope))
+    if only:
+        pairs.append(("only", "1"))
+    items = params.getlist("item")
+    if len(items) == 1 and len(items[0]) <= MAX_ITEM:
+        pairs.append(("item", items[0]))
+    return pairs
+
+
+def _landing(project: dict, back: list[tuple[str, str]], run_id: int) -> str:
+    """The query and the fragment of the packages view's address that a recorded check sent
+    from that view comes back to: back (_back) with the run as checked, at the candidate the
+    view opens or at the line that says there is none to open.
+
+    The view opens the candidate its address names (_selected). So the first candidate this
+    run returned among the rows that view lists (_listed) becomes the item, at #picked, the
+    link of the open candidate. When it returned none there, the candidate that was open stays
+    the item and the address goes to #check-status, the line that says what the check found,
+    never to #picked: that is then the candidate of an older check. The browser follows the
+    fragment itself, so the place is the same with the script and without it, and the address
+    still names what is open once the run is taken off it."""
+    kept = dict(back)
+    dependencies, _ = _dependencies(project["path"])
+    returned = {
+        row["location"]: row for row in _update_state(project)["rows"] if row["run_id"] == run_id
+    }
+    listed = _listed(dependencies, kept.get("q", ""), kept.get("scope", "all"))
+    first = next((returned[row["location"]] for row in listed if row["location"] in returned), None)
+    if first is not None:
+        kept["item"] = f"{first['run_id']}.{first['position']}"
+    kept["checked"] = run_id
+    return urlencode(kept) + ("#check-status" if first is None else "#picked")
+
+
+def _returned(params, state: dict, shown: list[dict], selected: dict | None) -> dict | None:
+    """What the packages view says of the check that sent the browser to it (the redirect of
+    check_update names its run in the checked query): {id, full (it checked everything), count
+    (how many current candidates it found), first (the first of them among shown, the
+    candidate rows the view lists; None when the view's filters leave none)}.
+
+    None unless checked is given once and is the run of one of the project's current checks
+    (state["checks"]). It is only compared as text with those runs: never read as a number,
+    and nothing is looked up by it. So the run of other files or of another project, a
+    repeated or malformed value and no value at all are all the same.
+
+    None too when first is not selected, the candidate the view opens: the address names
+    another one, which _landing never writes, and the view says nothing of a check whose
+    first candidate is not the one it shows."""
+    given = params.getlist("checked")
+    check = next((c for c in state["checks"] if [str(c["id"])] == given), None)
+    if check is None:
+        return None
+    first = next((row for row in shown if row["run_id"] == check["id"]), None)
+    if first is not None and first is not selected:
+        return None
+    return {
+        "id": check["id"], "full": check["targets"] is None,
+        "count": sum(row["run_id"] == check["id"] for row in state["rows"]),
+        "first": first,
+    }  # fmt: skip
+
+
 def _dependencies(path: str) -> tuple[list[dict], str | None]:
     """The lockfile's dependencies, or a fixed message (no error text, which can hold paths)."""
     folder = Path(path)
     if not _found(path):
         return [], "프로젝트 폴더를 찾을 수 없습니다."
     try:
+        if _refused(path, "package-lock.json"):
+            return [], "package-lock.json이 일반 파일이 아닙니다."
         lock = mcp._unlinked(folder / "package-lock.json", "package-lock.json")
         if lock is None:
             return [], "package-lock.json이 없습니다."
@@ -946,6 +1276,8 @@ def _declared_as(row: dict) -> str | None:
 def _preview_targets(path: str) -> set[str]:
     """Peer-only entries in the lockfile cannot be targeted by npm update."""
     try:
+        if _refused(path, "package.json"):
+            return set()
         manifest = mcp._unlinked(Path(path) / "package.json", "package.json")
         if manifest is None or not stat.S_ISREG(manifest.lstat().st_mode):
             return set()
@@ -1000,9 +1332,12 @@ def _run_preview(project: Path, names: list[str], options: dict) -> tuple | str:
 def _run_scan(project: Path, options: dict) -> tuple | str:
     """(report, run id or None) of service.scan_project with extraction against Git HEAD,
     recorded as depbee scan records it without base options; or the error page's message
-    (a GuardError's own, else fixed). Runs in a worker thread."""
+    (a GuardError's own, else fixed). Runs in a worker thread. In a container Git is handed the
+    project's own Git folder (mounted.repository) and looks for no other."""
     try:
-        report = service.scan_project(project, None, base_ref=None, extract=True, **options)
+        chosen = {} if mounted.root() is None else {"git_dir": mounted.repository(project)}
+        report = service.scan_project(project, None, base_ref=None, extract=True, **options,
+                                      **chosen)  # fmt: skip
     except GuardError as exc:
         return str(exc)
     except (OSError, ValueError, RecursionError):
@@ -1086,9 +1421,60 @@ def npm_link(name: object) -> str | None:
     return NPM_PAGE + quote(name, safe="@/")
 
 
+def _decision(row: dict) -> dict:
+    """Whether this one result could be applied as an update, by the update gate's own rule
+    (service.update_gate, asked of the row alone; nothing is decided here): refused for a known
+    malicious match whatever its score, to confirm for an ML hit, an unfinished item or a list
+    that did not say not_hit, else free. {key, cell, label, why (one line)}. The gate of a real
+    apply reads the whole preview, not one row."""
+    refused, confirm = service.update_gate({"results": [row]})
+    if refused:
+        key, why = "refused", REFUSED_WHY
+    elif confirm:
+        causes = []
+        for cause in confirm[0]["causes"]:
+            text = _text_label(CAUSE_LABELS, cause)
+            if cause == "incomplete" and row.get("reason"):
+                text += f", 이유: {_text_label(REASON_LABELS, row['reason'])}"
+            causes.append(text)
+        key, why = "confirm", f"{CONFIRM_WHY}: {'; '.join(causes)}."
+    elif row.get("status") == "removed":
+        key, why = "free", REMOVED_WHY
+    else:
+        scored = (row.get("ml") or {}).get("status") == "not_hit"
+        key, why = "free", FREE_WHY if scored else FREE_OTHER_WHY
+    cell, label = DECISIONS[key]
+    return {"key": key, "cell": cell, "label": label, "why": why}
+
+
+def _signal(row: dict, key: str, labels: dict, report: dict) -> dict:
+    """One detector slot of a result on its own (key: known_malicious or rules), as the report
+    words it: {cell, status, lines (its matches or checks), note (the display-only line on how
+    the rules and the ML path agree)}. A slot the report does not have is said to be unknown or
+    unconnected and never not_hit (cli._unchecked). The mark is a risk for a hit, a hold for a
+    failure and hollow for what did not run; a slot that ran and found nothing has none."""
+    slot = row.get(key)
+    if not slot:
+        missing = NOT_CHECKED if _unchecked(row, key, report) else NOT_CONFIGURED
+        return {"cell": "none", "status": missing, "lines": [], "note": None}
+    # The slot alone, so that cli._detector_lines words its matches or checks and nothing else.
+    alone = {"known_malicious": None, "rules": None, key: slot}
+    if key == "rules" and "rule_ml_agreement" in row:
+        alone["rule_ml_agreement"] = row["rule_ml_agreement"]
+    found = _detector_lines(alone, _clean, _text_label, {})
+    return {
+        "cell": {"hit": "risk", "failed": "hold", "not_hit": None}.get(slot.get("status"), "none"),
+        "status": _slot(slot, labels, _clean, _text_label),
+        "lines": found[0][1] if found else [],
+        "note": found[1][0] if len(found) > 1 else None,
+    }
+
+
 def _result(row: dict, report: dict) -> dict:
     """One result as the text output shows it; the facts and the model's explanation apart.
-    score_raw: the stored score as the report's JSON writes it, None without one."""
+    score_raw: the stored score as the report's JSON writes it, None without one. decision:
+    whether it could be applied (_decision); known and rules: its two detector slots, each on
+    its own (_signal)."""
     explanation = row.get("explanation") or []
     scale = max((abs(item["contribution"]) for item in explanation), default=0) or 1
     alternative = _alternative(row)
@@ -1096,6 +1482,9 @@ def _result(row: dict, report: dict) -> dict:
         "status": row["status"],
         "label": _text_label(STATUS_LABELS, row["status"]),
         "cell": CELLS.get(row["status"], "none"),
+        "decision": _decision(row),
+        "known": _signal(row, "known_malicious", KNOWN_STATUS_LABELS, report),
+        "rules": _signal(row, "rules", RULE_STATUS_LABELS, report),
         "package": row["package"],
         "version": row["after_version"] or row["before_version"],
         "location": row["location"],
@@ -1168,12 +1557,20 @@ def serve(
     Either way the server is asked to end by its should_exit flag, which uvicorn's handler of
     Ctrl+C sets as the control endpoint does. It then finishes the requests it has, and the app
     is given that flag (build_app's stopping) so that an open folder dialog is not one of them
-    for long: it is closed, and its request registers nothing."""
+    for long: it is closed, and its request registers nothing.
+
+    In a container (dashboard.mounted) the socket is bound on every interface of the container,
+    which is where Docker sends a published port, and port 0 means mounted.PORT: the container
+    cannot see which host port it was published under, so that must be the same number. The
+    address printed, and the only Host and Origin the app takes, stay those of 127.0.0.1 at
+    that port: the host's side of a port published to 127.0.0.1 alone."""
     if not 0 <= port <= 65535:
         raise GuardError("--port must be between 0 and 65535")
     # Only when given, so that build_app is called as before without an index.
     known = {"known_malicious_dir": known_malicious_dir} if known_malicious_dir else {}
-    sock = socket.create_server((HOST, port))
+    contained = mounted.root() is not None
+    bind = mounted.BIND if contained else HOST
+    sock = socket.create_server((bind, (port or mounted.PORT) if contained else port))
     try:
         actual = sock.getsockname()[1]
         session = secrets.token_urlsafe(32)
@@ -1182,7 +1579,7 @@ def serve(
         if background is not None:
             app = background.control(app, lambda: setattr(server, "should_exit", True))
         config = uvicorn.Config(
-            app, host=HOST, port=actual, access_log=False,
+            app, host=bind, port=actual, access_log=False,
             server_header=False, proxy_headers=False, log_level="warning", lifespan="off",
             ws="none",
         )  # fmt: skip
@@ -1191,7 +1588,7 @@ def serve(
         url = f"http://{HOST}:{actual}/s/{session}/"
         if background is None:
             print(url, flush=True)
-            print("이 주소를 브라우저에서 여세요. 종료하려면 Ctrl+C를 누르세요.", flush=True)
+            print(CONTAINER_STARTED.format(port=actual) if contained else STARTED, flush=True)
         else:
             background.publish(url, actual)
         try:

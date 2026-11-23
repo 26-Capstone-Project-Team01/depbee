@@ -1,7 +1,10 @@
-# depbee CLI and stdio MCP server (depbee mcp). The project to check is mounted at /project.
+# depbee CLI, stdio MCP server (depbee mcp) and dashboard (depbee dashboard). The project the
+# CLI or the MCP server checks is mounted at /project; the dashboard's projects are mounted
+# under /projects (docs/docker.md).
 #
-#   core  depbee[mcp]. Needs no credentials; has no feature extractor (scan --extract).
-#   full  the default: depbee[extract,mcp], with depbee-analyzer at the commit pyproject.toml pins.
+#   core  depbee[mcp,web]. Needs no credentials; has no feature extractor (scan --extract).
+#   full  the default: depbee[extract,mcp,web], with depbee-analyzer at the commit pyproject.toml
+#         pins.
 #
 #   docker build --target core -t depbee:core .
 #   docker build -t depbee .                                    (analyzer repository public)
@@ -9,10 +12,14 @@
 #
 # No heredocs: on a CRLF checkout BuildKit keeps the CR in a heredoc body, which breaks sh.
 
+# Node.js 24.11.0 with the npm it ships (11.6.1, the one docs/validation.md was checked with),
+# fixed by digest. Only node and that npm are copied out of it, into the runtime stage.
+FROM node:24.11.0-trixie-slim@sha256:a7dc5312b263c86d88b02f0665f0f4516292e3490601d3def196f6d4b8aa3f06 AS node
+
 # Python 3.12 on Debian trixie (Git 2.47), fixed by digest.
 FROM python:3.12-slim-trixie@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de AS base
 # git: depbee reads the base lockfile from the project's history and needs --no-lazy-fetch
-# (Git 2.45), which the last command checks. libgomp1: LightGBM. No compiler, Node or npm.
+# (Git 2.45), which the last command checks. libgomp1: LightGBM. No compiler.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates git libgomp1 \
  && rm -rf /var/lib/apt/lists/* \
@@ -28,7 +35,7 @@ COPY src/depbee/ src/depbee/
 # whole: an analyzer installed from a wheel instead would lose its Git provenance (PEP 610).
 RUN python -m venv --without-pip /opt/depbee \
  && python -m pip --python /opt/depbee/bin/python install \
-      --disable-pip-version-check --no-input --no-cache-dir ".[mcp]"
+      --disable-pip-version-check --no-input --no-cache-dir ".[mcp,web]"
 
 
 FROM base AS analyzer
@@ -91,16 +98,30 @@ COPY --from=analyzer /analyzer /analyzer
 RUN GIT_CONFIG_GLOBAL=/analyzer/gitconfig GIT_ALLOW_PROTOCOL=file GIT_TERMINAL_PROMPT=0 \
     GIT_NO_LAZY_FETCH=1 \
     python -m pip --python /opt/depbee/bin/python install \
-      --disable-pip-version-check --no-input --no-cache-dir ".[extract,mcp]"
+      --disable-pip-version-check --no-input --no-cache-dir ".[extract,mcp,web]"
 
 
 FROM base AS runtime
-# safe.directory: the project is a bind mount owned by another user, which Git otherwise
-# refuses to read. Only this one path, never a wildcard.
+# safe.directory: a project is a bind mount owned by another user, which Git otherwise refuses
+# to read. Only the two places projects are mounted at, never every path: /project, and
+# /projects with the folders below it, which are the only ones the dashboard registers.
+# /projects exists so that the dashboard finds it empty, not missing, when nothing is mounted.
 RUN groupadd --gid 10001 depbee \
  && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin depbee \
- && git config --system --add safe.directory /project
-ENV PATH=/opt/depbee/bin:$PATH HOME=/home/depbee
+ && git config --system --add safe.directory /project \
+ && git config --system --add safe.directory /projects \
+ && git config --system --add safe.directory '/projects/*' \
+ && mkdir /projects
+# For the update preview and install of the dashboard and of depbee update, which run node with
+# this npm-cli.js themselves (inputs.npm_cli), always with --ignore-scripts. No npm or npx
+# command is put on PATH.
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+# DEPBEE_CONTAINER_PROJECTS makes depbee dashboard a container's (dashboard.mounted): it
+# listens on the container's interfaces at port 5757 unless --port names another, and registers
+# only folders under /projects. Publish that port to the host's 127.0.0.1 alone, same number.
+ENV PATH=/opt/depbee/bin:$PATH HOME=/home/depbee DEPBEE_CONTAINER_PROJECTS=/projects
+EXPOSE 5757
 WORKDIR /project
 USER 10001:10001
 ENTRYPOINT ["depbee"]

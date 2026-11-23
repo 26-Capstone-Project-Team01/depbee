@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}연결한 폴더에서 프로젝트 선택 - depbee{% endblock %}
+{% block main %}
+{# The container's folder picker (app.mounted_folders, dashboard.mounted): one folder among the
+   mounted ones, its subfolders as links that open them, and for each one with a
+   package-lock.json the form that registers it. The form sends the folder's path to the route
+   a typed path goes to, which checks it the same way. No upload. The start page's one button
+   and project management's folder button both lead here in a container (app.pick). #}
+<h1>프로젝트 폴더 선택</h1>
+<p class="lead">컨테이너에 연결한 폴더(<span class="path">{{ root }}</span>) 안에서 package-lock.json이 있는 npm 프로젝트 폴더를 골라 등록합니다. 이 폴더 밖은 열거나 등록할 수 없습니다.</p>
+{# The docker run option that mounts a folder here, the same wherever it is shown: read-only,
+   which every view and check works with, and under a name of its own, which is what the
+   history knows the project by. #}
+{% set option = '--mount "type=bind,source=<호스트의 프로젝트 폴더>,target=' ~ root ~ '/<별칭>,readonly"' %}
+{% if view is none %}
+<p class="error" role="alert">컨테이너에 연결한 폴더를 찾을 수 없습니다.</p>
+<p>컨테이너를 종료한 뒤 docker run에 아래 옵션을 넣어 다시 실행하세요.</p>
+<p class="path">{{ option }}</p>
+{% else %}
+<nav class="trail paths" aria-label="폴더 위치">
+<ol>
+<li{% if not view.trail %} aria-current="page"{% endif %}>{% if view.trail %}<a href="{{ base }}/projects/mounted">{{ root }}</a>{% else %}{{ root }}{% endif %}</li>
+{% for name, at in view.trail %}
+<li{% if loop.last %} aria-current="page"{% endif %}>{% if loop.last %}{{ name }}{% else %}<a href="{{ base }}/projects/mounted?at={{ at|urlencode }}">{{ name }}</a>{% endif %}</li>
+{% endfor %}
+</ol>
+</nav>
+{% if view.project %}
+<section aria-labelledby="here">
+<h2 id="here">지금 연 폴더</h2>
+<p class="path">{{ view.path }}</p>
+<form method="post" action="{{ base }}/projects">
+<input type="hidden" name="session" value="{{ session }}">
+<input type="hidden" name="path" value="{{ view.path }}">
+<button class="primary" type="submit">이 폴더 등록</button>
+</form>
+</section>
+{% endif %}
+<section aria-labelledby="folders">
+<h2 id="folders">하위 폴더 {{ view.folders|length + view.more }}개</h2>
+{% if view.folders %}
+<ul class="projects">
+{% for folder in view.folders %}
+<li>
+<h3><a href="{{ base }}/projects/mounted?at={{ folder.at|urlencode }}">{{ folder.name }}</a> <span class="project-state">{{ "npm 프로젝트" if folder.project else "package-lock.json 없음" }}</span></h3>
+<p class="path">{{ folder.path }}</p>
+{% if folder.project %}
+<form method="post" action="{{ base }}/projects">
+<input type="hidden" name="session" value="{{ session }}">
+<input type="hidden" name="path" value="{{ folder.path }}">
+<p class="project-links"><button class="primary" type="submit">등록<span class="visually-hidden"> {{ folder.name }}</span></button></p>
+</form>
+{% endif %}
+</li>
+{% endfor %}
+</ul>
+{% if view.more %}<p class="note">이름순으로 {{ view.folders|length }}개만 표시했습니다. 나머지 {{ view.more }}개는 아래의 폴더 경로 직접 입력으로 등록하세요.</p>{% endif %}
+{% elif view.trail or view.project %}
+<p>하위 폴더가 없습니다.</p>
+{% else %}
+<p>연결한 프로젝트 폴더가 없습니다.</p>
+{% endif %}
+<p class="note">폴더 이름을 누르면 그 안을 엽니다. 숨김 폴더, node_modules, 링크는 표시하지 않습니다. 등록만 하고 검사는 하지 않습니다.</p>
+<p>목록에 없는 프로젝트는 대시보드 컨테이너를 종료한 뒤 docker run에 아래 옵션을 더해 다시 시작하면 나옵니다.</p>
+<p class="path">{{ option }}</p>
+<ul class="note">
+<li>readonly로 연결하면 컨테이너가 프로젝트 파일을 바꾸지 못합니다. 조회, 검사만, 업데이트 확인은 그대로 할 수 있습니다. 업데이트를 반영할 프로젝트만 ,readonly를 빼고 연결합니다.</li>
+<li>&lt;별칭&gt;은 프로젝트마다 다르게 정하고, 같은 프로젝트에는 늘 같은 별칭을 씁니다. 기록은 컨테이너 경로({{ root }}/&lt;별칭&gt;)로 구분하므로, 다른 프로젝트를 같은 별칭에 연결하면 이전 프로젝트의 기록이 그 프로젝트의 것으로 보입니다.</li>
+</ul>
+</section>
+{# The typed path, for a folder the list does not show. It goes to the route the forms above
+   use and is checked the same way. Before the first project this is its only place: the start
+   page has the folder button alone, and project management opens once a project is there. #}
+<details>
+<summary>폴더 경로 직접 입력</summary>
+<form method="post" action="{{ base }}/projects">
+<input type="hidden" name="session" value="{{ session }}">
+<label for="path"><span class="path">{{ root }}</span> 아래에 있는 프로젝트 폴더의 절대 경로</label>
+<div class="field">
+<input id="path" name="path" type="text" maxlength="1024" required>
+<button type="submit">등록</button>
+</div>
+</form>
+</details>
+{% endif %}
+{# The way back to where the folder button was: project management, or the start page while no
+   project is registered. #}
+<p>{% if tabs %}<a href="{{ base }}/?manage=1">프로젝트 관리로 돌아가기</a>{% else %}<a href="{{ base }}/">처음 화면으로 돌아가기</a>{% endif %}</p>
+{% endblock %}
