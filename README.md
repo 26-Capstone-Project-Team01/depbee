@@ -112,43 +112,33 @@ python -I src/depbee/actions.py report docs/examples/result-contract/03-known-ma
 
 ## Docker로 실행
 
-depbee 저장소에서 빌드한 로컬 이미지 `depbee:local`로 CLI 검사, stdio MCP, 대시보드를 실행합니다. 비공개 분석기를 받는 빌드 시크릿을 포함한 Windows·Linux 빌드 명령은 [이미지 빌드](docs/docker.md#이미지-빌드)에 있습니다.
+호스트에 Python과 Node.js가 없어도 depbee 저장소에서 빌드한 로컬 이미지 `depbee:local`로 대시보드, CLI 검사, stdio MCP를 실행합니다. 빌드에는 비공개 저장소의 읽기 권한이 필요합니다. [이미지 빌드](docs/docker.md#이미지-빌드)
 
-검사할 npm 프로젝트 폴더에서 폴더 경로와 이름을 변수에 담습니다.
+대시보드는 검사할 npm 프로젝트 폴더에서 아래 블록 하나로 시작합니다. 프로젝트는 읽기 전용으로 연결하고, 포트는 호스트의 `127.0.0.1`에만 게시하며, 등록과 기록은 `depbee-home` 볼륨에 남깁니다.
+
+**PowerShell**
 
 ```powershell
-$project = (Get-Location).Path; $name = Split-Path -Leaf $project   # PowerShell
+$project = (Get-Location).Path
+$hash = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($project)), 0, 4).Replace('-', '').ToLower()
+$alias = "$(Split-Path -Leaf $project)-$hash"
+docker run --rm -it -p 127.0.0.1:5757:5757 --mount "type=bind,source=$project,target=/projects/$alias,readonly" --mount type=volume,source=depbee-home,target=/home/depbee depbee:local dashboard
 ```
+
+**Bash**
 
 ```sh
-project="$PWD"; name="$(basename "$project")"                        # Bash
+project="$PWD"
+hash="$(printf '%s' "$project" | sha256sum | cut -c1-8)"
+alias="$(basename "$project")-$hash"
+docker run --rm -it -p 127.0.0.1:5757:5757 --mount "type=bind,source=$project,target=/projects/$alias,readonly" --mount type=volume,source=depbee-home,target=/home/depbee depbee:local dashboard
 ```
 
-아래 명령은 두 셸에서 같습니다.
+출력된 `http://127.0.0.1:5757/s/...` 주소를 브라우저에서 열어 연결한 폴더를 등록하고, Ctrl+C로 종료합니다. 읽기 전용 연결에서는 조회, 검사만, 업데이트 확인까지 할 수 있습니다.
 
-```sh
-# CLI: 정확한 버전 하나, 프로젝트의 lockfile 변경
-docker run --rm depbee:local check lodash@4.17.21
-docker run --rm --mount "type=bind,source=$project,target=/project,readonly" depbee:local scan /project --extract
+이력은 프로젝트를 컨테이너 경로(`/projects/<별칭>`)로 구분합니다. 같은 볼륨에서 다른 프로젝트를 이미 쓴 별칭에 연결하면 이전 프로젝트의 기록이 그 프로젝트의 기록으로 보입니다. 위의 `$alias`는 폴더 이름에 절대 경로의 해시를 붙여 폴더마다 다른 별칭을 만듭니다. [프로젝트 별칭과 이력](docs/docker.md#프로젝트-별칭과-이력)
 
-# stdio MCP: Claude Code에 등록
-claude mcp add --transport stdio --scope local depbee '--' docker run --rm -i --mount "type=bind,source=$project,target=/project,readonly" depbee:local mcp
-
-# 대시보드: 출력된 http://127.0.0.1:5757/s/... 주소를 브라우저에서 열고 Ctrl+C로 종료
-docker run --rm -it -p 127.0.0.1:5757:5757 --mount "type=bind,source=$project,target=/projects/$name,readonly" --mount type=volume,source=depbee-home,target=/home/depbee depbee:local dashboard
-```
-
-대시보드는 컨테이너의 `/projects` 아래에 연결한 폴더만 등록합니다. 첫 화면의 **프로젝트 추가**(등록한 프로젝트가 있으면 프로젝트 관리의 **프로젝트 폴더 선택**)를 누르면 연결한 폴더 목록이 열리고, `package-lock.json`이 있는 폴더의 **등록**을 누릅니다. 프로젝트가 여러 개면 `--mount`를 반복하거나 상위 폴더를 `/projects`에 연결합니다.
-
-```sh
-# 프로젝트 여러 개: 하나씩 연결하거나, 프로젝트들이 든 상위 폴더($workspace)를 연결
-docker run --rm -it -p 127.0.0.1:5757:5757 --mount "type=bind,source=$project_a,target=/projects/app-a,readonly" --mount "type=bind,source=$project_b,target=/projects/app-b,readonly" --mount type=volume,source=depbee-home,target=/home/depbee depbee:local dashboard
-docker run --rm -it -p 127.0.0.1:5757:5757 --mount "type=bind,source=$workspace,target=/projects,readonly" --mount type=volume,source=depbee-home,target=/home/depbee depbee:local dashboard
-```
-
-`readonly` 연결에서는 조회, 검사만, 업데이트 확인까지 할 수 있습니다. 반영하려면 `,readonly`를 빼고 다시 시작합니다. 등록과 기록은 `depbee-home` 볼륨에 남고, 포트는 호스트의 `127.0.0.1`에만 게시합니다.
-
-[폴더 연결과 등록](docs/docker.md#프로젝트-폴더-연결과-등록) · [읽기 전용 연결과 반영](docs/docker.md#읽기-전용-연결과-반영) · [컨테이너가 하는 일(쓰기와 npm)](docs/docker.md#컨테이너가-하는-일) · [이력 보관](docs/docker.md#이력-보관) · [포트](docs/docker.md#포트) · [종료](docs/docker.md#종료) · [Linux 파일 권한](docs/docker.md#linux-파일-권한)
+[CLI 검사](docs/docker.md#cli-검사) · [MCP 등록](docs/docker.md#claude-code에-stdio-mcp-서버-등록) · [프로젝트 여러 개](docs/docker.md#프로젝트-여러-개) · [쉼표가 있는 경로](docs/docker.md#쉼표가-있는-경로) · [읽기 전용 연결과 반영](docs/docker.md#읽기-전용-연결과-반영) · [포트](docs/docker.md#포트) · [종료](docs/docker.md#종료)
 
 ## 참고 문서
 
