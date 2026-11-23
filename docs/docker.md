@@ -174,8 +174,9 @@ $alias = "$(Split-Path -Leaf $project)-$hash"
 ```sh
 # 대시보드에서 볼 npm 프로젝트 루트에서 실행
 project="$PWD"
-hash="$({ printf '%s' "$project" | sha256sum || printf '%s' "$project" | shasum -a 256; } 2>/dev/null)"
-if [[ "$hash" =~ ^[0-9a-f]{64} ]]; then
+valid='^[0123456789abcdef]{64}$'
+if { out="$({ printf '%s' "$project" | sha256sum; } 2>/dev/null)" && hash="${out%%[[:space:]]*}" && [[ "$hash" =~ $valid ]]; } ||
+   { out="$({ printf '%s' "$project" | shasum -a 256; } 2>/dev/null)" && hash="${out%%[[:space:]]*}" && [[ "$hash" =~ $valid ]]; }; then
     alias="$(basename "$project")-${hash:0:8}"
 else
     unset project alias
@@ -185,7 +186,7 @@ fi
 
 별칭은 컨테이너 안에서 이 프로젝트를 가리키는 이름입니다. 폴더 이름에 폴더 절대 경로의 SHA-256 앞 8자리를 붙여 만듭니다(예: `shop-api-1a2b3c4d`). 같은 폴더에서는 늘 같은 별칭이 나오고, 이름이 같은 다른 폴더에서는 다른 별칭이 나옵니다. [프로젝트 별칭과 이력](#프로젝트-별칭과-이력)
 
-Bash 블록은 `sha256sum`을 쓰고, 없으면 `shasum -a 256`을 씁니다. 출력이 16진수 64자로 시작할 때만 별칭을 만듭니다. 그렇지 않으면 안내를 출력하고 `project`와 `alias`를 지웁니다. 두 변수가 비어 있으면 그 변수를 쓰는 아래의 `docker run` 명령은 컨테이너를 만들지 못하고 Docker의 오류로 끝납니다. 그때는 [별칭을 직접 정합니다](#프로젝트-별칭과-이력).
+Bash 블록은 `sha256sum`의 결과를 먼저 보고, 그 결과를 쓸 수 없으면 `shasum -a 256`의 결과를 따로 봅니다. 도구가 종료 코드 0으로 끝나고 출력에서 첫 공백 앞까지가 정확히 소문자 16진수 64자일 때만 그 값으로 별칭을 만듭니다. 두 결과를 모두 쓸 수 없으면 안내를 출력하고 `project`와 `alias`를 지웁니다. 두 변수가 비어 있으면 그 변수를 쓰는 아래의 `docker run` 명령은 컨테이너를 만들지 못하고 Docker의 오류로 끝납니다. 그때는 [별칭을 직접 정합니다](#프로젝트-별칭과-이력).
 
 두 셸에서 같은 명령으로 시작합니다.
 
