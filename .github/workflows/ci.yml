@@ -248,9 +248,10 @@ jobs:
       # The dashboard as docs/docker.md starts it: the image's own port, published on the runner's
       # 127.0.0.1 alone under the same number, the Git project of the step above mounted read-only
       # under /projects, and a volume for the home folder. What the pages do is tested in tests/;
-      # this is the image: the web extra, the templates, where it listens, the address it prints,
-      # the folder it registers from, the Git it reads that folder's HEAD with, and the volume a
-      # second container, made anew from the image, knows the registered project from.
+      # this is the image: the web extra, the templates and the script file they name, where it
+      # listens, the address it prints, the folder it registers from, the Git it reads that
+      # folder's HEAD with, and the volume a second container, made anew from the image, knows
+      # the registered project from.
       - name: Open the dashboard through a port published on 127.0.0.1, then in a new container
         shell: bash
         run: |
@@ -261,6 +262,7 @@ jobs:
           import re
           import subprocess
           import time
+          from pathlib import Path
           from urllib.parse import urlencode
 
           def docker(*arguments, check=True):
@@ -283,8 +285,8 @@ jobs:
                   time.sleep(0.5)
               raise SystemExit("The dashboard printed no address")
 
-          def call(method, url, host="127.0.0.1:5757", **form):
-              """(status, Location, body) of one request to the published port."""
+          def call(method, url, host="127.0.0.1:5757", header="location", **form):
+              """(status, the header named, body) of one request to the published port."""
               body = urlencode({"session": session, **form}) if method == "POST" else None
               headers = {"Host": host}
               if body:
@@ -293,7 +295,22 @@ jobs:
               connection = http.client.HTTPConnection("127.0.0.1", 5757, timeout=30)
               connection.request(method, url, body, headers)
               response = connection.getresponse()
-              return response.status, response.getheader("location"), response.read().decode()
+              return response.status, response.getheader(header), response.read().decode()
+
+          def script(page):
+              """The script file a page names, read as a browser reads it: from under the
+              session, as a script, and the checked-out file byte for byte. An image built
+              without that file still answers every page. Only this address fails there, and
+              with it all the script does."""
+              (source,) = re.findall(r'<script\b[^>]*\ssrc="([^"]*)"', page)
+              name = re.fullmatch(re.escape(base) + r"/static/([^/]+)", source)
+              # This session's own file and no script of the page's own beside it. The session
+              # is a secret, so a failure shows the address without it.
+              assert name and page.count("<script") == 1, source.removeprefix(base)
+              status, kind, body = call("GET", source, header="content-type")
+              assert (status, kind) == (200, "text/javascript; charset=utf-8"), (status, kind)
+              file = Path("src/depbee/dashboard/static", name[1]).read_bytes()
+              assert file and body.encode() == file, f"{name[1]} is not the checked-out file"
 
           def links():
               """The project links on the session's first page, which lists what is registered."""
@@ -324,6 +341,7 @@ jobs:
               base, session = started("depbee-dashboard")
               status, _, page = call("GET", base + "/")
               assert status == 200 and f'action="{base}/projects/pick"' in page, status
+              script(page)  # the page before the first project, a document of its own
               assert links() == set()  # a new volume knows no project
               assert call("GET", base + "/", host="localhost:5757")[0] == 400
               assert call("GET", "/s/" + "A" * 43 + "/")[0] == 403
@@ -337,6 +355,7 @@ jobs:
                   assert call("POST", base + "/projects", path=outside)[0] == 400, outside
               # The first project of the new volume lands on the overview, whose link opens it.
               usable(register(first=True))
+              script(call("GET", base + "/")[2])  # the console around every other page
               print("The dashboard answered on 127.0.0.1:5757 and registered /projects/example alone")
 
               # --rm: the first container goes with all it wrote outside the volume, and the
