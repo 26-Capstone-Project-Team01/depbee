@@ -835,10 +835,11 @@ def _found(path: str) -> bool:
 def _refused(path: str, *names: str) -> bool:
     """A container's dashboard must not read one of the files names of the registered folder at
     path: it is there, but not as a regular file of the mounted folder itself (a link, or
-    something that is no file: mounted.problem). Asked each time before a file is read or a
-    service is given the folder, since the file may have changed since it was last read. A
-    missing file is not refused: its reader's own error says that it is missing. Always False
-    on a desktop, which reads a file through its links as before."""
+    something that is no file), or it cannot be looked at (mounted.problem). Asked each time
+    before a file is read or a service is given the folder, since the file may have changed
+    since it was last read. Only a file that is really missing is not refused: its reader's own
+    error says that it is missing. Always False on a desktop, which reads a file through its
+    links as before."""
     return mounted.root() is not None and any(
         mounted.problem(Path(path) / name, stat.S_ISREG) not in (None, "missing") for name in names
     )
@@ -866,7 +867,7 @@ def _registration_problem(text: str) -> str | None:
                 if problem in ("outside", "link"):
                     return "outside"
                 if problem is not None:
-                    return missing
+                    return "unreadable" if problem == "unreadable" else missing
             return None
         folder = mcp._unlinked(path, "path")
         if folder is None or not stat.S_ISDIR(folder.stat().st_mode):

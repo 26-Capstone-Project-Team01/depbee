@@ -639,6 +639,26 @@ class ProblemTests(ContainerFixture):
                     self.assertEqual(mounted.problem(lock, stat.S_ISREG), "link")
                     self.assertIsNone(mounted.problem(app))
 
+    def test_an_entry_that_cannot_be_looked_at_is_not_taken_for_a_missing_one(self):
+        app = self.add("app")
+        lock = app / "package-lock.json"
+        for failure in (PermissionError(13, "synthetic"), OSError(5, "synthetic")):
+            with self.subTest(type(failure).__name__, entry="the file"), reported(lock, failure):
+                self.assertEqual(mounted.problem(lock, stat.S_ISREG), "unreadable")
+                self.assertTrue(self.app._refused(str(app), "package-lock.json"))
+                self.assertIsNone(self.app._sha256(str(app), "package-lock.json"))
+                self.assertEqual(self.app._registration_problem(str(app)), "unreadable")
+            with self.subTest(type(failure).__name__, entry="the folder"), reported(app, failure):
+                self.assertEqual(mounted.problem(app), "unreadable")
+                self.assertFalse(self.app._found(str(app)))
+                self.assertTrue(self.app._refused(str(app), "package-lock.json"))
+                self.assertEqual(self.app._registration_problem(str(app)), "unreadable")
+        # What is really not there stays missing: the reader of the file says so itself.
+        lock.unlink()
+        self.assertEqual(mounted.problem(lock, stat.S_ISREG), "missing")
+        self.assertFalse(self.app._refused(str(app), "package-lock.json"))
+        self.assertEqual(self.app._registration_problem(str(app)), "lockfile")
+
 
 class InstallChoiceTests(ScreenFixture):
     """The apply form of a preview: a container says by the install choice itself what its
@@ -827,8 +847,12 @@ class LiveInputTests(ScreenFixture):
             refused("a Git folder above the mounted folder",
                     "no .git folder at or above it in the mounted folder")  # fmt: skip
             self.assertEqual(tried, [])
-        # The nearest one at or above the project, up to the mounted folder itself, is used.
         nearest = self.mount / ".git"
         (nearest / "objects").mkdir(parents=True)
+        # A .git that cannot be looked at is not passed over for the one above it.
+        for failure in (PermissionError(13, "synthetic"), OSError(5, "synthetic")):
+            with reported(self.git_dir, failure):
+                refused(f"a .git that cannot be looked at ({type(failure).__name__})")
+        # The nearest one at or above the project, up to the mounted folder itself, is used.
         self.assertEqual(self.scan().status_code, 303)
         self.assertEqual(self.scan_project.call_args.kwargs["git_dir"], nearest)

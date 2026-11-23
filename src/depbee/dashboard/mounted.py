@@ -70,7 +70,9 @@ def problem(path: Path, kind=stat.S_ISDIR) -> str | None:
     alone (a relative path and one with ".." are outside), so nothing of such a path is ever
     looked at. "link": a part of it below the mounted folder is a link (symlink, junction),
     which is not read: where it leads does not matter. "missing": a part of it is not there.
-    "kind": it is there but not what kind says, a folder (stat.S_ISREG: a regular file).
+    "unreadable": a part could not be looked at (no permission, an I/O error, a name no file
+    system holds), which is not the same as not being there: nothing is known of it. "kind":
+    it is there but not what kind says, a folder (stat.S_ISREG: a regular file).
 
     Each part is looked at with lstat, which follows nothing."""
     top = _top()
@@ -81,8 +83,10 @@ def problem(path: Path, kind=stat.S_ISDIR) -> str | None:
         current = current / part
         try:
             mode = os.lstat(current)
-        except (OSError, ValueError):  # ValueError: a name no file system holds (a NUL in it)
+        except (FileNotFoundError, NotADirectoryError):
             return "missing"
+        except (OSError, ValueError):
+            return "unreadable"
         if is_link(mode):
             return "link"
     # Without a part the path is the mounted folder itself, which _top() found to be a folder.
@@ -98,8 +102,9 @@ def repository(project: Path) -> Path:
     repository of its own, neither above the mounted folder nor through a .git file, and reads
     only what that reader lets it (inputs.git._own_folder). The folder must hold its objects
     itself: a commondir file, an alternates file or a linked objects folder means another
-    folder's, and a worktree's or a submodule's .git is a file that names one. Any of them is
-    a GuardError before Git runs, with nothing they name looked at."""
+    folder's, and a worktree's or a submodule's .git is a file that names one. Any of them, or
+    an entry that cannot be looked at, is a GuardError before Git runs, with nothing they name
+    looked at."""
     top = _top()
     for folder in (project, *project.parents):
         git_dir = folder / ".git"
@@ -116,9 +121,10 @@ def repository(project: Path) -> Path:
     if not own or any(problem(pointer, stat.S_ISREG) != "missing" for pointer in pointers):
         raise GuardError(
             f"The .git of {folder} is not a Git folder with its own objects (it is a link, a "
-            ".git file of a worktree or submodule, or it names another folder in commondir or "
-            "alternates). A container's dashboard reads Git history only from such a folder "
-            "in the mounted folder: scan with depbee scan --base-lock instead"
+            ".git file of a worktree or submodule, it names another folder in commondir or "
+            "alternates, or it could not be looked at). A container's dashboard reads Git "
+            "history only from such a folder in the mounted folder: scan with depbee scan "
+            "--base-lock instead"
         )
     return git_dir
 
