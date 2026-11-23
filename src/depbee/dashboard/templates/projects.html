@@ -13,10 +13,11 @@
 {% if error and not typed %}<p class="error" role="alert">{{ error }}</p>{% endif %}
 <form method="post" action="{{ base }}/projects/pick">
 <input type="hidden" name="session" value="{{ session }}">
-<button class="primary" type="submit" aria-describedby="pick-hint" data-busy-label="폴더 선택 창을 확인하세요…">프로젝트 폴더 선택</button>
+<button class="primary" type="submit" aria-describedby="pick-hint" data-busy-label="{{ "연결한 폴더 목록을 여는 중…" if contained else "폴더 선택 창을 확인하세요…" }}">프로젝트 폴더 선택</button>
 </form>
 {# contained (app.page): in a container the button lists the mounted folders (mounted.html)
-   and opens no folder dialog on this PC, so the two hints say what each one does there. #}
+   and opens no folder dialog on this PC, so the two hints say what each one does there, and
+   so does the button while its request runs. #}
 {% if contained %}
 <p class="note" id="pick-hint">컨테이너에 연결한 폴더의 목록을 엽니다. 호스트의 폴더 선택 창은 열지 않으며, 연결하지 않은 호스트 폴더는 보이지 않습니다.</p>
 {% else %}
@@ -50,7 +51,7 @@
 <li>
 <h3><span class="cell {{ project.cell }}" aria-hidden="true"></span><a href="{{ url }}">{{ project.name }}</a> <span class="project-state">{{ project.state }}</span></h3>
 <p class="path">{{ project.path }}</p>
-{% if not project.found %}<p class="flag">찾을 수 없음. 폴더를 원래 위치로 되돌리거나, 옮긴 폴더를 위에서 새로 등록하세요. 지난 기록은 그대로 볼 수 있습니다.</p>{% endif %}
+{% if not project.found %}<p class="flag">찾을 수 없음. {% if contained %}대시보드 컨테이너를 종료한 뒤 이 폴더를 같은 별칭으로(위의 컨테이너 경로) 다시 연결해 시작하세요.{% else %}폴더를 원래 위치로 되돌리거나, 옮긴 폴더를 위에서 새로 등록하세요.{% endif %} 지난 기록은 그대로 볼 수 있습니다.</p>{% endif %}
 {% if project.runs %}
 {% set latest = project.runs[0] %}
 <dl class="latest">

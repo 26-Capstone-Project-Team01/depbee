@@ -310,13 +310,14 @@ jobs:
               status, _, page = call("POST", link + "/scans")
               assert status == 400 and "[extract]" in page, status
 
-          def register():
-              """Register the example and return its project link. Which page that lands on is
-              the pages' own business, the overview (as for the first project of all) or the
-              project itself: its link is read from the first page, never assumed."""
+          def register(first):
+              """Register the example and return its project link, read from the first page.
+              first: nothing was registered before, as on a new volume. That first project of
+              all must land on the overview, the first page, which lists it. Registering a
+              folder that is a project already must land on that project itself."""
               status, landed, _ = call("POST", base + "/projects", path="/projects/example")
               (link,) = links()
-              assert status == 303 and landed in (base + "/", link), (status, landed)
+              assert (status, landed) == (303, base + "/" if first else link), (status, landed)
               return link
 
           try:
@@ -334,7 +335,8 @@ jobs:
               assert call("GET", base + "/projects/mounted?at=..")[0] == 404
               for outside in ("/project", "/etc", "/home/depbee", "/projects/../etc"):
                   assert call("POST", base + "/projects", path=outside)[0] == 400, outside
-              usable(register())
+              # The first project of the new volume lands on the overview, whose link opens it.
+              usable(register(first=True))
               print("The dashboard answered on 127.0.0.1:5757 and registered /projects/example alone")
 
               # --rm: the first container goes with all it wrote outside the volume, and the
@@ -346,7 +348,7 @@ jobs:
               (link,) = links()
               usable(link)
               # The same folder is still that project: registering it again adds no second one.
-              assert register() == link
+              assert register(first=False) == link
               print("A new container read the registered project from the home volume")
           finally:
               docker("rm", "--force", "depbee-dashboard", "depbee-dashboard-again", check=False)
