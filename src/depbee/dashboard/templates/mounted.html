@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}연결한 폴더에서 프로젝트 선택 - depbee{% endblock %}
+{% block main %}
+{# The container's folder picker (app.mounted_folders, dashboard.mounted): one folder among the
+   mounted ones, its subfolders as links that open them, and for each one with a
+   package-lock.json the form that registers it. The form sends the folder's path to the route
+   a typed path goes to, which checks it the same way. No script and no upload. #}
+<h1>프로젝트 폴더 선택</h1>
+<p class="lead">컨테이너에 연결한 폴더(<span class="path">{{ root }}</span>) 안에서 package-lock.json이 있는 npm 프로젝트 폴더를 골라 등록합니다. 이 폴더 밖은 열거나 등록할 수 없습니다.</p>
+{% if view is none %}
+<p class="error" role="alert">컨테이너에 연결한 폴더를 찾을 수 없습니다.</p>
+<p>컨테이너를 종료한 뒤 docker run에 --mount type=bind,source=&lt;프로젝트 폴더&gt;,target={{ root }}/&lt;이름&gt;을 넣어 다시 실행하세요.</p>
+{% else %}
+<nav class="trail" aria-label="폴더 위치">
+<ol>
+<li{% if not view.trail %} aria-current="page"{% endif %}>{% if view.trail %}<a href="{{ base }}/projects/mounted">{{ root }}</a>{% else %}{{ root }}{% endif %}</li>
+{% for name, at in view.trail %}
+<li{% if loop.last %} aria-current="page"{% endif %}>{% if loop.last %}{{ name }}{% else %}<a href="{{ base }}/projects/mounted?at={{ at|urlencode }}">{{ name }}</a>{% endif %}</li>
+{% endfor %}
+</ol>
+</nav>
+{% if view.project %}
+<section aria-labelledby="here">
+<h2 id="here">지금 연 폴더</h2>
+<p class="path">{{ view.path }}</p>
+<form method="post" action="{{ base }}/projects">
+<input type="hidden" name="session" value="{{ session }}">
+<input type="hidden" name="path" value="{{ view.path }}">
+<button class="primary" type="submit">이 폴더 등록</button>
+</form>
+</section>
+{% endif %}
+<section aria-labelledby="folders">
+<h2 id="folders">하위 폴더 {{ view.folders|length + view.more }}개</h2>
+{% if view.folders %}
+<ul class="projects">
+{% for folder in view.folders %}
+<li>
+<h3><a href="{{ base }}/projects/mounted?at={{ folder.at|urlencode }}">{{ folder.name }}</a> <span class="project-state">{{ "npm 프로젝트" if folder.project else "package-lock.json 없음" }}</span></h3>
+<p class="path">{{ folder.path }}</p>
+{% if folder.project %}
+<form method="post" action="{{ base }}/projects">
+<input type="hidden" name="session" value="{{ session }}">
+<input type="hidden" name="path" value="{{ folder.path }}">
+<p class="project-links"><button class="primary" type="submit">등록<span class="visually-hidden"> {{ folder.name }}</span></button></p>
+</form>
+{% endif %}
+</li>
+{% endfor %}
+</ul>
+{% if view.more %}<p class="note">이름순으로 {{ view.folders|length }}개만 표시했습니다. 나머지 {{ view.more }}개는 프로젝트 관리의 폴더 경로 직접 입력으로 등록하세요.</p>{% endif %}
+{% elif view.trail or view.project %}
+<p>하위 폴더가 없습니다.</p>
+{% else %}
+<p>연결한 프로젝트 폴더가 없습니다. 컨테이너를 종료한 뒤 docker run에 --mount type=bind,source=&lt;프로젝트 폴더&gt;,target={{ root }}/&lt;이름&gt;을 넣어 다시 실행하세요.</p>
+{% endif %}
+<p class="note">폴더 이름을 누르면 그 안을 엽니다. 숨김 폴더, node_modules, 링크는 표시하지 않습니다. 등록만 하고 검사는 하지 않습니다.</p>
+</section>
+{% endif %}
+<p><a href="{{ base }}/?manage=1">프로젝트 관리로 돌아가기</a></p>
+{% endblock %}

@@ -14,7 +14,9 @@ the management page when the address asks for it (?manage=1). While no project i
 is the start page instead: one button that adds the first one, and nothing else.
 
 A project is registered by its folder's path: typed into the form, or chosen in the desktop's
-own folder dialog (.picker, a child process), which is checked as a typed one is.
+own folder dialog (.picker, a child process), which is checked as a typed one is. In a container
+(.mounted) the dialog's button opens the folders mounted into it instead, and only a folder
+among those is registered or used.
 
 The pages work without a script. The one script (static/app.js, from under the session like the
 stylesheets) only marks a button whose request is running, stops a second request meanwhile and
@@ -80,7 +82,7 @@ from ..cli import (
 from ..contracts import MAX_JSON_BYTES, GuardError, read_json
 from ..inputs.npm import MAX_NAME_LENGTH, PACKAGE_NAME
 from ..inputs.npm_cli import DEPENDENCY_FIELDS, UPDATE_NAME
-from . import picker
+from . import mounted, picker
 
 HOST = "127.0.0.1"
 MAX_BODY = 16 * 1024  # bytes of a request body (Starlette answers 413 above it)
@@ -179,7 +181,11 @@ REGISTER_ERRORS = {
     "folder": "폴더를 찾을 수 없습니다.",
     "lockfile": "폴더에 package-lock.json 파일이 없습니다.",
     "unreadable": "경로를 확인할 수 없습니다.",
+    "outside": "컨테이너에 연결한 프로젝트 폴더 밖의 경로는 등록할 수 없습니다(밖을 가리키는 링크 "
+    "포함).",
 }
+# The container's folder picker (.mounted) was asked for something it does not list.
+MOUNTED_MISSING = "컨테이너에 연결한 프로젝트 폴더 안의 폴더가 아닙니다."
 # The folder dialog gave no folder (picker.choose); both open the form for a typed path.
 PICK_ERRORS = {
     "unavailable": "폴더 선택 창을 열 수 없습니다(데스크톱 화면이 없거나 이 Python에 tkinter가 "
@@ -241,6 +247,13 @@ PREVIEW_NOT_RECORDED = (
 )
 APPLY_NOT_RECORDED = (
     "반영 기록을 로컬 이력에 남기지 못했습니다. 위 결과와 백업 위치는 실제로 일어난 일입니다."
+)
+STARTED = "이 주소를 브라우저에서 여세요. 종료하려면 Ctrl+C를 누르세요."
+# In a container the address is the host's, where the port has to be published under its number.
+CONTAINER_STARTED = (
+    "이 주소를 호스트의 브라우저에서 여세요. 컨테이너의 {port}번 포트를 호스트의 127.0.0.1에만 "
+    "같은 번호로 게시해야 열립니다(docker run -p 127.0.0.1:{port}:{port}). 종료하려면 Ctrl+C를 "
+    "누르거나 docker stop을 실행하세요."
 )
 STOPPED = "대시보드를 종료했습니다. 위 주소는 더 이상 열리지 않습니다."
 # _apply_lines wording without the CLI option: a dashboard apply, and a stored one (CLI or here).
@@ -446,10 +459,15 @@ def build_app(
         A server that has been asked to end opens no dialog, and picker.choose closes the open
         one, so that the server does not wait for it. ending() is asked again after the answer,
         here in the server's own thread, where the stop request is taken too: an answer that
-        comes back after that request registers nothing either."""
+        comes back after that request registers nothing either.
+
+        A container has no desktop: there the same button leads to the folders mounted into it
+        (mounted_folders), and no dialog is ever started."""
         form = await read_form(request)
         if isinstance(form, Response):
             return form
+        if mounted.root() is not None:
+            return RedirectResponse(f"{base}/projects/mounted", 303)
         if ending():
             return _text(503, PICK_STOPPED)
         if not picking.acquire(blocking=False):
@@ -466,6 +484,20 @@ def build_app(
         if outcome != "chosen":
             return projects(request, 503, PICK_ERRORS[outcome], manual=True)
         return enroll(request, folder, False)
+
+    def mounted_folders(request: Request) -> Response:
+        """The container's folder picker: the folders below the mounted one that the at query
+        names (mounted.listing), each project among them with the form that registers its path
+        as a typed one is registered. It lists names and registers nothing; outside a container
+        there is no such page."""
+        top, given = mounted.root(), request.query_params.getlist("at")
+        if top is None or len(given) > 1:
+            return _text(404, MOUNTED_MISSING)
+        view = mounted.listing(given[0] if given else "")
+        if view is None and given not in ([], [""]):
+            return _text(404, MOUNTED_MISSING)
+        # Without a view the mounted folder itself is not there: the page says how to mount one.
+        return page(request, "mounted.html", section="manage", root=str(top), view=view)
 
     def held(found: dict, state: dict) -> list[dict]:
         """The update previews of the project that this process still holds, newest first: the
@@ -740,6 +772,7 @@ def build_app(
             Route("/", home),
             Route("/projects", register, methods=["POST"]),
             Route("/projects/pick", pick, methods=["POST"]),
+            Route("/projects/mounted", mounted_folders),
             Route("/projects/{project_id:int}", project),
             Route("/projects/{project_id:int}/updates", updates),
             Route("/projects/{project_id:int}/history", project_history),
@@ -761,10 +794,11 @@ def build_app(
 
 
 def _found(path: str) -> bool:
-    """The registered folder still exists, looked at as at registration (no share or device)."""
+    """The registered folder still exists, looked at as at registration (no share or device; in
+    a container, among the mounted folders)."""
     try:
         real = mcp._unlinked(mcp._local_path(path, "project"), "project")
-        return real is not None and stat.S_ISDIR(real.stat().st_mode)
+        return real is not None and stat.S_ISDIR(real.stat().st_mode) and mounted.holds(real)
     except (GuardError, OSError, ValueError):
         return False
 
@@ -772,7 +806,9 @@ def _found(path: str) -> bool:
 def _registration_problem(text: str) -> str | None:
     """A REGISTER_ERRORS key, or None for an absolute local folder with a regular
     package-lock.json file. The MCP path checks: shares, device paths, reserved names and links
-    to them are refused before anything behind them is touched."""
+    to them are refused before anything behind them is touched. In a container the folder and
+    its lockfile, links resolved, must also be among the mounted folders (mounted.holds): a
+    folder outside them is refused before its lockfile is looked for."""
     if len(text) > MAX_PATH:
         return "long"
     try:
@@ -783,9 +819,13 @@ def _registration_problem(text: str) -> str | None:
         return "absolute"
     try:
         folder = mcp._unlinked(path, "path")
+        if folder is not None and not mounted.holds(folder):
+            return "outside"
         if folder is None or not stat.S_ISDIR(folder.stat().st_mode):
             return "folder"
         lock = mcp._unlinked(path / "package-lock.json", "package-lock.json")
+        if lock is not None and not mounted.holds(lock):
+            return "outside"
         if lock is None or not stat.S_ISREG(lock.stat().st_mode):
             return "lockfile"
     except GuardError:
@@ -930,7 +970,7 @@ def _sha256(folder: str, name: str) -> str | None:
     if it is not there, cannot be read or is larger than any file depbee previews."""
     try:
         real = mcp._unlinked(mcp._local_path(folder, "project") / name, name)
-        if real is None:
+        if real is None or not mounted.holds(real):
             return None
         mode = real.stat()
         if not stat.S_ISREG(mode.st_mode) or mode.st_size > MAX_JSON_BYTES:
@@ -1418,12 +1458,20 @@ def serve(
     Either way the server is asked to end by its should_exit flag, which uvicorn's handler of
     Ctrl+C sets as the control endpoint does. It then finishes the requests it has, and the app
     is given that flag (build_app's stopping) so that an open folder dialog is not one of them
-    for long: it is closed, and its request registers nothing."""
+    for long: it is closed, and its request registers nothing.
+
+    In a container (dashboard.mounted) the socket is bound on every interface of the container,
+    which is where Docker sends a published port, and port 0 means mounted.PORT: the container
+    cannot see which host port it was published under, so that must be the same number. The
+    address printed, and the only Host and Origin the app takes, stay those of 127.0.0.1 at
+    that port: the host's side of a port published to 127.0.0.1 alone."""
     if not 0 <= port <= 65535:
         raise GuardError("--port must be between 0 and 65535")
     # Only when given, so that build_app is called as before without an index.
     known = {"known_malicious_dir": known_malicious_dir} if known_malicious_dir else {}
-    sock = socket.create_server((HOST, port))
+    contained = mounted.root() is not None
+    bind = mounted.BIND if contained else HOST
+    sock = socket.create_server((bind, (port or mounted.PORT) if contained else port))
     try:
         actual = sock.getsockname()[1]
         session = secrets.token_urlsafe(32)
@@ -1432,7 +1480,7 @@ def serve(
         if background is not None:
             app = background.control(app, lambda: setattr(server, "should_exit", True))
         config = uvicorn.Config(
-            app, host=HOST, port=actual, access_log=False,
+            app, host=bind, port=actual, access_log=False,
             server_header=False, proxy_headers=False, log_level="warning", lifespan="off",
             ws="none",
         )  # fmt: skip
@@ -1441,7 +1489,7 @@ def serve(
         url = f"http://{HOST}:{actual}/s/{session}/"
         if background is None:
             print(url, flush=True)
-            print("이 주소를 브라우저에서 여세요. 종료하려면 Ctrl+C를 누르세요.", flush=True)
+            print(CONTAINER_STARTED.format(port=actual) if contained else STARTED, flush=True)
         else:
             background.publish(url, actual)
         try:

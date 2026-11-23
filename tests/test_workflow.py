@@ -60,6 +60,8 @@ class Fixture(unittest.TestCase):
         self.addCleanup(env.stop)
         os.environ.pop("DEPBEE_MODEL_DIR", None)
         os.environ.pop("DEPBEE_KNOWN_MALICIOUS_DIR", None)
+        # Nor is a test run inside the image a container's dashboard, unless it says so.
+        os.environ.pop("DEPBEE_CONTAINER_PROJECTS", None)
         # The local history (depbee.history) stays in this run; the file is not created.
         os.environ["DEPBEE_HISTORY_DB"] = str(self.root / "history.sqlite3")
         # So does the user's settings folder (depbee.config: assets saved by depbee setup, the

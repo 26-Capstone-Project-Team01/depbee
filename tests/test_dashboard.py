@@ -279,10 +279,10 @@ class PageTests(DashboardFixture):
         files = [*package_dir.glob("templates/*.html"), *package_dir.glob("static/*")]
         self.assertEqual(sorted(p.name for p in files), [
             "app.js", "applied.html", "apply_lines.html", "base.html", "counts.html",
-            "error.html", "history.html", "inspector.html", "model.html", "overview.css",
-            "overview.html", "preview.html", "project.html", "project_head.html",
-            "projects.html", "report.html", "run.html", "scanned.html", "score_history.html",
-            "start.html", "style.css", "trail.html", "updates.html"])  # fmt: skip
+            "error.html", "history.html", "inspector.html", "model.html", "mounted.html",
+            "overview.css", "overview.html", "preview.html", "project.html",
+            "project_head.html", "projects.html", "report.html", "run.html", "scanned.html",
+            "score_history.html", "start.html", "style.css", "trail.html", "updates.html"])  # fmt: skip
         for path in files:
             self.assertIsNone(re.search(r"https?:|//", path.read_text("utf-8")), path.name)
         text = "".join(p.read_text("utf-8") for p in files)
