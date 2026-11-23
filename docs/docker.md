@@ -213,16 +213,24 @@ http://127.0.0.1:5757/s/<이번 실행의 세션 값>/
 
 컨테이너의 대시보드는 `/projects` 안에 실제로 있는 폴더와 파일만 읽고 링크를 따라가지 않습니다. 등록할 경로의 어느 부분이든 링크(symlink, junction)이면 `/projects` 안을 가리켜도 등록을 거부합니다. 등록한 뒤에도 화면을 열거나 검사, 업데이트 확인, 반영을 할 때마다 폴더와 `package.json`, `package-lock.json`을 다시 확인합니다. 그 파일이 링크이거나 일반 파일이 아니면 읽지 않습니다. 검사만, 업데이트 확인, 반영은 오류 화면으로 끝나고, 패키지 화면은 lockfile이 일반 파일이 아니라고 표시합니다.
 
-**검사만**은 Git HEAD의 lockfile과 비교합니다. npm 프로젝트가 저장소의 하위 폴더이면 저장소 루트를 `/projects/<별칭>`에 연결하고, 목록에서 하위 폴더를 열어 등록합니다. 이미지의 Git은 `/project`, `/projects`와 그 아래 폴더만 `safe.directory`로 둡니다. **업데이트 확인**은 Git 없이 동작합니다.
+**검사만**은 Git HEAD의 lockfile과 비교합니다. npm 프로젝트가 저장소의 하위 폴더이면 저장소 루트를 `/projects/<별칭>`에 연결하고, 목록에서 하위 폴더를 열어 등록합니다. **업데이트 확인**은 Git 없이 동작합니다.
 
-**검사만**이 읽는 Git 이력은 `/projects` 안의 일반 `.git` 폴더에 있는 것뿐입니다. 대시보드는 프로젝트 폴더에서 `/projects`까지만 올라가며 `.git`을 찾고, 찾은 폴더를 Git에 직접 지정합니다. 아래 경우에는 가리키는 곳이 컨테이너에서 보이더라도 Git을 실행하기 전에 오류 화면으로 끝납니다.
+**검사만**이 읽는 Git 이력은 `/projects` 안의 일반 `.git` 폴더에 있는 것뿐입니다. 대시보드는 프로젝트 폴더에서 `/projects`까지만 올라가며 `.git`을 찾습니다. 찾은 `.git` 폴더를 Git에 그대로 넘기지는 않습니다. depbee가 `.git`의 `HEAD`와 HEAD가 가리키는 ref 파일에서 커밋 ID를 읽어 임시 Git 폴더를 만들고(ref 파일이 없으면 `packed-refs`를 복사합니다), Git은 그 임시 폴더와 저장소의 `.git/objects`만 읽습니다. 저장소의 `.git/config`와 그 설정이 include하는 파일, 이미지의 시스템·사용자 Git 설정, commit-graph, multi-pack-index는 읽지 않습니다. 일반 clone은 그대로 검사됩니다. 느슨한 객체, `git gc`로 묶은 pack, shallow clone, detached HEAD, 저장소 루트의 프로젝트와 하위 폴더의 프로젝트를 확인했습니다.
 
-- `.git`이 파일입니다. Git worktree와 submodule의 `.git`이 그렇습니다.
-- `.git`이나 그 안의 `objects`가 링크입니다.
-- `.git` 안에 `commondir`나 `objects/info/alternates`가 있습니다. 다른 저장소의 객체를 빌려 쓰는 저장소입니다.
+아래 경우에는 가리키는 곳이 컨테이너에서 보이더라도 Git을 실행하기 전에 오류 화면으로 끝납니다.
+
+- `.git`이 파일입니다. 별도의 Git worktree와 submodule의 `.git`이 그렇습니다.
+- `.git` 안에 `commondir`나 `objects/info/alternates`가 있습니다. 다른 저장소의 객체를 빌려 쓰는 저장소입니다(`git clone --shared`나 `--reference`).
+- `.git`, `HEAD`, ref 파일, `objects`와 그 아래 항목 중 하나가 심볼릭 링크나 junction입니다.
+- 객체 형식이 SHA-256이거나 ref 형식이 reftable입니다.
+- `.git/objects` 아래의 파일과 폴더가 200,000개를 넘습니다. 저장소에서 `git gc`를 실행하면 줄어듭니다.
+- `packed-refs`가 64MiB를 넘습니다.
+- 권한이나 I/O 오류로 확인할 수 없는 항목이 있습니다. 없는 파일과 구분해 거절합니다.
 - `/projects` 안에 `.git`이 없습니다. `/projects` 위쪽의 `.git`은 찾지 않습니다.
 
-그런 프로젝트는 호스트에서 이전 lockfile을 내보내 CLI의 `--base-lock`으로 검사합니다. [비교 기준 lockfile](#비교-기준-lockfile)
+그런 프로젝트는 호스트에서 이전 lockfile을 파일로 내보내 CLI의 `--base-lock`으로 검사합니다. [비교 기준 lockfile](#비교-기준-lockfile)
+
+Git을 실행하기 전에 `.git/objects`의 항목을 모두 한 번씩 확인합니다. Docker Desktop(Windows)에 Windows 폴더를 연결했을 때 이 확인은 항목 200,000개에 약 2초, 작은 저장소에 0.1초 미만이 걸렸습니다. 이 확인은 요청을 처리하는 동안 저장소가 바뀌지 않을 때 유효합니다. 확인한 항목을 Git이 읽기 전에 다른 프로세스가 바꾸는 경우는 막지 않으므로, 검사하는 동안 같은 저장소를 고치는 작업을 함께 실행하지 마세요.
 
 ### 프로젝트 별칭과 이력
 
