@@ -459,12 +459,14 @@ src/depbee/
 scripts/write_manifest.py # 모델 파일로 manifest.json 생성
 scripts/build_known_malicious_index.py # OSV npm all.zip으로 기지 악성 색인 폴더 생성
 tests/                    # 합성 자료를 이용한 회귀·모델 연동 테스트
-examples/                 # 실행 가능한 명령에 사용할 가상 lockfile
+examples/                 # 실행 가능한 명령에 사용할 lockfile: 합성 예시와 lodash 4.17.20 → 4.17.21의 실제 변경
 docs/                     # 구조·연결 규약·CI 설계·개발 순서
 models/                   # 직접 준비한 모델·색인을 두는 폴더(선택), Git 제외
 data/                     # 실제 샘플, Git 제외
 artifacts/                # 요청·분석·결과 JSON, Git 제외
-.github/workflows/ci.yml  # 이 도구 자체의 검사·테스트·패키징
+Dockerfile                # 로컬 이미지 빌드(기본: 분석기 포함, core: 분석기 제외)
+.github/workflows/ci.yml  # 이 도구 자체의 검사·테스트·패키징, Action과 이미지의 실제 검사
+.github/scripts/          # CI가 실제 검사의 보고서를 확인하는 스크립트
 ```
 
 ## 개발 환경
@@ -476,9 +478,19 @@ python -m pip install -e ".[dev,extract,mcp,web]"
 depbee --help
 ```
 
-`extract`는 팀의 비공개 저장소 depbee-analyzer를 고정된 커밋으로 설치하므로 GitHub 접근 권한이 필요합니다.
+`extract`는 팀의 공개 저장소 depbee-analyzer를 고정된 커밋으로 설치합니다. pip이 Git으로 받으므로 Git이 필요하고 로그인이나 토큰은 필요 없습니다.
 depbee-analyzer를 함께 개발할 때는 그 저장소를 받아 `pip install -e ../depbee-analyzer`로 대신 설치합니다.
 ML 추론(LightGBM)은 기본 설치에 들어 있고 `ml`은 이전 명령과의 호환용으로 남긴 이름입니다. 추출이 필요 없는 입력·계약 작업만 한다면 `extract`를 빼고 설치할 수 있습니다.
+
+### Git 주소로 설치
+
+소스를 따로 받지 않고 pip에 저장소 주소와 커밋을 주어 설치할 수 있습니다. depbee는 PyPI에 올리지 않았습니다. `pip install depbee`처럼 이름만 주는 설치는 이 프로젝트를 설치하지 않습니다.
+
+```sh
+python -m pip install "depbee[extract,mcp,web] @ git+https://github.com/26-Capstone-Project-Team01/depbee@759cc6880452b178566fe0d3294dadaf1a249d2c"
+```
+
+`@` 뒤는 설치할 커밋의 전체 SHA입니다. 예시는 depbee `main`에 있는 커밋(depbee 0.2.1)이고, 다른 커밋을 설치하려면 그 SHA로 바꿉니다. 저장소에 태그와 Release는 없습니다. pip은 depbee와 분석기 두 저장소를 로그인 없이 받습니다.
 
 ### wheel 만들기와 설치
 
@@ -491,15 +503,15 @@ python -m pip wheel --no-deps --wheel-dir dist .
 wheel로 depbee를 실행할 수 있습니다. 모델 manifest나 색인을 직접 생성할 때는 소스 저장소의 `scripts/`를 사용합니다. Python 3.11 이상의 가상환경을 만들고 활성화한 뒤 wheel이 있는 폴더에서 하나를 골라 실행합니다. 파일 이름은 받은 버전에 맞춥니다.
 
 ```sh
-python -m pip install ./depbee-0.1.0-py3-none-any.whl                     # 기본 CLI와 plan
-python -m pip install "./depbee-0.1.0-py3-none-any.whl[extract,mcp,web]"  # ML 분석과 네 진입점
+python -m pip install ./depbee-0.2.1-py3-none-any.whl                     # 기본 CLI와 plan
+python -m pip install "./depbee-0.2.1-py3-none-any.whl[extract,mcp,web]"  # ML 분석과 네 진입점
 ```
 
-빈 가상환경에서 설치하면 Windows에는 `.venv\Scripts\depbee.exe`, macOS/Linux에는 `.venv/bin/depbee`가 생깁니다. 활성화한 터미널에서 `depbee --help`로 설치를 확인합니다. wheel에는 Python 코드, 대시보드 템플릿·스타일, [기본 모델과 기지 악성 색인](#기본-자산)이 들어갑니다. 분석기는 `extract` 옵션으로 따로 설치합니다. `extract` 옵션은 설치할 때 고정된 분석기 커밋을 가져오므로 비공개 저장소의 Git 읽기 권한이 필요합니다. 사용한 분석기 커밋은 보고서의 `provenance.feature_extractor.commit`에서 확인합니다.
+빈 가상환경에서 설치하면 Windows에는 `.venv\Scripts\depbee.exe`, macOS/Linux에는 `.venv/bin/depbee`가 생깁니다. 활성화한 터미널에서 `depbee --help`로 설치를 확인합니다. wheel에는 Python 코드, 대시보드 템플릿·스타일, [기본 모델과 기지 악성 색인](#기본-자산)이 들어갑니다. 분석기는 `extract` 옵션으로 따로 설치합니다. `extract` 옵션은 설치할 때 고정된 분석기 커밋을 공개 저장소에서 Git으로 받으므로 Git과 네트워크가 필요하고 로그인은 필요 없습니다. 사용한 분석기 커밋은 보고서의 `provenance.feature_extractor.commit`에서 확인합니다.
 
 같은 버전 번호의 시험 wheel을 교체할 때는 새 가상환경을 사용하거나 `python -m pip install --force-reinstall`에 사용할 wheel 경로와 extra를 지정합니다.
 
-PowerShell에서 가상환경 활성화가 제한되면 활성화하지 않고 `.\.venv\Scripts\python.exe -m pip install ".[extract,mcp,web]"`과 `.\.venv\Scripts\depbee.exe --help`를 직접 실행할 수 있습니다. 가상환경 활성화 없이 계속 사용하려면 Python 3.11 이상의 `pipx` 환경에서 `pipx install ".[extract,mcp,web]"`로 설치합니다. `pipx ensurepath`를 한 번 실행하고 새 터미널에서 `depbee --help`를 확인합니다. Windows의 `depbee.exe`와 macOS/Linux의 `depbee`는 Python 환경의 실행 명령입니다. 현재 공개 Release나 Python 없이 실행하는 독립 바이너리는 제공하지 않습니다.
+PowerShell에서 가상환경 활성화가 제한되면 활성화하지 않고 `.\.venv\Scripts\python.exe -m pip install ".[extract,mcp,web]"`과 `.\.venv\Scripts\depbee.exe --help`를 직접 실행할 수 있습니다. 가상환경 활성화 없이 계속 사용하려면 Python 3.11 이상의 `pipx` 환경에서 `pipx install ".[extract,mcp,web]"`로 설치합니다. `pipx ensurepath`를 한 번 실행하고 새 터미널에서 `depbee --help`를 확인합니다. Windows의 `depbee.exe`와 macOS/Linux의 `depbee`는 Python 환경의 실행 명령입니다. depbee는 공개 저장소의 소스로만 배포합니다. PyPI 패키지, GitHub Release, Python 없이 실행하는 독립 바이너리는 제공하지 않습니다. Python을 설치하지 않고 쓰려면 소스에서 [Docker 이미지](docker.md#이미지-빌드)를 빌드합니다.
 
 ## 검증
 
@@ -513,7 +525,7 @@ python -m build
 
 테스트는 네트워크와 depbee-analyzer 없이 돌도록 depbee-analyzer 호출을 가짜로 바꿔 둡니다. ML 의존성이 없으면 native LightGBM 테스트는 skip됩니다.
 depbee-analyzer(`.[extract]`)가 설치돼 있으면 고정 커밋의 loader·extractor를 합성 tarball과 가짜 registry 응답으로 실행하는 경계 테스트도 돌고, 없으면 skip됩니다. 네트워크는 쓰지 않습니다.
-MCP SDK(`.[mcp]`)가 없으면 MCP 프로토콜 경로(메모리 내 클라이언트, stdio 하위 프로세스) 테스트만 skip되고, 도구 함수와 CLI 동등성 테스트는 그대로 돕니다. `.[web]`이나 `httpx2`(`[dev]`에 포함)가 없으면 대시보드 화면·보안 테스트가 skip되고, extra 없는 환경의 안내 테스트는 그대로 돕니다. CI는 `[mcp]`와 `[web]`을 설치하므로 이 테스트도 돌고, 비공개인 `extract` 경계 테스트만 skip됩니다. 경로 없이 띄운 stdio MCP 서버의 보고서가 설치본 모델 ID와 색인 기준 시점을 싣는지 보는 테스트는 실제 모델·색인·분석기를 쓰므로 `extract`가 설치된 환경에서만 돌고 CI에서는 skip됩니다.
+MCP SDK(`.[mcp]`)가 없으면 MCP 프로토콜 경로(메모리 내 클라이언트, stdio 하위 프로세스) 테스트만 skip되고, 도구 함수와 CLI 동등성 테스트는 그대로 돕니다. `.[web]`이나 `httpx2`(`[dev]`에 포함)가 없으면 대시보드 화면·보안 테스트가 skip되고, extra 없는 환경의 안내 테스트는 그대로 돕니다. CI는 `[extract]`, `[mcp]`, `[web]`을 모두 설치하므로 extra가 없어서 건너뛰는 테스트가 없습니다. 경로 없이 띄운 stdio MCP 서버의 보고서가 설치본 모델 ID와 색인 기준 시점을 싣는지 보는 테스트는 실제 모델·색인·분석기를 쓰므로 `extract`가 설치된 환경에서만 돕니다.
 테스트의 작은 모델은 직렬화·연결 검증용 합성 모델이며 실제 악성 탐지 모델이 아닙니다.
 
 다음 작업은 [연결 규약](contracts.md), [구조와 담당](architecture.md), [CI/CD 연결](ci-cd.md), [통합 순서](development.md)를 참고합니다.

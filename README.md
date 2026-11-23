@@ -6,7 +6,7 @@ depbee는 npm 패키지를 설치하기 전에 버전 변경을 검사합니다.
 
 ## 설치와 준비
 
-Python 3.11 이상이 필요합니다. 저장소 접근 권한이 있다면 소스를 받아 가상환경에 설치합니다.
+Python 3.11 이상과 Git이 필요합니다. depbee는 GitHub의 공개 저장소에서 소스로 배포합니다. PyPI 패키지, GitHub Release, 컨테이너 레지스트리의 이미지는 없습니다. 소스를 받아 가상환경에 설치합니다.
 
 ```sh
 git clone https://github.com/26-Capstone-Project-Team01/depbee.git
@@ -31,7 +31,7 @@ python -m pip install ".[extract,mcp,web]"
 depbee --help
 ```
 
-가상환경을 활성화하면 어느 프로젝트에서든 `depbee`를 실행할 수 있습니다. 패키지에서 특징을 추출하는 `extract` 설치에는 비공개 분석기 저장소 접근 권한이 필요합니다. [분석기 저장소](https://github.com/26-Capstone-Project-Team01/depbee-analyzer) · [wheel과 pipx 설치](docs/usage.md#wheel-만들기와-설치)
+가상환경을 활성화하면 어느 프로젝트에서든 `depbee`를 실행할 수 있습니다. `extract`는 패키지에서 특징을 추출하는 분석기를 고정된 커밋으로 설치합니다. 분석기도 공개 저장소이므로 pip이 로그인이나 토큰 없이 받습니다. [분석기 저장소](https://github.com/26-Capstone-Project-Team01/depbee-analyzer) · [Git 주소로 바로 설치](docs/usage.md#git-주소로-설치) · [wheel과 pipx 설치](docs/usage.md#wheel-만들기와-설치)
 
 **설치 직후 `depbee check lodash@4.17.21`로 첫 검사를 실행하세요.** wheel에는 모델 `D04-E00`과 `2026-10-06T14:00:47Z` 기준 OSV npm 색인이 들어 있습니다. `depbee setup`으로 현재 자산을 확인할 수 있고, 매 보고서에 실제 검사에 쓴 모델과 색인이 기록됩니다. [기본 자산 변경](docs/usage.md#기본-자산) · [결과 재현에 남길 값](docs/usage.md#결과-재현에-남길-값)
 
@@ -100,11 +100,13 @@ PR에서 lockfile 변경을 검사하려면 예시 workflow를 대상 저장소�
 
 세 장면을 한 번에 실행한 기록은 [Actions run 44781575143](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/actions/runs/44781575143)입니다. 가상 목록 일치 장면의 실패가 기대 결과이므로 이 실행은 전체가 실패로 표시됩니다.
 
-이 시연은 합성 정책 시연입니다. 시연 저장소의 fixture 게이트가 합성 lockfile의 이름과 버전을 가상 목록과 비교해, 일치는 실패이고 보류는 경고라는 정책이 PR에 어떻게 나타나는지 보여 줍니다. depbee 제품은 실행되지 않으며 Check의 성공과 실패는 보안 판정이 아닙니다. [장면별 확인 방법](docs/demo.md#github-actions)
+위 표의 Check는 합성 정책 시연입니다. 시연 저장소의 fixture 게이트가 합성 lockfile의 이름과 버전을 가상 목록과 비교해, 일치는 실패이고 보류는 경고라는 정책이 PR에 어떻게 나타나는지 보여 줍니다. fixture 게이트는 depbee 제품을 실행하지 않으며 그 Check의 성공과 실패는 보안 판정이 아닙니다. [장면별 확인 방법](docs/demo.md#github-actions)
 
-### 실제 제품 검사의 조건
+### 실제 제품 검사
 
-외부 저장소의 PR에서 depbee Action이 실제로 검사하려면 depbee와, 설치 단계에서 사용하는 depbee-analyzer가 모두 공개돼야 합니다. Action은 전체 커밋 SHA로 고정하고, 모델과 색인은 그 커밋의 설치본에 포함된 것을 기본으로 씁니다. Release 태그와 SHA-256은 다른 모델이나 색인을 명시해 바꿀 때만 씁니다. 두 저장소의 공개가 아직 허용되지 않았으므로, secret 없이 도는 공개 저장소에서의 실제 제품 검사 시연은 실행하지 않았습니다. 공개 전에도 depbee 저장소 루트에서 아래 명령으로 기지 악성 일치 예시의 실패 판정(종료 코드 1)을 확인할 수 있습니다.
+depbee와, 설치 단계에서 받는 depbee-analyzer는 공개 저장소입니다. 다른 저장소의 workflow가 Action을 전체 커밋 SHA로 고정하면 secret이나 토큰을 따로 주지 않아도 PR의 lockfile 변경을 실제로 검사합니다. 모델과 색인은 그 커밋의 설치본에 포함된 것을 기본으로 씁니다. Release 태그와 SHA-256은 다른 모델이나 색인을 명시해 바꿀 때만 쓰며, 지금 게시된 Release는 없습니다. depbee 저장소의 CI는 이 Action으로 실제 버전 변경(lodash 4.17.20에서 4.17.21)을 검사하고 보고서의 모델, 색인, 분석기 커밋을 확인합니다. [CI가 확인하는 범위](docs/ci-cd.md#자기-검사-depbee-ci-action-job)
+
+판정 단계만 따로 보려면 depbee 저장소 루트에서 아래 명령으로 기지 악성 일치 예시의 실패 판정(종료 코드 1)을 확인할 수 있습니다.
 
 ```powershell
 python -I src/depbee/actions.py report docs/examples/result-contract/03-known-malicious-low-ml.json --lockfile examples/project/package-lock.json
@@ -112,7 +114,7 @@ python -I src/depbee/actions.py report docs/examples/result-contract/03-known-ma
 
 ## Docker로 실행
 
-호스트에 Python과 Node.js가 없어도 depbee 저장소에서 빌드한 로컬 이미지 `depbee:local`로 대시보드, CLI 검사, stdio MCP를 실행합니다. 빌드에는 비공개 저장소의 읽기 권한이 필요합니다. [이미지 빌드](docs/docker.md#이미지-빌드)
+호스트에 Python과 Node.js가 없어도 depbee 저장소에서 빌드한 로컬 이미지 `depbee:local`로 대시보드, CLI 검사, stdio MCP를 실행합니다. 저장소 루트에서 `docker build -t depbee:local .`로 빌드하며 토큰, 빌드 시크릿, 빌드 인자가 필요 없습니다. 레지스트리에 올린 이미지는 없습니다. [이미지 빌드](docs/docker.md#이미지-빌드)
 
 대시보드는 검사할 npm 프로젝트 폴더에서 아래 블록 하나로 시작합니다. 프로젝트는 읽기 전용으로 연결하고, 포트는 호스트의 `127.0.0.1`에만 게시하며, 등록과 기록은 `depbee-home` 볼륨에 남깁니다.
 

@@ -3,9 +3,10 @@
 ## 현재 포함한 개발 CI
 
 `.github/workflows/ci.yml`의 `checks` job은 이 도구 자체의 Linux/Windows, Python 3.11/3.13 검사다.
-lint·회귀 테스트·native LightGBM 합성 테스트·wheel/sdist 빌드를 수행한다.
-`action` job은 아래 GitHub Action을 예시 보고서와 설치본의 내장 자산으로 검사한다(자기 검사 절).
-`docker` job은 자격 증명 없이 빌드한 `core` 이미지를 실행해 CLI, MCP, 대시보드, 이미지의 npm을 검사한다(Docker 이미지 검사 절).
+lint·회귀 테스트·native LightGBM 합성 테스트·wheel/sdist 빌드를 수행한다. `extract`까지 설치하므로 고정한 분석기의 loader 경계 테스트도 돈다.
+`action` job은 아래 GitHub Action의 판정 규칙을 예시 보고서로 검사한 뒤, 실제 버전 변경을 분석기와 npm registry로 검사한다(자기 검사 절).
+`docker` job은 기본 이미지를 자격 증명 없이 빌드하고 실행해 CLI, MCP, 대시보드, 이미지의 npm을 검사한다(Docker 이미지 검사 절).
+세 job 모두 secret을 쓰지 않는다. 분석기(depbee-analyzer)는 공개 저장소라 pip과 이미지 빌드가 고정 커밋을 로그인 없이 받는다.
 Action은 확인한 commit SHA로 고정했고 권한은 contents:read다.
 의존성은 pyproject의 범위로 설치한다. 첫 환경 검증 후 팀 공통 lock/constraints를 도입한다.
 
@@ -38,24 +39,24 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: 26-Capstone-Project-Team01/depbee@<40자리 commit SHA> # <태그>
+      - uses: 26-Capstone-Project-Team01/depbee@759cc6880452b178566fe0d3294dadaf1a249d2c
         # with:
         #   fail-on: ml-hit, incomplete
 ```
 
-- `uses:`의 ref는 태그나 브랜치가 아니라 40자리 commit SHA로 고정한다. 이 SHA 하나가 action 코드, 설치되는 depbee(`$GITHUB_ACTION_PATH`), 그 안의 모델과 색인을 함께 정한다. 태그와 브랜치는 다른 커밋으로 옮겨질 수 있다.
+- depbee와 depbee-analyzer는 공개 저장소다. 이 예시는 다른 저장소에서 secret, 토큰, 저장소 변수 없이 그대로 동작한다.
+- `uses:`의 ref는 태그나 브랜치가 아니라 40자리 commit SHA로 고정한다. 예시의 SHA는 depbee `main`에 있는 커밋이고, 더 새 `main` 커밋으로 올릴 때도 전체 SHA를 적는다. 이 SHA 하나가 action 코드, 설치되는 depbee(`$GITHUB_ACTION_PATH`), 그 안의 모델과 색인을 함께 정한다. 태그와 브랜치는 다른 커밋으로 옮겨질 수 있고, depbee 저장소에는 지금 태그와 Release가 없다.
 - `pull_request` 이벤트에서만 동작한다. 기준은 `github.event.pull_request.base.sha`이고, 이 값이 없으면(다른 이벤트) 입력 오류로 실패한다.
 - checkout은 `fetch-depth: 0`으로 기준 커밋까지 받는다. depbee가 기준 lockfile을 `git cat-file`로 읽기 때문이다. 토큰은 checkout 뒤 남기지 않는다(`persist-credentials: false`).
 - job `timeout-minutes`는 호출하는 workflow가 정한다(composite action은 job 시간 제한을 둘 수 없다). depbee는 변경 하나에 300초 예산을 쓰므로 `max-changes`와 함께 정한다.
 - 이 action을 필수 검사로 쓰면 workflow에 `paths` 필터를 두지 않는다. 필터로 건너뛴 workflow의 검사는 "Pending"으로 남아 병합을 막는다([GitHub 문서](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks)).
-- 저장소 공개 전에는 다른 저장소에서 이 예시가 동작하지 않는다(아래 "공개 전 제한과 미검증").
 
 ### 선택: Release의 모델과 색인
 
 고정한 커밋에 든 것과 다른 모델이나 색인을 쓰려면, 또는 이전 버전의 workflow처럼 Release 파일을 쓰려면 다음 다섯 입력을 모두 준다.
 
 ```yaml
-      - uses: 26-Capstone-Project-Team01/depbee@<40자리 commit SHA> # <태그>
+      - uses: 26-Capstone-Project-Team01/depbee@759cc6880452b178566fe0d3294dadaf1a249d2c
         with:
           model-version: <모델이 첨부된 Release 태그>
           model-sha256: <model.txt의 sha256>
@@ -67,7 +68,7 @@ jobs:
 - 다섯 값은 모두 주거나 모두 비운다. 일부만 주거나 형식이 틀리면 설치와 다운로드 전에 첫 단계가 실패하고, 빠진 입력 이름이나 틀린 입력을 오류에 적는다.
 - 모두 주면 action이 두 Release에서 파일 넷을 받아 입력의 sha256과 비교한 뒤 그 폴더만 scan에 넘긴다. 이때 설치본에 든 모델과 색인은 쓰지 않는다.
 - 색인은 모델보다 자주 갱신하므로 두 태그는 달라도 된다.
-- 모델과 색인을 첨부한 Release는 아직 없다. 그래서 이 경로는 기본 사용법이 아니다.
+- depbee 저장소에 게시된 Release는 아직 없다. 위 두 태그 자리에 넣을 값이 지금은 없으므로 이 경로는 기본 사용법이 아니다.
 
 ### 입력
 
@@ -98,7 +99,7 @@ action은 이 선택을 다음과 같이 고정한다. PR이나 runner에 남은
 
 - 기본(Release 입력 없음): 옵션을 주지 않고, scan 단계에서 두 환경 변수를 지우고(`unset`), `DEPBEE_CONFIG_DIR`을 이 실행이 `$RUNNER_TEMP` 아래 새로 만든 빈 폴더(`<실행 폴더>/config`)로 둔다. 그래서 depbee는 내장 자산을 쓴다. depbee는 내장 파일 넷(`model.txt`, 두 `manifest.json`, `index.json`)의 SHA-256을 코드에 고정한 값과 비교한 뒤에만 연다. 다르면 보고서 없이 오류로 끝나고 판정 단계가 실패한다.
 - Release 입력 다섯 개: 받은 파일을 입력의 sha256과 비교한 폴더를 `--model-dir`, `--known-malicious-dir` 옵션으로 넘긴다. 옵션이 가장 앞이므로 다른 출처는 쓰이지 않는다. 환경 변수 제거와 설정 폴더 격리는 이때도 같다.
-- 분석기(depbee-analyzer)는 action 커밋의 `pyproject.toml`이 고정한 커밋을 pip이 설치한 것을 쓴다. depbee는 설치된 분석기가 그 고정 커밋의 Git 주소에서 설치됐고 설치 뒤 바뀌지 않았는지 확인한다. 확인되면 보고서의 `provenance.feature_extractor`에 커밋과 설치 파일 해시를 적고, 확인되지 않으면 그 값은 null이며 캐시를 쓰지 않는다.
+- 분석기(depbee-analyzer)는 action 커밋의 `pyproject.toml`이 고정한 커밋을 pip이 공개 저장소에서 로그인 없이 받아 설치한 것을 쓴다. depbee는 설치된 분석기가 그 고정 커밋의 Git 주소에서 설치됐고 설치 뒤 바뀌지 않았는지 확인한다. 확인되면 보고서의 `provenance.feature_extractor`에 커밋과 설치 파일 해시를 적고, 확인되지 않으면 그 값은 null이며 캐시를 쓰지 않는다.
 - depbee와 pip은 `python -I`로 실행한다. 현재 폴더와 `PYTHONPATH`, 사용자 site가 import 경로에 들어가지 않으므로 PR checkout 안의 `depbee`나 분석기 모듈이 대신 실행되지 않는다. 설치 단계는 PR checkout이 아니라 실행 폴더에서 돈다.
 
 ### 단계
@@ -145,7 +146,7 @@ CLI 종료 코드 0/1/2의 의미는 그대로다.
 - job summary의 "depbee Actions 판정" 절 첫 두 줄: `모델 ID(model_id)`와 `기지 악성 색인 기준 시점(detectors.known_malicious.list_as_of)`. 그 위 depbee CLI 요약에도 "모델"과 "기지 악성 목록 ... 기준 시점" 줄이 있다.
 - artifact `depbee-report`의 `report.json`: `model_id`, `threshold`, `detectors.known_malicious`(`source`, `list_as_of`, `list_sha256`), `provenance.model`(`model_sha256`, `manifest_sha256`), `provenance.feature_extractor`(분석기 커밋 등). 필드 정의는 [연결 규약](contracts.md)에 있다.
 - 기본 사용에서 이 값은 `uses:`로 고정한 커밋의 depbee에 든 모델과 색인의 것이다. 커밋마다 다를 수 있어 이 문서에는 값을 적지 않는다.
-- 색인은 기준 시점까지의 기록만 담는다. action은 실행 중에 색인을 갱신하지 않으므로 그 뒤에 알려진 악성 버전은 일치로 나오지 않는다. 더 새 색인은 `uses:`의 SHA를 새 릴리스 커밋으로 올리거나 Release 다섯 입력으로 준다.
+- 색인은 기준 시점까지의 기록만 담는다. action은 실행 중에 색인을 갱신하지 않으므로 그 뒤에 알려진 악성 버전은 일치로 나오지 않는다. 더 새 색인은 `uses:`의 SHA를 그 색인을 담은 더 새 커밋으로 올리거나 Release 다섯 입력으로 준다.
 
 ### 주석, summary, artifact
 
@@ -176,7 +177,8 @@ CLI 종료 코드 0/1/2의 의미는 그대로다.
 
 ### 권한과 secret
 
-- secret을 쓰지 않는다. 기본 사용에는 Release 다운로드도 없다. depbee 설치(공개 뒤)와 registry 다운로드는 토큰 없이 한다. `GITHUB_TOKEN`은 checkout에만 쓰이고 `contents: read`로 충분하다.
+- secret을 쓰지 않는다. 기본 사용에는 Release 다운로드도 없다. depbee와 분석기의 설치, registry 다운로드는 토큰 없이 한다. `GITHUB_TOKEN`은 checkout에만 쓰이고 `contents: read`로 충분하다.
+- 사용자가 만든 토큰(PAT)과 저장소 변수는 필요 없다. 캐시와 artifact 저장은 GitHub가 실행마다 주는 권한으로 한다.
 - `pull_request_target`, `continue-on-error`, `|| true`를 쓰지 않는다.
 
 ### fork·Dependabot PR
@@ -195,34 +197,40 @@ CLI 종료 코드 0/1/2의 의미는 그대로다.
 - 모델과 색인을 정하는 `uses:`의 SHA(Release를 쓰면 다섯 입력도)가 workflow 파일에 있으므로 같은 보호를 받는다.
 - workflow 파일을 바꿀 수 있는 사람은 `report` 입력을 채우거나 이 단계를 바꿔 scan을 건너뛸 수 있다. 입력 검사는 이를 막지 못하므로, 이 job을 필수 검사로 쓸 때는 workflow 파일 변경을 위와 같이 리뷰한다. `report`로 판정한 실행은 summary에 자기 검사라고 적힌다.
 
-### 공개 전 제한과 미검증
+### 제한과 미검증
 
-- depbee와 depbee-analyzer가 아직 비공개라 위 사용 예시는 다른 저장소에서 그대로 동작하지 않는다. 비공개 저장소의 action은 그 저장소가 접근을 허용한 같은 소유자의 다른 비공개 저장소에서만 쓸 수 있다([GitHub 문서](https://docs.github.com/en/actions/how-tos/reuse-automations/share-across-private-repositories)). 설치 단계도 `[extract]`가 depbee-analyzer를 git 주소와 커밋으로 받으므로 토큰 없이는 되지 않는다. action은 secret을 받지 않으므로 이 제한을 우회하는 입력은 없다.
-- 두 저장소를 공개하면 workflow를 고치지 않고 위 사용 예시 그대로 동작하도록 만들었다. fork PR과 Dependabot PR도 같다.
-- 모델과 기지 악성 색인을 첨부한 Release가 아직 없다. Release 다섯 입력 경로는 입력 검사와 단계 배선만 확인했고 실제 다운로드는 확인하지 않았다.
-- 실제 PR에서의 설치, `depbee scan --extract`, 캐시 저장·복원, 주석 표시는 확인하지 않았다. 확인한 범위는 아래 자기 검사와 `docs/validation.md`에 있다.
+- depbee는 Git 소스로만 배포한다. PyPI 패키지, 컨테이너 레지스트리의 이미지, GitHub Release는 없다. action은 `uses:`의 커밋에서 depbee를 설치하고, 분석기는 그 커밋이 고정한 Git 주소에서 받는다.
+- 모델과 기지 악성 색인을 첨부한 Release가 없다. Release 다섯 입력 경로는 입력 검사와 단계 배선만 확인했고 실제 다운로드는 확인하지 않았다.
+- depbee 저장소의 CI는 PR에서 이 action을 그대로 실행한다(아래 자기 검사). 다른 저장소의 PR, fork PR, Dependabot PR에서의 실행과, 같은 PR의 두 번째 실행에서 캐시가 복원되는지, lockfile 줄 주석이 PR 화면에 놓이는 모습은 이 저장소에서 확인하지 않았다. secret과 쓰기 권한을 쓰지 않으므로 fork PR과 Dependabot PR에서도 조건 분기 없이 같은 방식으로 동작하도록 만들었다. 확인한 범위는 아래 자기 검사와 `docs/validation.md`에 있다.
 - Linux runner만 고려했다. Windows·macOS runner는 확인하지 않았다(`bash`, `curl`, `sed`, `mktemp`를 쓴다).
 
 ### 자기 검사 (depbee CI `action` job)
 
-공개 전이라 분석기 설치와 registry 다운로드를 포함한 실제 scan은 CI에서 돌릴 수 없어, 합성 자료와 설치본의 내장 자산으로 되는 범위만 검사한다.
+판정 규칙은 합성 보고서로, action 전체는 실제 버전 변경으로 검사한다.
 
 - 판정 모듈을 직접 호출해 종료 코드를 확인한다(`docs/examples/result-contract/`의 예시 보고서, 자기 검사 판정). 실패를 기대하는 경우도 `continue-on-error` 없이 `if`로 종료 코드를 본다. 기지 악성 일치는 실패, ML 기준 이상·보류는 기본 성공이고 `fail-on`으로 실패, 보고서 없음·알 수 없는 `fail-on`·sha256 불일치는 실패다. 색인 이름이 없는 예시 보고서는 scan 보고서로 판정하면 실패하고 자기 검사로만 판정된다.
 - 입력 검사를 직접 호출한다. Release 입력이 없으면 `assets=bundled`, 다섯 개면 `identity`가 `model-sha256` 값이고, 일부만 준 경우·형식이 틀린 값·기준 커밋이 없는 경우는 실패한다.
-- 분석기 없이 depbee만 설치해 예시 프로젝트를 내장 자산으로 scan하고(추출이 없어 항목은 보류), 보고서의 `model_id`·모델 해시·색인 기준 시점·색인 해시가 설치본의 manifest와 같은지, 그 보고서가 scan 보고서 판정을 통과하는지 확인한다.
-- `uses: ./`를 `report` 입력(위 scan의 보고서)으로 실행해 입력 검사, summary, artifact, 경고 주석의 배선을 확인한다. 이 실행의 summary에 설치본의 모델 ID와 색인 기준 시점이 나온다. `report`가 있으면 설치·다운로드·변경 수·캐시·scan 단계는 건너뛰고 Release 입력도 검사하지 않는다.
+- 실제 변경을 만든다. 작업 폴더의 `examples/lodash-update/package-lock.json`을 `examples/lodash-updated/`의 lockfile(npm이 lodash 4.17.21로 올려 쓴 결과)로 바꾼다. Git에 있는 쪽은 4.17.20이므로 바뀐 항목이 하나다.
+- `pull_request` 실행은 `uses: ./`로 action을 그대로 실행한다. `[extract]` 설치(분석기의 고정 커밋을 로그인 없이 받음), PR 기준 커밋의 lockfile 읽기, 변경 수 확인, 캐시 복원, `depbee scan --extract`(registry에서 두 버전의 tarball을 받아 실행 없이 분석), 캐시 저장, artifact, 판정까지 action의 모든 단계가 돈다.
+- `push` 실행에는 PR 기준 커밋이 없어 action이 scan할 수 없다. 같은 설치·scan·판정 명령을 HEAD를 기준으로 직접 실행하고, 그 보고서를 `report` 입력으로 넘겨 `uses: ./`의 입력 검사, summary, artifact 배선을 확인한다. `report`가 있으면 설치·다운로드·변경 수·캐시·scan 단계는 건너뛰고 Release 입력도 검사하지 않으며, summary에 자기 검사라고 적힌다.
+- 어느 쪽이든 마지막 단계(`.github/scripts/check_lodash_report.py`)가 action이 남긴 `report.json`을 확인한다. 전체가 통과(종료 코드 0)이고 항목은 lodash 4.17.20 → 4.17.21 하나이며, 비교 버전이 4.17.20, ML 판정이 기준 미만, 기지 악성이 미적중이어야 한다. `model_id`·모델 해시·색인 기준 시점·색인 해시는 저장소의 manifest와 같아야 하고, `provenance.feature_extractor.commit`은 `pyproject.toml`이 고정한 커밋이어야 한다. 이 값은 설치된 분석기가 그 커밋의 Git 설치 그대로일 때만 보고서에 들어간다.
 - 판정 모듈의 단위 테스트는 `tests/test_actions.py`이다(적대적 패키지 이름 이스케이프, lockfile 줄 찾기, Release 입력의 전부·전무·부분·형식 오류, 두 모드의 기준 커밋 검사, 모델 ID와 색인 기준 시점이 없는 scan 보고서의 실패와 자기 검사 호환, summary의 code span 표시, 캐시 신원 계산, 경로 입력의 링크 workspace 경계(심볼릭 링크는 POSIX, junction은 Windows에서 돎), `verify` 여러 쌍, `action.yml` 단계 순서·조건·인자를 텍스트로 확인 포함).
 
 ### Docker 이미지 검사 (depbee CI `docker` job)
 
-분석기가 비공개라 CI는 자격 증명이 필요 없는 `core` 단계만 빌드한다(`docker build --target core`). secret을 쓰지 않고 이미지를 push하지 않는다. 컨테이너에는 합성 예시와 그 예시로 만든 임시 Git 저장소만 읽기 전용으로 연결한다.
+CI는 기본 이미지를 문서의 명령 그대로 빌드한다(`docker build -t depbee:ci .`). secret, 빌드 인자, 토큰을 쓰지 않고 이미지를 push하지 않는다. 빌드는 `pyproject.toml`이 고정한 분석기 커밋을 공개 저장소에서 받고, 마지막 단계에서 설치된 분석기의 출처와 모델·색인의 SHA-256을 확인한다. 컨테이너에는 저장소의 예시와 그 예시로 만든 임시 Git 저장소만 읽기 전용으로 연결한다. 실제 버전 변경을 검사하는 단계만 npm registry에 연결하고 나머지는 네트워크 없이 실행한다.
 
-- CLI와 MCP: 네트워크 없이 읽기 전용 루트로 예시 프로젝트를 scan해 보고서의 모델과 색인이 이미지에 든 것인지 확인한다. 소유자가 다른 Git 저장소의 HEAD를 기준으로 `plan`이 되는지, stdio MCP가 초기화되고 도구 두 개를 내는지도 확인한다.
+- 합성 예시: 네트워크 없이 읽기 전용 루트로 예시 프로젝트를 scan해(추출이 없어 보류) 보고서의 모델과 색인이 이미지에 든 것인지 확인한다.
+- 실제 변경(CLI): `examples/lodash-updated`를 `examples/lodash-update`의 lockfile과 비교해 `scan --extract`한다. 보고서는 `action` job과 같은 스크립트로 확인한다(통과, lodash 4.17.20 → 4.17.21, 모델과 색인, 고정한 분석기 커밋).
+- Git HEAD: 소유자가 다른 Git 저장소(HEAD는 4.17.20, 작업 파일은 4.17.21)의 HEAD를 기준으로 `plan`이 되는지 확인한다.
+- MCP: 문서의 등록 방식으로 띄운 stdio 서버가 초기화되고 도구 두 개를 내는지, `scan_lockfile`이 그 저장소의 변경을 실제로 검사해 같은 보고서 확인을 통과하는지 본다.
 - 대시보드: 문서의 실행 방식(호스트의 `127.0.0.1`에만 같은 번호로 게시한 포트, `/projects` 아래의 읽기 전용 연결, 홈 볼륨)으로 띄운다. 출력한 주소, Host와 세션 검사, 연결한 폴더 목록, 그 밖의 경로 거부를 확인한다.
-- 등록한 프로젝트: 빈 볼륨의 첫 등록은 현황판(첫 화면)으로 이어져야 한다. 현황판에 나온 그 프로젝트의 링크를 열어 lockfile의 패키지가 보이는지 확인한다. 검사만 요청이 `/projects` 아래 저장소의 HEAD lockfile을 읽은 뒤 분석기가 없다는 오류로 끝나는지도 확인한다.
-- 홈 볼륨: 첫 컨테이너를 종료해 지운 뒤 같은 볼륨으로 새 컨테이너를 만든다. 등록한 프로젝트가 그대로 보이고 열리는지, 같은 폴더를 다시 등록하면 프로젝트가 늘지 않고 그 프로젝트의 화면으로 이어지는지 확인한다.
+- 등록한 프로젝트: 빈 볼륨의 첫 등록은 현황판(첫 화면)으로 이어져야 한다. 현황판에 나온 그 프로젝트의 링크를 열어 lockfile의 패키지가 보이는지 확인한다. **검사만** 요청이 `/projects` 아래 저장소의 HEAD lockfile과 비교해 실제로 검사하고, 기록된 실행 화면에 패키지와 새 버전, 이미지의 모델 ID가 나오는지 확인한다.
+- 홈 볼륨: 첫 컨테이너를 종료해 지운 뒤 같은 볼륨으로 새 컨테이너를 만든다. 등록한 프로젝트와 첫 컨테이너의 실행 기록이 그대로 열리는지, 같은 폴더를 다시 등록하면 프로젝트가 늘지 않고 그 프로젝트의 화면으로 이어지는지 확인한다.
 - 이미지의 npm: PATH에 `npm`과 `npx`가 없는지 확인한다. depbee가 업데이트 확인 때 쓰는 호출(`inputs.npm_cli`)이 Node.js 24.11.0의 npm 11.6.1을 찾아, 의존성 없는 임시 프로젝트의 lockfile을 네트워크 없이 다시 쓰는지 확인한다.
-- CI가 하지 않는 것: 기본 `full` 이미지의 빌드, 실제 업데이트 확인과 검사만. 비공개 분석기의 읽기 권한과 npm registry 다운로드가 필요하다. 권한이 있는 PC에서 [정해 둔 정상 예시](docker.md#전체-이미지-확인)로 확인하고 결과를 `docs/validation.md`에 남긴다.
+- 업데이트 미리보기: 읽기 전용으로 연결한 `examples/lodash-update`에 `depbee update`를 실행한다. 이미지의 npm이 사본에서 lockfile을 다시 쓰고(`--ignore-scripts`, 설치 없음) 분석기가 그 변경을 검사한다. npm이 쓴 lockfile의 SHA-256이 저장소의 `examples/lodash-updated/package-lock.json`과 같은지, 보고서가 위와 같은 확인을 통과하는지 본다. 반영은 하지 않는다.
+- `core` 단계: `docker build --target core`로 따로 빌드한다. root가 아닌 사용자이고 분석기 모듈이 없는지, 합성 예시의 보고서가 기본 이미지의 것과 바이트 단위로 같은지, `check`가 `[extract]` 설치를 안내하는 오류(종료 코드 2)로 끝나는지 네트워크 없이 확인한다.
+- CI가 하지 않는 것: 대시보드의 업데이트 확인 화면과 반영(같은 서비스 함수를 CLI의 `depbee update` 미리보기로 실행한다), 브라우저로 누르는 조작. [정해 둔 정상 예시](docker.md#전체-이미지-확인)로 직접 확인할 수 있다.
 
 ## CI 신뢰 경계
 
