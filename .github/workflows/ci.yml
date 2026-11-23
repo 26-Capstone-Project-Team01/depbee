@@ -123,3 +123,122 @@ jobs:
         with:
           lockfile: examples/project/package-lock.json
           report: bundled-report.json
+
+  # The public image stage: the wheel with the CLI and the MCP server, without the private
+  # analyzer. Built with no credentials and never pushed, then run the way it is used: its own
+  # entrypoint and user, no network, a read-only root and only the synthetic examples mounted.
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build the public stage, whose own user is not root
+        shell: bash
+        run: |
+          docker build --target core -t depbee:ci .
+          user="$(docker image inspect --format '{{.Config.User}}' depbee:ci)"
+          case "${user%%:*}" in '' | 0 | root) echo "depbee:ci runs as root"; exit 1 ;; esac
+      - name: Scan the example offline with the image's model and index
+        shell: bash
+        run: |
+          status=0
+          docker run --rm --network none --read-only --tmpfs /tmp \
+            --mount "type=bind,source=$PWD/examples/project,target=/project,readonly" \
+            --mount "type=bind,source=$PWD/examples/baseline,target=/baseline,readonly" \
+            depbee:ci scan /project --base-lock /baseline/package-lock.json --format json \
+            > docker-report.json || status=$?
+          cat docker-report.json
+          test "$status" -eq 2  # One changed package, no extracted features: held, not passed.
+          python3 -I - <<'PY'
+          import json
+          from pathlib import Path
+          assets = Path("src/depbee/assets")
+          model = json.loads((assets / "model" / "manifest.json").read_bytes())
+          index = json.loads((assets / "index" / "manifest.json").read_bytes())
+          report = json.loads(Path("docker-report.json").read_bytes())
+          assert (report["status"], report["exit_code"]) == ("incomplete", 2)
+          # A report names them only after LightGBM loaded that model and the index was read.
+          assert report["model_id"] == model["model_id"]
+          assert report["provenance"]["model"]["model_sha256"] == model["model_sha256"]
+          known = report["detectors"]["known_malicious"]
+          assert (known["list_as_of"], known["list_sha256"]) == (index["list_as_of"], index["index_sha256"])
+          (row,) = report["results"]
+          assert (row["package"], row["after_version"]) == ("example-package", "1.1.0")
+          assert (row["status"], row["reason"]) == ("incomplete", "analysis_missing")
+          assert (row["ml"]["status"], row["known_malicious"]["status"]) == ("not_run", "not_hit")
+          PY
+      # The default base: no --base-lock and no --base-ref, so the image's Git reads HEAD of an
+      # ordinary repository that the runner's user owns, allowed by safe.directory /project alone.
+      - name: Plan against Git HEAD in a project another user owns
+        shell: bash
+        run: |
+          project="$(mktemp -d "$RUNNER_TEMP/git-project.XXXXXX")"
+          cp examples/baseline/package-lock.json "$project/package-lock.json"
+          git init --quiet --initial-branch=main "$project"
+          git -C "$project" add package-lock.json
+          git -C "$project" -c user.name=depbee-ci -c user.email=depbee-ci@example.invalid \
+            -c core.hooksPath=/dev/null commit --quiet -m baseline
+          # From here the baseline is in HEAD only: the working file is the changed lockfile.
+          cp examples/project/package-lock.json "$project/package-lock.json"
+          # mktemp made the folder 0700, and the image's user reads it as "other".
+          chmod -R a+rX "$project"
+          owner="$(stat -c %u "$project")"
+          image_user="$(docker image inspect --format '{{.Config.User}}' depbee:ci)"
+          echo "fixture owner UID $owner, image user $image_user"
+          test "$owner" -ne "${image_user%%:*}"  # Fails on a user name too: the image names its UID.
+          docker run --rm --network none --read-only --tmpfs /tmp \
+            --mount "type=bind,source=$project,target=/project,readonly" \
+            depbee:ci plan /project > docker-plan.json
+          cat docker-plan.json
+          python3 -I - <<'PY'
+          import json
+          from pathlib import Path
+          (change,) = json.loads(Path("docker-plan.json").read_bytes())["changes"]
+          assert (change["location"], change["kind"]) == ("node_modules/example-package", "updated")
+          before, after = change["before"], change["after"]
+          assert (before["name"], before["version"]) == ("example-package", "1.0.0")  # Git HEAD
+          assert (after["name"], after["version"]) == ("example-package", "1.1.0")  # working file
+          PY
+      - name: Initialize the MCP server and list its tools over stdio
+        shell: bash
+        run: |
+          python3 -I - <<'PY'
+          import json
+          import subprocess
+          # stdin stays open until the last answer is read, as an agent keeps it. timeout ends a
+          # server that hangs: its stdout then ends without the answer, which fails here.
+          server = subprocess.Popen(
+              ["timeout", "--signal=KILL", "60", "docker", "run", "--rm", "-i", "--network", "none",
+               "--read-only", "--tmpfs", "/tmp", "depbee:ci", "mcp"],
+              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+
+          def send(**message):
+              server.stdin.write(json.dumps({"jsonrpc": "2.0", **message}) + "\n")
+              server.stdin.flush()
+
+          def call(request_id, method, params):
+              """Send one request, then read up to the answer with its id and return the result."""
+              send(id=request_id, method=method, params=params)
+              for line in server.stdout:  # JSON-RPC only: the server's log goes to stderr.
+                  answer = json.loads(line)
+                  if "method" not in answer and answer.get("id") == request_id:
+                      print(answer)
+                      assert answer["jsonrpc"] == "2.0"
+                      return answer["result"]
+              raise SystemExit(f"The server ended without an answer to {method}")
+
+          version = "2025-06-18"
+          result = call(1, "initialize", {"protocolVersion": version, "capabilities": {},
+                                          "clientInfo": {"name": "depbee-ci", "version": "0"}})
+          assert result["protocolVersion"] == version
+          assert result["serverInfo"]["name"] == "depbee"
+          assert "tools" in result["capabilities"]
+          # A notification (no id, no answer) ends the handshake; only then are the tools listed.
+          send(method="notifications/initialized")
+          tools = call(2, "tools/list", {})["tools"]
+          assert sorted(tool["name"] for tool in tools) == ["check_package", "scan_lockfile"]
+          server.stdin.close()
+          assert server.wait() == 0  # The server ends when its client closes stdin.
+          PY

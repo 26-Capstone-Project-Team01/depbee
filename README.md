@@ -35,6 +35,8 @@ depbee --help
 
 **설치 직후 `depbee check lodash@4.17.21`로 첫 검사를 실행하세요.** wheel에는 모델 `D04-E00`과 `2026-10-06T14:00:47Z` 기준 OSV npm 색인이 들어 있습니다. `depbee setup`으로 현재 자산을 확인할 수 있고, 매 보고서에 실제 검사에 쓴 모델과 색인이 기록됩니다. [기본 자산 변경](docs/usage.md#기본-자산) · [결과 재현에 남길 값](docs/usage.md#결과-재현에-남길-값)
 
+호스트에 Python을 설치하지 않아도 Docker로 CLI 검사와 stdio MCP를 사용할 수 있습니다. 로컬 이미지를 빌드한 뒤 `docker run --rm depbee:local check lodash@4.17.21`로 검사합니다. [Docker로 실행하기](docs/docker.md)
+
 ## CLI
 
 아래 예시는 Git에 `package-lock.json`(v2 또는 v3)을 커밋한 npm 프로젝트 폴더에서 실행합니다. 기본 비교 기준은 Git HEAD이며 Git 2.45 이상이 필요합니다. 기준 파일을 직접 지정하려면 `--base-lock <파일>`을 사용합니다.
