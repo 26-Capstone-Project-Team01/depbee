@@ -10,6 +10,7 @@ from collections import Counter
 from pathlib import Path
 
 from . import __version__, config, terminal
+from .actions import plain_number, score_raw, score_text
 from .contracts import GuardError
 from .service import (
     APPLY_MODES,
@@ -529,17 +530,27 @@ def _ml_score(row: dict, label, report: dict) -> str | None:
     """The ML risk score with the ML path's own status (contract 4.1); not a probability.
 
     An unknown ml.status is shown as other unknown states are (label); one derived for a report
-    without ml is marked ML_DERIVED.
+    without ml is marked ML_DERIVED. The number is actions.score_text()'s, worded against the
+    report's own threshold so that it never reads as contradicting the status beside it.
     """
     status, derived = _ml_status(row, report)
     shown = None if status is None else label(ML_LABELS, status)
     if shown is not None and derived:
         shown += f", {ML_DERIVED}"
-    if row["score"] is not None:
-        return f"{row['score']:.3f}" + (f" ({shown})" if shown is not None else "")
+    if row.get("score") is not None:
+        score = score_text(row["score"], report.get("threshold"))
+        return score + (f" ({shown})" if shown is not None else "")
     if row["status"] != "removed" and shown is not None:
         return f"없음({shown})"
     return None
+
+
+def _raw_score(row: dict, report: dict) -> str | None:
+    """The stored score as the JSON has it, for the details of an item whose shown score
+    (_ml_score) is not that very value. None without a score or when the two are the same."""
+    if row.get("score") is None:
+        return None
+    return score_raw(row["score"], report.get("threshold"))
 
 
 def _alternative(row: dict) -> tuple[str, str] | None:
@@ -628,19 +639,23 @@ def _ordered(results: list[dict]) -> list[dict]:
     lockfile order)."""
     return sorted(
         results,
-        key=lambda r: (STATUS_ORDER.get(r["status"], len(STATUS_ORDER)), -(r["score"] or 0.0)),
+        key=lambda r: (STATUS_ORDER.get(r["status"], len(STATUS_ORDER)), -(r.get("score") or 0.0)),
     )
 
 
-def _rest_line(row: dict) -> str:
-    """The explanation_rest line: the other features, the base value and their total."""
+def _rest_line(row: dict, threshold: object = None) -> str:
+    """The explanation_rest line: the other features, the base value and their total. threshold:
+    the report's, so that the score at its end is worded as the item's own (_ml_score)."""
     rest = row["explanation_rest"]
     shown = sum(item["contribution"] for item in row.get("explanation") or [])
     total = shown + rest["others_sum"] + rest["base_value"]
+    score_note = (
+        f" → 점수 {score_text(row['score'], threshold)}" if row.get("score") is not None else ""
+    )
     return (
         f"나머지 특징 {rest['others_count']}개 합 {rest['others_sum']:+.2f},"
         f" 모델 기준값 {rest['base_value']:+.2f}"
-        f" (합계 {total:+.2f} → 점수 {row['score']:.3f})"
+        f" (합계 {total:+.2f}{score_note})"
     )
 
 
@@ -658,7 +673,8 @@ def _print_text(report: dict, paint=terminal.plain, mark: str = "") -> None:
         tone = "flagged" if emphasized.startswith(WARNING) else "incomplete"
         print(f"{paint(tone, emphasized)} {rest}")
     if report["model_id"]:
-        print(f"모델: {_clean(report['model_id'])}, 판정 기준 점수 {report['threshold']}")
+        threshold = plain_number(report.get("threshold"))
+        print(f"모델: {_clean(report['model_id'])}, 판정 기준 점수 {threshold}")
     for line in _detector_setup(report, _clean):
         print(line)
     if package_input:
@@ -681,6 +697,9 @@ def _print_text(report: dict, paint=terminal.plain, mark: str = "") -> None:
         score = _ml_score(row, _text_label, report)
         if score is not None:
             print(f"  ML 위험 점수: {score}")
+        raw = _raw_score(row, report)
+        if raw is not None:
+            print(f"  점수 원값: {raw}")
         if row.get("reason"):
             reason = REASON_LABELS.get(row["reason"], row["reason"])
             print(f"  이유: {_clean(reason)}")
@@ -711,7 +730,7 @@ def _print_text(report: dict, paint=terminal.plain, mark: str = "") -> None:
                     f" ({item['contribution']:+.2f})"
                 )
         if rest:
-            print(f"    {_rest_line(row)}")
+            print(f"    {_rest_line(row, report.get('threshold'))}")
     print()
     print(SAFETY_NOTE)
 
@@ -748,7 +767,8 @@ def _print_markdown(report: dict) -> None:
     ]
     lines += [f"- **{emphasized}** {rest}" for emphasized, rest in _notices(report)]
     if report["model_id"]:
-        lines.append(f"- 모델: {_md(report['model_id'])}, 판정 기준 점수 {report['threshold']}")
+        threshold = plain_number(report.get("threshold"))
+        lines.append(f"- 모델: {_md(report['model_id'])}, 판정 기준 점수 {threshold}")
     lines += [f"- {line}" for line in _detector_setup(report, _md)]
     checked = (
         "lockfile 없이 registry 정보로 이 버전 하나만" if package_input
@@ -808,12 +828,16 @@ def _markdown_details(row: dict, report: dict) -> list[str]:
     explanation, rest = row.get("explanation") or [], row.get("explanation_rest")
     detectors = _detector_lines(row, _md, _md_label, report)
     alternative = _alternative(row)
+    raw = _raw_score(row, report)
     if not (
-        alternative or row.get("detail") or detectors or row.get("evidence") or explanation or rest
-    ):
+        alternative or raw or row.get("detail") or detectors or row.get("evidence")
+        or explanation or rest
+    ):  # fmt: skip
         return []
     target = _md(f"{row['package']}@{row['after_version'] or row['before_version']}")
     lines = ["", f"### {_md_label(STATUS_LABELS, row['status'])}: {target}", ""]
+    if raw:
+        lines.append(f"- 점수 원값: {raw}")
     if alternative:
         # The heading has no location and rows without details have no section, so say which.
         lines.append(
@@ -839,7 +863,7 @@ def _markdown_details(row: dict, report: dict) -> list[str]:
                 f" ({item['contribution']:+.2f})"
             )
         if rest:
-            lines.append(f"  - {_rest_line(row)}")
+            lines.append(f"  - {_rest_line(row, report.get('threshold'))}")
     return lines
 
 
@@ -856,7 +880,8 @@ def _preview_lines(preview: dict, esc) -> list[str]:
     ]  # fmt: skip
 
 
-def _apply_item(item: dict, esc, label) -> str:
+def _apply_item(item: dict, esc, label, threshold: object = None) -> str:
+    """One item of the update gate. threshold: the report's, which words the score."""
     version = item["after_version"] or item["before_version"]
     causes = []
     for cause in item["causes"]:
@@ -865,7 +890,7 @@ def _apply_item(item: dict, esc, label) -> str:
             text += f", 이유: {label(REASON_LABELS, item['reason'])}"
         causes.append(text)
     if item.get("score") is not None:
-        causes.append(f"ML 위험 점수 {item['score']:.3f}")
+        causes.append(f"ML 위험 점수 {score_text(item['score'], threshold)}")
     status = label(STATUS_LABELS, item["status"])
     return (f"[{status}] {esc(item['package'])}@{esc(version)} ({esc(item['location'])}): "
             + "; ".join(causes))  # fmt: skip
@@ -875,9 +900,11 @@ def _apply_lines(
     apply: dict, esc, label, *, reasons: dict = APPLY_REASON_LABELS,
     confirmed: str = f"{CONFIRM_OPTION}로 확인함",
     retry: str | None = f"위 항목을 검토한 뒤 진행하려면 {CONFIRM_OPTION}를 함께 줍니다.",
+    threshold: object = None,
 ) -> list[tuple[str, list[str]]]:  # fmt: skip
     """The update --apply section after the report: lines and their sub-lines. reasons,
-    confirmed and retry: the wording that names the CLI option, which the dashboard replaces."""
+    confirmed and retry: the wording that names the CLI option, which the dashboard replaces.
+    threshold: the threshold of the report the apply was decided from (_apply_item)."""
     lines = [(f"방식: {label(MODE_LABELS, apply['mode'])}", [])]
     if apply["reason"]:
         lines.append((f"이유: {label(reasons, apply['reason'])}", []))
@@ -886,13 +913,14 @@ def _apply_lines(
     if apply["blocked"]:
         lines.append((
             f"기지 악성 기록 일치로 거부한 항목 {len(apply['blocked'])}개:",
-            [_apply_item(item, esc, label) for item in apply["blocked"]],
+            [_apply_item(item, esc, label, threshold) for item in apply["blocked"]],
         ))  # fmt: skip
     if apply["confirmation_required"]:
         state = confirmed if apply["confirmed"] else "확인하지 않음"
         lines.append((
             f"확인이 필요한 항목 {len(apply['confirmation_required'])}개({state}):",
-            [_apply_item(item, esc, label) for item in apply["confirmation_required"]],
+            [_apply_item(item, esc, label, threshold)
+             for item in apply["confirmation_required"]],
         ))  # fmt: skip
     refused_unconfirmed = (
         apply["outcome"] == "refused" and apply["reason"] == "confirmation_required"
@@ -946,7 +974,8 @@ def _emit(
         if apply is not None:
             outcome = _md_label(OUTCOME_LABELS, apply["outcome"])
             lines = ["", f"## depbee 업데이트 반영: {outcome}", ""]
-            for line, subs in _apply_lines(apply, _md, _md_label):
+            shown = _apply_lines(apply, _md, _md_label, threshold=report.get("threshold"))
+            for line, subs in shown:
                 lines += [f"- {line}", *(f"  - {sub}" for sub in subs)]
             print("\n".join(lines))
         return
@@ -968,7 +997,8 @@ def _emit(
             OUTCOME_TONES.get(apply["outcome"], ""), _text_label(OUTCOME_LABELS, apply["outcome"])
         )
         print(f"depbee 업데이트 반영: {outcome}")
-        for line, subs in _apply_lines(apply, _clean, _text_label):
+        shown = _apply_lines(apply, _clean, _text_label, threshold=report.get("threshold"))
+        for line, subs in shown:
             print(line)
             for sub in subs:
                 print(f"  - {sub}")

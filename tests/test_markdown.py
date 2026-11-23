@@ -118,7 +118,7 @@ class MarkdownLayoutTests(Fixture):
         output = render(report)
         rows = [line for line in output.split("\n") if line.startswith("| ")][2:]  # no header
         self.assertEqual([r.split(" | ")[0] for r in rows], ["| 위험", "| 보류", "| 통과", "| 삭제"])
-        self.assertIn("| 통과 | ` example ` | ` 1.1.0 ` | - | 0.000 (기준 미만) | - |", output)  # 0
+        self.assertIn("| 통과 | ` example ` | ` 1.1.0 ` | - | 0 (기준 미만) | - |", output)  # 0
         self.assertIn("| 보류 | ` local ` | ` 1.0.0 ` | - | 없음(미실행) | npm 공식 registry가 아닌 출처 |",
                       output)  # fmt: skip
         self.assertIn("| 삭제 | ` gone ` | - | - | - | 현재 lockfile에서 삭제됨 |", output)

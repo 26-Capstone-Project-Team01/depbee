@@ -53,7 +53,8 @@
 <h3 id="score-title">모델 점수</h3>
 <dl class="pairs">
 <dt>ML 위험 점수</dt><dd>{{ picked.score if picked.score is not none else "-" }}</dd>
-{% if picked.get("threshold") is not none %}<dt>판정 기준 점수</dt><dd>{{ picked.threshold }}</dd>{% endif %}
+{% if picked.score_raw is not none %}<dt>점수 원값</dt><dd>{{ picked.score_raw }}</dd>{% endif %}
+{% if picked.get("threshold") is not none %}<dt>판정 기준 점수</dt><dd>{{ picked.threshold|plain }}</dd>{% endif %}
 </dl>
 {% if picked.explanation or picked.rest %}
 <h4>점수에 크게 작용한 특징(+ 위험 쪽, - 정상 쪽)</h4>

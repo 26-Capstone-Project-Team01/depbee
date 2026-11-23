@@ -12,7 +12,7 @@
 <section class="model-sheet">
 <h2>{{ model.model_id if model.model_id is not none else "모델 없이 실행" }}</h2>
 <dl class="latest">
-<div><dt>판정 기준 점수</dt><dd>{{ model.threshold if model.threshold is not none else "-" }}</dd></div>
+<div><dt>판정 기준 점수</dt><dd>{{ model.threshold|plain if model.threshold is not none else "-" }}</dd></div>
 <div><dt>실행 수</dt><dd>{{ model.runs }}</dd></div>
 <div><dt>마지막 실행</dt><dd>{{ model.last|when }}</dd></div>
 </dl>
