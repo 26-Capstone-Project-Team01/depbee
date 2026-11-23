@@ -209,7 +209,7 @@ class SecondRequestTests(DashboardFixture):
             self.assertNotIn(promise, html)
         # The way on is a link, which is a GET: the page has no form that could post again.
         self.assertEqual(self.app.PICK_REOPEN, "프로젝트 관리 다시 열기")
-        self.assertIn(f'<p><a href="{S}/">{self.app.PICK_REOPEN}</a></p>', html)
+        self.assertIn(f'<p><a href="{S}/?manage=1">{self.app.PICK_REOPEN}</a></p>', html)
         self.assertNotIn("<form", html)
         # Where the link leads, the registration of the first request is there to see.
         self.assertIn(f'href="{S}/projects/1"', self.page("/"))

@@ -2,22 +2,25 @@
 {% block title %}모델 정보 - depbee{% endblock %}
 {% block main %}
 <h1>모델 정보</h1>
-<p>저장된 실행의 보고서에 있는 값만 보입니다(모델마다 가장 최근 실행 기준).</p>
+<p class="lead">저장된 실행의 보고서에 있는 값만 보입니다(모델마다 가장 최근 실행 기준).</p>
 <p class="note">{{ limits }}</p>
 {% if not models %}
 <p class="empty">저장된 실행이 없습니다. 등록한 프로젝트에서 검사나 업데이트 확인을 실행하면 그 보고서의 모델 정보가 여기에 나옵니다.</p>
 {% endif %}
 {% for model in models %}
-<section>
+{# What decides a verdict first, then how often and when it was used, then what identifies it. #}
+<section class="model-sheet">
 <h2>{{ model.model_id if model.model_id is not none else "모델 없이 실행" }}</h2>
-<dl>
-<dt>판정 기준 점수</dt><dd>{{ model.threshold if model.threshold is not none else "-" }}</dd>
+<dl class="latest">
+<div><dt>판정 기준 점수</dt><dd>{{ model.threshold if model.threshold is not none else "-" }}</dd></div>
+<div><dt>실행 수</dt><dd>{{ model.runs }}</dd></div>
+<div><dt>마지막 실행</dt><dd>{{ model.last|when }}</dd></div>
+</dl>
+<dl class="pairs identity">
 <dt>model_sha256</dt><dd>{{ model.model_sha256 if model.model_sha256 is not none else "-" }}</dd>
 <dt>manifest_sha256</dt><dd>{{ model.manifest_sha256 if model.manifest_sha256 is not none else "-" }}</dd>
 <dt>분석기</dt><dd>{{ model.analyzer_version if model.analyzer_version is not none else "-" }}</dd>
 <dt>depbee-analyzer</dt><dd>{% if model.extractor %}{{ model.extractor|join(", ") }}{% else %}-{% endif %}</dd>
-<dt>실행 수</dt><dd>{{ model.runs }}</dd>
-<dt>마지막 실행</dt><dd>{{ model.last|when }}</dd>
 </dl>
 {% if not model.provenance %}<p class="note">이 보고서에는 provenance가 없어 해시를 확인할 수 없습니다.</p>{% endif %}
 </section>

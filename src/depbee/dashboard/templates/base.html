@@ -5,24 +5,32 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}depbee{% endblock %}</title>
 <link rel="stylesheet" href="{{ base }}/static/style.css">
+{% if section == "overview" %}<link rel="stylesheet" href="{{ base }}/static/overview.css">{% endif %}
 <link rel="icon" type="image/svg+xml" href="{{ base }}/static/icon.svg">
 </head>
-<body>
+{# shell: a view with the inspector beside its list says class="split" (docs/dashboard-design.md). #}
+<body{% block shell %}{% endblock %}>
 <a class="skip" href="#main">본문으로 건너뛰기</a>
+{# The rail, a bar on a narrow screen: the brand, the registered projects as tabs (links, the
+   open one marked aria-current, no script), then project management and the model page. #}
 <header class="masthead">
-<div class="top">
-<a class="brand" href="{{ base }}/"><span class="cell" aria-hidden="true"></span>depbee</a>
-<a href="{{ base }}/model"{% if section == "model" %} aria-current="page"{% endif %}>모델 정보</a>
-</div>
-{# The registered projects as tabs: links, the open one marked aria-current (no script). #}
+<a class="brand" href="{{ base }}/"><span class="comb" aria-hidden="true"><span></span><span></span><span></span></span><span class="wordmark">depbee</span> <span class="brand-note">npm 업데이트 검사</span></a>
 <nav class="tabs" aria-label="프로젝트">
+<p class="rail-title">프로젝트 {{ tabs|length }}개</p>
+{% if tabs %}
 <ul>
 {% for tab in tabs %}
-<li><a class="tab" href="{{ base }}/projects/{{ tab.id }}"{% if tab.current %} aria-current="{{ "page" if section == "packages" else "true" }}"{% endif %}><span class="cell {{ tab.cell }}" aria-hidden="true"></span><span class="tab-name">{{ tab.name }}</span> <span class="tab-state">{{ tab.state }}</span></a></li>
+<li{% if tab.current %} class="here"{% endif %}><a class="tab" href="{{ base }}/projects/{{ tab.id }}"{% if tab.current %} aria-current="{{ "page" if section == "packages" else "true" }}"{% endif %}><span class="cell {{ tab.cell }}" aria-hidden="true"></span><span class="tab-name">{{ tab.name }}</span> <span class="tab-state">{{ tab.state }}</span></a></li>
 {% endfor %}
-<li><a class="tab manage" href="{{ base }}/"{% if section == "manage" %} aria-current="page"{% endif %}>프로젝트 관리</a></li>
 </ul>
+{% endif %}
 </nav>
+<nav class="aux" aria-label="관리와 정보">
+<a href="{{ base }}/"{% if section == "overview" %} aria-current="page"{% endif %}>프로젝트 현황판</a>
+<a class="tab manage" href="{{ base }}/?manage=1"{% if section == "manage" %} aria-current="page"{% endif %}>프로젝트 관리</a>
+<a href="{{ base }}/model"{% if section == "model" %} aria-current="page"{% endif %}>모델 정보</a>
+</nav>
+<span class="hive" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span></span>
 </header>
 <main id="main">
 {% block main %}{% endblock %}

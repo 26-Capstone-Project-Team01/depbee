@@ -1,9 +1,17 @@
 {% extends "base.html" %}
 {% block title %}{{ project.name }} 패키지 - depbee{% endblock %}
+{% block shell %}{% if project.found and not problem %} class="split"{% endif %}{% endblock %}
 {% block main %}
 {% set url = base ~ "/projects/" ~ project.id %}
+{# selected: the candidate the view opens (app._selected), one of the rows listed here. A pick
+   keeps the search and the kind, the name percent-encoded, and names its item last. #}
+{% set picked = selected if selected is defined and selected else none %}
+{% set kept = ("q=" ~ query|urlencode ~ "&" if query else "") ~ ("scope=" ~ scope ~ "&" if scope != "all" else "") %}
+{% set pick = url ~ "?" ~ kept ~ "item=" %}
+{% set shown = namespace(inspector=false) %}
 {% include "project_head.html" %}
-<section aria-labelledby="packages-title">
+<div class="bench">
+<section class="pane" aria-labelledby="packages-title">
 <div class="pane-head">
 <h2 id="packages-title">패키지</h2>
 {% if project.found %}
@@ -19,10 +27,10 @@
 {% elif problem %}
 <p class="error">{{ problem }}</p>
 {% else %}
-<p>직접 {{ direct_count }}개, 중첩 {{ nested_count }}개. 지금 package-lock.json에 있는 항목입니다.</p>
+<p class="tally">직접 {{ direct_count }}개, 중첩 {{ nested_count }}개. 지금 package-lock.json에 있는 항목입니다.</p>
 <p class="state">
-{% if state.rows and state.full %}업데이트 후보 {{ state.rows|length }}개를 확인했습니다. 판정과 검사 근거는 <a href="{{ url }}/updates">업데이트</a>에 있습니다.
-{% elif state.rows %}일부 패키지만 확인했고 업데이트 후보 {{ state.rows|length }}개를 찾았습니다. 나머지 패키지는 미확인입니다. 판정과 검사 근거는 <a href="{{ url }}/updates">업데이트</a>에 있습니다.
+{% if state.rows and state.full %}업데이트 후보 {{ state.rows|length }}개를 확인했습니다. 후보를 고르면 판정과 검사 근거를 이 화면에서 봅니다.
+{% elif state.rows %}일부 패키지만 확인했고 업데이트 후보 {{ state.rows|length }}개를 찾았습니다. 나머지 패키지는 미확인입니다. 후보를 고르면 판정과 검사 근거를 이 화면에서 봅니다.
 {% elif state.full %}{{ state.full.created_at|when }}에 확인했고 바뀌는 항목이 없었습니다.
 {% elif state.checks %}일부 패키지만 확인했고 그 패키지에는 업데이트 후보가 없었습니다. 나머지 패키지는 미확인입니다.
 {% elif not state.readable %}package.json이나 package-lock.json을 읽을 수 없어 업데이트 후보를 알 수 없습니다.
@@ -48,15 +56,16 @@
 {% endif %}
 {% if rows %}
 <table class="stack packages" aria-label="설치된 패키지">
-<thead><tr><th scope="col">패키지</th><th scope="col">설치 버전</th><th scope="col">설치 위치</th><th scope="col">종류</th><th scope="col">업데이트 후보</th></tr></thead>
+<thead><tr><th scope="col">패키지</th><th scope="col">사용 버전</th><th scope="col">설치 위치</th><th scope="col">종류</th><th scope="col">업데이트 후보</th></tr></thead>
 <tbody>
 {% for row in rows %}
 <tr><th scope="row">{{ row.name if row.name is not none else "이름 없음" }}</th><td>{{ row.version if row.version is not none else "-" }}</td><td>{{ row.location }}</td>
 <td>{% if row.direct %}<strong>직접</strong> {{ row.declared }}{% if row.declared_as is not none %}<span class="where">선언 이름 {{ row.declared_as }}</span>{% endif %}{% else %}중첩{% endif %}</td>
 <td>{% set candidate = row.candidate %}
+{% set open = candidate and picked is not none and candidate is sameas(picked) and not shown.inspector %}
 {% if candidate %}
-<span class="move"><span class="visually-hidden">후보 </span><span aria-hidden="true">→</span> {{ candidate.after if candidate.after is not none else "삭제" }}</span>
-{% if candidate.status != "removed" %}<span class="verdict {{ candidate.cell }}"><span class="cell {{ candidate.cell }}" aria-hidden="true"></span>{{ candidate.label }}</span>{% endif %}
+<a class="pick"{% if open %} id="picked" aria-current="true"{% endif %} href="{{ pick }}{{ candidate.run_id }}.{{ candidate.position }}#candidate-evidence"><span class="move"><span class="visually-hidden">후보 </span><span aria-hidden="true">→</span> {{ candidate.after if candidate.after is not none else "삭제" }}</span>
+{% if candidate.status != "removed" %}<span class="verdict {{ candidate.cell }}"><span class="cell {{ candidate.cell }}" aria-hidden="true"></span>{{ candidate.label }}</span>{% endif %}<span class="visually-hidden"> 검사 근거 열기</span></a>
 {% if candidate.known_hit %}<strong class="known">기지 악성 기록 일치</strong>{% endif %}
 <a href="{{ base }}/runs/{{ candidate.run_id }}#r{{ candidate.position }}">근거<span class="visually-hidden"> {{ candidate.package }}</span></a>
 {% elif row.checked %}<span class="quiet">후보 없음</span>
@@ -65,11 +74,20 @@
 {% else %}<span class="unknown"><span class="cell none" aria-hidden="true"></span>미확인</span>
 {% endif %}</td>
 </tr>
+{% if open %}
+{% set shown.inspector = true %}
+<tr class="inspect"><td colspan="5" id="candidate-evidence" tabindex="-1">
+{% include "inspector.html" %}
+</td></tr>
+{% endif %}
 {% endfor %}
 </tbody>
 </table>
+<details class="reading">
+<summary>종류와 후보 표시 읽는 법</summary>
 <p class="note">종류의 "직접"은 package-lock.json 루트 항목에 선언된 패키지이고, 뒤의 일반·개발·선택·피어는 그 선언이 dependencies·devDependencies·optionalDependencies·peerDependencies 중 어디에 있는지입니다(여러 곳이면 모두). "선언 이름"은 패키지 이름과 다른 이름(alias)으로 선언된 경우입니다. "중첩"은 루트에 선언되지 않은 항목입니다.</p>
-<p class="note">후보는 package.json이 허용하는 범위 안에서 npm이 고른 버전이며, 지금의 package.json과 package-lock.json으로 확인한 결과만 보입니다. "미확인" 항목은 전체 업데이트 확인으로 한꺼번에 확인합니다. "후보 없음"은 그 확인에서 바뀌지 않은 항목입니다.</p>
+<p class="note">후보는 package.json이 허용하는 범위 안에서 npm이 고른 버전이며, 지금의 package.json과 package-lock.json으로 확인한 결과만 보입니다. "미확인" 항목은 전체 업데이트 확인으로 한꺼번에 확인합니다. "후보 없음"은 그 확인에서 바뀌지 않은 항목입니다. 후보 옆의 "근거"는 그 확인을 저장한 보고서의 해당 항목을 엽니다.</p>
+</details>
 {% elif query or scope != "all" %}
 <p class="empty">조건에 맞는 패키지가 없습니다. 다른 이름이나 종류로 검색하세요.</p>
 {% else %}
@@ -77,4 +95,8 @@
 {% endif %}
 {% endif %}
 </section>
+{% if project.found and not problem and not shown.inspector %}
+{% include "inspector.html" %}
+{% endif %}
+</div>
 {% endblock %}

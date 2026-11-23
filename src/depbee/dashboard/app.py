@@ -8,7 +8,9 @@ label and line through the depbee.cli helpers the text output uses.
 Every page is one console: the registered projects are tabs (_tabs), and a project has three
 views, its packages, its update candidates and its history. A candidate is only ever a stored
 update preview of that project made from the files as they are now (_update_state); a GET
-reads files and the history and never runs npm or reaches the network.
+reads files and the history and never runs npm or reaches the network. The session's first page
+is the overview of the registered projects (_portfolio): the management page while none is
+registered, and whenever the address asks for it (?manage=1).
 
 A project is registered by its folder's path: typed into the form, or chosen in the desktop's
 own folder dialog (.picker, a child process), which is checked as a typed one is.
@@ -20,7 +22,6 @@ import importlib.resources
 import os
 import secrets
 import socket
-import sqlite3
 import stat
 import sys
 import threading
@@ -94,6 +95,9 @@ DECLARED_LABELS = {
     "peerDependencies": "피어",
 }
 NPM_PAGE = "https://www.npmjs.com/package/"
+# The stylesheets, each under its own route /static/<name>: nothing else of static/ is served,
+# and no file name is ever taken from a request.
+STYLES = ("style.css", "overview.css")
 # The tab icon, the brand's hexagon cell. Served under the session like the stylesheet: without
 # it a browser asks for /favicon.ico, which has no session and is a 403 in its console.
 ICON = (
@@ -334,6 +338,18 @@ def build_app(
                     manual=typed or manual, pick_seconds=picker.PICK_SECONDS,
                     switch_keys=SWITCH_KEYS)  # fmt: skip
 
+    def home(request: Request) -> Response:
+        """The session's first page: the overview of the registered projects. It is the
+        management page while no project is registered, and whenever the address asks for it
+        (?manage=1): a closed folder dialog and the link of a refused one lead there, so that a
+        registration that did not happen never ends on the overview."""
+        if request.query_params.getlist("manage") != ["1"]:
+            tabs = _tabs(None)
+            if tabs:
+                return page(request, "overview.html", section="overview", tabs=tabs,
+                            portfolio=_portfolio(tabs))  # fmt: skip
+        return projects(request)
+
     def enroll(request: Request, path: str, typed: bool) -> Response:
         """Register the folder at path, typed or chosen in the dialog, and open its project; a
         path that fails the registration checks registers nothing."""
@@ -384,14 +400,15 @@ def build_app(
         if outcome == "stopped" or ending():
             return _text(503, PICK_STOPPED)
         if outcome == "cancelled":
-            return RedirectResponse(f"{base}/", 303)
+            return RedirectResponse(f"{base}/?manage=1", 303)
         if outcome != "chosen":
             return projects(request, 503, PICK_ERRORS[outcome], manual=True)
         return enroll(request, folder, False)
 
     def project(request: Request) -> Response:
         """The packages view: what package-lock.json installs, and for each entry the candidate
-        a current update check found for it, that it found none, or that nothing was checked."""
+        a current update check found for it, that it found none, or that nothing was checked.
+        selected: the candidate opened beside the list, one of the rows the filter leaves."""
         found = _project(request.path_params["project_id"])
         if found is None:
             return _text(404, "등록된 프로젝트가 아닙니다.")
@@ -421,14 +438,16 @@ def build_app(
             and (not needle or needle in _clean(row["name"] or "").casefold())
         ]  # fmt: skip
         targets = _preview_targets(found["path"]) if any(row["direct"] for row in rows) else set()
+        shown = [row["candidate"] for row in rows if row["candidate"] is not None]
         return page(request, "project.html", project=found, section="packages", rows=rows,
                     direct_count=direct_count, nested_count=len(dependencies) - direct_count,
                     query=query, scope=scope, targets=targets, max_query=MAX_NAME_LENGTH,
-                    problem=problem, state=state)  # fmt: skip
+                    problem=problem, state=state, selected=_selected(params, shown))  # fmt: skip
 
     def updates(request: Request) -> Response:
         """The updates view: the current candidates with their evidence, the previews this
-        process still holds (the only ones that can be applied) and the buttons that check."""
+        process still holds (the only ones that can be applied) and the buttons that check.
+        selected: the candidate opened beside the list."""
         found = _project(request.path_params["project_id"])
         if found is None:
             return _text(404, "등록된 프로젝트가 아닙니다.")
@@ -449,7 +468,8 @@ def build_app(
             else None
         )
         return page(request, "updates.html", project=found, section="updates", state=state,
-                    previews=held, applied_at=applied_at, max_targets=MAX_TARGETS)  # fmt: skip
+                    previews=held, applied_at=applied_at, max_targets=MAX_TARGETS,
+                    selected=_selected(request.query_params, state["rows"]))  # fmt: skip
 
     def project_history(request: Request) -> Response:
         """The history view: the project's applies and runs, each run linked to its report."""
@@ -459,7 +479,7 @@ def build_app(
         runs = [_run_row(run) for run in history.list_runs(found["id"])]
         applies = [_apply_row(row) for row in history.list_applies(found["id"])]
         return page(request, "history.html", project=found, section="history", runs=runs,
-                    applies=applies)  # fmt: skip
+                    applies=applies, score_history=history.list_run_scores(found["id"]))  # fmt: skip
 
     def run(request: Request) -> Response:
         run_id = request.path_params["run_id"]
@@ -618,9 +638,14 @@ def build_app(
         return page(request, "model.html", section="model", models=_models(),
                     limits=MODEL_LIMITS)  # fmt: skip
 
-    def style(request: Request) -> Response:
-        css = importlib.resources.files("depbee.dashboard").joinpath("static", "style.css")
-        return Response(css.read_bytes(), media_type="text/css; charset=utf-8")
+    def style(name: str):
+        """The handler of one stylesheet of STYLES: the file is the route's own."""
+
+        def stylesheet(request: Request) -> Response:
+            css = importlib.resources.files("depbee.dashboard").joinpath("static", name)
+            return Response(css.read_bytes(), media_type="text/css; charset=utf-8")
+
+        return stylesheet
 
     def icon(request: Request) -> Response:
         return Response(ICON, media_type="image/svg+xml")
@@ -631,7 +656,7 @@ def build_app(
 
     app = Starlette(
         routes=[
-            Route("/", projects),
+            Route("/", home),
             Route("/projects", register, methods=["POST"]),
             Route("/projects/pick", pick, methods=["POST"]),
             Route("/projects/{project_id:int}", project),
@@ -643,7 +668,7 @@ def build_app(
             Route("/previews/{preview_id}/apply", apply, methods=["POST"]),
             Route("/runs/{run_id:int}", run),
             Route("/model", model),
-            Route("/static/style.css", style),
+            *(Route(f"/static/{name}", style(name)) for name in STYLES),
             Route("/static/icon.svg", icon),
         ],
         exception_handlers={Exception: failed},
@@ -736,6 +761,33 @@ def _tabs(current: dict | None, recent: int = 1) -> list[dict]:
     return tabs
 
 
+def _portfolio(tabs: list[dict]) -> list[dict]:
+    """The overview's row of each registered project (tabs: _tabs()): its id, name, path and
+    whether its folder is found, with three things the history says of it, each None when the
+    project has none. scan: its newest scan. preview: its newest update preview that no apply
+    was recorded for (history.latest_preview_only()), so a preview that was applied, refused or
+    failed is not shown as one still to look at. Both are a _run_row() with the tab cell of the
+    stored status. apply: its most recently recorded apply that changed its files
+    (history.latest_applies(), the mode and outcome worded as in the history view); the applies
+    that did not are in the project's history view and on their runs.
+
+    Each run is found on its own, however many other runs came after it, and the applies are
+    read once for all the projects. Only stored run and apply columns are read: no report or
+    apply document, and no list of runs."""
+    portfolio, applies = [], history.latest_applies()
+    for tab in tabs:
+        row = {key: tab[key] for key in ("id", "name", "path", "found")}
+        (scan,) = history.list_runs(tab["id"], 1, "scan") or [None]
+        for name, run in (("scan", scan), ("preview", history.latest_preview_only(tab["id"]))):
+            row[name] = run and {**_run_row(run),
+                                 "cell": (TAB_STATES.get(run["status"]) or ("none",))[0]}  # fmt: skip
+        applied = applies.get(tab["id"])
+        row["apply"] = applied and {**applied, "mode": _text_label(MODE_LABELS, applied["mode"]),
+                                    "outcome": _text_label(OUTCOME_LABELS, applied["outcome"])}  # fmt: skip
+        portfolio.append(row)
+    return portfolio
+
+
 def _sha256(folder: str, name: str) -> str | None:
     """SHA-256 of the regular file name in a registered folder, reached as at registration; None
     if it is not there, cannot be read or is larger than any file depbee previews."""
@@ -790,10 +842,11 @@ def _candidates(checks: list[dict]) -> dict:
     stored reports of the used checks with a candidate row are read (history.get_run). checks:
     {id, created_at, targets (the names, None for everything)} of the checks used, newest
     first; rows: _result() views in the report order (D-13) with before, after, the run and the
-    row's position in its report (the anchor on the run page); covered: the locations the used
-    checks cover; full: the check of everything among them (as in checks), None if only named
-    packages were checked; summary: the counts as the text output words them, None without a
-    row."""
+    row's position in its report (the anchor on the run page), and model_id, threshold and
+    list_as_of (of the known malicious list) as that report stores them, None for what it does
+    not say; covered: the locations the used checks cover; full: the check of everything among
+    them (as in checks), None if only named packages were checked; summary: the counts as the
+    text output words them, None without a row."""
     reports = {}  # run -> its stored report, read once
 
     def report_of(run_id: int) -> dict:
@@ -831,12 +884,33 @@ def _candidates(checks: list[dict]) -> dict:
     rows = []
     for row in raw:
         run_id, position, report = picked[id(row)]
+        detectors = report.get("detectors")
+        known = detectors.get("known_malicious") if isinstance(detectors, dict) else None
         rows.append({**_result(row, report), "before": row["before_version"],
-                     "after": row["after_version"], "run_id": run_id,
-                     "position": position})  # fmt: skip
+                     "after": row["after_version"], "run_id": run_id, "position": position,
+                     "model_id": report.get("model_id"), "threshold": report.get("threshold"),
+                     "list_as_of": known.get("list_as_of") if isinstance(known, dict) else None,
+                     })  # fmt: skip
     full = shown[-1] if shown and shown[-1]["targets"] is None else None
     return {"checks": shown, "rows": rows, "covered": set(owners), "full": full,
             "summary": _summary(raw, False) if raw else None}  # fmt: skip
+
+
+def _selected(params, shown: list[dict]) -> dict | None:
+    """The update candidate a view opens beside its list: one of shown, the candidate rows the
+    view lists (_candidates rows, in the view's order). It is the row whose run and position the
+    item query names, written <run id>.<position> as in the row's link to its report; else the
+    first row shown, None when the view shows none.
+
+    The query is only compared as text with the keys of the rows shown: it is never read as a
+    number and nothing is looked up by it. So an item that is repeated, malformed, of a check
+    of other files or of another project, or of a row the view's filter leaves out is the same
+    as no item."""
+    given = params.getlist("item")
+    first = shown[0] if shown else None
+    if len(given) != 1:
+        return first
+    return next((row for row in shown if f"{row['run_id']}.{row['position']}" == given[0]), first)
 
 
 def _dependencies(path: str) -> tuple[list[dict], str | None]:
@@ -1100,12 +1174,8 @@ def serve(
             ws="none",
         )  # fmt: skip
         server = uvicorn.Server(config)
-        try:
-            projects = history.list_projects()
-        except (history.HistoryError, OSError, sqlite3.Error, RuntimeError):
-            projects = []  # The existing dashboard error page handles history read failures.
-        target = f"projects/{projects[0]['id']}" if len(projects) == 1 else ""
-        url = f"http://{HOST}:{actual}/s/{session}/{target}"
+        # The session's first page, whatever is registered: it reads the history when opened.
+        url = f"http://{HOST}:{actual}/s/{session}/"
         if background is None:
             print(url, flush=True)
             print("이 주소를 브라우저에서 여세요. 종료하려면 Ctrl+C를 누르세요.", flush=True)

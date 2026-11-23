@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}프로젝트 현황판 - depbee{% endblock %}
+{% block main %}
+{# The overview (app._portfolio): one row per registered project, with its newest scan, update
+   preview and apply in the same three columns. Stored records only, never a new verdict. A
+   state is said in words beside the console's status cell (style.css .cell), and what needs a
+   decision has an edge (overview.css). The roles are spelled out because the stylesheet lays
+   the rows out as blocks and grids, which would otherwise cost the table its meaning for
+   assistive technology. No macro: its output would pass through the environment's finalize as
+   plain text. #}
+<div class="overview">
+<div class="ov-head">
+<h1 class="ov-title" id="overview-title">프로젝트 현황판</h1>
+<a class="ov-add" href="{{ base }}/?manage=1">프로젝트 등록</a>
+</div>
+<p class="note" id="overview-note">미리보기에는 반영을 시도하지 않은 기록만, 실제 반영에는 완료한 기록만 표시합니다. 거부되거나 실패한 시도는 프로젝트 기록에서 확인하세요.</p>
+<table class="ov-board" role="table" aria-labelledby="overview-title" aria-describedby="overview-note">
+{# Shown on a wide page only; elsewhere every cell carries its own label (ov-kind). #}
+<thead role="rowgroup">
+<tr class="ov-cols" role="row"><th role="columnheader" scope="col">프로젝트</th><th role="columnheader" scope="col">최근 검사</th><th role="columnheader" scope="col">업데이트 미리보기</th><th role="columnheader" scope="col">실제 반영</th></tr>
+</thead>
+<tbody role="rowgroup">
+{% for row in portfolio %}
+<tr class="ov-row" role="row">
+<th class="ov-project" role="rowheader" scope="row">
+<a class="ov-name" href="{{ base }}/projects/{{ row.id }}">{{ row.name }}</a>
+<span class="ov-path">{{ row.path }}</span>
+{% if not row.found %}<span class="ov-gone"><span class="cell gone" aria-hidden="true"></span><span>폴더를 찾을 수 없습니다.{% if row.scan or row.preview or row.apply %} 지난 기록은 그대로 열립니다.{% endif %}</span></span>{% endif %}
+</th>
+{% for record, kind, absent in ((row.scan, "최근 검사", "검사 기록 없음"), (row.preview, "업데이트 미리보기", "별도 미리보기 없음")) %}
+<td class="ov-rec {% if record %}ov-{{ record.cell }}{% else %}ov-empty{% endif %}" role="cell">
+<span class="ov-kind">{{ kind }}</span>
+{% if record %}
+<p class="ov-state"><span class="cell {{ record.cell }}" aria-hidden="true"></span><span>{{ record.status }}</span></p>
+<p class="ov-detail"><span{% if record.counts.flagged %} class="ov-n-risk"{% endif %}>위험 {{ record.counts.flagged }}건</span>, <span{% if record.counts.incomplete %} class="ov-n-hold"{% endif %}>보류 {{ record.counts.incomplete }}건</span></p>
+<p class="ov-foot"><time datetime="{{ record.created_at }}">{{ record.created_at|when }}</time> <a href="{{ base }}/runs/{{ record.id }}"><span class="ov-sr">{{ row.name }} {{ kind }} </span>보고서 #{{ record.id }}</a></p>
+{% else %}
+<p class="ov-state"><span class="cell none" aria-hidden="true"></span><span>{{ absent }}</span></p>
+{% endif %}
+</td>
+{% endfor %}
+{# An apply is something that was done, not a verdict: it has no cell, and it alone has a mode. #}
+<td class="ov-rec{% if not row.apply %} ov-empty{% endif %}" role="cell">
+<span class="ov-kind">실제 반영</span>
+{% if row.apply %}
+<p class="ov-state"><span>{{ row.apply.outcome }}</span></p>
+<p class="ov-detail">방식: {{ row.apply.mode }}</p>
+<p class="ov-foot"><time datetime="{{ row.apply.created_at }}">{{ row.apply.created_at|when }}</time> <a href="{{ base }}/runs/{{ row.apply.run_id }}"><span class="ov-sr">{{ row.name }} 실제 반영 </span>보고서 #{{ row.apply.run_id }}</a></p>
+{% else %}
+<p class="ov-state"><span>완료된 반영 없음</span></p>
+{% endif %}
+</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{% endblock %}

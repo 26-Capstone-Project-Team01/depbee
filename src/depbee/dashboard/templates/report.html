@@ -1,6 +1,9 @@
-{# The report as the text output shows it; the context comes from app._report(). #}
+{# The report as the text output words it; the context is app._report() alone. Each result keeps
+   what was found apart from what the model scored: the facts (where, the versions, the detectors,
+   the extracted facts) on one side, the ML risk score and its explanation on the other. #}
 {# cli._notices puts the known malicious notice first; only that one is a risk, not a hold. #}
 {% set known = results|selectattr("known_hit")|list %}
+<div class="summary">
 <h2>검사 결과: {{ overall }}</h2>
 <ul>
 <li>{{ summary }}</li>
@@ -11,12 +14,15 @@
 {% endfor %}
 <li>범위: {% if package_input %}lockfile 없이 registry 정보로 이 버전 하나만{% else %}lockfile에서 바뀐 의존성만{% endif %} 검사했습니다. 프로젝트 전체의 안전성 평가가 아닙니다.</li>
 </ul>
+</div>
 {% for row in results %}
 <section class="result {{ row.status }}{% if row.known_hit %} known{% endif %}" id="r{{ row.position }}">
 <h3>[{{ row.label }}] {{ row.package }}@{{ row.version }}</h3>
+<div class="evidence">
+<div class="found">
+<p class="side">확인된 사실</p>
 <dl>
 <dt>위치</dt><dd>{{ row.location }}</dd>
-{% if row.score is not none %}<dt>ML 위험 점수</dt><dd>{{ row.score }}</dd>{% endif %}
 {% if row.compared is not none %}<dt>비교 버전</dt><dd>{{ row.compared }}</dd>{% endif %}
 {% if row.reason is not none %}<dt>이유</dt><dd>{{ row.reason }}</dd>{% endif %}
 {% if row.alternative is not none %}<dt>대안(안전 보증 아님)</dt><dd>{{ row.alternative[0] }} ({{ row.alternative[1] }})</dd>{% endif %}
@@ -37,6 +43,15 @@
 {% endfor %}
 </ul>
 {% endif %}
+</div>
+{% if row.score is not none or row.explanation or row.rest %}
+<div class="scored">
+<p class="side">모델 점수</p>
+{% if row.score is not none %}
+<dl>
+<dt>ML 위험 점수</dt><dd>{{ row.score }}</dd>
+</dl>
+{% endif %}
 {% if row.explanation or row.rest %}
 <h4>모델 설명: ML 위험 점수에 크게 작용한 특징(기여도 + 위험 쪽, - 정상 쪽)</h4>
 <table class="bars">
@@ -47,5 +62,8 @@
 </table>
 {% if row.rest %}<p>{{ row.rest }}</p>{% endif %}
 {% endif %}
+</div>
+{% endif %}
+</div>
 </section>
 {% endfor %}
