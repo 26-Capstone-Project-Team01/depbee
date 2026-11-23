@@ -531,9 +531,10 @@ def build_app(
         """The packages view: what package-lock.json installs, and for each entry the candidate
         a current update check found for it, that it found none, or that nothing was checked.
         The search, the kind and the candidates-only filter narrow the list together (_filters).
-        returned: what the check that sent the browser here found (_returned); selected: the
-        candidate opened beside the list, one of the rows the filters leave: the first one that
-        check returned, else the one the address names (_selected)."""
+        selected: the candidate opened beside the list, one of the rows the filters leave: the
+        one the address names (_selected), which after a check is the first one that check
+        returned (_landing); returned: what the check that sent the browser here found
+        (_returned)."""
         found = _project(request.path_params["project_id"])
         if found is None:
             return _text(404, "등록된 프로젝트가 아닙니다.")
@@ -544,7 +545,6 @@ def build_app(
         query, scope, only = filters
         dependencies, problem = _dependencies(found["path"])
         direct_count = sum(row["direct"] for row in dependencies)
-        needle = query.casefold()
         state = _update_state(found)
         candidates = {row["location"]: row for row in state["rows"]}
         # Counted over the whole list, whatever the search leaves of it. Without a candidate
@@ -556,15 +556,13 @@ def build_app(
              "checked": state["full"] is not None or row["location"] in state["covered"],
              "declared": ", ".join(DECLARED_LABELS[field] for field in row["declared"]),
              "declared_as": _declared_as(row)}
-            for row in dependencies
-            if (scope == "all" or row["direct"] == (scope == "direct"))
-            and (not needle or needle in _clean(row["name"] or "").casefold())
-            and (not only or row["location"] in candidates)
+            for row in _listed(dependencies, query, scope)
+            if not only or row["location"] in candidates
         ]  # fmt: skip
         targets = _preview_targets(found["path"]) if any(row["direct"] for row in rows) else set()
         shown = [row["candidate"] for row in rows if row["candidate"] is not None]
-        returned = _returned(params, state, shown)
-        selected = (returned and returned["first"]) or _selected(params, shown)
+        selected = _selected(params, shown)
+        returned = _returned(params, state, shown, selected)
         return page(request, "project.html", project=found, section="packages", rows=rows,
                     direct_count=direct_count, nested_count=len(dependencies) - direct_count,
                     query=query, scope=scope, only=only, candidate_count=candidate_count,
@@ -678,12 +676,12 @@ def build_app(
         while len(previews) > KEPT_PREVIEWS:
             previews.popitem(last=False)
         # Sent from the packages view and recorded: back to that list, where the first candidate
-        # this check returned is opened. The preview stays held and nothing is applied. Any
-        # other check opens its preview, as before.
+        # this check returned is opened (_landing). The preview stays held and nothing is
+        # applied. Any other check opens its preview, as before.
         back = _back(form)
         if back is not None and run_id is not None:
-            query = urlencode([*back, ("checked", run_id)])
-            return RedirectResponse(f"{base}/projects/{found['id']}?{query}#picked", 303)
+            landing = await run_in_threadpool(_landing, found, back, run_id)
+            return RedirectResponse(f"{base}/projects/{found['id']}?{landing}", 303)
         return RedirectResponse(f"{base}/previews/{preview_id}", 303)
 
     async def scan(request: Request) -> Response:
@@ -1158,6 +1156,19 @@ def _filters(params) -> tuple[str, str, bool] | None:
     return query, scope, bool(only)
 
 
+def _listed(dependencies: list[dict], query: str, scope: str) -> list[dict]:
+    """The lockfile entries the packages view lists under a search and a kind (_filters), in
+    the lockfile's order: those of the kind whose name holds the name searched for, whatever
+    its case."""
+    needle = query.casefold()
+    return [
+        row
+        for row in dependencies
+        if (scope == "all" or row["direct"] == (scope == "direct"))
+        and (not needle or needle in _clean(row["name"] or "").casefold())
+    ]
+
+
 def _back(form: dict) -> list[tuple[str, str]] | None:
     """The query of the packages view that a check was sent from, as the pairs which that
     view's own links write: the form's back field, read as the view reads its address
@@ -1184,7 +1195,32 @@ def _back(form: dict) -> list[tuple[str, str]] | None:
     return pairs
 
 
-def _returned(params, state: dict, shown: list[dict]) -> dict | None:
+def _landing(project: dict, back: list[tuple[str, str]], run_id: int) -> str:
+    """The query and the fragment of the packages view's address that a recorded check sent
+    from that view comes back to: back (_back) with the run as checked, at the candidate the
+    view opens or at the line that says there is none to open.
+
+    The view opens the candidate its address names (_selected). So the first candidate this
+    run returned among the rows that view lists (_listed) becomes the item, at #picked, the
+    link of the open candidate. When it returned none there, the candidate that was open stays
+    the item and the address goes to #check-status, the line that says what the check found,
+    never to #picked: that is then the candidate of an older check. The browser follows the
+    fragment itself, so the place is the same with the script and without it, and the address
+    still names what is open once the run is taken off it."""
+    kept = dict(back)
+    dependencies, _ = _dependencies(project["path"])
+    returned = {
+        row["location"]: row for row in _update_state(project)["rows"] if row["run_id"] == run_id
+    }
+    listed = _listed(dependencies, kept.get("q", ""), kept.get("scope", "all"))
+    first = next((returned[row["location"]] for row in listed if row["location"] in returned), None)
+    if first is not None:
+        kept["item"] = f"{first['run_id']}.{first['position']}"
+    kept["checked"] = run_id
+    return urlencode(kept) + ("#check-status" if first is None else "#picked")
+
+
+def _returned(params, state: dict, shown: list[dict], selected: dict | None) -> dict | None:
     """What the packages view says of the check that sent the browser to it (the redirect of
     check_update names its run in the checked query): {id, full (it checked everything), count
     (how many current candidates it found), first (the first of them among shown, the
@@ -1193,15 +1229,22 @@ def _returned(params, state: dict, shown: list[dict]) -> dict | None:
     None unless checked is given once and is the run of one of the project's current checks
     (state["checks"]). It is only compared as text with those runs: never read as a number,
     and nothing is looked up by it. So the run of other files or of another project, a
-    repeated or malformed value and no value at all are all the same."""
+    repeated or malformed value and no value at all are all the same.
+
+    None too when first is not selected, the candidate the view opens: the address names
+    another one, which _landing never writes, and the view says nothing of a check whose
+    first candidate is not the one it shows."""
     given = params.getlist("checked")
     check = next((c for c in state["checks"] if [str(c["id"])] == given), None)
     if check is None:
         return None
+    first = next((row for row in shown if row["run_id"] == check["id"]), None)
+    if first is not None and first is not selected:
+        return None
     return {
         "id": check["id"], "full": check["targets"] is None,
         "count": sum(row["run_id"] == check["id"] for row in state["rows"]),
-        "first": next((row for row in shown if row["run_id"] == check["id"]), None),
+        "first": first,
     }  # fmt: skip
 
 

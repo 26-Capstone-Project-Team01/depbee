@@ -61,17 +61,20 @@
 
   const status = document.getElementById('check-status');
   if (status && status.dataset.landing) {
-    const candidate = status.dataset.landing === 'picked' && document.getElementById('picked');
-    if (candidate) {
-      candidate.scrollIntoView({ block: 'center' });
-      candidate.focus({ preventScroll: true });
-    } else {
-      status.focus();
-    }
+    /* The place the fragment of the address names: the candidate the check opened, or the
+       line that says it opened none. The browser scrolls to it by itself, as it does without
+       this script: a scroll made from here ended at another place in WebKit at times. */
+    const picked = status.dataset.landing === 'picked' && document.getElementById('picked');
+    (picked || status).focus({ preventScroll: true });
     say(status.textContent.replace(/\s+/g, ' ').trim());
-    /* Once: the address without the check, so that a reload or a way back moves no focus. */
-    const url = new URL(location.href);
-    url.searchParams.delete('checked');
-    history.replaceState(null, '', url);
+    /* Once: the address without the check and without that fragment, so that a reload or a
+       way back moves no focus and says nothing again. It still names what is open (item).
+       Not before the browser has gone to the fragment, which can be just after the load. */
+    window.addEventListener('load', () => setTimeout(() => {
+      const url = new URL(location.href);
+      url.searchParams.delete('checked');
+      url.hash = '';
+      history.replaceState(null, '', url);
+    }));
   }
 })();

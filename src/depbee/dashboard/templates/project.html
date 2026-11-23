@@ -55,7 +55,8 @@
 <span class="toggle off">{{ "확인된 후보 0개" if state.checks else "후보 미확인" }}</span>
 {% endif %}
 </div>
-{# landing: where the script puts the focus after a check, the candidate it opened or this line. #}
+{# landing: where a check that came back here lands, the candidate it opened or this line. The
+   fragment of its address names the same place (app._landing); the script puts the focus there. #}
 <p class="state" id="check-status" tabindex="-1"{% if returned %} data-landing="{{ "picked" if returned.first else "status" }}"{% endif %}>
 {% if returned and returned.first %}실행 #{{ returned.id }}에서 후보 {{ returned.count }}개를 확인했습니다. 목록에서 그 첫 후보를 열었습니다: {{ returned.first.package }}. 자동으로 반영하지 않습니다.
 {% elif returned and returned.count %}실행 #{{ returned.id }}에서 후보 {{ returned.count }}개를 확인했지만 지금 검색과 필터로는 목록에 보이지 않습니다. <a href="{{ url }}">필터 초기화</a>

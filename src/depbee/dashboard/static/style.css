@@ -261,7 +261,7 @@ meter::-moz-meter-bar { background: var(--ink); }
 .stack .inspect > td { padding: 0; border: 0; background: none; }
 .candidates tr.inspect { display: block; margin: 0; padding: 0; border: 0; background: none; box-shadow: none; }
 #candidate-evidence { scroll-margin-top: 7.5rem; }
-#picked { scroll-margin-top: 6rem; }
+#picked, #check-status { scroll-margin-top: 6rem; }
 .inspector { display: block; margin: .25rem 0 .75rem; padding: .85rem 1rem 1rem; border: 1px solid var(--line-2); border-top: 3px solid var(--honey); background: var(--sheet); font: .9375rem/1.6 var(--sans); --ground: var(--sheet); }
 .inspector.idle { border-top-color: var(--line-2); }
 .inspector h2 { margin: 0; color: var(--muted); font-size: .8125rem; font-weight: 600; }
@@ -445,7 +445,7 @@ meter::-moz-meter-bar { background: var(--ink); }
    height, so that the address of a pick brings that row into view. */
 @media (min-width: 64rem) {
   body.split main, body.split footer { padding-right: calc(var(--inspect) + 1.5rem); }
-  #candidate-evidence, #picked { scroll-margin-top: 35vh; }
+  #candidate-evidence, #picked, #check-status { scroll-margin-top: 35vh; }
   #candidate-evidence:focus-visible { outline: 0; box-shadow: none; }
   .inspector { position: fixed; top: 0; right: 0; bottom: 0; z-index: 2; width: var(--inspect); margin: 0; padding: 1.1rem 1.25rem 2rem; overflow-y: auto; overscroll-behavior: contain; border-width: 3px 0 0 1px; }
   .inspect-nav .when-open, .inspect-nav .when-closed { display: none; }

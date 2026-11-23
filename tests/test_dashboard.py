@@ -1698,13 +1698,15 @@ class CheckReturnTests(ScreenFixture):
                                 follow_redirects=False)  # fmt: skip
 
     def landed(self, back, packages=""):
-        """(run, the address the check came back to without the session prefix)."""
+        """(run, the address the check came back to without the session prefix): this project's
+        packages view, with the run, at the candidate it opens or at the line that says there
+        is none to open."""
         response = self.send(back, packages)
         self.assertEqual(response.status_code, 303, response.text)
         run = history.list_runs(self.project_id, 1)[0]["id"]
         location = response.headers["location"]
         self.assertTrue(location.startswith(f"{S}{self.packages}?"), location)
-        self.assertTrue(location.endswith(f"checked={run}#picked"), location)
+        self.assertRegex(location, rf"[?&]checked={run}#(picked|check-status)$")
         return run, location.removeprefix(S)
 
     def context(self, url):
@@ -1713,20 +1715,29 @@ class CheckReturnTests(ScreenFixture):
             self.assertEqual(self.get(url).status_code, 200, url)
         return template.render.call_args.kwargs
 
+    def inspector(self, url):
+        """The inspector of the page at an address, as it is shown: the candidate that is open."""
+        return re.search(r'<aside class="inspector" .*?</aside>', self.page(url), re.S)[0]
+
     def test_a_check_comes_back_to_the_view_it_was_sent_from(self):
         self.returns("other", "example")
         # Without the field (any other form): the preview's own page, as before.
         self.assertTrue(self.check().headers["location"].startswith(f"{S}/previews/"))
+        # The search, the kind and the filter are kept. The item is the candidate the view
+        # opens: example's (the report's second row) is the first that the list shows, whatever
+        # was open before, and the address goes to it.
         for back, query in (
             ("", ""),
-            ("q=ex&scope=direct&only=1&item=3.0", "q=ex&scope=direct&only=1&item=3.0&"),
+            ("q=ex&scope=direct&only=1&item=3.0", "q=ex&scope=direct&only=1&"),
             ("only=1&q=ex", "q=ex&only=1&"),  # written as the view's own links write it
-            ("q=%ED%95%9C%EA%B8%80+x&", "q=%ED%95%9C%EA%B8%80+x&"),
             ("scope=all&q=+", ""),  # nothing that narrows the list
         ):
             with self.subTest(back=back):
                 run, url = self.landed(back)
-                self.assertEqual(url, f"{self.packages}?{query}checked={run}#picked")
+                self.assertEqual(url, f"{self.packages}?{query}item={run}.1&checked={run}#picked")
+        # A search that lists none of the candidates: the address goes to the line that says so.
+        run, url = self.landed("q=%ED%95%9C%EA%B8%80+x&")
+        self.assertEqual(url, f"{self.packages}?q=%ED%95%9C%EA%B8%80+x&checked={run}#check-status")
         # The address is always this project's packages view, built from what that view reads
         # of the field and never from the field's text: what the view would refuse, a value
         # that is no query of it, or a field given twice is the view without a filter.
@@ -1735,7 +1746,7 @@ class CheckReturnTests(ScreenFixture):
                      "item=" + "9" * 41, "item=1.0&item=2.0", ["q=ex", "only=1"]):  # fmt: skip
             with self.subTest(back=str(back)[:30]):
                 run, url = self.landed(back)
-                self.assertEqual(url, f"{self.packages}?checked={run}#picked")
+                self.assertEqual(url, f"{self.packages}?item={run}.1&checked={run}#picked")
         # Every one of these checks is held and recorded, and none of them applied anything.
         self.assertEqual(len(history.list_runs(self.project_id)), len(self.previewed))
         self.assertEqual(self.apply_preview.call_count, 0)
@@ -1779,9 +1790,11 @@ class CheckReturnTests(ScreenFixture):
         self.assertEqual(self.apply_preview.call_count, 0)
         # The search the check was sent with decides which returned candidate is the first.
         run, url = self.landed("q=oth")
-        self.assertEqual(self.context(url)["selected"]["package"], "other")
+        self.assertEqual((url, self.context(url)["selected"]["package"]),
+                         (f"{self.packages}?q=oth&item={run}.0&checked={run}#picked", "other"))  # fmt: skip
         # No returned candidate among the rows: the line says so, and is where the focus goes.
         run, url = self.landed("q=inner")
+        self.assertEqual(url, f"{self.packages}?q=inner&checked={run}#check-status")
         context = self.context(url)
         self.assertEqual((context["returned"]["count"], context["returned"]["first"],
                           context["selected"]), (2, None, None))  # fmt: skip
@@ -1795,31 +1808,109 @@ class CheckReturnTests(ScreenFixture):
         self.returns("other")
         first, url = self.landed("", "other")
         key = f"{first}.0"
-        self.assertEqual(self.context(url)["selected"]["package"], "other")
-        # A check of example alone, sent while other is open: its candidate is opened instead.
+        self.assertEqual((url, self.context(url)["selected"]["package"]),
+                         (f"{self.packages}?item={key}&checked={first}#picked", "other"))  # fmt: skip
+        # A check of example alone, sent while other is open: its candidate is opened instead,
+        # and it is the one the address names.
         self.returns("example")
         second, url = self.landed(f"item={key}", "example")
         context = self.context(url)
         self.assertEqual((url, context["selected"]["package"], context["returned"]["full"]),
-                         (f"{self.packages}?item={key}&checked={second}#picked", "example",
+                         (f"{self.packages}?item={second}.0&checked={second}#picked", "example",
                           False))  # fmt: skip
         # A check of inner alone finds nothing: the open candidate stays open, and the line
         # says that this check has none. Nothing says that nothing would change at all.
         self.returns()
         third, url = self.landed(f"item={key}", "inner")
         context = self.context(url)
-        self.assertEqual((context["selected"]["package"], context["returned"]),
-                         ("other", {"id": third, "full": False, "count": 0, "first": None}))  # fmt: skip
+        self.assertEqual((url, context["selected"]["package"], context["returned"]),
+                         (f"{self.packages}?item={key}&checked={third}#check-status", "other",
+                          {"id": third, "full": False, "count": 0, "first": None}))  # fmt: skip
         html = self.page(url)
         self.assertIn('data-landing="status">', html)
         self.assertIn(f"실행 #{third}에서 확인한 패키지에는 업데이트 후보가 없었습니다.", html)
         self.assertNotIn("바뀌는 항목이 없었습니다", html)
         # A check of everything that finds nothing says so, and that it is 0, not unknown.
         fourth, url = self.landed("")
+        self.assertEqual(url, f"{self.packages}?checked={fourth}#check-status")
         html = self.page(url)
         self.assertIn(f"실행 #{fourth}에서 확인했고 바뀌는 항목이 없었습니다. 확인된 후보 "
                       "0개입니다.", html)  # fmt: skip
         self.assertIn('<span class="toggle off">확인된 후보 0개</span>', html)
+
+    def test_a_check_with_nothing_to_open_goes_to_its_line_not_to_the_candidate_left_open(self):
+        """The browser follows the fragment of the address a check comes back to, with the
+        script or without it. The candidate an earlier check left open keeps its link on the
+        page, so that link must not be where the address of a check with nothing to open goes."""
+        self.returns("other")
+        first, _ = self.landed("", "other")
+        item = f"item={first}.0"
+        for returned, back, said in (
+            # example alone, and nothing would change for it.
+            ((), item, "확인한 패키지에는 업데이트 후보가 없었습니다."),
+            # example alone has a candidate now, which the search of the view it was sent from
+            # leaves out.
+            (("example",), f"q=oth&{item}", "후보 1개를 확인했지만 지금 검색과 필터로는 목록에 "
+                                           "보이지 않습니다."),
+        ):  # fmt: skip
+            with self.subTest(back=back):
+                self.returns(*returned)
+                run, url = self.landed(back, "example")
+                self.assertEqual(url, f"{self.packages}?{back}&checked={run}#check-status")
+                html = self.page(url)
+                # The line is the landing, and it can take the focus the fragment gives it.
+                self.assertIn('<p class="state" id="check-status" tabindex="-1" '
+                              'data-landing="status">', html)  # fmt: skip
+                self.assertIn(f"실행 #{run}에서 {said}", html)
+                # other's candidate is still the open one, in the one link with that id.
+                self.assertEqual(html.count('id="picked"'), 1)
+                self.assertIn("<strong>other</strong>", self.inspector(url))
+
+        # The lockfile changes while a check runs: that check is one of other files, and so is
+        # every check before it. The address goes to the line, which says to check again.
+        def changed_meanwhile(project, names, **options):
+            result = self.fake_preview(project, names, **options)
+            self.head.write_bytes(self.head.read_bytes() + b"\n")
+            return result
+
+        self.preview_files.side_effect = changed_meanwhile
+        run, url = self.landed(item, "example")
+        self.assertEqual(url, f"{self.packages}?{item}&checked={run}#check-status")
+        html = self.page(url)
+        self.assertIn("바뀌었습니다. 후보를 다시 확인하세요.", html)
+        self.assertNotIn("data-landing", html)
+        self.assertNotIn('id="picked"', html)
+
+    def test_the_address_a_check_comes_back_to_opens_the_same_candidate_when_asked_again(self):
+        """A reload, a way back or a way forward asks for the address again: as the check came
+        back to it (without the script), or without the run and the fragment, which app.js
+        takes off once the focus is there. Both show the candidate the check returned, under
+        the same search and kind, and not the one that was open when the check was sent."""
+        self.returns("other")
+        first, _ = self.landed("", "other")
+        self.returns("example")
+        self.report["results"][0]["after_version"] = "1.9.0"  # not the version other would get
+        run, url = self.landed(f"q=e&scope=direct&item={first}.0", "example")
+        later = f"{self.packages}?q=e&scope=direct&item={run}.0"
+        self.assertEqual(url, f"{later}&checked={run}#picked")
+        shown = self.inspector(url)
+        self.assertIn('<p class="subject"><strong>example</strong> <span class="where">'
+                      "node_modules/example</span></p>", shown)  # fmt: skip
+        self.assertIn("<div><dt>사용 버전</dt><dd>1.0.0</dd></div>\n"
+                      "<div><dt>후보 버전</dt><dd>1.9.0</dd></div>", shown)  # fmt: skip
+        # The package, the location, the versions and every line of evidence are the same.
+        self.assertEqual(self.inspector(later), shown)
+        html = self.page(later)
+        self.assertIn('value="e" placeholder="패키지 검색">', html)
+        self.assertIn('<option value="direct" selected>', html)
+        # Without the run nothing is said of a check: nothing to announce or to focus again.
+        self.assertNotIn("data-landing", html)
+        # The view shows the candidate its address names and no other. With the one that was
+        # open when the check was sent as the item, that one is shown, and nothing is said of
+        # a check whose first candidate is not the one on the screen.
+        before = f"{self.packages}?q=e&scope=direct&item={first}.0&checked={run}"
+        self.assertIn("<strong>other</strong>", self.inspector(before))
+        self.assertNotIn("data-landing", self.page(before))
 
     def test_a_run_that_is_no_current_check_of_the_project_is_as_no_run_at_all(self):
         self.returns("example", "other")
