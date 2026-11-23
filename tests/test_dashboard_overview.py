@@ -477,10 +477,82 @@ class OverviewTests(test_dashboard.DashboardFixture):
             self.assertEqual(self.view(closed.headers["location"].removeprefix(S))[0],
                              "start.html")  # fmt: skip
             self.assertFalse(self.db.exists())
-            # The typed path of that page registers the first project, and so does the dialog.
-            self.assertEqual(self.post(str(self.project), SESSION).headers["location"],
-                             f"{S}/projects/1")  # fmt: skip
+            # None of that registered anything: the typed path of that page then registers the
+            # first project of all, which ends on the overview as the dialog's would.
+            self.assertEqual(self.post(str(self.project), SESSION).headers["location"], f"{S}/")
         self.assertEqual(self.view("/")[0], "overview.html")
+
+    def reopened(self):
+        """(template, context) of the first page of another run of the dashboard, with its own
+        session, on the same history."""
+        from starlette.testclient import TestClient
+
+        session = "another-synthetic-session-for-tests-9876543210"
+        client = TestClient(self.app.build_app(test_dashboard.PORT, session),
+                            base_url=test_dashboard.BASE)  # fmt: skip
+        self.addCleanup(client.close)
+        response, name, context = self.rendered(lambda: client.get(f"/s/{session}/"))
+        self.assertEqual(response.status_code, 200)
+        return name, context
+
+    def test_the_first_project_of_all_opens_the_overview_whichever_way_it_was_given(self):
+        mount = self.root / "mounted"  # for the container: what its projects are mounted under
+        first, second = mount / "first", mount / "second"
+        for folder in (first, second):
+            folder.mkdir(parents=True)
+            (folder / "package-lock.json").write_bytes(self.head.read_bytes())
+
+        def dialog(folder):
+            choose.return_value = ("chosen", str(folder))
+            return self.pick()
+
+        def typed(folder):
+            return self.post(str(folder), SESSION)
+
+        def listed(folder):
+            """The container's list: the folder button leads there, and the folder's form on
+            it sends its path where a typed one goes."""
+            self.assertEqual(self.pick().headers["location"], f"{S}/projects/mounted")
+            page = self.get("/projects/mounted").text
+            self.assertIn(f'<input type="hidden" name="path" value="{folder}">', page)
+            return self.post(str(folder), SESSION)
+
+        ways = (("the folder dialog", dialog, {}), ("a typed path", typed, {}),
+                ("the container's list", listed, {"DEPBEE_CONTAINER_PROJECTS": str(mount)}))  # fmt: skip
+        with mock.patch.object(test_dashboard_picker.picker, "choose") as choose:
+            for way, register, environment in ways:
+                with self.subTest(way=way), mock.patch.dict("os.environ", environment):
+                    self.assertEqual(self.view("/")[0], "start.html")
+                    # What registers nothing leaves the next folder the first: a closed dialog,
+                    # one that cannot be used, and a folder that is refused.
+                    if register is dialog:
+                        for outcome, status in (("cancelled", 303), ("unavailable", 503)):
+                            choose.return_value = (outcome, None)
+                            self.assertEqual(self.pick().status_code, status)
+                    self.assertEqual(typed(self.root / "missing").status_code, 400)
+                    self.assertEqual(history.list_projects(), [])
+                    response = register(first)
+                    self.assertEqual((response.status_code, response.headers["location"]),
+                                     (303, f"{S}/"))  # fmt: skip
+                    # That address is the overview now, with the project and nothing inspected.
+                    name, context = self.view("/")
+                    self.assertEqual((name, context["section"]), ("overview.html", "overview"))
+                    self.assertEqual(context["portfolio"], [{
+                        "id": 1, "name": "first", "path": str(first.resolve()), "found": True,
+                        "state": "none", "cell": "none", "label": "미검사", "run": None,
+                        "attempt": None, "success": None}])  # fmt: skip
+                    self.assertEqual(context["chart"], [*CORE[:3], {**CORE[3], "count": 1}])
+                    # Only the first of all: the same folder again, and the next one, open
+                    # their own project as before.
+                    self.assertEqual(register(first).headers["location"], f"{S}/projects/1")
+                    self.assertEqual(register(second).headers["location"], f"{S}/projects/2")
+                    self.assertEqual([project["path"] for project in history.list_projects()],
+                                     [str(first.resolve()), str(second.resolve())])  # fmt: skip
+                    # It is the history that holds them: another run opens the overview too.
+                    name, context = self.reopened()
+                    self.assertEqual((name, [row["name"] for row in context["portfolio"]]),
+                                     ("overview.html", ["first", "second"]))  # fmt: skip
+                history.db_path().unlink()  # the next way starts without a project
 
     def test_a_history_file_of_an_older_format_is_shown_as_it_is(self):
         history.register_project(self.project)

@@ -217,9 +217,14 @@ class PickerTests(ContainerFixture):
         self.assertEqual(self.page("/"), start)
         self.assertEqual(self.page("/?manage=1"), start)
         # That typed path is checked as every other: outside is refused, inside is registered.
+        # A refusal registers nothing, so what follows is still the first project of all: it
+        # ends on the overview, where it stands with nothing inspected.
         self.assert_outside(self.project)
         self.assertEqual(history.list_projects(), [])
-        self.assertEqual(self.register(str(project)).headers["location"], S + "/projects/1")
+        self.assertEqual(self.register(str(project)).headers["location"], S + "/")
+        overview = self.page("/")
+        self.assertIn(f'<a class="ov-name" href="{S}/projects/1">app-a</a>', overview)
+        self.assertIn('<span class="ov-label">미검사</span> <b class="ov-count">1</b>', overview)
         # With a project the way back is project management, whose folder button leads here too.
         page = self.listed()
         self.assertIn(f'<a href="{S}/?manage=1">프로젝트 관리로 돌아가기</a>', page)
@@ -294,16 +299,22 @@ class PickerTests(ContainerFixture):
         self.assertIn("하위 폴더 0개", page)
         self.assertIn("하위 폴더가 없습니다.", page)
 
-    def test_listed_projects_are_registered_and_opened(self):
+    def test_the_first_listed_project_opens_the_overview_and_later_ones_their_project(self):
         for name in ("app-a", "app-b"):
             self.add(name)
         paths = self.forms(self.listed())
         self.assertEqual(paths, [str(self.mount / "app-a"), str(self.mount / "app-b")])
-        for number, path in enumerate(paths, 1):
+        # The first project of all ends on the overview, as on a desktop; the next one, which
+        # project management's folder button leads to, on its own project.
+        for path, location in zip(paths, (f"{S}/", f"{S}/projects/2"), strict=True):
             response = self.register(path)
             self.assertEqual((response.status_code, response.headers["location"]),
-                             (303, f"{S}/projects/{number}"))  # fmt: skip
+                             (303, location))  # fmt: skip
         self.assertEqual([project["path"] for project in history.list_projects()], paths)
+        overview = self.page("/")
+        self.assertIn("<title>프로젝트 현황판 - depbee</title>", overview)
+        for number, name in enumerate(("app-a", "app-b"), 1):
+            self.assertIn(f'<a class="ov-name" href="{S}/projects/{number}">{name}</a>', overview)
         self.assertIn(f'<p class="path">{paths[0]}</p>', self.page("/projects/1"))
         self.assertEqual(self.register(paths[0]).headers["location"], S + "/projects/1")
         self.assertEqual(self.choose.call_count, 0)
@@ -313,6 +324,7 @@ class PickerTests(ContainerFixture):
         page = self.listed()
         self.assertEqual(self.forms(page), [str(self.mount)])
         self.assertIn('<button class="primary" type="submit">이 폴더 등록</button>', page)
+        self.assertEqual(self.register(str(self.mount)).headers["location"], S + "/")
         self.assertEqual(self.register(str(self.mount)).headers["location"], S + "/projects/1")
 
     def test_nothing_mounted_says_how_to_mount(self):

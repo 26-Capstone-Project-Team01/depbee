@@ -108,14 +108,18 @@ class PickRouteTests(DashboardFixture):
         self.assertLess(html.index(PICK_FORM), html.index("등록한 프로젝트 1개"))
         self.assertEqual(self.choose.call_count, 0)  # looking opens no dialog
 
-    def test_a_chosen_folder_is_registered_and_its_project_opened(self):
+    def test_the_first_chosen_folder_opens_the_overview_and_later_ones_their_project(self):
         self.choose.return_value = ("chosen", str(self.project))
         response = self.pick()
+        # The first project of all: registered, and the overview is where the button ends.
         self.assertEqual((response.status_code, response.headers["location"]),
-                         (303, S + "/projects/1"))  # fmt: skip
+                         (303, S + "/"))  # fmt: skip
         self.choose.assert_called_once_with()
         (project,) = history.list_projects()
         self.assertEqual(project["path"], str(self.project.resolve()))
+        overview = self.page("/")
+        self.assertIn("<title>프로젝트 현황판 - depbee</title>", overview)
+        self.assertIn(f'<a class="ov-name" href="{S}/projects/1">project</a>', overview)
         self.assertIn(f'<h1>project</h1>\n<p class="path">{self.project.resolve()}</p>',
                       self.page("/projects/1"))  # fmt: skip
         # The same folder again opens the first registration, as the typed path does.
@@ -124,6 +128,13 @@ class PickRouteTests(DashboardFixture):
         self.assertEqual(self.post(str(self.project), SESSION).headers["location"],
                          S + "/projects/1")  # fmt: skip
         self.assertEqual(len(history.list_projects()), 1)
+        # A folder chosen from project management once a project is there opens its own project.
+        second = self.root / "second"
+        second.mkdir()
+        (second / "package-lock.json").write_bytes(self.head.read_bytes())
+        self.choose.return_value = ("chosen", str(second))
+        self.assertEqual(self.pick().headers["location"], S + "/projects/2")
+        self.assertEqual(len(history.list_projects()), 2)
 
     def test_closing_the_dialog_registers_and_writes_nothing(self):
         before = self.files()
@@ -163,9 +174,9 @@ class PickRouteTests(DashboardFixture):
                 self.assertIn(PATH_FORM, html)
                 self.assert_nothing_registered(before)
         self.assertIn(f"{picker.PICK_SECONDS}초 안에", self.app.PICK_ERRORS["timeout"])
-        # The typed path then registers the project.
-        self.assertEqual(self.post(str(self.project), SESSION).headers["location"],
-                         S + "/projects/1")  # fmt: skip
+        # The typed path then registers the project: the first of all, so the overview opens.
+        self.assertEqual(self.post(str(self.project), SESSION).headers["location"], S + "/")
+        self.assertEqual(len(history.list_projects()), 1)
 
     def test_a_chosen_folder_is_checked_as_a_typed_path_is(self):
         (self.root / "lock-dir" / "package-lock.json").mkdir(parents=True)
@@ -233,7 +244,7 @@ class PickRouteTests(DashboardFixture):
         self.assertNotIn("이력에 기록하지 않았습니다.", again.text)
         self.assertEqual(seen["page"].status_code, 200)
         self.assertEqual(seen["files"], ([], False))  # an open dialog has written nothing
-        self.assertEqual(seen["typed"].headers["location"], S + "/projects/1")
+        self.assertEqual(seen["typed"].headers["location"], S + "/")  # the first project of all
         self.assertEqual(self.pick().status_code, 303)  # free again
         self.assertEqual(self.choose.call_count, 2)
 
@@ -297,7 +308,7 @@ class PickedFolderTests(DashboardFixture):
         self.write(folder / "package-lock.json", self.new)
         response = self.pick(answering(str(folder)))
         self.assertEqual((response.status_code, response.headers["location"]),
-                         (303, S + "/projects/1"))  # fmt: skip
+                         (303, S + "/"))  # fmt: skip
         (project,) = history.list_projects()
         self.assertEqual(project["path"], str(folder.resolve()))
         html = self.page("/projects/1")

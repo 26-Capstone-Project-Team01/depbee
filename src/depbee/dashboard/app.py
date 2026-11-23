@@ -11,7 +11,8 @@ only ever a stored update preview of that project made from the files as they ar
 (_update_state); a GET reads files and the history and never runs npm or reaches the network.
 The session's first page is the overview of the registered projects (_portfolio, _chart), and
 the management page when the address asks for it (?manage=1). While no project is registered it
-is the start page instead: one button that adds the first one, and nothing else.
+is the start page instead: one button that adds the first one, and nothing else. Registering
+that first project comes back to the overview (enroll); a later one opens its own project.
 
 A project is registered by its folder's path: typed into the form, or chosen in the desktop's
 own folder dialog (.picker, a child process), which is checked as a typed one is. In a container
@@ -426,13 +427,17 @@ def build_app(
                     portfolio=portfolio, chart=_chart(portfolio))  # fmt: skip
 
     def enroll(request: Request, path: str, typed: bool) -> Response:
-        """Register the folder at path, typed or chosen in the dialog, and open its project; a
-        path that fails the registration checks registers nothing."""
+        """Register the folder at path, however it was given (the dialog, the container's list
+        of mounted folders, a typed path); a path that fails the registration checks registers
+        nothing. The first project of all opens the overview, where it stands with nothing
+        inspected yet: the start page's one button ends there. Every later registration opens
+        its own project, as does registering a folder again."""
         problem = _registration_problem(path)
         if problem:  # the input is not echoed
             return projects(request, 400, REGISTER_ERRORS[problem], typed=typed)
+        first = not history.list_projects()
         project_id = history.register_project(Path(path))
-        return RedirectResponse(f"{base}/projects/{project_id}", 303)
+        return RedirectResponse(f"{base}/" if first else f"{base}/projects/{project_id}", 303)
 
     async def register(request: Request) -> Response:
         form = await read_form(request)

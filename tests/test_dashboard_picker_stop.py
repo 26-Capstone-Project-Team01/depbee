@@ -143,8 +143,10 @@ class StopRouteTests(DashboardFixture):
 
     def test_until_the_server_is_asked_to_end_the_dialog_registers_as_before(self):
         response = self.pick()
+        # The first project of all: registered, and the overview is where it is shown.
         self.assertEqual((response.status_code, response.headers["location"]),
-                         (303, S + "/projects/1"))  # fmt: skip
+                         (303, S + "/"))  # fmt: skip
+        self.assertEqual([project["id"] for project in history.list_projects()], [1])
         ((watched,), options) = self.choose.call_args
         self.assertEqual((watched(), options), (False, {}))
         self.asked.append(True)  # what the dialog watches is the server's own answer
@@ -195,7 +197,7 @@ class SecondRequestTests(DashboardFixture):
 
         with mock.patch.object(picker, "choose", side_effect=open_dialog) as choose:
             first = self.pick()
-        self.assertEqual(first.headers["location"], S + "/projects/1")  # the first one registers
+        self.assertEqual(first.headers["location"], S + "/")  # the first one registers
         self.assertEqual(choose.call_count, 1)
         again = seen["again"]
         self.assertEqual(again.status_code, 409)

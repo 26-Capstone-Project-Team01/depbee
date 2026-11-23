@@ -1078,11 +1078,12 @@ class SecurityTests(DashboardFixture):
                 self.assertEqual(history.list_projects(), [])
         # The dashboard's own page, the user (a reload), and a browser that says nothing, which
         # is left to the Origin check.
-        for sites in (("same-origin",), ("none",), ("SAME-ORIGIN",), ()):
+        for number, sites in enumerate((("same-origin",), ("none",), ("SAME-ORIGIN",), ())):
             with self.subTest(sites=sites):
                 response = post(*sites)
+                # The first of these registers the project; the others find it registered.
                 self.assertEqual((response.status_code, response.headers["location"]),
-                                 (303, S + "/projects/1"))  # fmt: skip
+                                 (303, S + ("/projects/1" if number else "/")))  # fmt: skip
         # The header does not stand in for the Origin, and a page is opened from anywhere: its
         # address holds the session.
         refused = self.client.post(S + "/projects", data={"path": path, "session": form},
@@ -1321,9 +1322,8 @@ class RegistrationTests(DashboardFixture):
 
     def test_register_and_register_again(self):
         response = self.register(str(self.project))
-        self.assertEqual(
-            (response.status_code, response.headers["location"]), (303, S + "/projects/1")
-        )
+        # The first project of all opens the overview; the same folder again, its own project.
+        self.assertEqual((response.status_code, response.headers["location"]), (303, S + "/"))
         again = self.post(str(self.project) + os.sep, self.form_session())
         self.assertEqual(again.headers["location"], S + "/projects/1")
         (project,) = history.list_projects()
