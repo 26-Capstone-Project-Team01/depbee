@@ -201,7 +201,8 @@ CLI 종료 코드 0/1/2의 의미는 그대로다.
 
 - depbee는 Git 소스로만 배포한다. PyPI 패키지, 컨테이너 레지스트리의 이미지, GitHub Release는 없다. action은 `uses:`의 커밋에서 depbee를 설치하고, 분석기는 그 커밋이 고정한 Git 주소에서 받는다.
 - 모델과 기지 악성 색인을 첨부한 Release가 없다. Release 다섯 입력 경로는 입력 검사와 단계 배선만 확인했고 실제 다운로드는 확인하지 않았다.
-- depbee 저장소의 CI는 PR에서 이 action을 그대로 실행한다(아래 자기 검사). 다른 저장소의 PR, fork PR, Dependabot PR에서의 실행과, 같은 PR의 두 번째 실행에서 캐시가 복원되는지, lockfile 줄 주석이 PR 화면에 놓이는 모습은 이 저장소에서 확인하지 않았다. secret과 쓰기 권한을 쓰지 않으므로 fork PR과 Dependabot PR에서도 조건 분기 없이 같은 방식으로 동작하도록 만들었다. 확인한 범위는 아래 자기 검사와 `docs/validation.md`에 있다.
+- depbee 저장소의 CI는 PR에서 이 action을 그대로 실행한다(아래 자기 검사). 다른 저장소에서는 공개 시연 저장소의 PR이 위 사용 예시의 SHA로 실행했다. `ms` 2.1.1에서 2.1.3으로의 변경 하나는 통과로 판정됐고([run 45290776914](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/actions/runs/45290776914)), lockfile을 바꾸지 않은 PR은 바뀐 항목 0개로 끝났다([run 45290763429](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/actions/runs/45290763429)).
+- fork PR과 Dependabot PR에서의 실행, 같은 PR의 두 번째 실행에서 캐시가 복원되는지, 경고·실패 항목의 lockfile 줄 주석이 PR 화면에 놓이는 모습은 확인하지 않았다. secret과 쓰기 권한을 쓰지 않으므로 fork PR과 Dependabot PR에서도 조건 분기 없이 같은 방식으로 동작하도록 만들었다. 확인한 범위는 아래 자기 검사와 `docs/validation.md`에 있다.
 - Linux runner만 고려했다. Windows·macOS runner는 확인하지 않았다(`bash`, `curl`, `sed`, `mktemp`를 쓴다).
 
 ### 자기 검사 (depbee CI `action` job)

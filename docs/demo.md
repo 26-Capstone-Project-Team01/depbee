@@ -151,7 +151,14 @@ Actions 장면은 셋으로 나뉩니다. 공개 시연 저장소의 fixture 장
 
 **실제 제품 검사.** depbee와, 설치 단계에서 받는 depbee-analyzer는 공개 저장소입니다. PR의 lockfile 변경을 실제로 검사하려면 대상 저장소의 `.github/workflows/depbee.yml`에 [CI/CD 연결의 사용 예시](ci-cd.md#사용-예시)를 둡니다. secret, 토큰, 저장소 변수는 필요 없습니다. workflow는 Action을 전체 커밋 SHA로 고정합니다. 모델과 기지 악성 색인은 그 커밋의 설치본에 포함된 것을 기본으로 쓰고, Release 태그와 SHA-256은 다른 모델이나 색인을 명시해 바꿀 때만 지정합니다. 지금 게시된 Release는 없습니다.
 
-lockfile을 바꾼 PR을 열면 Checks의 job summary에 모델 ID, 색인 기준 시점, 항목별 판정이 나오고, lockfile 줄 주석과 `depbee-report` artifact가 생깁니다. depbee 저장소의 CI는 PR마다 이 Action으로 lodash 4.17.20에서 4.17.21로의 변경을 검사합니다. 그 저장소 Actions 탭의 `action` job에서 실제 실행의 summary와 artifact를 볼 수 있습니다([자기 검사](ci-cd.md#자기-검사-depbee-ci-action-job)). 시연 저장소의 제품 검사 연결(`depbee.yml`)이 켜져 있는지와 켜는 순서는 [그 저장소의 README](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo#readme)를 따릅니다. 가상 목록 일치 장면은 실제 색인에 없는 이름이라 제품 검사에서는 재현되지 않습니다.
+lockfile을 바꾼 PR을 열면 Checks의 job summary에 모델 ID, 색인 기준 시점, 항목별 판정이 나오고, 경고나 실패 항목에는 lockfile 줄 주석이 붙으며, `depbee-report` artifact가 생깁니다.
+
+실제 실행은 두 곳에서 볼 수 있습니다.
+
+- 공개 시연 저장소의 [PR #8](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/pull/8)은 `ms`를 2.1.1에서 2.1.3으로 올린 lockfile 변경 하나입니다. 그 저장소의 workflow가 위 사용 예시와 같은 SHA로 Action을 불렀고, `depbee scan (제품 실제 검사)` job이 통과로 판정했습니다([Actions run 45290776914](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/actions/runs/45290776914)). summary의 모델 ID는 `D04-E00`, 색인 기준 시점은 `2026-10-06T14:00:47Z`이고, artifact의 `report.json`에는 비교 버전 2.1.2와 분석기 커밋(`provenance.feature_extractor.commit`)이 있습니다. lockfile을 바꾸지 않은 PR에서는 바뀐 의존성 0개로 통과합니다([Actions run 45290763429](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/actions/runs/45290763429)).
+- depbee 저장소의 CI는 PR마다 이 Action으로 lodash 4.17.20에서 4.17.21로의 변경을 검사합니다. 그 저장소 Actions 탭의 `action` job에서 summary와 artifact를 볼 수 있습니다([자기 검사](ci-cd.md#자기-검사-depbee-ci-action-job)).
+
+시연 저장소의 `main`에서 제품 검사가 켜져 있는지와 켜는 순서는 [그 저장소의 README](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo#readme)를 따릅니다. 가상 목록 일치 장면은 실제 색인에 없는 이름이라 제품 검사에서는 재현되지 않습니다.
 
 **로컬 판정 재현.** action의 판정 단계(`src/depbee/actions.py report`, 표준 라이브러리만 씀)는 설치 없이 로컬에서 같은 인자로 실행할 수 있습니다. `GITHUB_STEP_SUMMARY`가 없으면 job summary가 주석 뒤에 터미널로 나옵니다.
 

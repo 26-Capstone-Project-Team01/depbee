@@ -2,7 +2,7 @@
 
 depbee는 npm 패키지를 설치하기 전에 버전 변경을 검사합니다. 공개 악성 기록에 등록된 이름·버전인지 확인하고, 새 버전과 이전 배포본의 차이로 계산한 ML 위험 점수와 근거를 보여 줍니다. 검사는 패키지 코드를 실행하지 않습니다. 낮은 점수만으로 안전을 보증할 수는 없습니다.
 
-진입점은 네 가지입니다. [CLI](#cli)와 [로컬 대시보드](#로컬-대시보드)로 자기 프로젝트를 검사하고 업데이트를 관리합니다. [MCP](#mcp)는 AI 에이전트의 설치 전 검사에, [GitHub Actions](#github-actions)는 PR의 lockfile 변경 검사에 씁니다. 통과·경고·실패가 PR에 어떻게 나타나는지는 합성 정책 [공개 시연](#공개-시연)에서 바로 볼 수 있습니다.
+진입점은 네 가지입니다. [CLI](#cli)와 [로컬 대시보드](#로컬-대시보드)로 자기 프로젝트를 검사하고 업데이트를 관리합니다. [MCP](#mcp)는 AI 에이전트의 설치 전 검사에, [GitHub Actions](#github-actions)는 PR의 lockfile 변경 검사에 씁니다. 통과·경고·실패가 PR에 어떻게 나타나는지는 합성 정책 [공개 시연](#공개-시연)에서, depbee가 PR의 변경을 실제로 검사한 실행은 [실제 제품 검사](#실제-제품-검사)에서 바로 볼 수 있습니다.
 
 ## 설치와 준비
 
@@ -105,6 +105,8 @@ PR에서 lockfile 변경을 검사하려면 예시 workflow를 대상 저장소�
 ### 실제 제품 검사
 
 depbee와, 설치 단계에서 받는 depbee-analyzer는 공개 저장소입니다. 다른 저장소의 workflow가 Action을 전체 커밋 SHA로 고정하면 secret이나 토큰을 따로 주지 않아도 PR의 lockfile 변경을 실제로 검사합니다. 모델과 색인은 그 커밋의 설치본에 포함된 것을 기본으로 씁니다. Release 태그와 SHA-256은 다른 모델이나 색인을 명시해 바꿀 때만 쓰며, 지금 게시된 Release는 없습니다. depbee 저장소의 CI는 이 Action으로 실제 버전 변경(lodash 4.17.20에서 4.17.21)을 검사하고 보고서의 모델, 색인, 분석기 커밋을 확인합니다. [CI가 확인하는 범위](docs/ci-cd.md#자기-검사-depbee-ci-action-job)
+
+공개 시연 저장소의 [PR #8](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/pull/8)은 다른 저장소에서 이 Action을 쓴 실제 검사의 예입니다. `ms`를 2.1.1에서 2.1.3으로 올린 lockfile 변경을 depbee가 검사해 통과로 판정했습니다. [Actions run 45290776914](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/actions/runs/45290776914)의 summary에서 판정, 모델 ID, 색인 기준 시점을 볼 수 있습니다.
 
 판정 단계만 따로 보려면 depbee 저장소 루트에서 아래 명령으로 기지 악성 일치 예시의 실패 판정(종료 코드 1)을 확인할 수 있습니다.
 
