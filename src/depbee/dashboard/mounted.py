@@ -9,10 +9,17 @@ dialog (listing()).
 
 And a project there is only what the mounted folder really holds. Whenever the dashboard is
 about to register, list, read, check, scan or apply something, the folder and each file it
-reads must be in the mounted folder as they are spelled, with no link on the way (problem()),
-and the Git folder a scan reads must be the project's own (repository()). That is asked each
-time, not once at registration: what a folder holds can change. A path outside the mounted
-folder, such as one an older history kept, is refused by its spelling and never looked at.
+reads must be in the mounted folder as they are spelled, with no link on the way (problem()).
+That is asked each time, not once at registration: what a folder holds can change. A path
+outside the mounted folder, such as one an older history kept, is refused by its spelling and
+never looked at.
+
+A scan reads HEAD's lockfile from the project's own Git folder (repository()), and Git itself
+is given less than that folder: a HEAD and a config that depbee writes, and the folder's
+object files once each is seen to be a file of its own (inputs.git._own_folder). The
+repository's config, whatever it includes, and anything else its files name are not read. All
+of this holds for a checkout that stays as it is while one request uses it: an entry that is
+replaced between the look and the read is not caught.
 
 Without the variable, as on a desktop, nothing here applies. Nothing here registers, reads or
 writes a project.
@@ -24,7 +31,7 @@ from pathlib import Path
 
 from .. import mcp
 from ..contracts import GuardError
-from ..inputs.npm_cli import is_link
+from ..inputs.git import is_link
 
 VARIABLE = "DEPBEE_CONTAINER_PROJECTS"
 # Every interface of the container: Docker sends the published port to its own, never to the
@@ -87,11 +94,12 @@ def repository(project: Path) -> Path:
     the nearest folder above it, no further up than the mounted folder. project: a folder that
     problem() has passed.
 
-    Git is handed this folder (inputs.git.read_base_lock) and so finds no repository of its
-    own, neither above the mounted folder nor through a .git file. The folder must hold its
-    objects itself: a commondir file, an alternates file or a linked objects folder would have
-    Git read another folder's, and a worktree's or a submodule's .git is a file that names
-    one. Any of them is a GuardError before Git runs, with nothing they name looked at."""
+    The scan names this folder to Git's reader (inputs.git.read_base_lock), so Git finds no
+    repository of its own, neither above the mounted folder nor through a .git file, and reads
+    only what that reader lets it (inputs.git._own_folder). The folder must hold its objects
+    itself: a commondir file, an alternates file or a linked objects folder means another
+    folder's, and a worktree's or a submodule's .git is a file that names one. Any of them is
+    a GuardError before Git runs, with nothing they name looked at."""
     top = _top()
     for folder in (project, *project.parents):
         git_dir = folder / ".git"

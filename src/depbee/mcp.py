@@ -30,7 +30,7 @@ from .cli import (
     _split_package,
 )
 from .contracts import GuardError
-from .inputs.npm_cli import is_link as _is_link
+from .inputs.git import is_link as _is_link
 
 # What an agent waits for in one tool call, not a bound on the work: a late call gives an error,
 # never a verdict, and starts no further change, but the work already running goes on with no

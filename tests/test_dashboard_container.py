@@ -22,8 +22,8 @@ from pathlib import Path
 from unittest import mock
 from urllib.parse import quote
 
-from test_apply import LINKS, reported
 from test_dashboard import BASE, PORT, SESSION, DashboardFixture, S, ScreenFixture
+from test_workflow import LINKS, reported
 
 from depbee import history, service
 from depbee.cli import main

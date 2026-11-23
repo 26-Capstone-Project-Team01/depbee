@@ -9,12 +9,12 @@ import json
 import os
 import shutil
 import stat
-import types
 from pathlib import Path
 from unittest import mock
 
 from test_history import sql
 from test_update import ERROR_SECRET, UpdateFixture, sri
+from test_workflow import LINKS, reported
 
 from depbee import history, service
 from depbee.cli import CONFIRM_OPTION
@@ -31,27 +31,10 @@ from depbee.service import (
 )
 
 PASS = {"status": "not_flagged", "reason": None, "ml": "not_hit", "known": "not_hit"}
-# What os.lstat says of an entry that names another path. No test makes a real one: reported()
-# gives these for a path, and nothing is behind it.
-LINKS = {
-    "symlink": os.stat_result((stat.S_IFLNK | 0o777, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
-    # A Windows junction: a folder whose reparse tag is a name surrogate (a mount point).
-    "junction": types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o777, st_reparse_tag=0xA0000003),
-}
 
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()
-
-
-def reported(path, mode):
-    """os.lstat that answers mode for path and is the real one for every other path."""
-    real = os.lstat
-
-    def lstat(target, *args, **kwargs):
-        return mode if Path(target) == path else real(target, *args, **kwargs)
-
-    return mock.patch("os.lstat", lstat)
 
 
 class ApplyFixture(UpdateFixture):

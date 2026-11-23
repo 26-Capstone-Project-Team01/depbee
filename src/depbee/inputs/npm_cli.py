@@ -26,7 +26,7 @@ import stat
 from pathlib import Path
 
 from ..contracts import MAX_JSON_BYTES, GuardError, parse_json
-from .git import _run
+from .git import _run, is_link
 
 TIMEOUT_SECONDS = 120
 # npm ci downloads and unpacks every tarball of the tree, not only metadata as the preview does:
@@ -79,17 +79,6 @@ REGISTRY_TARBALL = "https://registry.npmjs.org/"
 _FILE_SUFFIX = re.compile(r"[.](?:tgz|tar.gz|tar)\Z", re.IGNORECASE)
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _NPM_VERSION = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?")
-# Windows reparse tag bit of tags that name another path (IsReparseTagNameSurrogate).
-NAME_SURROGATE = 0x20000000
-
-
-def is_link(mode: os.stat_result) -> bool:
-    """An os.lstat result of a symlink, or on Windows of a name-surrogate reparse point (symlink,
-    junction): an entry that names another path. Other reparse points (such as Cloud Files
-    placeholders) are plain files and folders here."""
-    return stat.S_ISLNK(mode.st_mode) or bool(
-        (getattr(mode, "st_reparse_tag", 0) or 0) & NAME_SURROGATE
-    )
 
 
 def check_install_dir(project: Path) -> None:
