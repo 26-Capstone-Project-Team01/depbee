@@ -215,20 +215,24 @@ http://127.0.0.1:5757/s/<이번 실행의 세션 값>/
 
 **검사만**은 Git HEAD의 lockfile과 비교합니다. npm 프로젝트가 저장소의 하위 폴더이면 저장소 루트를 `/projects/<별칭>`에 연결하고, 목록에서 하위 폴더를 열어 등록합니다. **업데이트 확인**은 Git 없이 동작합니다.
 
-**검사만**이 읽는 Git 이력은 `/projects` 안의 일반 `.git` 폴더에 있는 것뿐입니다. 대시보드는 프로젝트 폴더에서 `/projects`까지만 올라가며 `.git`을 찾습니다. 찾은 `.git` 폴더를 Git에 그대로 넘기지는 않습니다. depbee가 `.git`의 `HEAD`와 HEAD가 가리키는 ref 파일에서 커밋 ID를 읽어 임시 Git 폴더를 만들고(ref 파일이 없으면 `packed-refs`를 복사합니다), Git은 그 임시 폴더와 저장소의 `.git/objects`만 읽습니다. 저장소의 `.git/config`와 그 설정이 include하는 파일, 이미지의 시스템·사용자 Git 설정, commit-graph, multi-pack-index는 읽지 않습니다. 일반 clone은 그대로 검사됩니다. 느슨한 객체, `git gc`로 묶은 pack, shallow clone, detached HEAD, 저장소 루트의 프로젝트와 하위 폴더의 프로젝트를 확인했습니다.
+**검사만**이 읽는 Git 이력은 `/projects` 안의 일반 `.git` 폴더에 있는 것뿐입니다. 대시보드는 프로젝트 폴더에서 `/projects`까지만 올라가며 `.git`을 찾습니다. 찾은 `.git` 폴더를 Git에 그대로 넘기지는 않습니다. depbee가 `.git`의 `HEAD`와 HEAD가 가리키는 ref 파일에서 커밋 ID를 읽어 임시 Git 폴더를 만들고(ref 파일이 없으면 `packed-refs`를 복사합니다), Git은 그 임시 폴더와 저장소의 `.git/objects`만 읽습니다. 저장소의 `.git/config`와 그 설정이 include하는 파일, 이미지의 시스템·사용자 Git 설정, commit-graph, multi-pack-index는 읽지 않습니다. 일반 clone은 그대로 검사됩니다. 느슨한 객체, `git gc`로 묶은 pack, shallow clone, detached HEAD, 저장소 루트의 프로젝트와 하위 폴더의 프로젝트를 확인했습니다. `release./stable`처럼 중간 이름이 점으로 끝나는 브랜치도 그런 이름을 담을 수 있는 파일 시스템(Linux)에서 읽습니다.
 
-아래 경우에는 가리키는 곳이 컨테이너에서 보이더라도 Git을 실행하기 전에 오류 화면으로 끝납니다.
+아래 경우에는 가리키는 곳이 컨테이너에서 보이더라도 depbee가 Git을 실행하기 전에 확인해 거절하고, **검사만**은 그 이유를 적은 오류 화면으로 끝납니다.
 
 - `.git`이 파일입니다. 별도의 Git worktree와 submodule의 `.git`이 그렇습니다.
 - `.git` 안에 `commondir`나 `objects/info/alternates`가 있습니다. 다른 저장소의 객체를 빌려 쓰는 저장소입니다(`git clone --shared`나 `--reference`).
 - `.git`, `HEAD`, ref 파일, `objects`와 그 아래 항목 중 하나가 심볼릭 링크나 junction입니다.
-- 객체 형식이 SHA-256이거나 ref 형식이 reftable입니다.
+- 객체 형식이 SHA-256입니다. `HEAD`, ref 파일, 복사할 `packed-refs`에 적힌 ID가 SHA-1보다 길면 거절합니다.
+- ref 형식이 reftable입니다.
+- `HEAD`가 가리키는 ref의 이름이 UTF-8이 아닙니다.
 - `.git/objects` 아래의 파일과 폴더가 200,000개를 넘습니다. 저장소에서 `git gc`를 실행하면 줄어듭니다.
-- `packed-refs`가 64MiB를 넘습니다.
-- 권한이나 I/O 오류로 확인할 수 없는 항목이 있습니다. 없는 파일과 구분해 거절합니다.
+- `HEAD`가 가리키는 ref가 파일로 없어서 `packed-refs`를 복사해야 하는데 그 파일이 64MiB를 넘습니다. ref 파일이 있으면 `packed-refs`를 읽지 않으므로 이 한도와 상관없습니다.
+- depbee가 직접 보는 항목을 권한이나 I/O 오류로 확인할 수 없습니다. `HEAD`, ref 파일, 복사할 `packed-refs`, `objects` 아래 폴더의 목록이 그런 항목이고, 없는 파일과 구분해 거절합니다.
 - `/projects` 안에 `.git`이 없습니다. `/projects` 위쪽의 `.git`은 찾지 않습니다.
 
 그런 프로젝트는 호스트에서 이전 lockfile을 파일로 내보내 CLI의 `--base-lock`으로 검사합니다. [비교 기준 lockfile](#비교-기준-lockfile)
+
+Git이 실행된 뒤에 드러나는 문제도 같은 오류 화면으로 끝나고, 이때는 Git의 오류 문구가 함께 보입니다. 커밋이 없는 저장소, HEAD 커밋에 `package-lock.json`이 없는 저장소, Git이 읽지 못하는 객체 파일이 그런 경우입니다. 이전 lockfile이 있으면 이때도 `--base-lock`으로 비교할 수 있습니다.
 
 Git을 실행하기 전에 `.git/objects`의 항목을 모두 한 번씩 확인합니다. Docker Desktop(Windows)에 Windows 폴더를 연결했을 때 이 확인은 항목 200,000개에 약 2초, 작은 저장소에 0.1초 미만이 걸렸습니다. 이 확인은 요청을 처리하는 동안 저장소가 바뀌지 않을 때 유효합니다. 확인한 항목을 Git이 읽기 전에 다른 프로세스가 바꾸는 경우는 막지 않으므로, 검사하는 동안 같은 저장소를 고치는 작업을 함께 실행하지 마세요.
 

@@ -43,6 +43,8 @@ _OWN_CONFIG = (
     b"\tcommitGraph = false\n\tmultiPackIndex = false\n"
 )
 _OWN_OID = re.compile(rb"([0-9a-fA-F]{40})\s*")
+# A line of packed-refs that begins with more hex digits than a SHA-1 id has: a SHA-256 id.
+_OWN_LONG_ID = re.compile(rb"^[0-9a-fA-F]{41}", re.MULTILINE)
 # Characters no part of a ref name has (git check-ref-format), the path separators among them.
 _REF_FORBIDDEN = re.compile(r"[\x00-\x20\x7f~^:?*\[\\]")
 # Windows reparse tag bit of tags that name another path (IsReparseTagNameSurrogate).
@@ -370,12 +372,16 @@ def _own_file(git_dir: Path, name: str, limit: int) -> bytes | None:
 def _ref_name(text: str) -> bool:
     """text is a ref below refs/ as git check-ref-format takes one, so each part is a plain
     name: never "..", an empty part or a separator, and never the .invalid stub of a reftable
-    repository."""
+    repository. A part may end with a dot, as in refs/heads/release./stable: only the whole
+    name may not."""
     parts = text.split("/")
-    return parts[0] == "refs" and len(parts) > 1 and "@{" not in text and all(
-        part and not part.startswith(".") and not part.endswith((".", ".lock"))
-        and ".." not in part and not _REF_FORBIDDEN.search(part)
-        for part in parts
+    return (
+        parts[0] == "refs" and len(parts) > 1 and "@{" not in text and not text.endswith(".")
+        and all(
+            part and not part.startswith(".") and not part.endswith(".lock")
+            and ".." not in part and not _REF_FORBIDDEN.search(part)
+            for part in parts
+        )
     )  # fmt: skip
 
 
@@ -397,7 +403,7 @@ def _own_head(git_dir: Path) -> tuple[bytes, bool]:
         try:
             target = content[4:].strip().decode() if content.startswith(b"ref:") else ""
         except UnicodeDecodeError:
-            target = ""
+            raise _refusal(git_dir, f"{name} names a ref whose name is not UTF-8 text") from None
         if not _ref_name(target):
             raise _refusal(
                 git_dir, f"{name} holds neither a SHA-1 commit id nor the name of a ref below refs/"
@@ -472,6 +478,9 @@ def _own_folder(git_dir: Path):
     try:
         head, packed = _own_head(git_dir)
         refs = _own_file(git_dir, "packed-refs", MAX_PACKED_REFS_BYTES) if packed else None
+        # Told here and not by Git, which would only fail to parse the file as SHA-1 refs.
+        if refs is not None and _OWN_LONG_ID.search(refs):
+            raise _refusal(git_dir, "packed-refs holds SHA-256 object ids")
         objects = _own_objects(git_dir)
     except OSError as exc:  # not "not there": something could not be looked at or read
         raise _refusal(git_dir, f"it could not be looked at ({type(exc).__name__})") from None

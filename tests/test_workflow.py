@@ -757,6 +757,24 @@ class ChosenGitFolderTests(Fixture):
             report = scan_project(project, git_dir=git_dir)
         self.assertEqual(report, scan(self.request(), None, None))
 
+    def test_a_branch_whose_part_ends_with_a_dot_is_read(self):
+        # Git takes release./stable: only the whole name of a ref may not end with a dot.
+        head, commit = "ref: refs/heads/release./stable\n", COMMIT.encode() + b"\n"
+        git_dir, project = self.git_folder("loose", head=head, loose=None)
+        ref = git_dir / "refs" / "heads" / "release." / "stable"
+        ref.parent.mkdir()
+        ref.write_bytes(commit)
+        request, calls, opened = self.read(git_dir, project)
+        self.assertEqual(request["request_id"], self.request()["request_id"])
+        self.assertEqual(opened, ["HEAD", "refs/heads/release./stable"])
+        self.assertEqual([call[3]["HEAD"] for call in calls], [commit, commit])
+        packed = PACKED.replace(b"refs/heads/main", b"refs/heads/release./stable")
+        git_dir, project = self.git_folder("packed", head=head, loose=None, packed=packed)
+        _, calls, opened = self.read(git_dir, project)
+        self.assertEqual(opened, ["HEAD", "packed-refs"])
+        self.assertEqual([(call[3]["HEAD"], call[3]["packed-refs"]) for call in calls],
+                         [(head.encode(), packed)] * 2)  # fmt: skip
+
     def test_a_ref_that_is_nowhere_is_gits_to_say(self):
         # Not there is not an error of the look: Git gets the name and answers as it always does.
         git_dir, project = self.git_folder(loose=None)
@@ -778,14 +796,17 @@ class ChosenGitFolderTests(Fixture):
             "ref: ../../elsewhere/HEAD", "ref: refs/../../elsewhere", "ref: /absolute/ref",
             "ref: refs/heads/.invalid",  # what a reftable repository's HEAD says
             "ref: refs\\heads\\main", "ref: refs/heads/a..b", "ref: refs/heads/main.lock",
+            "ref: refs/heads/a.lock/b", "ref: refs/heads/main.", "ref: refs/heads/a./b.",
             "ref: refs/heads/", "ref: refs", "ref: heads/main", "ref: refs/heads/a b",
             "ref: refs/heads/a@{1}", "ref:", "a" * 64,  # a SHA-256 id
-            COMMIT[:39], COMMIT + "0", "not a ref", "", b"ref: refs/heads/\xff\n",
+            COMMIT[:39], COMMIT + "0", "not a ref", "",
         ]  # fmt: skip
         for number, head in enumerate(heads):
             with self.subTest(head=head):
                 git_dir, project = self.git_folder(f"head-{number}", head=head)
                 self.refused(git_dir, project, "HEAD " + no_ref)
+        git_dir, project = self.git_folder("bytes", head=b"ref: refs/heads/\xff\n")
+        self.refused(git_dir, project, "HEAD names a ref whose name is not UTF-8 text")
         git_dir, project = self.git_folder("no-head", head=None)
         self.refused(git_dir, project, "it has no HEAD")
         git_dir, project = self.git_folder("long-head", head="ref: refs/heads/" + "a" * 5000)
@@ -798,6 +819,17 @@ class ChosenGitFolderTests(Fixture):
         git_dir, project = self.git_folder("packed", loose=None, packed=PACKED)
         with mock.patch.object(git_input, "MAX_PACKED_REFS_BYTES", len(PACKED) - 1):
             self.refused(git_dir, project, f"packed-refs is larger than {len(PACKED) - 1} bytes")
+        # The limit is on a packed-refs that is copied: with a loose ref it is not read at all.
+        git_dir, project = self.git_folder("unread", packed=PACKED)
+        with mock.patch.object(git_input, "MAX_PACKED_REFS_BYTES", len(PACKED) - 1):
+            self.assertEqual(self.read(git_dir, project)[2], ["HEAD", "refs/heads/main"])
+        # A SHA-256 repository whose refs are packed is told as one, with the way on, before
+        # Git runs: Git would only say that it cannot resolve HEAD.
+        long_ids = PACKED.replace(COMMIT.encode(), b"a" * 64)
+        git_dir, project = self.git_folder("sha256", loose=None, packed=long_ids)
+        self.refused(git_dir, project, "packed-refs holds SHA-256 object ids. Git is given only "
+                     "HEAD and the object files that this Git folder holds itself; scan with "
+                     "depbee scan --base-lock instead")  # fmt: skip
 
     def test_a_link_or_a_failed_look_on_the_way_to_a_ref_is_refused(self):
         git_dir, project = self.git_folder(packed=PACKED)
