@@ -35,7 +35,7 @@ depbee --help
 
 **설치 직후 `depbee check lodash@4.17.21`로 첫 검사를 실행하세요.** wheel에는 모델 `D04-E00`과 `2026-10-06T14:00:47Z` 기준 OSV npm 색인이 들어 있습니다. `depbee setup`으로 현재 자산을 확인할 수 있고, 매 보고서에 실제 검사에 쓴 모델과 색인이 기록됩니다. [기본 자산 변경](docs/usage.md#기본-자산) · [결과 재현에 남길 값](docs/usage.md#결과-재현에-남길-값)
 
-호스트에 Python을 설치하지 않아도 Docker로 CLI 검사와 stdio MCP를 사용할 수 있습니다. 로컬 이미지를 빌드한 뒤 `docker run --rm depbee:local check lodash@4.17.21`로 검사합니다. [Docker로 실행하기](docs/docker.md)
+호스트에 Python과 Node.js를 설치하지 않고 쓰려면 로컬 Docker 이미지 하나로 CLI 검사, stdio MCP, 대시보드를 실행합니다. [Docker로 실행](#docker로-실행)
 
 ## CLI
 
@@ -110,6 +110,46 @@ PR에서 lockfile 변경을 검사하려면 예시 workflow를 대상 저장소�
 python -I src/depbee/actions.py report docs/examples/result-contract/03-known-malicious-low-ml.json --lockfile examples/project/package-lock.json
 ```
 
+## Docker로 실행
+
+depbee 저장소에서 빌드한 로컬 이미지 `depbee:local`로 CLI 검사, stdio MCP, 대시보드를 실행합니다. 비공개 분석기를 받는 빌드 시크릿을 포함한 Windows·Linux 빌드 명령은 [이미지 빌드](docs/docker.md#이미지-빌드)에 있습니다.
+
+검사할 npm 프로젝트 폴더에서 폴더 경로와 이름을 변수에 담습니다.
+
+```powershell
+$project = (Get-Location).Path; $name = Split-Path -Leaf $project   # PowerShell
+```
+
+```sh
+project="$PWD"; name="$(basename "$project")"                        # Bash
+```
+
+아래 명령은 두 셸에서 같습니다.
+
+```sh
+# CLI: 정확한 버전 하나, 프로젝트의 lockfile 변경
+docker run --rm depbee:local check lodash@4.17.21
+docker run --rm --mount "type=bind,source=$project,target=/project,readonly" depbee:local scan /project --extract
+
+# stdio MCP: Claude Code에 등록
+claude mcp add --transport stdio --scope local depbee '--' docker run --rm -i --mount "type=bind,source=$project,target=/project,readonly" depbee:local mcp
+
+# 대시보드: 출력된 http://127.0.0.1:5757/s/... 주소를 브라우저에서 열고 Ctrl+C로 종료
+docker run --rm -it -p 127.0.0.1:5757:5757 --mount "type=bind,source=$project,target=/projects/$name,readonly" --mount type=volume,source=depbee-home,target=/home/depbee depbee:local dashboard
+```
+
+대시보드는 컨테이너의 `/projects` 아래에 연결한 폴더만 등록합니다. **프로젝트 폴더 선택**을 누르면 연결한 폴더 목록이 열리고, `package-lock.json`이 있는 폴더의 **등록**을 누릅니다. 프로젝트가 여러 개면 `--mount`를 반복하거나 상위 폴더를 `/projects`에 연결합니다.
+
+```sh
+# 프로젝트 여러 개: 하나씩 연결하거나, 프로젝트들이 든 상위 폴더($workspace)를 연결
+docker run --rm -it -p 127.0.0.1:5757:5757 --mount "type=bind,source=$project_a,target=/projects/app-a,readonly" --mount "type=bind,source=$project_b,target=/projects/app-b,readonly" --mount type=volume,source=depbee-home,target=/home/depbee depbee:local dashboard
+docker run --rm -it -p 127.0.0.1:5757:5757 --mount "type=bind,source=$workspace,target=/projects,readonly" --mount type=volume,source=depbee-home,target=/home/depbee depbee:local dashboard
+```
+
+`readonly` 연결에서는 조회, 검사만, 업데이트 확인까지 할 수 있습니다. 반영하려면 `,readonly`를 빼고 다시 시작합니다. 등록과 기록은 `depbee-home` 볼륨에 남고, 포트는 호스트의 `127.0.0.1`에만 게시합니다.
+
+[폴더 연결과 등록](docs/docker.md#프로젝트-폴더-연결과-등록) · [읽기 전용 연결과 반영](docs/docker.md#읽기-전용-연결과-반영) · [컨테이너가 하는 일(쓰기와 npm)](docs/docker.md#컨테이너가-하는-일) · [이력 보관](docs/docker.md#이력-보관) · [포트](docs/docker.md#포트) · [종료](docs/docker.md#종료) · [Linux 파일 권한](docs/docker.md#linux-파일-권한)
+
 ## 참고 문서
 
-[네 진입점 시연](docs/demo.md) · [상세 사용법과 지원 범위](docs/usage.md) · [결과 필드와 연결 규약](docs/contracts.md) · [구조](docs/architecture.md) · [검증 기록](docs/validation.md) · [공개 Actions 시연 저장소](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo)
+[네 진입점 시연](docs/demo.md) · [상세 사용법과 지원 범위](docs/usage.md) · [Docker로 실행하기](docs/docker.md) · [결과 필드와 연결 규약](docs/contracts.md) · [구조](docs/architecture.md) · [검증 기록](docs/validation.md) · [공개 Actions 시연 저장소](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo)

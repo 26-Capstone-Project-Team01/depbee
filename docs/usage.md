@@ -2,7 +2,7 @@
 
 설치본에 든 기본 자산과 사용자 지정, 명령별 옵션, 업데이트 반영 조건과 백업·복구, 이력 보관 방식, MCP 설정을 설명합니다. 처음 실행하는 명령은 [빠른 시작](../README.md), 네 진입점을 순서대로 실행하는 예시는 [진입점별 시연](demo.md)에 있습니다.
 
-Docker 이미지로 CLI 검사와 MCP를 실행하는 방법은 [Docker로 실행하기](docker.md)에 있습니다.
+Docker 이미지로 CLI 검사, MCP, 대시보드를 실행하는 방법은 [Docker로 실행하기](docker.md)에 있습니다.
 
 분석기는 Python 배포와 실행 명령에서 `depbee-analyzer`, import에서 `depbee_analyzer`를 사용합니다. 이전 배포명은 `feature-extractor`, import는 `feature_extractor`였습니다. 새 환경에서는 depbee의 `[extract]` 옵션이 지정한 커밋을 설치합니다. 저장된 결과와 이력에서 분석기의 출처를 읽을 때는 기존 JSON 키 `provenance.feature_extractor`를 사용합니다.
 
@@ -286,6 +286,7 @@ depbee dashboard --background          # 백그라운드로 실행 (아래 백�
 보안 동작:
 
 - `127.0.0.1`에만 바인딩하고 다른 주소로 여는 옵션은 없습니다. 모든 요청의 Host 헤더가 `127.0.0.1:<포트>`와 정확히 같아야 합니다(DNS rebinding 방지, 다르면 400).
+- Docker 이미지의 대시보드는 컨테이너의 인터페이스에 바인딩하고, 호스트의 `127.0.0.1`에 같은 번호로 게시한 포트로 엽니다. 이미지에 설정된 환경 변수 `DEPBEE_CONTAINER_PROJECTS`가 이 동작을 켜고, 등록할 수 있는 폴더를 그 값(`/projects`) 아래로 제한합니다. Host, 세션, Origin 검사는 같습니다. [Docker의 대시보드](docker.md#대시보드)
 - 세션: 실행할 때마다 무작위 세션 값을 만들어 시작 주소에 넣습니다. 모든 화면·폼·CSS는 `/s/<세션>/` 아래에 있고, 이 접두사가 없거나 세션이 다르면 조회를 포함한 모든 요청을 고정 문구 403으로 거부합니다. 같은 PC의 다른 프로세스·계정도 `127.0.0.1`에 접속할 수 있기 때문입니다. 쿠키는 쓰지 않습니다(응답에 `Set-Cookie`가 없고 요청의 `Cookie`는 무시). 로그인 단계도 없습니다. 쿠키를 없애면 로그인 단계가 세션을 넘길 곳이 주소뿐이라 따로 두어도 보호가 늘지 않습니다.
 - 알려진 한계(받아들인 위험): 세션 값이 주소에 있으므로 브라우저 주소창과 방문 기록에 남고, 시작 줄이나 그 주소를 볼 수 있는 사람은 대시보드가 도는 동안 화면을 보고 검사, 업데이트 확인·반영을 할 수 있습니다. 주소를 다른 사람에게 보이지 않게 하고, 쓰지 않을 때는 대시보드를 끕니다. 대시보드를 끄면 그 주소는 무효가 됩니다(다음 실행은 새 세션). 예전 쿠키 방식의 한계(같은 브라우저로 연 127.0.0.1의 다른 포트 서버가 세션 쿠키를 받음)는 쿠키를 없애 사라졌습니다.
 - 상태를 바꾸는 요청은 POST만 받습니다(프로젝트 등록, 검사만, 업데이트 확인, 반영). GET은 npm을 실행하거나 상태를 바꾸지 않습니다. POST는 `Origin: http://127.0.0.1:<포트>`이고 폼의 숨은 세션 값이 맞아야 하며, 브라우저가 `Sec-Fetch-Site`를 보냈으면 `same-origin`이나 `none`이어야 합니다(하나라도 아니면 403). 본문은 16 KiB, 폼 필드는 4개, 경로·대상 이름 칸은 각각 1024자까지 받습니다.
@@ -453,6 +454,7 @@ src/depbee/
   history.py              # 로컬 이력 저장소(SQLite): 프로젝트 등록, 보고서 기록·조회
   dashboard/              # 로컬 대시보드(depbee dashboard): app.py, templates/, static/
   dashboard/lifecycle.py  # 백그라운드 대시보드의 시작·상태·종료(잠금, 상태 파일, 제어 요청)
+  dashboard/mounted.py    # 컨테이너의 대시보드: 연결한 폴더 목록과 등록 범위(DEPBEE_CONTAINER_PROJECTS)
 scripts/write_manifest.py # 모델 파일로 manifest.json 생성
 scripts/build_known_malicious_index.py # OSV npm all.zip으로 기지 악성 색인 폴더 생성
 tests/                    # 합성 자료를 이용한 회귀·모델 연동 테스트
