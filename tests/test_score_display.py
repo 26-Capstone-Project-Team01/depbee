@@ -18,6 +18,7 @@ from unittest import mock
 import test_actions  # the modules: their test classes, imported by name, would run again here
 import test_dashboard
 from test_detectors import ADVISORY, KnownList
+from test_markdown import outside_code_spans
 from test_output_formats import FormatFixture, as_json, capture, older
 from test_workflow import FakePredictor
 
@@ -109,6 +110,21 @@ class RenderedTests(FormatFixture):
         self.assertEqual(report, kept)
         self.assertEqual(json.loads(as_json(report)), kept)
         self.assertEqual((report["results"][0]["score"], report["exit_code"]), (TINY, 0))
+
+    def test_markdown_stored_value_says_which_lockfile_location_it_belongs_to(self):
+        # The same package and version at two locations: the two details have one heading.
+        report = self.scored(2e-07)
+        (row,) = report["results"]
+        hostile = "node_modules/`x`/[link](https://evil.test)/node_modules/example"
+        report["results"] = [row, {**row, "location": hostile, "score": 4e-07}]
+        markdown = capture(_print_markdown, report)
+        self.assertEqual(markdown.count("\n### 통과: ` example@1.1.0 `\n"), 2)
+        self.assertIn("\n- 점수 원값: 2e-07\n- 위치: ` node_modules/example `\n", markdown)
+        self.assertIn(f"\n- 점수 원값: 4e-07\n- 위치: `` {hostile} ``\n", markdown)
+        # The location is one code span: its backticks and link never reach the rendered text.
+        plain = outside_code_spans(markdown)
+        for inert in ("`", "[link]", "evil.test"):
+            self.assertNotIn(inert, plain)
 
     def test_exact_zero_and_exact_scores_have_no_separate_stored_value(self):
         for score, shown in ((0.0, "0"), (-0.0, "0"), (0.9, "0.900")):

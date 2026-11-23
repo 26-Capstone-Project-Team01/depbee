@@ -837,7 +837,8 @@ def _markdown_details(row: dict, report: dict) -> list[str]:
     target = _md(f"{row['package']}@{row['after_version'] or row['before_version']}")
     lines = ["", f"### {_md_label(STATUS_LABELS, row['status'])}: {target}", ""]
     if raw:
-        lines.append(f"- 점수 원값: {raw}")
+        # Rows of one package and version share the heading: the location says whose value it is.
+        lines += [f"- 점수 원값: {raw}", f"- 위치: {_md(row['location'])}"]
     if alternative:
         # The heading has no location and rows without details have no section, so say which.
         lines.append(
