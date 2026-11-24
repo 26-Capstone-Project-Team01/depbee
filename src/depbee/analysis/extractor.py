@@ -102,12 +102,14 @@ def _with_this_python(requirement: str) -> str:
     is a supported way to run it (docs/usage.md), and there the shell's python can be another
     environment's: a bare "python -m pip" would install into that one. Each form takes a path
     with spaces or quotes. On Windows it is PowerShell's, the shell of the guides, where & calls
-    a quoted path and a quote inside one is doubled; elsewhere the POSIX shells' quoting."""
+    a quoted path and a single quote inside one is doubled: PowerShell 5.1 and 7 read U+2018 to
+    U+201B (the curly ones, as in a user name O'Brien typed with U+2019) as single quotes too.
+    Elsewhere the POSIX shells' quoting."""
     python = sys.executable or "python"
     if os.name == "nt":
 
         def quote(text: str) -> str:
-            return "'" + text.replace("'", "''") + "'"
+            return "'" + text.translate({ord(q): q * 2 for q in "'\u2018\u2019\u201a\u201b"}) + "'"
 
         return f", in PowerShell: & {quote(python)} -m pip install {quote(requirement)}"
     return f": {shlex.quote(python)} -m pip install {shlex.quote(requirement)}"

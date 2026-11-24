@@ -3,6 +3,7 @@
 No network access and no package code: depbee-analyzer is replaced by FakeBackend.
 """
 
+import base64
 import contextlib
 import copy
 import dataclasses
@@ -11,6 +12,9 @@ import importlib.util
 import io
 import json
 import os
+import shutil
+import subprocess
+import sys
 import tarfile
 import unittest
 from pathlib import Path
@@ -34,7 +38,7 @@ from test_workflow import FakePredictor, Fixture, package
 
 from depbee.analysis import registry
 from depbee.analysis.baseline import select_baseline
-from depbee.analysis.extractor import ExtractorAnalyzer, FeatureExtractorBackend
+from depbee.analysis.extractor import ExtractorAnalyzer, FeatureExtractorBackend, _with_this_python
 from depbee.cli import _print_text, main
 from depbee.contracts import GuardError, read_json
 from depbee.inputs.npm import build_package_request, check_package_spec
@@ -1042,6 +1046,73 @@ class PinnedLoaderTests(Fixture):
         # Only the baseline tarball came from the registry.
         self.assertEqual(self.served.opened, [self.packument_url, tarball_url("example", "1.0.1")])
         self.own_requests.assert_not_called()
+
+
+# For each statement of $env:DEPBEE_COMMANDS: its number of commands, the call operator, then each
+# command element (a string's value, anything else as written) as base64 of UTF-8.
+READ_BACK = """
+$parser = [Management.Automation.Language.Parser]
+$errors = $null
+$ast = $parser::ParseInput($env:DEPBEE_COMMANDS, [ref]$null, [ref]$errors)
+if ($errors) { exit 3 }
+foreach ($statement in $ast.EndBlock.Statements) {
+    $command = $statement.PipelineElements
+    $words = foreach ($element in $command.CommandElements) {
+        $text = $element.Extent.Text
+        if ($element -is [Management.Automation.Language.StringConstantExpressionAst]) {
+            $text = $element.Value
+        }
+        [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text))
+    }
+    (@($command.Count, $command.InvocationOperator) + $words) -join ' '
+}
+"""
+
+
+class PowerShellInstallCommandTests(unittest.TestCase):
+    """The analyzer install command of a Windows depbee (extractor._with_this_python), read back
+    by the parser of each PowerShell found here: Windows PowerShell 5.1 and PowerShell 7 (CI's
+    Windows runner has both, its Linux runner pwsh). The path and the requirement are opaque
+    text: whatever they hold, PowerShell must call that Python with that one requirement."""
+
+    def test_each_powershell_reads_back_the_python_and_the_requirement(self):
+        shells = [shell for shell in ("powershell", "pwsh") if shutil.which(shell)]
+        if not shells:
+            self.skipTest("no PowerShell here")
+        # Each character that ends a PowerShell single-quoted string (' and U+2018 to U+201B),
+        # alone, doubled and next to another; the double quotes, backtick and $ that mean
+        # something only outside one; spaces and Hangul.
+        odd = ("O'Brien O\u2019Brien \u2018\u201a\u201b '' \u2019\u2019 '\u2019 "
+               "\u201c\u201d\u201e\" `$HOME 한글")  # fmt: skip
+        pin = ("depbee-analyzer @ git+https://github.com/26-Capstone-Project-Team01/"
+               "depbee-analyzer@" + "a" * 40)  # fmt: skip
+        cases = [
+            ("C:\\Users\\A O\u2019Brien space\\venv\\Scripts\\python.exe", pin),
+            (f"C:\\Users\\{odd}\\my env\\Scripts\\python.exe", ".[extract]"),
+            ("C:\\Program Files\\Python313\\python.exe", f"{odd} @ file:///C:/{odd}"),
+        ]
+        commands = []
+        for python, requirement in cases:
+            with mock.patch.object(os, "name", "nt"), mock.patch.object(sys, "executable", python):
+                said = _with_this_python(requirement)
+            self.assertTrue(said.startswith(", in PowerShell: & "), said)
+            commands.append(said.removeprefix(", in PowerShell: "))
+        for shell in shells:
+            with self.subTest(shell):
+                done = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                     base64.b64encode(READ_BACK.encode("utf-16-le")).decode()],
+                    env={**os.environ, "DEPBEE_COMMANDS": "\n".join(commands)},
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120,
+                )  # fmt: skip
+                self.assertEqual(done.returncode, 0, done.stderr)
+                read = [line.split(" ") for line in done.stdout.splitlines()]
+                self.assertEqual(
+                    [[*line[:2], *(base64.b64decode(word).decode() for word in line[2:])]
+                     for line in read],
+                    [["1", "Ampersand", python, "-m", "pip", "install", requirement]
+                     for python, requirement in cases],
+                )  # fmt: skip
 
 
 if __name__ == "__main__":
