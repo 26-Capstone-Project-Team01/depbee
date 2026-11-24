@@ -121,7 +121,9 @@ class InspectorTests(test_dashboard.DashboardFixture):
 
     def test_an_item_that_is_not_one_key_of_a_shown_row_changes_nothing(self):
         key = self.keys["inner"]  # a row that both views show and neither opens first
-        wide = key.translate(str.maketrans("0123456789", "０１２３４５６７８９"))  # int() reads these
+        wide = key.translate(
+            str.maketrans("0123456789", "０１２３４５６７８９")
+        )  # int() reads these
         items = [
             "", "x", str(self.checked), f"{self.checked}.", ".2", f"{key}.0", f"{key}x", f" {key}",
             f"{key} ", f"+{key}", f"0{key}", f"{self.checked}.02", f"{self.checked}.-2",
@@ -144,7 +146,9 @@ class InspectorTests(test_dashboard.DashboardFixture):
         for name in ("package.json", "package-lock.json"):
             (twin / name).write_bytes((self.project / name).read_bytes())
         twin_id = history.register_project(twin)
-        foreign = self.check(project=twin, targets=None)  # the same files and rows, not this project
+        foreign = self.check(
+            project=twin, targets=None
+        )  # the same files and rows, not this project
         stale = self.check(targets=None, package_lock_sha256="4" * 64)  # this project, other files
         unused = [mock.patch.object(*target) for target in (
             (service, "preview_files"), (service, "scan_project"), (service, "apply_preview"),
@@ -191,47 +195,54 @@ class InspectorTests(test_dashboard.DashboardFixture):
             self.assertEqual([row[key] for key in CHECKED_WITH],
                              ["unit-test", 0.5, KnownList.list_as_of])  # fmt: skip
 
-    def test_the_candidates_only_filter_and_the_search_narrow_the_list_together(self):
+    def test_the_tabs_and_the_search_narrow_the_list_together(self):
         # A later check of other alone found nothing: other is installed and has no candidate.
         self.check({**self.report, "results": []}, targets=["other"], changed_count=0)
-        for query, expected in (
-            ("", ["example", "inner", "other"]),
-            ("only=1", ["example", "inner"]),
-            ("only=1&q=IN", ["inner"]),
-            ("q=IN&only=1", ["inner"]),  # in either order
-            ("only=1&scope=direct", ["example"]),
-            ("only=1&scope=nested&q=inner", ["inner"]),
-            ("only=1&q=other", []),  # found by the search, but it has no candidate
-            ("q=other", ["other"]),
+        for query, expected, show in (
+            ("", ["example", "inner", "other"], "all"),
+            ("show=candidates", ["example", "inner"], "candidates"),
+            ("show=candidates&q=IN", ["inner"], "candidates"),
+            ("q=IN&show=candidates", ["inner"], "candidates"),  # in either order
+            ("show=candidates&scope=direct", ["example"], "candidates"),
+            ("show=candidates&scope=nested&q=inner", ["inner"], "candidates"),
+            ("show=candidates&q=other", ["other"], "all"),  # the search leaves no candidate
+            ("show=none", ["other"], "none"),
+            ("q=other", ["other"], "all"),
         ):
             with self.subTest(query=query):
                 context = self.context(f"{self.packages}?{query}")
                 self.assertEqual([row["name"] for row in context["rows"]], expected)
-                # The count is of the whole list, and the search is kept as it was given.
-                self.assertEqual((context["candidate_count"], context["only"]),
-                                 (2, "only=1" in query))  # fmt: skip
+                self.assertEqual(context["show"], show)
+                # The tabs count what the search and the kind leave: their parts make the whole.
+                counts = context["counts"]
+                self.assertEqual(counts["candidates"] + counts["unchecked"] + counts["none"],
+                                 counts["all"])  # fmt: skip
                 self.assertEqual(context["query"], "IN" if "q=IN" in query else
                                  "inner" if "q=inner" in query else
                                  "other" if "q=other" in query else "")  # fmt: skip
-        # The view opens one of the rows the filter leaves.
-        row = self.selected(f"{self.packages}?only=1&item={self.keys['inner']}")
+        self.assertEqual(self.context(self.packages)["counts"],
+                         {"all": 3, "candidates": 2, "unchecked": 0, "none": 1})  # fmt: skip
+        # The view opens one of the rows the tab leaves.
+        row = self.selected(f"{self.packages}?show=candidates&item={self.keys['inner']}")
         self.assertEqual(row["package"], "inner")
-        self.assertIsNone(self.selected(f"{self.packages}?only=1&q=other&item={self.keys['inner']}"))
-        for query in ("only=0", "only=", "only=true", "only=1&only=1", "only=1&only=0"):
+        self.assertIsNone(self.selected(f"{self.packages}?show=none&item={self.keys['inner']}"))
+        for query in ("show=", "show=yes", "show=none&show=none", "show=candidates&show=none"):
             self.assertEqual(self.get(f"{self.packages}?{query}").status_code, 400, query)
+        for query in ("only=0", "only=", "only=true", "only=1&only=1"):  # the old filter: no more
+            self.assertEqual(self.get(f"{self.packages}?{query}").status_code, 200, query)
 
-    def test_a_filter_with_no_candidate_to_show_is_off(self):
+    def test_a_tab_with_nothing_to_show_lists_everything(self):
         # No current check: nothing is known, and an address kept from before lists everything.
         self.head.write_bytes(self.head.read_bytes() + b"\n")
-        context = self.context(f"{self.packages}?only=1")
-        self.assertEqual((context["only"], context["candidate_count"], context["state"]["checks"],
-                          len(context["rows"])), (False, 0, [], 3))  # fmt: skip
+        context = self.context(f"{self.packages}?show=candidates")
+        self.assertEqual((context["show"], context["counts"]["candidates"], context["state"]["checks"],
+                          len(context["rows"])), ("all", 0, [], 3))  # fmt: skip
         # A check of everything that found nothing: 0 is known, and the list is still whole.
         run = self.check({**self.report, "results": []}, targets=None, changed_count=0)
-        context = self.context(f"{self.packages}?only=1")
-        self.assertEqual((context["only"], context["candidate_count"], len(context["rows"]),
+        context = self.context(f"{self.packages}?show=candidates")
+        self.assertEqual((context["show"], context["counts"]["candidates"], len(context["rows"]),
                           [check["id"] for check in context["state"]["checks"]]),
-                         (False, 0, 3, [run]))  # fmt: skip
+                         ("all", 0, 3, [run]))  # fmt: skip
 
     def scanned(self, *signal, **detectors):
         """A report of example 1.1.0 to 1.2.0 as setUp's are: scanned while the lockfile is the
@@ -274,7 +285,9 @@ class InspectorTests(test_dashboard.DashboardFixture):
              "보류(통과가 아님), 이유: 연결된 탐지기 실패; 기지 악성 목록 미확인"),
         ):  # fmt: skip
             with self.subTest(causes=causes):
-                self.assertEqual(self.decided(report), ("hold", "확인 필요", f"{confirm}: {causes}."))
+                self.assertEqual(
+                    self.decided(report), ("hold", "확인 필요", f"{confirm}: {causes}.")
+                )
         # An entry that is removed installs nothing; a match would still refuse it.
         gone = self.scanned(0.1, known_malicious=clean)
         gone["results"][0].update(status="removed", after_version=None, score=None,

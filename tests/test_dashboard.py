@@ -535,7 +535,8 @@ class ConsoleTests(DashboardFixture):
         for view, mark in marks.items():
             html = self.page(f"/projects/{flagged}{view}")
             self.assertEqual(self.tab(html, flagged)[0], mark, view)
-            self.assertEqual(html.count("aria-current="), 2, view)  # the tab and the view link
+            # The rail tab and the view link; the packages view also marks its list tab.
+            self.assertEqual(html.count("aria-current="), 3 if view == "" else 2, view)
             self.assertEqual(self.tab(html, passed)[0], "", view)
         html = self.page(f"/runs/{run}")
         self.assertEqual(self.tab(html, flagged)[0], ' aria-current="true"')
@@ -1158,57 +1159,67 @@ class CandidateTests(DashboardFixture):
         self.assertIn('class="stack candidates"', self.page(self.updates))
         self.assertEqual(self.db.read_bytes(), before)  # looking does not upgrade the file
 
-    def test_the_filter_beside_the_search_keeps_the_search_and_says_what_is_known(self):
+    def test_the_tabs_count_what_the_search_leaves_and_keep_it(self):
         url = f"{S}{self.packages}"
 
         def listed(html):
             return re.findall(r'<tr><th scope="row">([^<]*)</th>', html)
 
-        # Nothing checked: unknown, which is not 0. An address kept from before lists it all.
-        html = self.page(f"{self.packages}?only=1")
-        self.assertIn('<span class="toggle off">후보 미확인</span>', html)
+        def tabs(html):
+            nav = re.search(r'<nav class="filter-tabs" aria-label="패키지 목록 거르기">(.*?)</nav>',
+                            html, re.S)[1]  # fmt: skip
+            return re.findall(r'<(a href="[^"]*"(?: aria-current="true")?|span class="filter-off")>'
+                              r'([^<]*) <span class="filter-count">(\d+)</span>', nav)  # fmt: skip
+
+        # Nothing checked: everything is unchecked, which is not 0 candidates.
+        html = self.page(self.packages)
+        self.assertEqual(tabs(html), [
+            (f'a href="{url}" aria-current="true"', "전체", "3"),
+            ('span class="filter-off"', "후보", "0"),
+            (f'a href="{url}?show=unchecked"', "미확인", "3"),
+            ('span class="filter-off"', "후보 없음", "0")])  # fmt: skip
         self.assertIn("미확인은 확인된 후보 0개와 다릅니다.", html)
-        self.assertNotIn('<a class="toggle"', html)
-        self.assertEqual(listed(html), ["example", "inner", "other"])
-        run = self.check(targets=None)  # one candidate: example
-        # Off: the link turns the filter on and keeps the search and the kind.
-        off = self.page(f"{self.packages}?q=e&scope=direct")
-        self.assertIn(f'<a class="toggle" href="{url}?q=e&amp;scope=direct&amp;only=1">확인된 후보 '
-                      '1개<span class="visually-hidden">만 보기</span></a>', off)  # fmt: skip
-        self.assertNotIn('name="only"', off)
-        self.assertIn(f'검색 결과 <strong>2개</strong>. <a href="{url}">필터 초기화</a>', off)
-        self.assertEqual(listed(off), ["example", "other"])
-        # On: both narrow the list, the link turns the filter off and keeps the search, a new
-        # search keeps the filter, and a pick keeps all three.
-        on = self.page(f"{self.packages}?q=e&scope=direct&only=1")
-        self.assertIn(f'<a class="toggle" href="{url}?q=e&amp;scope=direct" aria-current="true">'
-                      '확인된 후보 1개<span class="visually-hidden">만 보는 중입니다. 전체 패키지 '
-                      "보기</span></a>", on)  # fmt: skip
-        self.assertIn('<input type="hidden" name="only" value="1">', on)
+        # A tab the address names that holds nothing, and the old filter, list everything.
+        for address in ("?show=candidates", "?only=1", "?only=0"):
+            self.assertEqual(
+                listed(self.page(self.packages + address)), ["example", "inner", "other"]
+            )
+        run = self.check(targets=None)  # a check of everything: example has a candidate
+        # The counts are of what the search and the kind leave, and each tab keeps both.
+        html = self.page(f"{self.packages}?q=e&scope=direct")
+        self.assertEqual(tabs(html), [
+            (f'a href="{url}?q=e&amp;scope=direct" aria-current="true"', "전체", "2"),
+            (f'a href="{url}?q=e&amp;scope=direct&amp;show=candidates"', "후보", "1"),
+            ('span class="filter-off"', "미확인", "0"),
+            (f'a href="{url}?q=e&amp;scope=direct&amp;show=none"', "후보 없음", "1")])  # fmt: skip
+        self.assertEqual(listed(html), ["example", "other"])
+        self.assertNotIn('name="show"', html)
+        self.assertIn(f'검색 결과 <strong>2개</strong>. <a href="{url}">필터 초기화</a>', html)
+        # A tab narrows the list; a new search keeps the tab, and a pick keeps all three.
+        on = self.page(f"{self.packages}?q=e&scope=direct&show=candidates")
+        self.assertIn(
+            f'<a href="{url}?q=e&amp;scope=direct&amp;show=candidates" aria-current="true">후보', on
+        )
+        self.assertIn('<input type="hidden" name="show" value="candidates">', on)
         self.assertIn('name="q" maxlength="214" value="e"', on)
         self.assertIn('<option value="direct" selected>직접</option>', on)
-        self.assertIn("확인된 후보만 검색 결과 <strong>1개</strong>.", on)
+        self.assertIn(f'검색 결과 <strong>1개</strong>. <a href="{url}">필터 초기화</a>', on)
         self.assertEqual(listed(on), ["example"])
-        self.assertIn(f'href="{url}?q=e&amp;scope=direct&amp;only=1&amp;item={run}.0'
+        self.assertIn(f'href="{url}?q=e&amp;scope=direct&amp;show=candidates&amp;item={run}.0'
                       '#candidate-evidence"', on)  # fmt: skip
-        # Without a search the way back is the view itself.
-        alone = self.page(f"{self.packages}?only=1")
-        self.assertIn(f'<a class="toggle" href="{url}" aria-current="true">', alone)
-        self.assertEqual(listed(alone), ["example"])
-        # A search that leaves no candidate says which of the two came up empty, and keeps both.
-        none = self.page(f"{self.packages}?q=other&only=1")
-        self.assertIn("조건에 맞는 확인된 후보가 없습니다.", none)
-        self.assertIn(f'<a class="toggle" href="{url}?q=other" aria-current="true">', none)
-        self.assertEqual(listed(none), [])
+        self.assertEqual(listed(self.page(f"{self.packages}?show=none")), ["inner", "other"])
+        self.assertEqual(
+            listed(self.page(f"{self.packages}?show=all")), ["example", "inner", "other"]
+        )
         self.assertIn("조건에 맞는 패키지가 없습니다.", self.page(f"{self.packages}?q=missing"))
-        # A check of everything that found nothing: 0 is known, and the filter has nothing to do.
+        # A check of everything that found nothing: 0 is known, and the list is whole.
         self.check(self.nothing(), targets=None, changed_count=0)
-        html = self.page(f"{self.packages}?only=1")
-        self.assertIn('<span class="toggle off">확인된 후보 0개</span>', html)
+        html = self.page(f"{self.packages}?show=candidates")
         self.assertIn("바뀌는 항목이 없었습니다. 확인된 후보 0개입니다.", html)
         self.assertNotIn("미확인은 확인된 후보 0개와 다릅니다.", html)
         self.assertEqual(listed(html), ["example", "inner", "other"])
-        self.assertEqual(self.get(f"{self.packages}?only=2").status_code, 400)
+        for address in ("?show=evil", "?show=", "?show=none&show=none", "?show=none&show=all"):
+            self.assertEqual(self.get(self.packages + address).status_code, 400, address)
 
     def test_candidate_strings_stay_inert(self):
         from markupsafe import escape
@@ -2013,8 +2024,10 @@ class CheckReturnTests(ScreenFixture):
         # was open before, and the address goes to it.
         for back, query in (
             ("", ""),
-            ("q=ex&scope=direct&only=1&item=3.0", "q=ex&scope=direct&only=1&"),
-            ("only=1&q=ex", "q=ex&only=1&"),  # written as the view's own links write it
+            # The check opened a candidate: the tab is dropped, as a tab of unchecked rows
+            # would no longer list the row just checked.
+            ("q=ex&scope=direct&show=candidates&item=3.0", "q=ex&scope=direct&"),
+            ("show=unchecked&q=ex", "q=ex&"),
             ("scope=all&q=+", ""),  # nothing that narrows the list
         ):
             with self.subTest(back=back):
@@ -2023,10 +2036,15 @@ class CheckReturnTests(ScreenFixture):
         # A search that lists none of the candidates: the address goes to the line that says so.
         run, url = self.landed("q=%ED%95%9C%EA%B8%80+x&")
         self.assertEqual(url, f"{self.packages}?q=%ED%95%9C%EA%B8%80+x&checked={run}#check-status")
+        # It opened none: the tab it was sent from stays (the view shows all when that is empty).
+        run, url = self.landed("q=%ED%95%9C%EA%B8%80+x&show=none")
+        self.assertEqual(
+            url, f"{self.packages}?q=%ED%95%9C%EA%B8%80+x&show=none&checked={run}#check-status"
+        )
         # The address is always this project's packages view, built from what that view reads
         # of the field and never from the field's text: what the view would refuse, a value
         # that is no query of it, or a field given twice is the view without a filter.
-        for back in ("scope=evil&q=x", "q=" + "x" * 215, "only=2&q=x", "q=a&q=b",
+        for back in ("scope=evil&q=x", "q=" + "x" * 215, "show=evil&q=x", "q=a&q=b",
                      "//evil.test/x", "https://evil.test/?q=x", f"../../{SESSION}/model",
                      "item=" + "9" * 41, "item=1.0&item=2.0", ["q=ex", "only=1"]):  # fmt: skip
             with self.subTest(back=str(back)[:30]):
@@ -2121,7 +2139,7 @@ class CheckReturnTests(ScreenFixture):
         html = self.page(url)
         self.assertIn(f"실행 #{fourth}에서 확인했고 바뀌는 항목이 없었습니다. 확인된 후보 "
                       "0개입니다.", html)  # fmt: skip
-        self.assertIn('<span class="toggle off">확인된 후보 0개</span>', html)
+        self.assertIn('<span class="filter-off">후보 <span class="filter-count">0</span></span>', html)
 
     def test_a_check_with_nothing_to_open_goes_to_its_line_not_to_the_candidate_left_open(self):
         """The browser follows the fragment of the address a check comes back to, with the
@@ -2226,10 +2244,10 @@ class CheckReturnTests(ScreenFixture):
     def test_the_form_says_which_view_it_is_sent_from_and_what_its_buttons_do_meanwhile(self):
         self.returns("example")
         run, _ = self.landed("")
-        html = self.page(f"{self.packages}?q=ex&scope=direct&only=1")
+        html = self.page(f"{self.packages}?q=ex&scope=direct&show=candidates")
         form = re.search(r'<form [^>]*id="preview-project"[^>]*>(.*?)</form>', html, re.S)[1]
         self.assertIn(f'<input type="hidden" name="session" value="{SESSION}">', form)
-        self.assertIn('<input type="hidden" name="back" value="q=ex&amp;scope=direct&amp;only=1'
+        self.assertIn('<input type="hidden" name="back" value="q=ex&amp;scope=direct&amp;show=candidates'
                       f'&amp;item={run}.0">', form)  # fmt: skip
         self.assertIn('<button class="primary" type="submit" data-busy-label="후보 확인 중…" '
                       'name="packages" value="">업데이트 후보 다시 확인</button>', form)  # fmt: skip

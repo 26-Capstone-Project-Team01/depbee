@@ -140,10 +140,10 @@ class FocusAndPickTests(unittest.TestCase):
         self.assertRegex(css, r"(?m)^\.field input \{[^}]*min-width: 0;")
         self.assertRegex(css, r"(?m)^\.actions form \{ min-width: 0; \}")
 
-    def test_a_picked_filter_has_an_ink_border(self):
+    def test_a_picked_list_tab_has_an_ink_underline(self):
         css = strip_comments((STATIC / "style.css").read_text("utf-8"))
-        rule = re.search(r"^\.toggle\[aria-current\] \{([^}]*)\}", css, re.M)
-        self.assertIn("border-color: var(--ink)", rule.group(1))
+        rule = re.search(r"^\.filter-tabs a\[aria-current\] \{([^}]*)\}", css, re.M)
+        self.assertIn("border-bottom-color: var(--ink)", rule.group(1))
 
 
 @unittest.skipUnless(WEB, NO_WEB)

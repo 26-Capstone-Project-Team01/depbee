@@ -218,8 +218,8 @@ input[aria-invalid=true] { border: 2px solid var(--risk); }
 .empty::after { top: calc(1rem + 2px); left: calc(1rem + 2px); width: calc(1.1rem - 4px); height: calc(1.27rem - 4px); background: var(--sheet); }
 
 button, input, select { color: inherit; font: inherit; }
-button, .action, .toggle { display: inline-flex; align-items: center; justify-content: center; gap: .45rem; min-height: 2.75rem; padding: .4rem .9rem; border: 1px solid var(--line-2); border-radius: 6px; background: var(--sheet); color: var(--ink); font-weight: 700; text-decoration: none; white-space: nowrap; cursor: pointer; }
-button:hover, .action:hover, .toggle:hover { border-color: var(--ink); background: var(--head); }
+button, .action { display: inline-flex; align-items: center; justify-content: center; gap: .45rem; min-height: 2.75rem; padding: .4rem .9rem; border: 1px solid var(--line-2); border-radius: 6px; background: var(--sheet); color: var(--ink); font-weight: 700; text-decoration: none; white-space: nowrap; cursor: pointer; }
+button:hover, .action:hover { border-color: var(--ink); background: var(--head); }
 button.primary, .gate form > button { border-color: var(--honey); background: var(--honey); color: var(--on-honey); }
 button.primary:hover, .gate form > button:hover { border-color: var(--honey-strong); background: var(--honey-strong); }
 /* A request is running (app.js): the button that sent it says so, and every button that would
@@ -350,8 +350,20 @@ footer .note { max-width: none; }
 .filters label { display: block; color: var(--muted); font-size: .8125rem; }
 .filters .grow { flex: 1 1 10rem; }
 /* The filter is a link that looks like the switch it is: on, it is honey under an ink border. */
-.toggle[aria-current] { padding-inline: calc(.9rem - 1px); border-width: 2px; border-color: var(--ink); background: var(--honey-wash); box-shadow: inset 0 -3px 0 var(--honey); }
-.toggle.off { border-color: var(--line-2); background: transparent; color: var(--muted); font-weight: 600; cursor: default; }
+/* The list's tabs (show): smaller than the project's, with an ink underline, as honey is what
+   is picked. Each says how many rows of the search it holds; an empty one is words. */
+.filter-tabs { display: flex; flex-wrap: wrap; gap: 0 1rem; margin-top: .75rem; border-bottom: 1px solid var(--line); }
+.filter-tabs a, .filter-tabs .filter-off { display: inline-flex; align-items: center; gap: .35rem; min-height: 2.75rem; margin-bottom: -1px; padding: .2rem .1rem; border-bottom: 2px solid transparent; font-size: .9375rem; font-weight: 600; text-decoration: none; }
+.filter-tabs a:hover { border-bottom-color: var(--line-2); }
+.filter-tabs a[aria-current] { border-bottom-color: var(--ink); font-weight: 800; }
+.filter-tabs .filter-off { color: var(--muted); }
+.filter-count { font: 700 .8125rem/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--muted); }
+.filter-tabs a[aria-current] .filter-count { color: var(--ink); }
+/* The search: a magnifier drawn in the field's left padding; the labels are for a screen reader. */
+.search-box { position: relative; }
+.search-box input { padding-left: 2.1rem; }
+.search-box::before { content: ""; position: absolute; top: 50%; left: .75rem; width: .7rem; height: .7rem; margin-top: -.45rem; border: 2px solid var(--muted); border-radius: 50%; pointer-events: none; }
+.search-box::after { content: ""; position: absolute; top: 50%; left: 1.35rem; width: .4rem; height: 2px; margin-top: .25rem; background: var(--muted); transform: rotate(45deg); pointer-events: none; }
 .state { max-width: none; margin: .75rem 0 0; padding: .55rem .8rem; border-left: 3px solid var(--ink); background: var(--head); font-size: .9375rem; }
 .state:focus-visible { outline-offset: 3px; }
 .filter-summary { font-size: .875rem; }

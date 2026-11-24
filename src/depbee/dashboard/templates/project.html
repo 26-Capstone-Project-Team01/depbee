@@ -4,11 +4,11 @@
 {% block main %}
 {% set url = base ~ "/projects/" ~ project.id %}
 {# selected: the candidate the view opens (app.project), one of the rows listed here. A pick
-   keeps the search, the kind and the candidates-only filter, the name percent-encoded, and names
-   its item last. search: the search and the kind alone, what the filter's own link keeps. #}
+   keeps the search, the kind and the tab (show), the name percent-encoded, and names its item
+   last. search: the search and the kind alone, what each tab's own link keeps. #}
 {% set picked = selected if selected is defined and selected else none %}
 {% set search = ("q=" ~ query|urlencode ~ "&" if query else "") ~ ("scope=" ~ scope ~ "&" if scope != "all" else "") %}
-{% set kept = search ~ ("only=1&" if only else "") %}
+{% set kept = search ~ ("show=" ~ show ~ "&" if show != "all" else "") %}
 {% set pick = url ~ "?" ~ kept ~ "item=" %}
 {% set shown = namespace(inspector=false) %}
 {% include "project_head.html" %}
@@ -28,28 +28,30 @@
 <p>종류의 "직접"은 package-lock.json 루트 항목에 선언된 패키지이고, 뒤의 일반·개발·선택·피어는 그 선언이 dependencies·devDependencies·optionalDependencies·peerDependencies 중 어디에 있는지입니다(여러 곳이면 모두). "선언 이름"은 패키지 이름과 다른 이름(alias)으로 선언된 경우입니다. "중첩"은 루트에 선언되지 않은 항목입니다.</p>
 <p>후보는 package.json이 허용하는 범위 안에서 npm이 고른 버전이며, 지금의 package.json과 package-lock.json으로 확인한 결과만 보입니다. 후보 옆의 반영 가능·확인 필요·반영 거부는 그 후보 하나를 업데이트 반영 기준으로 본 결과입니다. "미확인" 항목은 업데이트 후보 확인으로 한꺼번에 확인합니다. 확인은 몇 초에서 수십 초 걸립니다. "후보 없음"은 그 확인에서 바뀌지 않은 항목입니다. 후보 옆의 "근거"는 그 확인을 저장한 보고서의 해당 항목을 엽니다.</p>
 </div>
+{# The tabs (app.SHOWS): links that keep the search and the kind, each with how many of the
+   rows those leave it holds (app.project). A tab with none is words, not a link; before any
+   check every row is unchecked, which is not "0 candidates". #}
+<nav class="filter-tabs" aria-label="패키지 목록 거르기">
+{% for key, label in (("all", "전체"), ("candidates", "후보"), ("unchecked", "미확인"), ("none", "후보 없음")) %}
+{% set target = search ~ ("show=" ~ key ~ "&" if key != "all" else "") %}
+{% if key == "all" or counts[key] %}<a href="{{ url }}{% if target %}?{{ target[:-1] }}{% endif %}"{% if show == key %} aria-current="true"{% endif %}>{{ label }} <span class="filter-count">{{ counts[key] }}</span></a>{% else %}<span class="filter-off">{{ label }} <span class="filter-count">0</span></span>{% endif %}
+{% endfor %}
+</nav>
 <div class="tools">
 <form method="get" action="{{ url }}" class="filters" role="search" aria-label="패키지 검색">
-<div class="grow"><label for="dep-query">패키지 이름</label>
+<div class="grow search-box"><label class="visually-hidden" for="dep-query">패키지 이름</label>
 <input type="search" id="dep-query" name="q" maxlength="{{ max_query }}" value="{{ query }}" placeholder="패키지 검색">
 </div>
-<div><label for="dep-scope">의존성 종류</label>
+<div><label class="visually-hidden" for="dep-scope">의존성 종류</label>
 <select id="dep-scope" name="scope">
 {% for value, label in (("all", "전체"), ("direct", "직접"), ("nested", "중첩")) %}
 <option value="{{ value }}"{% if scope == value %} selected{% endif %}>{{ label }}</option>
 {% endfor %}
 </select>
 </div>
-{% if only %}<input type="hidden" name="only" value="1">{% endif %}
+{% if show != "all" %}<input type="hidden" name="show" value="{{ show }}">{% endif %}
 <button type="submit">검색</button>
 </form>
-{# The candidates-only filter: a link, so that it works alone and keeps the search. It counts
-   the whole list. No check and a check that found nothing are told apart. #}
-{% if candidate_count %}
-<a class="toggle" href="{{ url }}{% if only %}{% if search %}?{{ search[:-1] }}{% endif %}{% else %}?{{ search }}only=1{% endif %}"{% if only %} aria-current="true"{% endif %}>확인된 후보 {{ candidate_count }}개<span class="visually-hidden">{{ "만 보는 중입니다. 전체 패키지 보기" if only else "만 보기" }}</span></a>
-{% else %}
-<span class="toggle off">{{ "확인된 후보 0개" if state.checks else "후보 미확인" }}</span>
-{% endif %}
 </div>
 {# landing: where a check that came back here lands, the candidate it opened or this line. The
    fragment of its address names the same place (app._landing); the script puts the focus there. #}
@@ -67,8 +69,8 @@
 {% else %}업데이트 후보는 아직 확인하지 않았습니다. 미확인은 확인된 후보 0개와 다릅니다.
 {% endif %}
 </p>
-{% if query or scope != "all" or only %}
-<p class="filter-summary">{% if only %}확인된 후보만 {% endif %}검색 결과 <strong>{{ rows|length }}개</strong>. <a href="{{ url }}">필터 초기화</a></p>
+{% if query or scope != "all" or show != "all" %}
+<p class="filter-summary">검색 결과 <strong>{{ rows|length }}개</strong>. <a href="{{ url }}">필터 초기화</a></p>
 {% endif %}
 {% if rows %}
 <table class="stack packages" aria-label="설치된 패키지">
@@ -99,8 +101,8 @@
 {% endfor %}
 </tbody>
 </table>
-{% elif query or scope != "all" or only %}
-<p class="empty">{% if only %}조건에 맞는 확인된 후보가 없습니다.{% else %}조건에 맞는 패키지가 없습니다.{% endif %} 다른 이름이나 종류로 검색하세요.</p>
+{% elif query or scope != "all" %}
+<p class="empty">조건에 맞는 패키지가 없습니다. 다른 이름이나 종류로 검색하세요.</p>
 {% else %}
 <p class="empty">이 lockfile에 설치된 의존성이 없습니다.</p>
 {% endif %}
