@@ -51,7 +51,7 @@ CLI, GitHub Action, MCP, 대시보드가 모두 `pipeline.scan()`을 재사용�
 `ExtractorAnalyzer`는 depbee-analyzer의 `build_row()`를 직접 호출한다. 패키지 코드는 읽기만 하고 실행하지 않는다.
 `analysis/rules.py`는 depbee-analyzer 고정 커밋의 정적 규칙(`rules.diff_scan`)을 특징 추출이 푼 같은 두 버전에 실행하고, 스캐너의 `hit`·`no_hit`·`unknown`과 압축 해제·스캐너가 빠뜨린 입력을 결과 계약의 규칙 결과로 바꾼다. 결과는 `ExtractorAnalyzer`가 변경별로 보관하고 `pipeline.scan()`에는 그 결과를 돌려주는 `RuleDetector`(`rules.Results`)로 넘긴다. 분석 JSON 규약과 `RuleDetector` 인터페이스는 그대로다(client-dev 2.3.2의 권장안대로이며 그 권장안은 팀 합의 전이다). 변환 규칙은 [연결 규약](contracts.md) 4절 "정적 규칙"에 있다.
 
-`analysis/cache.py`는 추출한 feature를 실행 사이에 재사용하는 작은 JSON 파일 캐시다(키 digest가 파일 이름, 임시 파일 뒤 `os.replace`로 저장). 키는 `ExtractorAnalyzer`가 비교한 두 버전의 메타데이터, 검증한 모델의 해시(`LightGBMPredictor.identity`), 설치 출처를 확인한 depbee-analyzer의 식별 정보(`FeatureExtractorBackend.identity`)로 만들고, 셋 중 하나라도 없으면 캐시를 쓰지 않는다. 같은 두 버전의 정적 규칙 결과도 함께 저장하며(형식 3), 규칙 결과가 없거나 형식이 맞지 않는 항목은 쓰지 않는다. 캐시에서 읽거나 저장할 feature는 그 모델의 입력 변환(`LightGBMPredictor.encode()`)으로 다시 확인한다. 서비스는 분석기가 잰 항목별 시간과 캐시 사용 여부를 보고서에 붙인다(`service._timed`). 판정은 그대로 `pipeline.scan()`이 한다.
+`analysis/cache.py`는 추출한 feature를 실행 사이에 재사용하는 작은 JSON 파일 캐시다(키 digest가 파일 이름, 임시 파일 뒤 `os.replace`로 저장). 키는 `ExtractorAnalyzer`가 비교한 두 버전의 메타데이터, 검증한 모델의 해시(`LightGBMPredictor.identity`), 설치 출처를 확인한 depbee-analyzer의 식별 정보(`FeatureExtractorBackend.identity`)로 만들고, 셋 중 하나라도 없으면 캐시를 쓰지 않는다. 같은 두 버전의 정적 규칙 결과도 함께 저장하며(형식 4), 규칙 결과가 없거나 형식이 맞지 않는 항목은 쓰지 않는다. 캐시에서 읽거나 저장할 feature는 그 모델의 입력 변환(`LightGBMPredictor.encode()`)으로 다시 확인한다. 서비스는 분석기가 잰 항목별 시간과 캐시 사용 여부를 보고서에 붙인다(`service._timed`). 판정은 그대로 `pipeline.scan()`이 한다.
 `ArtifactAnalyzer`는 다른 분석기가 파일로 넘긴 결과를 받는 연결부다.
 새 분석기는 `Analyzer.analyze(request)`를 구현한다. 임의 플러그인 자동 검색이나 대상 프로젝트 설정의 명령 실행은 하지 않는다.
 
