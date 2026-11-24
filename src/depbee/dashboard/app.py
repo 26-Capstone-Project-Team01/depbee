@@ -1314,7 +1314,7 @@ def _now() -> str:
 def _run_preview(project: Path, names: list[str], options: dict) -> tuple | str:
     """(result, new package.json, new lockfile, run id or None) of service.preview_files, recorded
     as the CLI records an update preview; or the message of the error page. A GuardError's own
-    message is shown (it says what is missing, e.g. Node.js or .[extract]); other errors are a
+    message is shown (it says what is missing, e.g. Node.js or the analyzer); other errors are a
     fixed message. Runs in a worker thread."""
     try:
         result, new_package, new_lock = service.preview_files(project, names, **options)

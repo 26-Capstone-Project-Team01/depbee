@@ -10,7 +10,10 @@ import dataclasses
 import hashlib
 import importlib.metadata
 import json
+import os
 import platform
+import shlex
+import sys
 import tempfile
 import time
 from collections.abc import Callable
@@ -93,6 +96,53 @@ def _installed_identity() -> dict | None:
     }
 
 
+def _with_this_python(requirement: str) -> str:
+    """The end of an instruction: the command that installs requirement into the Python that
+    runs this depbee, named by its own path. The depbee of an environment that is not activated
+    is a supported way to run it (docs/usage.md), and there the shell's python can be another
+    environment's: a bare "python -m pip" would install into that one. Each form takes a path
+    with spaces or quotes. On Windows it is PowerShell's, the shell of the guides, where & calls
+    a quoted path and a quote inside one is doubled; elsewhere the POSIX shells' quoting."""
+    python = sys.executable or "python"
+    if os.name == "nt":
+
+        def quote(text: str) -> str:
+            return "'" + text.replace("'", "''") + "'"
+
+        return f", in PowerShell: & {quote(python)} -m pip install {quote(requirement)}"
+    return f": {shlex.quote(python)} -m pip install {shlex.quote(requirement)}"
+
+
+def _how_to_get_the_analyzer() -> str:
+    """What a user without depbee-analyzer can do, said for the depbee at hand.
+
+    In depbee's image (the variable its Dockerfile sets, as dashboard.mounted reads it) nothing
+    can be installed: there is no pip and no source tree, so the answer is the default image.
+    An installed depbee names the public commit its own metadata pins and its own interpreter:
+    a command for any folder and any PATH. Only depbee run from a source tree, which has no
+    metadata, is sent to the extra.
+    """
+    if os.environ.get("DEPBEE_CONTAINER_PROJECTS"):
+        return (
+            "This image has no depbee-analyzer: it was built with --target core. Build the "
+            "default image in a depbee checkout instead: docker build -t depbee:local ."
+        )
+    try:
+        pins = importlib.metadata.requires("depbee") or []
+    except importlib.metadata.PackageNotFoundError:
+        pins = []
+    for pin in pins:
+        if pin.startswith("depbee-analyzer @"):
+            return (
+                "depbee-analyzer is missing. Install the commit that this depbee pins into the "
+                "Python that runs it" + _with_this_python(pin.split(";")[0].strip())
+            )
+    return (
+        "depbee-analyzer is missing. In a depbee checkout, install it into the Python that "
+        "runs depbee" + _with_this_python(".[extract]")
+    )
+
+
 class _RegistrySource:
     """depbee-analyzer SnapshotSource for registry versions, used instead of its
     RegistrySnapshotSource: the snapshot comes from the packument depbee checked (the pinned
@@ -131,9 +181,7 @@ class FeatureExtractorBackend:
             from depbee_analyzer.core.pipeline import build_row, resolve_extractors
             from depbee_analyzer.core.sources import LocalArchiveSnapshotSource
         except ImportError as exc:
-            raise GuardError(
-                'Install analyzer dependencies: python -m pip install -e ".[extract]"'
-            ) from exc
+            raise GuardError(f"{_how_to_get_the_analyzer()} ({exc})") from exc
         self.errors = (
             FeatureExtractorError,
             registry.RegistryError,

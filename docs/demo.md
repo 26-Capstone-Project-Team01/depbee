@@ -16,7 +16,7 @@
 | MCP | `mcp`, `extract` | `scan_lockfile`의 기본 HEAD 기준에 필요 | 불필요 | 설치본 | 설치본 | registry, 에이전트 서비스 |
 | Actions 공개 시연(합성 정책) | 설치 없음 | 불필요 | 불필요 | 불필요 | 불필요(가상 목록) | github.com 열람 |
 | Actions 판정 재현 | 없음(표준 라이브러리) | 실제 보고서를 만들 때만 | 불필요 | 실제 보고서를 만들 때만 | 실제 보고서를 만들 때만 | 예시 보고서면 불필요 |
-| Actions 실제 PR | action이 설치 | runner | 불필요 | 설치본(Release는 명시해 바꿀 때만) | 설치본(Release는 명시해 바꿀 때만) | 저장소 공개 뒤 |
+| Actions 실제 PR | action이 설치 | runner | 불필요 | 설치본(Release는 명시해 바꿀 때만) | 설치본(Release는 명시해 바꿀 때만) | runner의 GitHub·PyPI·registry 연결 |
 
 ```powershell
 cd "<depbee 폴더>"
@@ -27,7 +27,7 @@ python -m pip install ".[extract,mcp,web]"
 
 이 절의 명령은 PowerShell 예시입니다. macOS/Linux에서 가상환경을 활성화하는 방법은 [설치와 준비](../README.md#설치와-준비)에 있습니다.
 
-`extract`는 비공개 depbee-analyzer 저장소에 접근할 수 있어야 설치됩니다. 접근할 수 없으면 `.[mcp,web]`로 설치해 추출이 필요 없는 장면(`plan`, `--extract` 없는 `scan`, Actions 판정 재현)만 할 수 있습니다.
+`extract`는 공개 저장소 depbee-analyzer를 고정된 커밋으로 받아 설치합니다. 로그인이나 토큰은 필요 없습니다. 추출이 필요 없는 장면(`plan`, `--extract` 없는 `scan`, Actions 판정 재현)만 한다면 `.[mcp,web]`로 설치해도 됩니다.
 아래 명령은 가상 환경을 활성화한 뒤 콘솔 스크립트 `depbee`로 실행합니다. 시연 폴더에서 `python -m depbee`를 쓰지 않는 이유는 [MCP 진입점](usage.md#mcp-진입점-검사-전용)에 있습니다.
 
 시연 동안의 이력, 반영 백업, 추출 캐시, 임시 파일은 새로 만든 빈 `<시연 상태 폴더>` 하나에 모읍니다. 그래야 정리할 때 이 폴더만 지우면 되고 기본 위치의 기존 기록을 건드리지 않습니다. 시연할 창에서 아래를 실행합니다.
@@ -81,6 +81,7 @@ CLI와 대시보드는 장면마다 상태를 따로 두도록 서로 다른 시
 6. 보류(네트워크 없음): `package-lock.json`의 한 항목에서 `version`과 `resolved`의 버전을 같은 패키지의 pre-release(예: `3.0.0-canary.1`)로 바꾸고 `depbee scan . --extract --cache-dir $cache`. 첫 줄 `depbee 검사 결과: 보류(완료하지 못한 항목 있음) (종료 코드 2)`이고 이유는 학습 범위 밖(`out_of_training_scope`)입니다. pre-release는 registry를 조회하기 전에 보류합니다. 끝나면 `git checkout -- package-lock.json`.
 7. 기지 악성 일치(네트워크 없음): 설치본 색인 `assets\index\index.json`(설치된 depbee 패키지 폴더 안, 폴더 위치는 `python -c "import depbee; print(depbee.__path__[0])"`로 확인)의 `packages`(`[이름, [[기록 ID, [버전...], [범위...]], ...]]` 목록)에서 버전 목록이 있는 이름·버전을 하나 고릅니다. lockfile 항목 하나의 키(`node_modules/<이름>`), `version`, `resolved`를 그 이름·버전으로 바꾸고(`integrity`는 그대로) `depbee scan .`를 `--extract` 없이 실행합니다. 첫 줄 `depbee 검사 결과: 위험 판정 있음 (종료 코드 1)`, 다음 줄들에 `경고: 기지 악성 기록 일치 1개`가 나옵니다. 이 lockfile에 `--extract`, `npm install`, `npm ci`를 쓰지 않습니다. 추출은 그 버전의 tarball을 받으려 하고, 설치는 악성 코드를 실행할 수 있습니다. 끝나면 `git checkout -- package-lock.json`.
 8. registry에서 내려간 악성 버전의 ML 분석은 그 버전의 로컬 사본이 필요하고 이 저장소에는 없습니다. 방법은 [실행](usage.md#실행)의 `--local-root`·`--local-source`에 있습니다.
+9. 저장소의 예시로 재현(npm과 Git 없음): `depbee scan "<depbee 폴더>\examples\lodash-updated" --base-lock "<depbee 폴더>\examples\lodash-update\package-lock.json" --extract --cache-dir $cache`. lodash 4.17.20에서 4.17.21로의 변경을 registry와 분석기로 검사하고, 첫 줄은 `depbee 검사 결과: 통과 (종료 코드 0)`입니다. depbee 저장소의 CI와 [Docker 이미지 확인](docker.md#전체-이미지-확인)도 이 예시를 씁니다.
 
 ### 로컬 대시보드
 
@@ -134,7 +135,7 @@ MCP 호출은 이력에 기록되지 않습니다. `scan_lockfile`은 언제나 
 
 ### GitHub Actions
 
-Actions 장면은 셋으로 나뉩니다. 공개 시연 저장소는 합성 lockfile로 정책이 PR에 어떻게 나타나는지 보여 줍니다. 로컬 판정 재현은 depbee의 판정 단계를 예시 보고서로 실행합니다. 공개 PR에서의 실제 제품 검사는 저장소 공개가 허용된 뒤에만 실행합니다.
+Actions 장면은 셋으로 나뉩니다. 공개 시연 저장소의 fixture 장면은 합성 lockfile로 정책이 PR에 어떻게 나타나는지 보여 줍니다. 실제 제품 검사는 Action을 고정한 workflow가 PR의 lockfile 변경을 검사합니다. 로컬 판정 재현은 depbee의 판정 단계를 예시 보고서로 실행합니다.
 
 **공개 시연 저장소(합성 정책 시연).** [depbee-actions-demo](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo)는 설치 없이 브라우저로 볼 수 있습니다. 열린 PR 세 개가 장면 하나씩이고 모두 `package-lock.json` 한 파일만 바꿉니다.
 
@@ -146,16 +147,20 @@ Actions 장면은 셋으로 나뉩니다. 공개 시연 저장소는 합성 lock
 
 각 PR의 **Checks** 탭에서 `fixture PR 검사 (depbee 제품 미실행)`의 job summary를, **Files changed** 탭에서 lockfile 줄의 주석을 봅니다. 세 장면과 자체 테스트를 한 번에 실행한 기록은 [Actions run 44781575143](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/actions/runs/44781575143)입니다(workflow `fixture 시연 (depbee 제품 미실행)`의 수동 실행). 가상 목록 일치 장면의 실패가 기대 결과이므로 이 실행은 전체가 실패로 표시됩니다. 다시 실행하는 방법과 실행 결과에서 확인할 것은 시연 저장소 README의 [fixture 시연의 세 장면](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo#fixture-시연의-세-장면)에 있습니다.
 
-이 시연에서 depbee 제품은 실행되지 않습니다. 시연 저장소의 fixture 게이트(`tools/fixture_gate.py`)가 lockfile의 이름과 버전을 가상 목록과 비교할 뿐이고, 기지 악성 색인 대조와 tarball 추출과 ML 위험 점수는 없습니다. 그래서 Check의 성공은 depbee가 검사해서 통과했다는 뜻이 아니며 보안 판정도 아닙니다. 이 시연이 보여 주는 것은 정책입니다. 일치는 실패이고, 보류는 경고이되 통과가 아니며, 결과는 Check와 lockfile 줄 주석과 summary와 보고서 artifact로 남습니다. 시연 저장소의 artifact는 7일 뒤 지워집니다. `DEPBEE-DEMO-SENTINEL`은 시연을 위해 지은 가상의 이름이며 실제 악성 패키지 기록이 아닙니다.
+이 fixture 검사는 depbee 제품을 실행하지 않습니다. 시연 저장소의 fixture 게이트(`tools/fixture_gate.py`)가 lockfile의 이름과 버전을 가상 목록과 비교할 뿐이고, 기지 악성 색인 대조와 tarball 추출과 ML 위험 점수는 없습니다. 그래서 fixture Check의 성공은 depbee가 검사해서 통과했다는 뜻이 아니며 보안 판정도 아닙니다. 이 시연이 보여 주는 것은 정책입니다. 일치는 실패이고, 보류는 경고이되 통과가 아니며, 결과는 Check와 lockfile 줄 주석과 summary와 보고서 artifact로 남습니다. 시연 저장소의 artifact는 7일 뒤 지워집니다. `DEPBEE-DEMO-SENTINEL`은 시연을 위해 지은 가상의 이름이며 실제 악성 패키지 기록이 아닙니다.
 
-**실제 제품 검사의 공개 조건.** 외부 저장소의 PR에서 depbee Action이 실제로 검사하려면 두 가지가 필요합니다.
+**실제 제품 검사.** depbee와, 설치 단계에서 받는 depbee-analyzer는 공개 저장소입니다. PR의 lockfile 변경을 실제로 검사하려면 대상 저장소의 `.github/workflows/depbee.yml`에 [CI/CD 연결의 사용 예시](ci-cd.md#사용-예시)를 둡니다. secret, 토큰, 저장소 변수는 필요 없습니다. workflow는 Action을 전체 커밋 SHA로 고정합니다. 모델과 기지 악성 색인은 그 커밋의 설치본에 포함된 것을 기본으로 쓰고, Release 태그와 SHA-256은 다른 모델이나 색인을 명시해 바꿀 때만 지정합니다. 지금 게시된 Release는 없습니다.
 
-1. depbee 저장소와, 설치 단계에서 받는 depbee-analyzer 저장소가 공개돼 있습니다.
-2. workflow가 Action을 전체 커밋 SHA로 고정합니다. 모델과 기지 악성 색인은 그 커밋의 설치본에 포함된 것을 기본으로 쓰고, Release 태그와 SHA-256은 다른 모델이나 색인을 명시해 바꿀 때만 지정합니다.
+lockfile을 바꾼 PR을 열면 Checks의 job summary에 모델 ID, 색인 기준 시점, 항목별 판정이 나오고, 경고나 실패 항목에는 lockfile 줄 주석이 붙으며, `depbee-report` artifact가 생깁니다.
 
-두 저장소의 공개가 아직 허용되지 않았으므로, secret 없이 도는 공개 저장소에서의 실제 제품 검사 시연은 실행하지 않았습니다([공개 전 제한과 미검증](ci-cd.md#공개-전-제한과-미검증)). 시연 저장소에는 이 연결(`depbee.yml`)이 준비돼 있고 PR 검사는 꺼져 있습니다. 켜는 순서는 그 저장소 README의 [제품 연동 켜기](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo#제품-연동-켜기)에 있습니다. 가상 목록 일치 장면은 실제 색인에 없는 이름이라 제품 검사에서는 재현되지 않습니다.
+실제 실행은 두 곳에서 볼 수 있습니다.
 
-**로컬 판정 재현.** 저장소 공개 전에도 action의 판정 단계(`src/depbee/actions.py report`, 표준 라이브러리만 씀)는 로컬에서 같은 인자로 실행할 수 있습니다. `GITHUB_STEP_SUMMARY`가 없으면 job summary가 주석 뒤에 터미널로 나옵니다.
+- 공개 시연 저장소의 [PR #8](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/pull/8)은 `ms`를 2.1.1에서 2.1.3으로 올린 lockfile 변경 하나입니다. 그 저장소의 workflow가 위 사용 예시와 같은 SHA로 Action을 불렀고, `depbee scan (제품 실제 검사)` job이 통과로 판정했습니다([Actions run 45290776914](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/actions/runs/45290776914)). summary의 모델 ID는 `D04-E00`, 색인 기준 시점은 `2026-10-06T14:00:47Z`이고, artifact의 `report.json`에는 비교 버전 2.1.2와 분석기 커밋(`provenance.feature_extractor.commit`)이 있습니다. lockfile을 바꾸지 않은 PR에서는 바뀐 의존성 0개로 통과합니다([Actions run 45290763429](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/actions/runs/45290763429)).
+- depbee 저장소의 CI는 PR마다 이 Action으로 lodash 4.17.20에서 4.17.21로의 변경을 검사합니다. 그 저장소 Actions 탭의 `action` job에서 summary와 artifact를 볼 수 있습니다([자기 검사](ci-cd.md#자기-검사-depbee-ci-action-job)).
+
+시연 저장소의 `main`에서 제품 검사가 켜져 있는지와 켜는 순서는 [그 저장소의 README](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo#readme)를 따릅니다. 가상 목록 일치 장면은 실제 색인에 없는 이름이라 제품 검사에서는 재현되지 않습니다.
+
+**로컬 판정 재현.** action의 판정 단계(`src/depbee/actions.py report`, 표준 라이브러리만 씀)는 설치 없이 로컬에서 같은 인자로 실행할 수 있습니다. `GITHUB_STEP_SUMMARY`가 없으면 job summary가 주석 뒤에 터미널로 나옵니다.
 
 ```powershell
 cd "<depbee 폴더>"
@@ -170,7 +175,7 @@ python -I src/depbee/actions.py report docs/examples/result-contract/03-known-ma
 
 실제 보고서로도 같습니다. CLI 장면의 `scan`에 `--format json --output "<새 파일>"`을 붙여 보고서를 저장하고, `<시연 폴더>`에서 `python -I "<depbee 폴더>\src\depbee\actions.py" report "<새 파일>" --lockfile package-lock.json`으로 판정합니다(기지 악성 일치 단계면 `::error`와 1, 보류 단계면 `::warning`과 0). `--output`은 있는 파일을 덮어쓰지 않으므로 실행마다 새 파일 이름을 씁니다.
 Windows에서 `--markdown`으로 CLI Markdown을 summary에 붙이려면 PowerShell 7.4 이상에서 준비의 `PYTHONIOENCODING`이나 `$env:PYTHONUTF8 = '1'`을 둔 채 `depbee scan ... --format markdown --output "<새 파일>" > "<summary 파일>"`로 만듭니다. 둘 다 없으면 summary가 시스템 코드 페이지로 저장되어 판정이 "보고서를 판정하지 못했습니다"로 실패합니다.
-설치와 `--extract` 검사를 포함한 실제 PR 시연은 저장소 공개 뒤에 [CI/CD 연결의 사용 예시](ci-cd.md#사용-예시)를 따릅니다.
+설치와 `--extract` 검사를 포함한 실제 PR 검사는 위 **실제 제품 검사**의 workflow를 따릅니다.
 
 ### 시연 뒤 정리
 

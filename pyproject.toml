@@ -14,7 +14,8 @@ dependencies = ["lightgbm>=4.6,<5", "numpy>=1.26,<3"]
 [project.optional-dependencies]
 # Part of the base install now; the name stays so that ".[ml]" in older commands still installs.
 ml = []
-# Private team repository; installing it needs GitHub access. Pinned to a reviewed commit.
+# The team's public analyzer repository at a reviewed commit, which pip fetches over HTTPS
+# without credentials. Only this form (that URL, a full commit id) is accepted by the tests.
 extract = [
     "depbee-analyzer @ git+https://github.com/26-Capstone-Project-Team01/depbee-analyzer@917ba903bb2e719419ad5f2daeb7d542940703d5",
 ]

@@ -6,44 +6,37 @@ Linux 컨테이너와 BuildKit이 필요합니다. Windows에서는 Docker Deskt
 
 ## 이미지 빌드
 
-이미지는 depbee 소스에서 직접 빌드합니다. depbee와 분석기(depbee-analyzer) 저장소는 비공개이고, 공개 레지스트리에서 받는 이미지는 없습니다. 준비 방법은 가진 권한에 따라 다릅니다.
+이미지는 depbee 소스에서 직접 빌드합니다. depbee와 분석기(depbee-analyzer)는 공개 저장소입니다. 빌드는 `pyproject.toml`이 고정한 분석기 커밋을 로그인 없이 받으므로 토큰, 빌드 시크릿, 빌드 인자가 필요 없습니다. 컨테이너 레지스트리에 올린 이미지는 없어 `docker pull`로는 받을 수 없습니다. [분석기 저장소](https://github.com/26-Capstone-Project-Team01/depbee-analyzer)
 
-| 가진 것 | 준비 방법 | 실행할 수 있는 것 |
-| --- | --- | --- |
-| 두 저장소의 읽기 권한 | 아래 명령으로 기본 이미지를 빌드합니다. | 이 문서의 모든 기능 |
-| depbee 소스만 | 토큰 없이 `docker build --target core -t depbee:local .`로 분석기를 뺀 이미지를 빌드합니다. | `plan`, `--extract` 없는 `scan`, 대시보드의 등록과 조회 |
-| 권한이 있는 사람이 빌드한 이미지 파일 | [빌드한 이미지 전달](#빌드한-이미지-전달)의 `docker load`로 불러옵니다. | 그 이미지와 같음 |
-
-분석기를 뺀 이미지에서 `check`, `scan --extract`, MCP의 두 도구, 대시보드의 **검사만**과 **업데이트 확인**은 분석기를 설치하라는 오류로 끝납니다. CLI의 종료 코드는 2입니다.
-
-기본 이미지는 depbee 저장소 루트에서 빌드합니다. 비공개 분석기의 고정 커밋을 받으려면 해당 저장소의 `Contents` 읽기 권한이 있는 GitHub 토큰이 필요합니다. 아래 명령은 현재 셸에 `GH_TOKEN`이 없을 때만 입력을 받습니다. [분석기 저장소](https://github.com/26-Capstone-Project-Team01/depbee-analyzer)
-
-**PowerShell**
-
-```powershell
-if (-not $env:GH_TOKEN) { $env:GH_TOKEN = [System.Net.NetworkCredential]::new('', (Read-Host 'GH_TOKEN' -AsSecureString)).Password }
-```
-
-**Bash**
+두 셸에서 같은 명령으로 소스를 받아 이미지를 빌드하고 버전을 확인합니다.
 
 ```sh
-[ -n "${GH_TOKEN:-}" ] || read -rs -p 'GH_TOKEN: ' GH_TOKEN
-export GH_TOKEN
-```
-
-두 셸에서 같은 명령으로 이미지를 빌드하고 버전을 확인합니다.
-
-```sh
-# depbee 저장소 루트에서 실행
-docker build --secret id=gh_token,env=GH_TOKEN -t depbee:local .
+git clone https://github.com/26-Capstone-Project-Team01/depbee.git
+cd depbee
+docker build -t depbee:local .
 docker run --rm depbee:local --version
 ```
 
-토큰은 빌드 중 비공개 분석기를 받는 단계에만 전달합니다. 빌드 후 `docker run`에는 자격 증명이 필요 없습니다. [Docker 빌드 시크릿](https://docs.docker.com/build/building/secrets/)
+빌드하는 동안 Docker Hub(기반 이미지), Debian 패키지 저장소, PyPI, GitHub(분석기)에 연결합니다. 빌드의 마지막 단계는 설치된 분석기가 고정한 커밋의 Git 설치 그대로인지와 이미지에 든 모델·색인의 SHA-256을 확인하고, 하나라도 다르면 빌드가 실패합니다. 빌드한 이미지의 `docker run`에는 자격 증명이 필요 없습니다.
 
-### 빌드한 이미지 전달
+### 분석기를 뺀 이미지 (`core`)
 
-기본 이미지에는 비공개 분석기의 코드가 들어 있습니다. 두 저장소를 볼 권한이 있는 사람에게만 전달하고 공개 레지스트리에 올리지 않습니다. 이미지는 파일로 저장해 전달합니다. 받은 PC에서는 빌드와 토큰 없이 실행합니다.
+`--target core`는 분석기와 그 의존성을 설치하지 않는 빌드입니다. 빌드하는 동안 Git 저장소를 받지 않습니다. 패키지를 내려받아 분석할 필요가 없는 작업만 할 때 고릅니다. 아래 표의 `core` 작업은 실행할 때 네트워크가 필요 없습니다.
+
+```sh
+docker build --target core -t depbee:core .
+```
+
+| 이미지 | 빌드 | 실행할 수 있는 것 |
+| --- | --- | --- |
+| 기본 | `docker build -t depbee:local .` | 이 문서의 모든 기능 |
+| `core` | `docker build --target core -t depbee:core .` | `plan`, `--extract` 없는 `scan`(기지 악성 대조), 대시보드의 등록과 조회 |
+
+`core` 이미지에서 `check`, `scan --extract`, MCP의 두 도구, 대시보드의 **검사만**과 **업데이트 확인**은 이 이미지에 분석기가 없으니 기본 이미지를 빌드하라는 오류로 끝납니다. CLI의 종료 코드는 2입니다. 이미지에는 pip과 depbee 소스가 없어 분석기를 따로 설치할 수 없으므로, depbee 저장소에서 `docker build -t depbee:local .`로 기본 이미지를 빌드해 씁니다. 이 문서의 나머지 예시는 기본 이미지 `depbee:local`을 씁니다.
+
+### 빌드한 이미지 옮기기
+
+빌드에 필요한 연결이 막힌 PC에서는 다른 PC에서 빌드한 이미지를 파일로 옮겨 씁니다. 받은 PC에서는 빌드 없이 실행합니다.
 
 ```sh
 docker save -o depbee-local.tar depbee:local    # 빌드한 PC에서 실행
@@ -408,7 +401,40 @@ docker run --rm -it --user "$(id -u):$(id -g)" -p 127.0.0.1:5757:5757 --mount "t
 
 ## 전체 이미지 확인
 
-기본 이미지의 실제 업데이트 확인은 비공개 분석기와 npm registry가 필요해 저장소의 CI가 실행하지 않습니다. 이미지를 빌드한 PC에서 아래의 정상 예시로 확인합니다. [CI가 확인하는 범위](ci-cd.md#docker-이미지-검사-depbee-ci-docker-job)
+빌드한 이미지가 실제 버전 변경을 검사하는지 아래의 정상 예시로 확인합니다. 저장소의 CI도 기본 이미지를 빌드해 같은 예시로 CLI 검사, MCP `scan_lockfile`, 대시보드의 **검사만**, 이미지의 npm으로 하는 업데이트 미리보기를 실행합니다. [CI가 확인하는 범위](ci-cd.md#docker-이미지-검사-depbee-ci-docker-job)
+
+### CLI로 확인
+
+`examples/lodash-update`의 lockfile은 lodash 4.17.20이고, `examples/lodash-updated`의 lockfile은 npm이 4.17.21로 올려 쓴 결과입니다. 두 폴더를 읽기 전용으로 연결해 그 변경을 검사합니다.
+
+**PowerShell**
+
+```powershell
+# depbee 저장소 루트에서 실행
+$examples = Join-Path (Get-Location).Path 'examples'
+```
+
+**Bash**
+
+```sh
+# depbee 저장소 루트에서 실행
+examples="$PWD/examples"
+```
+
+```sh
+docker run --rm --mount "type=bind,source=$examples,target=/examples,readonly" depbee:local scan /examples/lodash-updated --base-lock /examples/lodash-update/package-lock.json --extract
+```
+
+두 버전의 tarball을 npm registry에서 받아 실행 없이 읽습니다. 진행 표시 뒤의 결과는 다음 줄로 시작하고 종료 코드는 0입니다. 줄 끝에 `--format json`을 붙이면 보고서의 `provenance.feature_extractor.commit`에서 이미지에 든 분석기의 커밋을 볼 수 있습니다.
+
+```text
+depbee 검사 결과: 통과 (종료 코드 0)
+바뀐 의존성 1개: 위험 0, 통과 1, 보류 0
+모델: D04-E00, 판정 기준 점수 0.5
+기지 악성 목록: OSV npm MAL, 기준 시점 2026-10-06T14:00:47Z
+```
+
+### 대시보드로 확인
 
 예시 프로젝트 `examples/lodash-update`는 `package.json`이 lodash 4.17.21을 요구하고 lockfile은 아직 4.17.20인 상태입니다. 프로젝트는 읽기 전용으로 연결하고, 이력은 확인용 볼륨에 따로 둡니다.
 
