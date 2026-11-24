@@ -17,9 +17,11 @@
 {% if chart.threshold is not none %}<line class="threshold" x1="44" x2="420" y1="{{ chart.threshold }}" y2="{{ chart.threshold }}"/>{% endif %}
 {% for tick in chart.ticks %}<line class="threshold" x1="{{ tick.x - 9 }}" x2="{{ tick.x + 9 }}" y1="{{ tick.y }}" y2="{{ tick.y }}"/>{% endfor %}
 {% for point in chart.points %}
-{% if point.y is none %}<circle class="dot empty" cx="{{ point.x }}" cy="125" r="4"/>{% else %}<circle class="dot{% if point.over %} over{% endif %}" cx="{{ point.x }}" cy="{{ point.y }}" r="4"/>{% if point.over and chart.inline %}<text class="value" x="{{ point.lx }}" y="{{ point.y - 9 }}" text-anchor="{{ point.anchor }}">{{ point.label }}</text>{% endif %}{% endif %}
-{% if point.tick %}<text class="run-label" x="{{ point.x }}" y="146">#{{ point.id }}</text>{% endif %}
+{% if point.y is none %}<circle class="dot empty" cx="{{ point.x }}" cy="125" r="4"/>{% else %}<circle class="dot{% if point.over %} over{% endif %}" cx="{{ point.x }}" cy="{{ point.y }}" r="4"/>{% endif %}
+{% if point.tick %}<text class="run-label" x="{{ point.tx }}" y="146" text-anchor="{{ point.tick_anchor }}">#{{ point.id }}</text>{% endif %}
 {% endfor %}
+{# The values last, so that no point is drawn over one. #}
+{% if chart.inline %}{% for point in chart.points if point.over %}<text class="value" x="{{ point.lx }}" y="{{ point.y - 9 }}" text-anchor="{{ point.anchor }}">{{ point.label }}</text>{% endfor %}{% endif %}
 </svg>
 </div>
 {% if not chart.inline %}<p class="note chart-values">판정 기준 이상: {% for point in chart.points if point.over %}<span class="ident">#{{ point.id }} {{ point.label }}</span>{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}

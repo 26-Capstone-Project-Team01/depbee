@@ -1338,13 +1338,47 @@ def _score_chart(entries: list[dict]) -> dict | None:
         else:
             point["anchor"], point["lx"] = "middle", point["x"]
             spans.append((point["x"] - width / 2, point["x"] + width / 2))
-    inline = all(left >= 37 and right <= 443 for left, right in spans) and all(
-        later[0] - earlier[1] >= 6 for earlier, later in zip(spans, spans[1:], strict=False)
+    # A value clears every other run's point (4 units of radius and some room) too.
+    xs = [point["x"] for point in points]
+    inline = (
+        all(left >= 37 and right <= 443 for left, right in spans)
+        and all(
+            later[0] - earlier[1] >= 6 for earlier, later in zip(spans, spans[1:], strict=False)
+        )
+        and all(
+            not left - 6 < x < right + 6
+            for point, (left, right) in zip(labelled, spans, strict=True)
+            for x in xs
+            if x != point["x"]
+        )
     )
-    # The run numbers under the axis: every k-th where they would meet, the newest always.
-    every = max(1, math.ceil((max(len(f"#{point['id']}") for point in points) * 7.3 + 6) / step))
+    # The run numbers under the axis: every k-th where they would meet, the newest always; the
+    # two ends lean inwards where centring would cross the box, and a shown number that would
+    # still meet the one after it is left out.
+    widths = [len(f"#{point['id']}") * 7.3 for point in points]
+    every = max(1, math.ceil((max(widths) + 6) / step))
     for index, point in enumerate(points):
         point["tick"] = (len(points) - 1 - index) % every == 0
+        point["tick_anchor"], point["tx"] = "middle", point["x"]
+    if points[0]["x"] - widths[0] / 2 < 0:
+        points[0]["tick_anchor"] = "start"
+    if points[-1]["x"] + widths[-1] / 2 > 440:
+        points[-1]["tick_anchor"] = "end"
+
+    def span(index: int) -> tuple[float, float]:
+        point, width = points[index], widths[index]
+        left = {"start": point["tx"], "end": point["tx"] - width}.get(
+            point["tick_anchor"], point["tx"] - width / 2
+        )
+        return left, left + width
+
+    after = None
+    for index in range(len(points) - 1, -1, -1):
+        if points[index]["tick"]:
+            if after is not None and span(index)[1] + 6 > span(after)[0]:
+                points[index]["tick"] = False
+            else:
+                after = index
     scored = [point for point in points if point["score"] is not None]
     compared = [point for point in scored if point["threshold"] is not None]
     summary = f"최근 {len(points)}회 실행의 최고 ML 위험 점수"

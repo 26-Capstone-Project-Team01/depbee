@@ -354,12 +354,30 @@ class PageTests(DashboardFixture):
                 ]
             )["inline"]
         )
+        # A value that would run over another run's point is listed under the chart instead.
+        mixed = [{**entries[0], "id": n, "peak_score": 0.13} for n in range(10, 1, -1)]
+        mixed.append(
+            {**entries[0], "id": 1, "peak_score": 3.950535635136895e-07, "threshold": 1e-07}
+        )
+        self.assertFalse(chart(mixed)["inline"])
         # Run numbers that do not fit between the points: every few, the newest always.
         ids = [{**entries[0], "id": 100000 + n} for n in range(9, -1, -1)]
         ticks = [p["tick"] for p in chart(ids)["points"]]
         self.assertTrue(ticks[-1])
         self.assertLess(sum(ticks), 10)
         self.assertNotIn([True, True], [ticks[n : n + 2] for n in range(9)])
+        # The numbers at the two ends lean inwards; no two shown numbers meet.
+        points = chart(ids)["points"]
+        self.assertEqual((points[-1]["tick_anchor"], points[-1]["tx"]), ("end", 420))
+        spans = []
+        for p in (p for p in points if p["tick"]):
+            width = len(f"#{p['id']}") * 7.3
+            left = {"start": p["tx"], "end": p["tx"] - width}.get(
+                p["tick_anchor"], p["tx"] - width / 2
+            )
+            spans.append((left, left + width))
+        self.assertTrue(all(0 <= left and right <= 440 for left, right in spans))
+        self.assertTrue(all(b[0] - a[1] >= 6 for a, b in zip(spans, spans[1:], strict=False)))
         self.assertTrue(all(p["tick"] for p in chart(entries)["points"]))
 
     def test_the_history_view_draws_the_chart_above_the_table(self):
@@ -383,8 +401,11 @@ class PageTests(DashboardFixture):
             '<div class="scroll chart-scroll" role="region" aria-label="점수 그래프" tabindex="0">',
             html,
         )
-        # The threshold is drawn over the line, so a line on it does not hide it.
         svg = html.split('<svg class="score-chart"', 1)[1].split("</svg>", 1)[0]
+        # Values come after every point, so no point is drawn over one.
+        self.assertIn('class="value"', svg)
+        self.assertLess(svg.rindex("<circle"), svg.index('class="value"'))
+        # The threshold is drawn over the line, so a line on it does not hide it.
         self.assertLess(svg.index('class="line"'), svg.index('class="threshold"'))
 
     def test_values_are_the_stored_ones_and_known_malicious_is_emphasized(self):

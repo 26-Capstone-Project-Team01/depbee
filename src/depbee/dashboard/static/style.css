@@ -709,6 +709,5 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 .score-chart .dot.empty { fill: var(--sheet); stroke: var(--muted); stroke-width: 1.5; }
 .score-chart text { fill: var(--muted); font: 600 12px var(--mono); }
 .score-chart .tick-label { text-anchor: end; }
-.score-chart .run-label { text-anchor: middle; }
 .score-chart .value { fill: var(--risk); font-weight: 700; }
 .chart-values .ident { color: var(--risk); font-family: var(--mono); font-weight: 700; overflow-wrap: anywhere; }
