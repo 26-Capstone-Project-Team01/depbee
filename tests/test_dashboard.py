@@ -124,7 +124,11 @@ class PageTests(DashboardFixture):
                 for row in report["results"]:
                     self.assertIn(row["package"], text)
                 self.assertNotIn("확률", text)
-        projects, project, model = self.page("/?manage=1"), self.page("/projects/1"), self.page("/model")
+        projects, project, model = (
+            self.page("/?manage=1"),
+            self.page("/projects/1"),
+            self.page("/model"),
+        )
         for text in (projects, project, model):
             self.assertIn(SAFETY_NOTE.replace("'", "&#39;"), text)  # autoescaped
         self.assertIn(str(self.project.resolve()), projects)
@@ -140,7 +144,8 @@ class PageTests(DashboardFixture):
         self.assertIn("<strong>경고: 기지 악성 기록 일치 1개.</strong>", text)
         self.assertIn('class="result flagged known"', text)
         self.assertIn("<dd>0.040 (기준 미만)</dd>", text)  # a low score stays as stored
-        self.assertIn("<dd>2.0.0 (비교 기준 버전)</dd>", text)  # cli._alternative
+        # cli._alternative; the version in the identifiers' face, the words around it not.
+        self.assertIn('<dd><span class="ident">2.0.0</span> (비교 기준 버전)</dd>', text)
         self.assertIn("<h4>추출된 사실</h4>", text)
         self.assertIn("<h4>모델 설명:", text)
         self.assertIn('<rect class="normal" width="100" height="8"/>', text)
@@ -276,7 +281,13 @@ class PageTests(DashboardFixture):
 
     def test_resources_have_no_external_urls(self):
         package_dir = Path(self.app.__file__).parent
-        files = [*package_dir.glob("templates/*.html"), *package_dir.glob("static/*")]
+        static = package_dir / "static"
+        self.assertEqual(sorted(p.relative_to(static).as_posix() for p in static.rglob("*") if p.is_file()), [
+            "app.js", "fonts/JetBrainsMono-depbee.woff2", "fonts/NotoSansKR-depbee.woff2",
+            "fonts/OFL-JetBrainsMono.txt", "fonts/OFL-NotoSansKR.txt", "fonts/coverage.txt",
+            "overview.css", "style.css"])  # fmt: skip
+        files = [*package_dir.glob("templates/*.html"),
+                 *(p for p in static.glob("*") if p.is_file())]  # fmt: skip
         self.assertEqual(sorted(p.name for p in files), [
             "app.js", "applied.html", "apply_lines.html", "base.html", "counts.html",
             "error.html", "history.html", "inspector.html", "model.html", "mounted.html",
@@ -285,7 +296,17 @@ class PageTests(DashboardFixture):
             "score_history.html", "start.html", "style.css", "trail.html", "updates.html"])  # fmt: skip
         for path in files:
             self.assertIsNone(re.search(r"https?:|//", path.read_text("utf-8")), path.name)
-        text = "".join(p.read_text("utf-8") for p in files)
+        # The bundled fonts, their licences and the list of what they cover; nothing else.
+        self.assertEqual(sorted(p.name for p in (package_dir / "static" / "fonts").iterdir()), [
+            "JetBrainsMono-depbee.woff2", "NotoSansKR-depbee.woff2", "OFL-JetBrainsMono.txt",
+            "OFL-NotoSansKR.txt", "coverage.txt"])  # fmt: skip
+        # The stylesheet's two font faces name the bundled files, beside it under fonts/.
+        css = (package_dir / "static" / "style.css").read_text("utf-8")
+        self.assertEqual(css.count("@font-face"), 2)
+        self.assertEqual(re.findall(r"url\(([^)]*)\)", css),
+                         [f"fonts/{name}" for name in self.app.FONTS])  # fmt: skip
+        text = "".join(p.read_text("utf-8") for p in files if p.name != "style.css")
+        text += re.sub(r"@font-face \{[^}]*\}", "", css)
         # CSP: style-src 'self' refuses a style attribute or element.
         for refused in ("<style", " style=", "url(", "@import", "@font-face"):
             self.assertNotIn(refused, text)
@@ -332,7 +353,7 @@ class ConsoleTests(DashboardFixture):
         for url in ("/", "/?manage=1"):  # nothing to manage yet: the same page
             html = self.page(url)
             elements = Elements(html).found
-            body = elements[[tag for tag, _ in elements].index("body"):]
+            body = elements[[tag for tag, _ in elements].index("body") :]
             # One form with one button, and nothing of the console around it: no bar, no
             # heading, no count, no chart, no footer, no link.
             self.assertEqual([tag for tag, _ in body],
@@ -457,8 +478,12 @@ class ConsoleTests(DashboardFixture):
             self.assertIn('<p class="error">프로젝트 폴더를 찾을 수 없습니다.', html)
             self.assertIn(f'<a href="{S}/?manage=1">프로젝트 관리</a>에서 새로 등록하세요.', html)
             self.assertIn(f'<a href="{S}/projects/{project}/history">기록</a>에 그대로', html)
-            for form in ("/previews", "/scans", "<button"):
+            for form in ("/previews", "/scans"):
                 self.assertNotIn(form, html)
+            # No button but the rail's theme one.
+            self.assertEqual(
+                html.count("<button"), html.count('<button type="submit" name="theme"')
+            )
         self.assertIn(f'<a href="{S}/runs/{run}">#{run}</a>', html)  # the history view
         self.assertIn("찾을 수 없음. 폴더를 원래 위치로", self.page("/?manage=1"))
 
@@ -962,9 +987,10 @@ class SecurityTests(DashboardFixture):
         headers = response.headers
         self.assertEqual(headers["content-security-policy"], self.app.CSP)
         # Each source list is 'self' or 'none' alone: no inline script or style, no eval, no
-        # other host. script-src 'self' is the one file of static/.
+        # other host. script-src 'self' is the one file of static/, font-src 'self' the two
+        # bundled fonts.
         self.assertEqual(sorted(headers["content-security-policy"].split("; ")), [
-            "base-uri 'none'", "default-src 'none'", "form-action 'self'",
+            "base-uri 'none'", "default-src 'none'", "font-src 'self'", "form-action 'self'",
             "frame-ancestors 'none'", "img-src 'self'", "script-src 'self'",
             "style-src 'self'"])  # fmt: skip
         self.assertEqual(headers["x-content-type-options"], "nosniff")
@@ -1713,7 +1739,8 @@ class CheckReturnTests(ScreenFixture):
         template = mock.Mock(**{"render.return_value": "<html></html>"})
         with mock.patch.object(self.app.ENV, "get_template", return_value=template):
             self.assertEqual(self.get(url).status_code, 200, url)
-        return template.render.call_args.kwargs
+        # The theme form's way back is the address itself, whatever the address holds.
+        return {k: v for k, v in template.render.call_args.kwargs.items() if k != "theme_back"}
 
     def inspector(self, url):
         """The inspector of the page at an address, as it is shown: the candidate that is open."""

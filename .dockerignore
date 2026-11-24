@@ -16,6 +16,8 @@
 !src/depbee/dashboard/templates/*.html
 !src/depbee/dashboard/static/*.css
 !src/depbee/dashboard/static/app.js
+!src/depbee/dashboard/static/fonts/*.woff2
+!src/depbee/dashboard/static/fonts/*.txt
 !src/depbee/assets/NOTICE.md
 !src/depbee/assets/LICENSE-Apache-2.0.txt
 !src/depbee/assets/model/manifest.json

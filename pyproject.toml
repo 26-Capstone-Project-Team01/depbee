@@ -32,10 +32,12 @@ depbee = "depbee.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# The dashboard's pages, stylesheets and script; include-package-data alone takes only MANIFEST.in
-# files.
+# The dashboard's pages, stylesheets, script and bundled fonts with their licences;
+# include-package-data alone takes only MANIFEST.in files.
 [tool.setuptools.package-data]
-"depbee.dashboard" = ["templates/*.html", "static/*.css", "static/*.js"]
+"depbee.dashboard" = [
+    "templates/*.html", "static/*.css", "static/*.js", "static/fonts/*.woff2", "static/fonts/*.txt",
+]
 # The shipped model and index (depbee.bundled fixes their SHA-256) with their notice and the
 # license of the index's source. Named one by one: nothing else in that folder is shipped.
 "depbee" = [

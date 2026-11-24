@@ -5,7 +5,9 @@
    - a second such request is not sent meanwhile: the server runs one at a time, and its refusal
      would replace the answer of the first;
    - after an update check from the packages view, the focus goes to the first candidate that
-     check returned, or to the line that says it returned none (data-landing).
+     check returned, or to the line that says it returned none (data-landing);
+   - while such a request runs, the rail's theme form is not sent from this page either: leaving
+     would lose the answer of the request, such as the result of an apply.
    Block comments only: the tests refuse two slashes in a row anywhere in static/. */
 (() => {
   'use strict';
@@ -20,7 +22,7 @@
     setTimeout(() => { live.textContent = text; }, 50);
   };
 
-  const buttons = () => document.querySelectorAll('[data-busy-label]');
+  const buttons = () => document.querySelectorAll('[data-busy-label], form.theme button');
 
   const start = (button) => {
     running = button;
@@ -50,6 +52,10 @@
   };
 
   document.addEventListener('submit', (event) => {
+    if (event.target.classList.contains('theme')) { /* at once, unless a request runs here */
+      if (running) event.preventDefault();
+      return;
+    }
     const button = event.submitter || event.target.querySelector('[data-busy-label]');
     if (!button || !button.dataset.busyLabel) return; /* a search or a typed path: at once */
     if (running) event.preventDefault();

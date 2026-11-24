@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ko">
+<html lang="ko"{% if theme != "system" %} data-theme="{{ theme }}"{% endif %}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -18,6 +18,15 @@
    open one marked aria-current), then the overview, project management and the model page. #}
 <header class="masthead">
 <a class="brand" href="{{ base }}/"><span class="comb" aria-hidden="true"><span></span><span></span><span></span></span><span class="wordmark">depbee</span> <span class="brand-note">npm 업데이트 검사</span></a>
+{# The theme: the system's, or the one chosen here (theme.py), saved by a POST that comes back to
+   this page. Only on a page a GET opened (theme_back, app.page). #}
+{% if theme_back is not none %}
+<form class="theme" method="post" action="{{ base }}/theme">
+<input type="hidden" name="session" value="{{ session }}">
+<input type="hidden" name="back" value="{{ theme_back }}">
+<button type="submit" name="theme" value="{{ theme_next }}">화면: {{ theme_words[theme][0] }}<span class="visually-hidden">. {{ theme_words[theme_next][1] }}</span></button>
+</form>
+{% endif %}
 <nav class="tabs" aria-label="프로젝트">
 <p class="rail-title">프로젝트 {{ tabs|length }}개</p>
 {% if tabs %}

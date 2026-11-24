@@ -67,7 +67,8 @@ class InspectorTests(test_dashboard.DashboardFixture):
         with mock.patch.object(self.app.ENV, "get_template", return_value=template):
             response = self.get(url, params=None if item is None else {"item": item})
         self.assertEqual(response.status_code, 200, url)
-        return template.render.call_args.kwargs
+        # The theme form's way back is the address itself, whatever the address holds.
+        return {k: v for k, v in template.render.call_args.kwargs.items() if k != "theme_back"}
 
     def selected(self, url, item=None):
         return self.context(url, item)["selected"]
