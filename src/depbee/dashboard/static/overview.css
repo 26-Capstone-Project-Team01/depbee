@@ -1,9 +1,8 @@
 /* The overview, the session's first page once a project is registered: a chart of how many
    projects are in each state, one hexagon a project, then a ledger with one row per project, its
    newest run and its newest apply attempt. Every selector starts at .overview; the shell, the
-   status cell (.cell), the focus ring and the tokens are style.css's. Colour is kept for a
-   state, always beside its words. What needs a decision has a left edge, whole for a risk and
-   broken for a hold, so the two are not told apart by colour alone. No honey: it marks what is
+   status cell (.cell), the chip (.verdict), the focus ring and the tokens are style.css's.
+   Colour is kept for a state, always beside its mark and its words. No honey: it marks what is
    picked or open, and nothing here is. */
 .overview {
   /* The layout follows the width the shell leaves this page, not the window's. */
@@ -44,62 +43,53 @@
 .overview .ov-states .ov-stale .ov-label { color: var(--fail); }
 .overview .ov-states .ov-gone .ov-label { color: var(--risk); }
 
-/* Narrow: a sheet per project under an ink rule, its two records one under another, each with
-   its own name. */
+/* Narrow: a card per project, its values under it in two columns, each with its column's name. */
 .overview .ov-board { display: block; width: 100%; margin: 1rem 0 0; border: 0; border-spacing: 0; font-size: .9375rem; --ground: var(--sheet); }
 .overview .ov-board thead { display: none; }
 .overview .ov-board tbody { display: block; }
-.overview .ov-row { display: grid; grid-template-columns: minmax(0, 1fr); margin-top: .75rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow); overflow: hidden; }
+.overview .ov-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem 1rem; margin-top: .75rem; padding: .35rem 1rem .9rem 1.15rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow); }
 .overview .ov-row:first-child { margin-top: 0; }
-.overview .ov-project, .overview .ov-rec { min-width: 0; font-weight: 400; text-align: start; }
-
-/* A project: its name, the way into it, and its folder. A path breaks wherever it has to. The
-   name is a target a finger can hit, and the room around it is its focus ring's. */
-.overview .ov-project { display: block; padding: .35rem 1rem .8rem 1.15rem; }
-.overview .ov-name { display: inline-block; padding-block: 1rem .3rem; font: 800 1.0625rem/1.4 var(--sans); letter-spacing: -.01em; overflow-wrap: anywhere; }
-.overview .ov-path { display: block; margin-top: .2rem; color: var(--muted); font: .8125rem/1.45 var(--mono); word-break: normal; overflow-wrap: anywhere; }
-
-/* A record: its kind, its state, what the history says of it, then the date and the way to its
-   report. The edge of a column is read at a glance. */
-.overview .ov-rec { display: flex; flex-direction: column; gap: .15rem; padding: .65rem 1rem .5rem 1.15rem; border-top: 1px solid var(--line); background: no-repeat 0 0 / 5px 100%; }
-.overview .ov-rec.ov-risk { background-image: linear-gradient(var(--risk), var(--risk)); }
-.overview .ov-rec.ov-hold { background-image: repeating-linear-gradient(to bottom, var(--hold) 0 7px, transparent 7px 11px); }
+.overview .ov-project, .overview .ov-row td { display: block; min-width: 0; font-weight: 400; text-align: start; }
+.overview .ov-project, .overview .ov-rec, .overview .ov-time, .overview .ov-apply { grid-column: 1 / -1; }
 .overview .ov-kind { display: block; color: var(--muted); font-size: .8125rem; font-weight: 600; }
-.overview .ov-state { display: flex; align-items: flex-start; gap: .4rem; font-weight: 700; text-wrap: pretty; }
-.overview .ov-state .cell { margin-top: .23rem; }
-.overview .ov-rec.ov-risk .ov-state, .overview .ov-rec.ov-gone .ov-state, .overview .ov-state.ov-risk { color: var(--risk); }
-.overview .ov-rec.ov-hold .ov-state { color: var(--hold); }
-.overview .ov-rec.ov-pass .ov-state, .overview .ov-state.ov-pass { color: var(--pass); }
-.overview .ov-rec.ov-stale .ov-state, .overview .ov-state.ov-fail { color: var(--fail); }
-.overview .ov-rec.ov-none .ov-state, .overview .ov-rec.ov-unknown .ov-state, .overview .ov-state.ov-none { color: var(--muted); font-weight: 600; }
-.overview .ov-detail { font-size: .875rem; }
-.overview .ov-n-risk { color: var(--risk); font-weight: 700; }
-.overview .ov-n-hold { color: var(--hold); font-weight: 700; }
-/* The last line of a record. The link is a target a finger can hit, with room for its focus
-   ring above and below, and it moves under the date before anything is cut off. */
-.overview .ov-foot, .overview .ov-prev { display: flex; flex-wrap: wrap; align-items: center; gap: 0 1rem; font-size: .8125rem; }
-.overview time { color: var(--muted); font-variant-numeric: tabular-nums; }
-.overview .ov-foot a, .overview .ov-prev a { display: inline-block; padding-block: .7rem; font-size: .875rem; font-weight: 700; font-variant-numeric: tabular-nums; }
-/* The last apply that did change the files, apart from an attempt that did not. */
-.overview .ov-prev { margin-top: .3rem; border-top: 1px dashed var(--line-2); }
-.overview .ov-prev b { flex-basis: 100%; padding-top: .5rem; color: var(--muted); font-weight: 600; }
 
-/* Room for two: the records of a project side by side under its name. */
-@container overview (min-width: 34rem) {
-  .overview .ov-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .overview .ov-project { grid-column: 1 / -1; }
-}
-/* Wide: one ledger. The kinds are the column heads and a row is read across. */
+/* A project: its name, the way into it, and its folder on one line under it (whole on hover). The
+   name is a target a finger can hit, and the room around it is its focus ring's. */
+.overview .ov-name { margin-top: .5rem; font: 800 1.0625rem/1.4 var(--sans); letter-spacing: -.01em; overflow-wrap: anywhere; }
+/* The way into a project and to a report: a target a finger can hit. */
+.overview .ov-name, .overview .ov-rec a, .overview .ov-apply a { display: inline-flex; align-items: center; min-height: 2.75rem; }
+.overview .ov-path { display: block; color: var(--muted); font: .8125rem/1.45 var(--mono); overflow-wrap: anywhere; }
+
+/* A state is a chip, its mark and its words; why it is not the stored result is its title and,
+   for a screen reader, words after it. The colours of the states only the overview has. */
+.overview .verdict { display: inline-flex; align-items: center; gap: .35rem; white-space: nowrap; }
+.overview .verdict[title] { cursor: help; }
+.overview .verdict.stale, .overview .verdict.fail { --ground: var(--fail-wash); --tone: var(--fail); }
+.overview .verdict.gone { --ground: var(--risk-wash); --tone: var(--risk); }
+.overview .ov-rec, .overview .ov-apply { display: flex; flex-wrap: wrap; align-items: center; gap: .15rem .6rem; }
+.overview .ov-rec .ov-kind, .overview .ov-apply .ov-kind { flex-basis: 100%; }
+.overview .ov-num { font: 700 1rem/1.5 var(--mono); font-variant-numeric: tabular-nums; }
+.overview .ov-n-risk { color: var(--risk); }
+.overview .ov-n-hold { color: var(--hold); }
+.overview time { color: var(--muted); font-size: .875rem; font-variant-numeric: tabular-nums; }
+/* A report link is a target a finger can hit, with room for its focus ring above and below. */
+.overview .ov-rec a, .overview .ov-apply a { font-size: .875rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* Wide: one line a project, the column names its heads. */
 @container overview (min-width: 56rem) {
   .overview .ov-board { border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow); overflow: hidden; }
-  .overview .ov-board thead { display: block; }
-  .overview .ov-cols, .overview .ov-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 1.1fr); }
-  .overview .ov-cols th { display: block; padding: .5rem 1rem .5rem 1.15rem; color: var(--muted); font-size: .8125rem; font-weight: 600; text-align: start; }
-  .overview .ov-row { margin-top: 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: none; box-shadow: none; overflow: visible; }
-  /* A pointer's targets: closer, and the name's line level with the states beside it. */
-  .overview .ov-project { grid-column: auto; padding-top: .45rem; }
-  .overview .ov-name { padding-top: .55rem; }
-  .overview .ov-rec { padding-block: 1rem .6rem; border-top: 0; }
+  .overview .ov-board thead { display: block; border-bottom: 1px solid var(--line-2); background: var(--head); }
+  .overview .ov-cols, .overview .ov-row { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.25fr) minmax(0, .45fr) minmax(0, .45fr) minmax(0, 1fr) minmax(0, 1.35fr) minmax(0, 1.1fr); }
+  .overview .ov-cols th { display: block; padding: .5rem .75rem; color: var(--muted); font-size: .8125rem; font-weight: 600; text-align: start; }
+  .overview .ov-cols th:nth-child(3), .overview .ov-cols th:nth-child(4) { text-align: end; }
+  .overview .ov-row { gap: 0; align-items: center; margin: 0; padding: 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: none; box-shadow: none; }
+  .overview .ov-row:first-child { border-top: 0; }
+  .overview .ov-project, .overview .ov-rec, .overview .ov-time, .overview .ov-apply { grid-column: auto; }
+  .overview .ov-project, .overview .ov-row td { padding: .3rem .75rem; }
+  /* A pointer's targets in the table, and a long name cut to one line (whole on hover). */
+  .overview .ov-name, .overview .ov-rec a, .overview .ov-apply a { min-height: 2.25rem; }
+  .overview .ov-name { display: block; margin-top: .15rem; overflow: hidden; line-height: 2.25rem; text-overflow: ellipsis; white-space: nowrap; }
+  .overview .ov-path { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .overview .ov-row .ov-num { text-align: end; }
   .overview .ov-kind { display: none; }
-  .overview .ov-foot a, .overview .ov-prev a { padding-block: .3rem; }
 }

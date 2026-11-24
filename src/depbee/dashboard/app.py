@@ -29,6 +29,7 @@ moves the focus to the first candidate a check returned.
 import hashlib
 import hmac
 import importlib.resources
+import math
 import os
 import re
 import secrets
@@ -135,6 +136,14 @@ DECISIONS = {
     "confirm": ("hold", "확인 필요"),
     "free": ("pass", "반영 가능"),
 }
+# The updates view's groups of candidates (_grouped), what needs a look first: by whether each
+# could be applied (DECISIONS), and a removal that could be apart, after them.
+GROUPS = (
+    ("refused", "반영 거부"),
+    ("confirm", "확인 필요"),
+    ("free", "반영 가능"),
+    ("removed", "삭제"),
+)
 REFUSED_WHY = (
     "기지 악성 색인과 일치한 버전입니다. 낮은 ML 위험 점수는 이 거부를 취소하지 않으며, 확인으로도 "
     "반영할 수 없습니다."
@@ -612,9 +621,9 @@ def build_app(
                     head=head)  # fmt: skip
 
     def updates(request: Request) -> Response:
-        """The updates view: the current candidates with their evidence, the previews this
-        process still holds (held) and the buttons that check. selected: the candidate opened
-        beside the list."""
+        """The updates view: the named check, the previews this process still holds (held) and
+        the current candidates in groups (_grouped). selected: the candidate opened beside the
+        list, the first one shown when the address names none."""
         found = _project(request.path_params["project_id"])
         if found is None:
             return _text(404, "등록된 프로젝트가 아닙니다.")
@@ -627,10 +636,12 @@ def build_app(
             else None
         )
         head = _head(found, *_dependencies(found["path"]), state)
+        groups = _grouped(state["rows"])
+        shown = [row for group in groups for row in group["rows"]]
         return page(request, "updates.html", project=found, section="updates", state=state,
-                    head=head,
+                    head=head, groups=groups,
                     previews=held(found, state), applied_at=applied_at, max_targets=MAX_TARGETS,
-                    selected=_selected(request.query_params, state["rows"]))  # fmt: skip
+                    selected=_selected(request.query_params, shown))  # fmt: skip
 
     def project_history(request: Request) -> Response:
         """The history view: the project's applies and runs, each run linked to its report."""
@@ -640,9 +651,11 @@ def build_app(
         runs = [_run_row(run) for run in history.list_runs(found["id"])]
         applies = [_apply_row(row) for row in history.list_applies(found["id"])]
         head = _head(found, *_dependencies(found["path"]), _update_state(found), len(runs))
+        scores = history.list_run_scores(found["id"])
         return page(request, "history.html", project=found, section="history", runs=runs,
                     head=head,
-                    applies=applies, score_history=history.list_run_scores(found["id"]))  # fmt: skip
+                    applies=applies, score_history=scores,
+                    score_chart=_score_chart(scores))  # fmt: skip
 
     def run(request: Request) -> Response:
         run_id = request.path_params["run_id"]
@@ -1258,6 +1271,149 @@ def _selected(params, shown: list[dict]) -> dict | None:
     return next((row for row in shown if f"{row['run_id']}.{row['position']}" == given[0]), first)
 
 
+def _score_chart(entries: list[dict]) -> dict | None:
+    """The history view's chart of the peak ML score of each run (history.list_run_scores
+    entries, newest first), drawn on a 440 by 160 box: runs from the oldest on the left (x 44 to
+    420), scores from 0 at y 125 to 1 at y 15. None for fewer than two runs: the table is enough.
+
+    points (oldest first): x, y (None for a run without a score), id, score, threshold (each
+    None unless a number from 0 to 1), label (the score as the score filter words it, against
+    that run's threshold) and over (at or over that threshold). segments: the polyline points
+    of each unbroken stretch of scored runs. threshold: the y of the one threshold every run
+    shares, else None and ticks: the x and y of each run's own. inline: whether the values of
+    the points over their threshold fit beside them (else the page lists them under the chart).
+    summary: the chart said in words, for its aria-label, from the stored scores."""
+    if len(entries) < 2:
+        return None
+
+    def number(value: object) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, int | float) or not 0 <= value <= 1:
+            return None
+        return value
+
+    def spot(value: float) -> float | int:
+        value = round(value, 2)
+        return int(value) if value == int(value) else value
+
+    runs = entries[::-1]
+    step = (420 - 44) / (len(runs) - 1)
+    points, segments, line = [], [], []
+    for index, run in enumerate(runs):
+        score, threshold = number(run["peak_score"]), number(run["threshold"])
+        x = spot(44 + index * step)
+        y = None if score is None else spot(125 - score * 110)
+        points.append({
+            "x": x, "y": y, "id": run["id"], "score": score, "threshold": threshold,
+            "label": "점수 없음" if score is None else score_text(score, run["threshold"]),
+            "over": score is not None and threshold is not None and score >= threshold,
+        })  # fmt: skip
+        if y is None:
+            if line:
+                segments.append(" ".join(line))
+            line = []
+        else:
+            line.append(f"{x},{y}")
+    if line:
+        segments.append(" ".join(line))
+    shared = {point["threshold"] for point in points}
+    threshold = next(iter(shared)) if len(shared) == 1 else None
+    ticks = [] if threshold is not None else [
+        {"x": point["x"], "y": spot(125 - point["threshold"] * 110)}
+        for point in points if point["threshold"] is not None
+    ]  # fmt: skip
+    # A value is drawn over its point in 12px mono, about 7.3 units a character: centred, or
+    # from the point where centring would reach the value axis's labels (x under 40), or up to
+    # the point where it would pass the box's right end. The values are drawn where no two of
+    # them meet; else the page lists them under the chart.
+    labelled = [point for point in points if point["over"]]
+    spans = []
+    for point in labelled:
+        width = len(point["label"]) * 7.3
+        if point["x"] - width / 2 < 40:
+            point["anchor"], point["lx"] = "start", spot(point["x"] - 3)
+            spans.append((point["lx"], point["lx"] + width))
+        elif point["x"] + width / 2 > 440:
+            point["anchor"], point["lx"] = "end", spot(point["x"] + 3)
+            spans.append((point["lx"] - width, point["lx"]))
+        else:
+            point["anchor"], point["lx"] = "middle", point["x"]
+            spans.append((point["x"] - width / 2, point["x"] + width / 2))
+    # A value clears every other run's point (4 units of radius and some room) too.
+    xs = [point["x"] for point in points]
+    inline = (
+        all(left >= 37 and right <= 443 for left, right in spans)
+        and all(
+            later[0] - earlier[1] >= 6 for earlier, later in zip(spans, spans[1:], strict=False)
+        )
+        and all(
+            not left - 6 < x < right + 6
+            for point, (left, right) in zip(labelled, spans, strict=True)
+            for x in xs
+            if x != point["x"]
+        )
+    )
+    # The run numbers under the axis: every k-th where they would meet, the newest always; the
+    # two ends lean inwards where centring would cross the box, and a shown number that would
+    # still meet the one after it is left out.
+    widths = [len(f"#{point['id']}") * 7.3 for point in points]
+    every = max(1, math.ceil((max(widths) + 6) / step))
+    for index, point in enumerate(points):
+        point["tick"] = (len(points) - 1 - index) % every == 0
+        point["tick_anchor"], point["tx"] = "middle", point["x"]
+    if points[0]["x"] - widths[0] / 2 < 0:
+        points[0]["tick_anchor"] = "start"
+    if points[-1]["x"] + widths[-1] / 2 > 440:
+        points[-1]["tick_anchor"] = "end"
+
+    def span(index: int) -> tuple[float, float]:
+        point, width = points[index], widths[index]
+        left = {"start": point["tx"], "end": point["tx"] - width}.get(
+            point["tick_anchor"], point["tx"] - width / 2
+        )
+        return left, left + width
+
+    after = None
+    for index in range(len(points) - 1, -1, -1):
+        if points[index]["tick"]:
+            if after is not None and span(index)[1] + 6 > span(after)[0]:
+                points[index]["tick"] = False
+            else:
+                after = index
+    scored = [point for point in points if point["score"] is not None]
+    compared = [point for point in scored if point["threshold"] is not None]
+    summary = f"최근 {len(points)}회 실행의 최고 ML 위험 점수"
+    if scored:
+        top = max(scored, key=lambda point: point["score"])
+        summary += f", 가장 높은 값은 실행 #{top['id']}의 {top['label']}"
+    if compared:
+        summary += f", 판정 기준 이상 {len(labelled)}회"
+    if len(compared) < len(scored):
+        summary += f", 기준을 비교할 수 없는 실행 {len(scored) - len(compared)}회"
+    if len(scored) < len(points):
+        summary += f", 점수 없는 실행 {len(points) - len(scored)}회"
+    return {"width": 440, "height": 160, "points": points, "segments": segments,
+            "threshold": None if threshold is None else spot(125 - threshold * 110),
+            "ticks": ticks, "inline": inline, "summary": summary + "."}  # fmt: skip
+
+
+def _grouped(rows: list[dict]) -> list[dict]:
+    """The updates view's candidates (_update_state rows) in groups, GROUPS' order, the empty ones
+    left out: {key, cell (None for removals), label, rows (in the given order)}. A removal that
+    could be applied is a group of its own; one that is refused or to confirm stays in that
+    group, as what it needs is not told by its being a removal."""
+
+    def key(row: dict) -> str:
+        decided = row["decision"]["key"]
+        return "removed" if decided == "free" and row["status"] == "removed" else decided
+
+    return [
+        {"key": name, "cell": DECISIONS[name][0] if name in DECISIONS else None, "label": label,
+         "rows": [row for row in rows if key(row) == name]}
+        for name, label in GROUPS
+        if any(key(row) == name for row in rows)
+    ]  # fmt: skip
+
+
 def _filters(params) -> tuple[str, str, str] | None:
     """What narrows the packages view's list, from its query: (the name searched for, the kind
     of dependency, the tab: one of SHOWS). The three apply together. None for a query the view
@@ -1505,13 +1661,19 @@ def _run_apply(project: Path, kept: dict, mode: str, confirmed: bool) -> tuple |
 
 def _report(report: dict) -> dict:
     """The context of report.html: the report as the text output shows it. Each result keeps
-    its position in the stored report, the anchor a candidate row links to."""
+    its position in the stored report, the anchor a candidate row links to. The band at its top:
+    the overall result (its words and mark) and how many results there are of each status."""
     package_input = report.get("input_kind") == "package"
     position = {id(row): index for index, row in enumerate(report["results"])}
+    found = Counter(row["status"] for row in report["results"])
     return {
-        "overall": f"{_text_label(OVERALL_LABELS, report['status'])}"
-                   f" (종료 코드 {_clean(report['exit_code'])})",
-        "summary": _summary(report["results"], package_input), "notices": _notices(report),
+        "overall_label": _text_label(OVERALL_LABELS, report["status"]),
+        "overall_cell": TAB_STATES.get(report["status"], ("none",))[0],
+        "exit_code": _clean(report["exit_code"]),
+        "counts": {"all": len(report["results"]), "risk": found["flagged"],
+                   "hold": found["incomplete"], "pass": found["not_flagged"],
+                   "removed": found["removed"]},
+        "notices": _notices(report),
         "model_id": report.get("model_id"), "threshold": report.get("threshold"),
         "setup": _detector_setup(report, _clean), "package_input": package_input,
         "results": [{**_result(row, report), "position": position[id(row)]}
@@ -1643,6 +1805,8 @@ def _result(row: dict, report: dict) -> dict:
         "rules": _signal(row, "rules", RULE_STATUS_LABELS, report),
         "package": row["package"],
         "version": row["after_version"] or row["before_version"],
+        "before": row.get("before_version"),
+        "after": row.get("after_version"),
         "location": row["location"],
         "npm": npm_link(row["package"]),
         "score": _ml_score(row, _text_label, report),

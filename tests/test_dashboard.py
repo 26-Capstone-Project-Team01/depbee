@@ -15,6 +15,7 @@ import re
 import sqlite3
 import sys
 import unittest
+from collections import Counter
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
@@ -192,6 +193,221 @@ class PageTests(DashboardFixture):
         self.assertIn("0123456789abcdef" * 4, model)  # provenance model_sha256, as stored
         self.assertIn("text/css", self.get("/static/style.css").headers["content-type"])
 
+    def test_a_report_opens_with_its_result_and_counts_in_a_band(self):
+        report = json.loads((EXAMPLES / "03-known-malicious-low-ml.json").read_text("utf-8"))
+        run = self.record(report)
+        text = self.page(f"/runs/{run}")
+        band = text.split('<div class="band">', 1)[1].split("</div>", 1)[0]
+        self.assertIn('<h2 class="band-title">검사 결과: <span class="verdict risk"><span class="cell risk" '
+                      'aria-hidden="true"></span>위험 판정 있음</span></h2>', band)  # fmt: skip
+        found = Counter(row["status"] for row in report["results"])
+        package_input = report.get("input_kind") == "package"
+        total = "검사한 패키지" if package_input else "바뀐 의존성"
+        expected = [("all", total, len(report["results"])), ("risk", "위험", found["flagged"]),
+                    ("hold", "보류", found["incomplete"]), ("pass", "통과", found["not_flagged"])]  # fmt: skip
+        if not package_input:
+            expected.append(("removed", "삭제", found["removed"]))
+        self.assertEqual(re.findall(r'<li class="n-(\w+)">([^<]+) <b>(\d+)</b></li>', band),
+                         [(key, label, str(count)) for key, label, count in expected])  # fmt: skip
+        # One line of what the result was made with, then the warnings, then the items.
+        meta = text.split('<ul class="meta">', 1)[1].split("</ul>", 1)[0]
+        for part in ("모델: ", "기지 악성 목록: ", "규칙: ", f"종료 코드 {report['exit_code']}"):
+            self.assertIn(part, meta)
+        warning = text.index(
+            '<p class="warning risk"><strong>경고: 기지 악성 기록 일치 1개.</strong>'
+        )
+        self.assertLess(text.index('<ul class="meta">'), warning)
+        self.assertLess(warning, text.index('<section class="result'))
+        # An item: its verdict, the package and the versions on its title line; the two sides
+        # and its anchor as before.
+        hit = next(
+            row
+            for row in report["results"]
+            if (row.get("known_malicious") or {}).get("status") == "hit"
+        )
+        position = report["results"].index(hit)
+        # One version checked alone has no change to show; a lockfile's change has two.
+        move = (hit["after_version"] or hit["before_version"] if package_input else
+                f'{hit["before_version"]} <span aria-hidden="true">→</span>'
+                f'<span class="visually-hidden">에서</span> {hit["after_version"]}')  # fmt: skip
+        self.assertIn(f'<section class="result flagged known" id="r{position}">\n<h3 class="result-title">'
+                      '<span class="verdict risk"><span class="cell risk" aria-hidden="true"></span>위험</span> '
+                      f'<span class="ident">{hit["package"]}</span> <span class="move">{move}</span></h3>',
+                      text)  # fmt: skip
+        for side in ('<p class="side">확인된 사실</p>', '<p class="side">모델 점수</p>'):
+            self.assertIn(side, text)
+
+    def test_a_report_title_says_only_the_versions_it_has(self):
+        row = self.scan_with(0.9)["results"][0]
+
+        def title(**changes):
+            report = {**self.scan_with(0.9), "model_id": None}
+            report["results"] = [{**row, **changes}]
+            html = self.page(f"/runs/{self.record(report)}")
+            found = re.search(
+                r'<span class="ident">[^<]*</span> <span class="move">(.*?)</span></h3>', html
+            )
+            return re.sub(r"<[^>]+>", "", found.group(1)), html
+
+        # A removal is the stored status, never a missing version.
+        before, after = row["before_version"], row["after_version"]
+        self.assertEqual(
+            title(after_version=None, status="removed", score=None)[0], f"{before} →에서 삭제"
+        )
+        self.assertEqual(title(after_version=None, status="incomplete", score=None)[0], before)
+        self.assertEqual(title(before_version=None)[0], after)  # not said to be new
+        moved, html = title(
+            before_version=None, after_version=None, status="incomplete", score=None
+        )
+        self.assertEqual(moved, "버전 기록 없음")
+        self.assertNotIn("None", moved)
+        # The band says every count of a lockfile's report, 0 included, and a missing model.
+        self.assertIn('<li class="n-removed">삭제 <b>0</b></li>', html)
+        self.assertIn("<li>모델: 기록 없음</li>", html)
+
+    def test_the_score_chart_draws_each_run_against_its_threshold(self):
+        from depbee.actions import score_text
+
+        chart = self.app._score_chart
+        scores = [0.001, 0.87, 0.012, 0.42, 0.61, 0.05]  # oldest first
+        entries = [{"id": n + 1, "created_at": "2026-11-21T00:00:00.000Z", "model_id": "m",
+                    "scored_count": 1, "peak_score": score, "threshold": 0.5}
+                   for n, score in enumerate(scores)][::-1]  # newest first, as the history gives  # fmt: skip
+        found = chart(entries)
+        self.assertEqual((found["width"], found["height"]), (440, 160))
+        self.assertEqual([p["x"] for p in found["points"]], [44, 119.2, 194.4, 269.6, 344.8, 420])
+        self.assertEqual(
+            [p["y"] for p in found["points"]], [124.89, 29.3, 123.68, 78.8, 57.9, 119.5]
+        )
+        self.assertEqual([p["id"] for p in found["points"]], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(found["threshold"], 70)  # one line: every run has the same threshold
+        self.assertEqual(found["ticks"], [])
+        self.assertEqual([p["id"] for p in found["points"] if p["over"]], [2, 5])
+        self.assertEqual(
+            [p["label"] for p in found["points"]], [score_text(s, 0.5) for s in scores]
+        )
+        self.assertEqual(
+            found["segments"], [" ".join(f"{p['x']},{p['y']}" for p in found["points"])]
+        )
+        self.assertIn("6회", found["summary"])
+        # Thresholds that differ: a short mark on each run instead of one line.
+        mixed = [
+            {**e, "threshold": t}
+            for e, t in zip(entries, (0.5, 0.6, 0.5, 0.7, 0.5, 0.4), strict=True)
+        ]
+        found = chart(mixed)
+        self.assertIsNone(found["threshold"])
+        self.assertEqual(len(found["ticks"]), 6)
+        # A run without a score is a gap in the line, its point empty.
+        gap = [dict(e) for e in entries]
+        gap[2]["peak_score"] = None  # the fourth from the oldest
+        found = chart(gap)
+        self.assertIsNone(found["points"][3]["y"])
+        self.assertEqual([len(s.split()) for s in found["segments"]], [3, 2])
+        # One run, or none: no chart.
+        self.assertIsNone(chart(entries[:1]))
+        self.assertIsNone(chart([]))
+        # The highest run is the stored score's, not the drawn spot's.
+        close = [
+            {**entries[0], "id": 2, "peak_score": 0.5000001},
+            {**entries[0], "id": 1, "peak_score": 0.4999999},
+        ]
+        found = chart(close)
+        self.assertIn("가장 높은 값은 실행 #2의", found["summary"])
+        self.assertIn("판정 기준 이상 1회", found["summary"])
+        # Runs whose threshold cannot be compared are said to be so, not counted as under it.
+        blind = [
+            {**entries[0], "id": 2, "threshold": None},
+            {**entries[0], "id": 1, "threshold": -0.1},
+        ]
+        found = chart(blind)
+        self.assertIn("기준을 비교할 수 없는 실행 2회", found["summary"])
+        self.assertNotIn("판정 기준 이상", found["summary"])
+        # Values that fit beside their points are drawn there; else they are listed under it.
+        self.assertTrue(chart(entries)["inline"])
+        tiny = [{**entries[0], "id": n, "peak_score": 3.950535635136895e-07, "threshold": 1e-07}
+                for n in range(10, 0, -1)]  # fmt: skip
+        found = chart(tiny)
+        self.assertFalse(found["inline"])
+        self.assertEqual(len([p for p in found["points"] if p["over"]]), 10)
+        # Two runs leave room: a value runs from its point at the value axis's side and ends at
+        # its point at the box's other end, inside both.
+        found = chart(tiny[:2])
+        self.assertTrue(found["inline"])
+        self.assertEqual(
+            [(p["anchor"], p["lx"]) for p in found["points"]], [("start", 41), ("end", 423)]
+        )
+        found = chart(
+            [
+                {**entries[0], "id": 2, "peak_score": 0.87},
+                {**entries[0], "id": 1, "peak_score": 0.87},
+            ]
+        )
+        self.assertTrue(found["inline"])
+        self.assertEqual(found["points"][0]["anchor"], "start")  # clear of the axis's "1"
+        # A value at 1 has its room above the box (style.css gives the box its padding).
+        self.assertTrue(
+            chart(
+                [
+                    {**entries[0], "id": n, "peak_score": s}
+                    for n, s in ((3, 1.0), (2, 0.999), (1, 1.0))
+                ]
+            )["inline"]
+        )
+        # A value that would run over another run's point is listed under the chart instead.
+        mixed = [{**entries[0], "id": n, "peak_score": 0.13} for n in range(10, 1, -1)]
+        mixed.append(
+            {**entries[0], "id": 1, "peak_score": 3.950535635136895e-07, "threshold": 1e-07}
+        )
+        self.assertFalse(chart(mixed)["inline"])
+        # Run numbers that do not fit between the points: every few, the newest always.
+        ids = [{**entries[0], "id": 100000 + n} for n in range(9, -1, -1)]
+        ticks = [p["tick"] for p in chart(ids)["points"]]
+        self.assertTrue(ticks[-1])
+        self.assertLess(sum(ticks), 10)
+        self.assertNotIn([True, True], [ticks[n : n + 2] for n in range(9)])
+        # The numbers at the two ends lean inwards; no two shown numbers meet.
+        points = chart(ids)["points"]
+        self.assertEqual((points[-1]["tick_anchor"], points[-1]["tx"]), ("end", 420))
+        spans = []
+        for p in (p for p in points if p["tick"]):
+            width = len(f"#{p['id']}") * 7.3
+            left = {"start": p["tx"], "end": p["tx"] - width}.get(
+                p["tick_anchor"], p["tx"] - width / 2
+            )
+            spans.append((left, left + width))
+        self.assertTrue(all(0 <= left and right <= 440 for left, right in spans))
+        self.assertTrue(all(b[0] - a[1] >= 6 for a, b in zip(spans, spans[1:], strict=False)))
+        self.assertTrue(all(p["tick"] for p in chart(entries)["points"]))
+
+    def test_the_history_view_draws_the_chart_above_the_table(self):
+        history.register_project(self.project)
+        history.record("scan", self.project, self.scan_with(0.9))
+        one = self.page("/projects/1/history")
+        self.assertNotIn('class="score-chart"', one)  # one run: the table alone
+        self.assertIn('class="score-history"', one)
+        history.record("scan", self.project, self.scan_with(0.1))
+        html = self.page("/projects/1/history")
+        self.assertRegex(
+            html, r'<svg class="score-chart" viewBox="0 0 440 160" role="img" aria-label="[^"]+">'
+        )
+        self.assertLess(
+            html.index('class="score-chart"'),
+            html.index('<table class="stack">', html.index("score-history")),
+        )
+        self.assertNotIn("<meter", html)
+        # Never drawn smaller than its own size: a narrow page scrolls it inside its box.
+        self.assertIn(
+            '<div class="scroll chart-scroll" role="region" aria-label="점수 그래프" tabindex="0">',
+            html,
+        )
+        svg = html.split('<svg class="score-chart"', 1)[1].split("</svg>", 1)[0]
+        # Values come after every point, so no point is drawn over one.
+        self.assertIn('class="value"', svg)
+        self.assertLess(svg.rindex("<circle"), svg.index('class="value"'))
+        # The threshold is drawn over the line, so a line on it does not hide it.
+        self.assertLess(svg.index('class="line"'), svg.index('class="threshold"'))
+
     def test_values_are_the_stored_ones_and_known_malicious_is_emphasized(self):
         report = json.loads((EXAMPLES / "03-known-malicious-low-ml.json").read_text("utf-8"))
         text = self.page(f"/runs/{self.record(report)}")
@@ -207,7 +423,8 @@ class PageTests(DashboardFixture):
     def test_order_null_scores_and_unfinished_items(self):
         report = self.cases()["mixed"]
         text = self.page(f"/runs/{self.record(report)}")
-        heads = re.findall(r"<h3>\[([^\]]+)\] ([^@<]+)@", text)
+        heads = re.findall(r'<h3 class="result-title"><span class="verdict \w+">(?:<span class="cell \w+" '
+                           r'aria-hidden="true"></span>)?([^<]+)</span> <span class="ident">([^<]+)</span>', text)  # fmt: skip
         labels = {"flagged": "위험", "incomplete": "보류", "not_flagged": "통과", "removed": "삭제"}
         order = {key: index for index, key in enumerate(labels)}
         expected = sorted(report["results"],
@@ -455,7 +672,9 @@ class ConsoleTests(DashboardFixture):
         # Between 46rem and 80rem the projects take a line of their own under the menu: a
         # focused project with long counts fits the row whole, and a wrapped list leaves the
         # menu at the top. Without the script the page leaves room for a focused ring too.
-        medium = re.search(r"@media \(min-width: 46rem\) and \(max-width: 79\.99rem\) \{\n(.*?)\n\}", css, re.S)
+        medium = re.search(
+            r"@media \(min-width: 46rem\) and \(max-width: 79\.99rem\) \{\n(.*?)\n\}", css, re.S
+        )
         self.assertIn("  .tabs { flex-basis: 100%; }", medium.group(1))
         self.assertRegex(css, r"@media \(scripting: none\) and \(min-width: 46rem\) and "
                               r"\(max-width: 79\.99rem\) \{\n  \.tabs ul \{[^}]*\}\n  html \{ scroll-padding-block: 1\.5rem; \}")  # fmt: skip
@@ -484,7 +703,9 @@ class ConsoleTests(DashboardFixture):
                 html = self.page("/model")
                 order = re.findall(rf'<a class="tab" href="{re.escape(S)}/projects/(\d+)"', html)
                 self.assertEqual(order, [str(odd), str(fresh)])
-                self.assertEqual(self.tab(html, odd)[1:], ("none", "project", "최근 실행 알 수 없음"))
+                self.assertEqual(
+                    self.tab(html, odd)[1:], ("none", "project", "최근 실행 알 수 없음")
+                )
                 self.assertEqual(self.tab(html, fresh)[1:], ("none", "fresh", "실행 기록 없음"))
                 # The same mark, told apart in view by a word.
                 line = html.split(f'href="{S}/projects/{odd}"', 1)[1].split("</a>", 1)[0]
@@ -880,10 +1101,9 @@ class CandidateTests(DashboardFixture):
             '<td>1.1.0 <span aria-hidden="true">→</span><span class="visually-hidden">에서</span>'
             " 1.2.0</td>",
             "<td>0.900 (기준 이상)</td>",
-            "<li>synthetic evidence</li>",
-            f'<a href="{S}/runs/{run}#r0">실행 #{run}<span class="visually-hidden">의 example '
-            "근거 전체</span></a>",
-            '<a href="https://www.npmjs.com/package/example" rel="noreferrer noopener">',
+            "<li>synthetic evidence</li>",  # in the inspector, open on the first candidate
+            f'href="{S}/runs/{run}#r0">보고서에서 전체 근거 보기',
+            'href="https://www.npmjs.com/package/example" rel="noreferrer noopener">',
             "릴리스 노트와 변경 내역 원문은 depbee가 수집하지 않으므로",
         ):  # fmt: skip
             self.assertIn(text, updates)
@@ -1007,7 +1227,7 @@ class CandidateTests(DashboardFixture):
         self.assertIn('<td><span class="quiet">새로 추가</span> <span aria-hidden="true">→</span>'
                       '<span class="visually-hidden">에서</span> 3.0.0</td>', updates)  # fmt: skip
         self.assertIn('에서</span> <span class="quiet">삭제</span></td>', updates)
-        self.assertIn(f'href="{S}/runs/{run}#r1"', updates)
+        self.assertIn(f'/updates?item={run}.1#candidate-evidence"', updates)
         self.assertIn("바뀐 의존성 2개: 위험 1, 통과 0, 보류 0, 삭제 1.", updates)
         # A later check of other alone would not remove it: that row goes, the added entry of
         # the check of everything stays.
@@ -1142,7 +1362,7 @@ class CandidateTests(DashboardFixture):
         updates = self.page(self.updates)
         self.assertIn("바뀐 의존성 2개: 위험 2, 통과 0, 보류 0.", updates)
         for position in (0, 1):
-            self.assertIn(f'href="{S}/runs/{first}#r{position}"', updates)
+            self.assertIn(f'/updates?item={first}.{position}#candidate-evidence"', updates)
         # A later check of the package named with the escape text alone: only that location
         # takes the new run's row.
         second = self.check({**self.report, "results": [row(text, "\\udc80x", "8.0.0", "8.2.0")]},
@@ -1152,9 +1372,9 @@ class CandidateTests(DashboardFixture):
         self.assertIn("후보 버전 8.2.0,", of_text)
         self.assertIn(f'?item={second}.0#candidate-evidence"', of_text)
         updates = self.page(self.updates)
-        self.assertIn(f'href="{S}/runs/{first}#r0"', updates)
-        self.assertIn(f'href="{S}/runs/{second}#r0"', updates)
-        self.assertNotIn(f'href="{S}/runs/{first}#r1"', updates)
+        self.assertIn(f'/updates?item={first}.0#candidate-evidence"', updates)
+        self.assertIn(f'/updates?item={second}.0#candidate-evidence"', updates)
+        self.assertNotIn(f'/updates?item={first}.1#candidate-evidence"', updates)
         # A later check of the package named with the lone surrogate alone finds nothing: only
         # that location loses its candidate.
         self.check(self.nothing(), targets=["\udc80x"], changed_count=0)
@@ -1275,7 +1495,9 @@ class CandidateTests(DashboardFixture):
                 for html in (packages, updates):
                     EscapeTests.check(self, html)
                 shown = escape(_clean(text))
-                self.assertIn(f"후보 버전 {shown}, 검사 근거 열기</span>", packages)  # the candidate
+                self.assertIn(
+                    f"후보 버전 {shown}, 검사 근거 열기</span>", packages
+                )  # the candidate
                 self.assertIn(f'<th scope="row">{shown}<span class="where">', updates)
                 self.assertIn(f"<li>{shown}</li>", updates)
                 self.assertIn(f", {shown})", updates)  # the check's target

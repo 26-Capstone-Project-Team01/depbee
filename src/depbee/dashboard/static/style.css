@@ -386,10 +386,6 @@ td ul { padding-left: 1.1rem; }
 .count .cell { margin-right: .35rem; vertical-align: -.1em; }
 .applies td:nth-child(-n+3) { white-space: nowrap; }
 .applies td:nth-child(6), .packages tbody th, .packages td:nth-child(2), .candidates tbody th, .candidates td:nth-child(2), .move { font-family: var(--mono); font-size: .875rem; }
-meter { width: 7rem; height: .6rem; margin-right: .4rem; vertical-align: middle; }
-meter::-webkit-meter-bar { height: .6rem; border: 0; border-radius: 0; background: var(--head); }
-meter::-webkit-meter-optimum-value { background: var(--ink); }
-meter::-moz-meter-bar { background: var(--ink); }
 
 /* The packages: what is installed, and in the last cell the candidate of a current check. The
    candidate itself is the link that picks it; the picked one is honey with an ink border. */
@@ -498,12 +494,17 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 .legend dd { font-size: .875rem; }
 
 /* The updates view: what can be run, the previews still open, then the candidates. */
-.jobs { display: grid; gap: .75rem; }
-.jobs > section { min-width: 0; }
-.jobs section, .held { margin-top: 0; padding: .9rem 1.1rem 1rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow); }
-.jobs h2 { font-size: 1rem; }
-.jobs p { margin-top: 0; font-size: .875rem; }
-.held { margin-top: .75rem; }
+/* The updates view's action line: the named check folded until opened, and its help. */
+.action-line { display: flex; flex-wrap: wrap; align-items: flex-start; gap: .5rem .75rem; margin: 0 0 .75rem; }
+.named { flex: 1 1 20rem; min-width: 0; max-width: 46rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); }
+.named > summary { display: flex; align-items: center; width: auto; min-height: 2.75rem; padding: .3rem .9rem; font-weight: 700; cursor: pointer; }
+.named[open] > summary { border-bottom: 1px solid var(--line); }
+.named form { min-width: 0; padding: .8rem .9rem 1rem; }
+.held { margin-top: 0; padding: .9rem 1.1rem 1rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow); }
+/* A group of candidates: its mark, its name and how many it holds. */
+.group-title { display: flex; align-items: center; gap: .45rem; margin: 1.1rem 0 .45rem; font-size: 1rem; }
+.group-count { color: var(--muted); font: 700 .875rem/1 var(--mono); }
+.row-why { margin: .25rem 0 0; color: var(--muted); font-size: .875rem; }
 .actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .75rem 1.5rem; }
 .actions form { min-width: 0; }
 .actions form:last-child { flex: 1 1 16rem; }
@@ -542,11 +543,21 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 
 /* A report: the overall result, then each item with what was found beside what was scored. */
 .summary, section.preview, section.apply { padding: .9rem 1.1rem 1rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow); }
+/* The report's band: the result and how many of each, a line of what it was made with, the
+   warnings under it. */
 .summary { margin-top: 1rem; }
-.summary ul { max-width: none; margin: 0; padding: 0; list-style: none; }
-.summary li { margin: 0; padding: .35rem 0; border-top: 1px solid var(--line); }
-.summary li:first-child { border-top: 0; font-weight: 700; }
-.summary li.warning { max-width: none; margin: .3rem 0; padding: .5rem .9rem; border-top: 0; }
+.band { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .6rem 1.5rem; }
+.band-title { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem; margin: 0; font-size: 1.125rem; }
+.band-counts { display: flex; flex-wrap: wrap; gap: .4rem; max-width: none; margin: 0; padding: 0; list-style: none; }
+.band-counts li { display: flex; flex-direction: column-reverse; align-items: center; min-width: 4.25rem; margin: 0; padding: .3rem .65rem; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: .8125rem; font-weight: 600; }
+.band-counts b { color: var(--ink); font: 800 1.25rem/1.2 var(--mono); font-variant-numeric: tabular-nums; }
+.band-counts .n-risk b { color: var(--risk); }
+.band-counts .n-hold b { color: var(--hold); }
+.band-counts .n-pass b { color: var(--pass); }
+.meta { display: flex; flex-wrap: wrap; gap: .2rem 1.25rem; max-width: none; margin: .7rem 0 0; padding: .6rem 0 0; border-top: 1px solid var(--line); color: var(--muted); font-size: .875rem; list-style: none; }
+.meta li { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.summary .warning { max-width: none; margin: .6rem 0 0; }
+.summary .note { margin: .6rem 0 0; }
 .result { margin: .75rem 0 0; padding: .9rem 1.1rem 1rem 1.4rem; border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); background: linear-gradient(var(--muted), var(--muted)) 0 0 / 6px 100% no-repeat, var(--sheet); scroll-margin-top: 1rem; --ground: var(--sheet); }
 .result.flagged { background-image: linear-gradient(var(--risk), var(--risk)); }
 /* A hold is a broken edge, so that it is not told from a risk by its colour alone. */
@@ -554,7 +565,9 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 .result.not_flagged { background-image: linear-gradient(var(--pass), var(--pass)); background-size: 3px 100%; }
 .result.known { border-color: var(--risk); }
 .result:target { outline: 3px solid var(--ink); outline-offset: 2px; box-shadow: 0 0 0 2px var(--honey); }
-.result h3 { margin: 0 0 .6rem; font-family: var(--mono); }
+.result-title { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .6rem; margin: 0 0 .7rem; }
+.result-title .ident { font: 700 1rem/1.4 var(--mono); }
+.result-title .move { color: var(--muted); font: 600 .875rem/1.4 var(--mono); }
 .result .ident { font-family: var(--mono); font-size: .875rem; }
 .score-history .score { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .evidence { display: grid; gap: 1rem 2rem; }
@@ -616,12 +629,11 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
   /* A version and a kind stay whole: their columns keep the width of what they hold. */
   /* A name is not squeezed to a few letters, and a candidate with its mark is one line. */
   .packages th:last-child { width: 16rem; }
-  .candidates tr:not(.inspect) { grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr) minmax(0, 1fr); grid-template-areas: "name move ruling" "facts facts score" "links links links"; }
+  .candidates tr:not(.inspect) { grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr) minmax(0, 1fr); grid-template-areas: "name move ruling" "name score links"; }
   .candidates tbody th { grid-area: name; }
   .candidates td:nth-child(2) { grid-area: move; }
   .candidates td:nth-child(3) { grid-area: ruling; }
   .candidates td:nth-child(4) { grid-area: score; }
-  .candidates td:nth-child(5) { grid-area: facts; }
   .candidates tr:not(.inspect) > td:last-child { grid-area: links; }
 }
 /* Medium: every project fits the bar as one row of its own under the menu, which scrolls
@@ -642,7 +654,6 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
   html { scroll-padding-block: 1.5rem; }
 }
 @media (min-width: 60rem) {
-  .jobs { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); }
   .desk { grid-template-columns: minmax(0, 22rem) minmax(0, 1fr); }
   .desk.first { grid-template-columns: minmax(0, 26rem); }
   .evidence { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
@@ -683,3 +694,20 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
   html { scroll-behavior: smooth; }
   button[aria-busy=true]::before { animation: turn .8s linear infinite; }
 }
+
+/* The history view's score chart: drawn by the server as attributes; colours and lines here. */
+/* Never drawn below its own 440px, so its text stays 12px or more: a narrow page scrolls it
+   inside its box, as the table under it. */
+.chart-scroll { max-width: 36rem; margin: .5rem 0 .75rem; padding-top: 1rem; }
+.score-chart { display: block; width: 100%; min-width: 440px; height: auto; overflow: visible; }
+.score-chart .grid { stroke: var(--line); stroke-width: 1; }
+.score-chart .axis { stroke: var(--line-2); stroke-width: 1.5; }
+.score-chart .threshold { stroke: var(--risk); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.score-chart .line { fill: none; stroke: var(--muted); stroke-width: 2; }
+.score-chart .dot { fill: var(--ink); stroke: var(--sheet); stroke-width: 1.5; }
+.score-chart .dot.over { fill: var(--risk); }
+.score-chart .dot.empty { fill: var(--sheet); stroke: var(--muted); stroke-width: 1.5; }
+.score-chart text { fill: var(--muted); font: 600 12px var(--mono); }
+.score-chart .tick-label { text-anchor: end; }
+.score-chart .value { fill: var(--risk); font-weight: 700; }
+.chart-values .ident { color: var(--risk); font-family: var(--mono); font-weight: 700; overflow-wrap: anywhere; }

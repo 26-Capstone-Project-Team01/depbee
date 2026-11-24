@@ -127,7 +127,7 @@ class PickRouteTests(DashboardFixture):
         self.assertEqual(project["path"], str(self.project.resolve()))
         overview = self.page("/")
         self.assertIn("<title>프로젝트 현황판 - depbee</title>", overview)
-        self.assertIn(f'<a class="ov-name" href="{S}/projects/1">project</a>', overview)
+        self.assertIn(f'<a class="ov-name" href="{S}/projects/1" title="project">project</a>', overview)
         self.assertEqual(project_head(self.page("/projects/1"))[::2],
                          ("project", str(self.project.resolve())))  # fmt: skip
         # The same folder again opens the first registration, as the typed path does.

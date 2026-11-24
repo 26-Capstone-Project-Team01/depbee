@@ -269,7 +269,7 @@ class PickerTests(ContainerFixture):
         self.assertEqual(history.list_projects(), [])
         self.assertEqual(self.register(str(project)).headers["location"], S + "/")
         overview = self.page("/")
-        self.assertIn(f'<a class="ov-name" href="{S}/projects/1">app-a</a>', overview)
+        self.assertIn(f'<a class="ov-name" href="{S}/projects/1" title="app-a">app-a</a>', overview)
         self.assertIn('<span class="ov-label">미검사</span> <b class="ov-count">1</b>', overview)
         # With a project the way back is project management, whose folder button leads here too.
         page = self.listed()
@@ -445,7 +445,7 @@ class PickerTests(ContainerFixture):
         overview = self.page("/")
         self.assertIn("<title>프로젝트 현황판 - depbee</title>", overview)
         for number, name in enumerate(("app-a", "app-b"), 1):
-            self.assertIn(f'<a class="ov-name" href="{S}/projects/{number}">{name}</a>', overview)
+            self.assertIn(f'<a class="ov-name" href="{S}/projects/{number}" title="{name}">{name}</a>', overview)
         self.assertEqual(
             project_head(self.page("/projects/1"))[1:], (self.app._short_path(paths[0]), paths[0])
         )

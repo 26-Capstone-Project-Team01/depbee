@@ -2,6 +2,30 @@
 <section class="score-history" aria-labelledby="score-history-title">
 <h2 id="score-history-title">실행별 최고 ML 위험 점수</h2>
 <p class="note">최근 10회까지 표시합니다. 실행마다 검사한 패키지나 모델이 다를 수 있습니다.</p>
+{# The chart (app._score_chart): one point a run, oldest on the left, joined by a line that breaks
+   at a run without a score (an empty point on the axis). The threshold is one dashed line when
+   every run shares it, else a short mark on each run; a point at or over it is in the risk
+   colour with its value. The table under it holds the exact values. #}
+{% set chart = score_chart %}
+{% if chart %}
+<div class="scroll chart-scroll" role="region" aria-label="점수 그래프" tabindex="0">
+<svg class="score-chart" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="{{ chart.summary }}">
+<line class="grid" x1="44" x2="420" y1="15" y2="15"/><line class="grid" x1="44" x2="420" y1="70" y2="70"/>
+<line class="axis" x1="44" x2="420" y1="125" y2="125"/>
+<text class="tick-label" x="36" y="19">1</text><text class="tick-label" x="36" y="74">0.5</text><text class="tick-label" x="36" y="129">0</text>
+{% for segment in chart.segments %}<polyline class="line" points="{{ segment }}"/>{% endfor %}
+{% if chart.threshold is not none %}<line class="threshold" x1="44" x2="420" y1="{{ chart.threshold }}" y2="{{ chart.threshold }}"/>{% endif %}
+{% for tick in chart.ticks %}<line class="threshold" x1="{{ tick.x - 9 }}" x2="{{ tick.x + 9 }}" y1="{{ tick.y }}" y2="{{ tick.y }}"/>{% endfor %}
+{% for point in chart.points %}
+{% if point.y is none %}<circle class="dot empty" cx="{{ point.x }}" cy="125" r="4"/>{% else %}<circle class="dot{% if point.over %} over{% endif %}" cx="{{ point.x }}" cy="{{ point.y }}" r="4"/>{% endif %}
+{% if point.tick %}<text class="run-label" x="{{ point.tx }}" y="146" text-anchor="{{ point.tick_anchor }}">#{{ point.id }}</text>{% endif %}
+{% endfor %}
+{# The values last, so that no point is drawn over one. #}
+{% if chart.inline %}{% for point in chart.points if point.over %}<text class="value" x="{{ point.lx }}" y="{{ point.y - 9 }}" text-anchor="{{ point.anchor }}">{{ point.label }}</text>{% endfor %}{% endif %}
+</svg>
+</div>
+{% if not chart.inline %}<p class="note chart-values">판정 기준 이상: {% for point in chart.points if point.over %}<span class="ident">#{{ point.id }} {{ point.label }}</span>{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+{% endif %}
 <div class="scroll" role="region" aria-labelledby="score-history-title" tabindex="0">
 <table class="stack">
 <thead><tr><th scope="col">실행</th><th scope="col">모델</th><th scope="col">점수 산출 항목</th><th scope="col">최고 점수</th></tr></thead>
@@ -11,7 +35,6 @@
 <td data-label="모델">{{ entry.model_id or '기록 없음' }}</td>
 <td data-label="점수 산출 항목">{{ entry.scored_count }}개</td>
 <td data-label="최고 점수">{% if entry.peak_score is not none %}
-<meter min="0" max="1" value="{{ entry.peak_score }}" aria-hidden="true"></meter>
 <span class="score">{{ entry.peak_score|score(entry.threshold) }}</span>
 {% else %}점수 없음{% endif %}</td>
 </tr>{% endfor %}</tbody>

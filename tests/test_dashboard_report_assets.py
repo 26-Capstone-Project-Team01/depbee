@@ -107,7 +107,7 @@ def markdown_lines(report):
 
 def page_lines(html):
     """The text of each line of the report's summary list on a dashboard page."""
-    summary = html.split("<h2>검사 결과:", 1)[1].split("</ul>", 1)[0]
+    summary = html.split('<ul class="meta">', 1)[1].split("</ul>", 1)[0]
     return [text.strip() for text in re.findall(r"<li[^>]*>(.*?)</li>", summary, re.S)]
 
 
