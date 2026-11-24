@@ -357,7 +357,7 @@ footer .note { max-width: none; }
    is picked. Each says how many rows of the search it holds; an empty one is words. */
 .filter-tabs { display: flex; flex-wrap: wrap; gap: 0 1rem; margin-top: .75rem; border-bottom: 1px solid var(--line); }
 .filter-tabs a, .filter-tabs .filter-off { display: inline-flex; align-items: center; gap: .35rem; min-height: 2.75rem; margin-bottom: -1px; padding: .2rem .1rem; border-bottom: 2px solid transparent; font-size: .9375rem; font-weight: 600; text-decoration: none; }
-.filter-tabs a:hover { border-bottom-color: var(--line-2); }
+.filter-tabs a:not([aria-current]):hover { border-bottom-color: var(--line-2); }
 .filter-tabs > [aria-current] { border-bottom-color: var(--ink); font-weight: 800; }
 .filter-tabs .filter-off { color: var(--muted); }
 .filter-count { font: 700 .8125rem/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--muted); }

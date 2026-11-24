@@ -162,6 +162,9 @@ class FocusAndPickTests(unittest.TestCase):
         # The open tab, a link or (with no rows) words.
         rule = re.search(r"^\.filter-tabs > \[aria-current\] \{([^}]*)\}", css, re.M)
         self.assertIn("border-bottom-color: var(--ink)", rule.group(1))
+        # A pointer over the open tab leaves its underline: only the other tabs' hover greys it.
+        self.assertNotRegex(css, r"(?m)^\.filter-tabs a:hover")
+        self.assertRegex(css, r"(?m)^\.filter-tabs a:not\(\[aria-current\]\):hover \{")
 
 
 @unittest.skipUnless(WEB, NO_WEB)
