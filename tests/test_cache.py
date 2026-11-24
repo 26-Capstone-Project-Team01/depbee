@@ -267,6 +267,8 @@ class CacheTests(CacheFixture):
             "other format": json.dumps({**good, "format": cache.FORMAT + 1}).encode(),
             "other key": json.dumps({**good, "key": {**good["key"], "version": "9.9.9"}}).encode(),
             "extra field": json.dumps({**good, "note": 1}).encode(),
+            "no rules field": json.dumps({k: v for k, v in good.items() if k != "rules"}).encode(),
+            "rules not a list": json.dumps({**good, "rules": {"checks": []}}).encode(),
             "no features": json.dumps({**good, "features": {}}).encode(),
             "NaN feature": json.dumps({**good, "features": {"signal": math.nan}}).encode(),
             "infinite feature": json.dumps({**good, "features": {"signal": 12345.5}})
@@ -306,9 +308,13 @@ class CacheTests(CacheFixture):
             with self.subTest(features=features):
                 cache.store(self.cache_dir, key, features)
                 self.assertEqual(self.entries(), [])
+        cache.store(self.cache_dir, key, {"signal": 0.5}, rules={"not": "a list"})
+        self.assertEqual(self.entries(), [])
         cache.store(self.cache_dir, key, {"signal": 0.5, "name": "x", "flag": True, "none": None})
         self.assertEqual(cache.load(self.cache_dir, key),
-                         {"signal": 0.5, "name": "x", "flag": True, "none": None})  # fmt: skip
+                         ({"signal": 0.5, "name": "x", "flag": True, "none": None}, None))  # fmt: skip
+        cache.store(self.cache_dir, key, {"signal": 0.5}, rules=[{"rule_id": "x"}])
+        self.assertEqual(cache.load(self.cache_dir, key), ({"signal": 0.5}, [{"rule_id": "x"}]))
 
     def test_only_a_regular_file_is_read_and_its_open_does_not_wait(self):
         # Revy minor 5: a plain open() of a FIFO at an entry's path waits for a writer, and the
@@ -323,7 +329,7 @@ class CacheTests(CacheFixture):
             return opened[-1][1]
 
         with self.subTest("open flags"), mock.patch.object(cache.os, "open", side_effect=spy):
-            self.assertEqual(cache.load(self.cache_dir, key), features)
+            self.assertEqual(cache.load(self.cache_dir, key), (features, None))
             self.assertEqual(len(opened), 1)
             for flag in ("O_NONBLOCK", "O_BINARY"):  # each where the platform has it
                 self.assertEqual(opened[0][0] & getattr(os, flag, 0), getattr(os, flag, 0), flag)
@@ -345,7 +351,7 @@ class CacheTests(CacheFixture):
         other = {"package": "other"}
         cache._path(self.cache_dir, other).mkdir()  # a real directory at an entry's path
         self.assertIsNone(cache.load(self.cache_dir, other))
-        self.assertEqual(cache.load(self.cache_dir, key), features)
+        self.assertEqual(cache.load(self.cache_dir, key), (features, None))
 
     def test_write_failures_only_skip_caching(self):
         self.cache_dir.write_bytes(b"not a directory")
@@ -378,8 +384,8 @@ class CacheTests(CacheFixture):
         for thread in readers:
             thread.join()
         self.assertTrue(seen)
-        self.assertTrue(all(value in (None, features) for value in seen))
-        self.assertEqual(cache.load(self.cache_dir, key), features)
+        self.assertTrue(all(value in (None, (features, None)) for value in seen))
+        self.assertEqual(cache.load(self.cache_dir, key), (features, None))
         self.assertEqual([p.name.startswith(".tmp-") for p in self.cache_dir.iterdir()], [False])
 
 

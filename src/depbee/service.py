@@ -153,7 +153,19 @@ def scan_project(
     analyzer = ExtractorAnalyzer(
         sources, progress=progress, **_cache_options(predictor, cache_dir, no_cache), **detectors
     )
-    return _timed(scan(request, analyzer, predictor, **detectors), analyzer, started)
+    report = scan(request, analyzer, predictor, **_with_rules(detectors, analyzer))
+    return _timed(report, analyzer, started)
+
+
+def _with_rules(detectors: dict, analyzer) -> dict:
+    """detectors with the analyzer's static rules (analysis.rules: run on the pairs it unpacks),
+    if it has them. Like the index (_assets), a detector that is not there is no keyword, so a
+    caller's own detector (as in tests) is not replaced by None. A stand-in analyzer without a
+    ruleset version (a mock) has none."""
+    found = getattr(analyzer, "rules", None)
+    if isinstance(getattr(found, "ruleset_version", None), str):
+        return {**detectors, "rules": found}
+    return detectors
 
 
 def _assets(
@@ -345,7 +357,7 @@ def check_package(
         fetched = elapsed_since(fetch_started)
         request = build_package_request(name, version, packument)
         # The one change's metadata was read before analyze(); count it in that result's time.
-        report = scan(request, analyzer, predictor, **detectors)
+        report = scan(request, analyzer, predictor, **_with_rules(detectors, analyzer))
     return _timed(report, analyzer, started, {request["changes"][0]["change_id"]: fetched})
 
 

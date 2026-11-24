@@ -183,8 +183,14 @@ def _data_without_symlinks(member: tarfile.TarInfo, path: str) -> tarfile.TarInf
     return None if member.issym() else member
 
 
-def unpack(data: bytes, directory: Path, what: str) -> Path:
-    """Unpack a checked .tgz into directory within the limits and return its package root."""
+def unpack(data: bytes, directory: Path, what: str, omitted: list[str] | None = None) -> Path:
+    """Unpack a checked .tgz into directory within the limits and return its package root.
+
+    omitted, if given, gets "PATH:KIND" for each member that is not written as a file of the
+    package root, so that a reader of the root (analysis.rules) knows what it cannot see: a
+    symbolic link (symlink), a hard link to no earlier file (link), a file whose name differs from
+    an earlier one only in case where the file system ignores case (case), and a file outside the
+    package root (outside_root). PATH is "/"-separated, relative to the root when inside it."""
     try:
         with gzip.GzipFile(fileobj=io.BytesIO(data)) as stream:
             raw = stream.read(MAX_UNPACKED_BYTES + 1)  # never inflates more than this
@@ -192,6 +198,7 @@ def unpack(data: bytes, directory: Path, what: str) -> Path:
         raise RegistryError(f"{what} is not a complete gzip file") from exc
     if len(raw) > MAX_UNPACKED_BYTES:
         raise RegistryError(f"{what} unpacks to more than {MAX_UNPACKED_BYTES} bytes")
+    dropped, cased = [], {}  # (name, kind) left out; each file name by os.path.normcase
     try:
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
             members, declared, files = [], 0, {}  # files: size of each name, None if no file
@@ -205,10 +212,16 @@ def unpack(data: bytes, directory: Path, what: str) -> Path:
                     size = files[name] = files.get(os.path.normpath(member.linkname))
                     if size is None:
                         tarfile.data_filter(member, str(directory))  # links out are still refused
+                        dropped.append((name, "link"))
                         continue
                 else:
                     size = max(member.size, 0)  # a sparse member can declare more than it holds
                     files[name] = size if member.isreg() else None
+                    if member.issym():
+                        dropped.append((name, "symlink"))  # _data_without_symlinks skips it
+                if files[name] is not None:
+                    if cased.setdefault(os.path.normcase(name), name) != name:
+                        dropped.append((name, "case"))  # written over the earlier file
                 members.append(member)
                 declared += size
                 if declared > MAX_UNPACKED_BYTES:
@@ -219,8 +232,19 @@ def unpack(data: bytes, directory: Path, what: str) -> Path:
     # depbee-analyzer's _locate_package_root (loader.py:123-142): the folder or its one child
     # that holds package.json.
     if (directory / "package.json").is_file():
-        return directory
-    roots = [child for child in sorted(directory.iterdir()) if (child / "package.json").is_file()]
-    if len(roots) != 1:
-        raise RegistryError(f"{what} has no single package root containing package.json")
-    return roots[0]
+        root = directory
+    else:
+        roots = [c for c in sorted(directory.iterdir()) if (c / "package.json").is_file()]
+        if len(roots) != 1:
+            raise RegistryError(f"{what} has no single package root containing package.json")
+        root = roots[0]
+    if omitted is not None:
+        inside = os.path.relpath(root, directory)  # "." or the root folder's name
+        dropped += [(name, "outside_root") for name, size in files.items()
+                    if size is not None and inside != "." and Path(name).parts[0] != inside]  # fmt: skip
+        for name, kind in dropped:
+            parts = Path(name).parts
+            if inside != "." and parts[0] == inside and kind != "outside_root":
+                parts = parts[1:]
+            omitted.append(f"{'/'.join(parts)}:{kind}")
+    return root

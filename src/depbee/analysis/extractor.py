@@ -22,7 +22,7 @@ from pathlib import Path
 
 from .. import __version__
 from ..contracts import SCHEMA_VERSION, GuardError, digest, elapsed_since
-from . import bounded, cache, registry
+from . import bounded, cache, registry, rules
 from .artifact import validate
 from .baseline import is_stable, select_baseline
 
@@ -167,12 +167,14 @@ class _RegistrySource:
     RegistrySnapshotSource: the snapshot comes from the packument depbee checked (the pinned
     loader's public build_snapshot, which fetches nothing without include_source), and the source
     tree from depbee's checked download (analysis.registry), unpacked under work. depbee-analyzer's
-    build_row uses only get_snapshot of the sources it is given."""
+    build_row uses only get_snapshot of the sources it is given. unpacked maps each version whose
+    source it unpacked to (package root, the members unpack left out), for the rule scan."""
 
     def __init__(self, packument: dict, build_snapshot: Callable, work: Path) -> None:
         self._packument = packument
         self._build_snapshot = build_snapshot
         self._work = work
+        self.unpacked: dict[str, tuple[Path, list[str]]] = {}
 
     def get_snapshot(self, package: str, version: str, *, include_source: bool = False):
         snapshot = self._build_snapshot(self._packument, package, version)
@@ -180,7 +182,9 @@ class _RegistrySource:
             return snapshot
         data = registry.tarball(package, version, self._packument["versions"][version]["dist"])
         target = Path(tempfile.mkdtemp(prefix="version_", dir=self._work))
-        source = registry.unpack(data, target, f"{package}@{version} tarball")
+        omitted: list[str] = []
+        source = registry.unpack(data, target, f"{package}@{version} tarball", omitted)
+        self.unpacked[version] = (source, omitted)
         return dataclasses.replace(snapshot, source_dir=source)
 
 
@@ -189,8 +193,10 @@ class FeatureExtractorBackend:
 
     Registry metadata and tarballs are downloaded by analysis.registry, never by
     depbee-analyzer, so its size, address and integrity checks apply to everything read. The
-    metadata download and the extraction (both downloads, unpacking and feature extraction) run
-    in child processes of analysis.bounded, killed when the change's time budget runs out.
+    metadata download and the extraction (both downloads, unpacking, feature extraction and the
+    static rule scan of the same two unpacked versions) run in child processes of
+    analysis.bounded, killed when the change's time budget runs out. ruleset_version is the
+    pinned depbee-analyzer's (analysis.rules), the version of the rule checks extract() returns.
     """
 
     def __init__(self) -> None:
@@ -199,6 +205,7 @@ class FeatureExtractorBackend:
             from depbee_analyzer.core.loader import build_snapshot
             from depbee_analyzer.core.pipeline import build_row, resolve_extractors
             from depbee_analyzer.core.sources import LocalArchiveSnapshotSource
+            from depbee_analyzer.rules.diff_scan import RULESET_VERSION
         except ImportError as exc:
             raise GuardError(f"{_how_to_get_the_analyzer()} ({exc})") from exc
         self.errors = (
@@ -214,11 +221,15 @@ class FeatureExtractorBackend:
         self._build_row = build_row
         self._extractors = resolve_extractors(None)
         self._local_source = LocalArchiveSnapshotSource
+        self.ruleset_version = RULESET_VERSION
 
     def extract(
         self, name: str, old: str, new: str, packument: dict, local: Path | None
-    ) -> tuple[dict, dict]:
-        """Return (features, package.json of the new version), both from the given packument.
+    ) -> tuple[dict, dict, dict | None]:
+        """Return (features, package.json of the new version, rule result), the first two from the
+        given packument. The rule result is analysis.rules.scan()'s for the two versions just
+        unpacked, {"error": text} if that scan failed (the features stand), or None without a
+        ruleset_version.
 
         Both manifests and their dist objects must already be checked (ExtractorAnalyzer does).
         Runs in a bounded child process; only the two versions' manifests and publish times are
@@ -230,14 +241,14 @@ class FeatureExtractorBackend:
             "time": {v: packument["time"][v] for v in (old, new) if v in packument["time"]},
         }
         with tempfile.TemporaryDirectory(prefix="depbee_src_", ignore_cleanup_errors=True) as work:
-            features, new_json = bounded.run(
+            features, new_json, found = bounded.run(
                 self._extract_here, (name, old, new, slim, local, Path(work))
             )
-        return features, new_json
+        return features, new_json, found
 
     def _extract_here(
         self, name: str, old: str, new: str, packument: dict, local: Path | None, work: Path
-    ) -> tuple[dict, dict]:
+    ) -> tuple[dict, dict, dict | None]:
         source = _RegistrySource(packument, self._build_snapshot, work)
         new_source = self._local_source(local, packument) if local else source
         # label is a dataset column; inference does not use it.
@@ -247,7 +258,30 @@ class FeatureExtractorBackend:
         new_json = (
             new_source.get_snapshot(name, new).package_json if local else packument["versions"][new]
         )
-        return row.features, new_json
+        found = None
+        if self.ruleset_version:
+            found = _scan_rules((name, old, new), source, new_source if local else None)
+        return row.features, new_json, found
+
+
+def _scan_rules(pair: tuple[str, str, str], source: _RegistrySource, local) -> dict:
+    """The rule scan of the two package roots build_row read (local: the new version's local
+    copy, read where it is; the scanner reports its links itself). Any error is kept as the result
+    so that the features stand: a GuardError's own message, else the error's type only, since
+    another message can hold local paths."""
+    name, old, new = pair
+    try:
+        old_root, old_missing = source.unpacked[old]
+        if local is None:
+            new_root, new_missing = source.unpacked[new]
+        else:
+            new_root = local.get_snapshot(name, new, include_source=True).source_dir
+            new_missing = []
+        return rules.scan(old_root, new_root, {"old": old_missing, "new": new_missing}, pair)
+    except GuardError as exc:
+        return {"error": f"규칙 스캔 오류: {exc}"}
+    except Exception as exc:  # any other failure of the scan: the features of the change stand
+        return {"error": f"규칙 스캔 오류({type(exc).__name__})"}
 
 
 def _short(text: str) -> str:
@@ -299,6 +333,9 @@ class ExtractorAnalyzer:
     ``known_malicious``, if given, is the run's known malicious index (``known_malicious.load``):
     baseline candidates it lists or has in a bounded range are skipped (D-16), and the evidence
     says so. The cache key needs nothing more: it already holds the chosen baseline.
+    ``rules`` is the RuleDetector for pipeline.scan() (analysis.rules.Results) over the rule
+    results of the latest ``analyze()``, None for a backend without a ``ruleset_version``. They
+    are kept per change_id with the compared pair, and only for a change analyzed completely.
     """
 
     def __init__(
@@ -322,6 +359,8 @@ class ExtractorAnalyzer:
         self.known_malicious = known_malicious
         self.measurements: dict[str, tuple[float, bool]] = {}
         self._packuments: dict[str, dict] = {}
+        version = getattr(self.backend, "ruleset_version", None)
+        self.rules = rules.Results(version) if isinstance(version, str) and version else None
 
     def analyze(self, request: dict) -> dict:
         changes = [c for c in request["changes"] if c["analyzable"]]
@@ -333,6 +372,8 @@ class ExtractorAnalyzer:
             raise GuardError(f"Local source matches no analyzable change: {name}@{version}")
         # A package request (check) has no lockfile; the evidence must not mention one.
         package_input = request.get("input_kind") == "package"
+        if self.rules:
+            self.rules.found = {}  # no result of an earlier request answers for this one
         results = []
         for index, change in enumerate(changes, start=1):
             if self.progress:
@@ -438,14 +479,22 @@ class ExtractorAnalyzer:
         key = None
         if self.cache_dir is not None and local is None:
             key = self._cache_key(name, new, baseline.version, packument)
-        features = cache.load(self.cache_dir, key) if key else None
+        features, found = (cache.load(self.cache_dir, key) if key else None) or (None, None)
         if features is not None and not self._model_accepts(features):
             features = None  # damaged or foreign entry: extract again
+        if features is not None and self.rules:
+            found = self._rule_result({"checks": found, "cacheable": True})
+            if "error" in found:
+                features = None  # an entry without usable rule checks: extract again
         cache_hit = features is not None
         if cache_hit:
             new_json = packument["versions"][new]
         else:
-            features, new_json = self.backend.extract(name, baseline.version, new, packument, local)
+            features, new_json, found = self.backend.extract(
+                name, baseline.version, new, packument, local
+            )
+            if self.rules:
+                found = self._rule_result(found)
         old_json = packument["versions"][baseline.version]
         result = {
             "status": "complete",
@@ -457,11 +506,27 @@ class ExtractorAnalyzer:
         }
         # The parent parsed the metadata, read the cache, built the evidence and checks the
         # features itself; none of that is in a child, so the deadline is checked here.
+        # A failed or one-off rule result (an unreadable file) is not stored: the next run scans.
+        stored = found.get("checks") if self.rules else None
         if key and not cache_hit and self._model_accepts(features):
-            bounded.check()  # write nothing for a result already too late
-            cache.store(self.cache_dir, key, features)  # checks again before publishing
+            if not self.rules or (stored and found.get("cacheable")):
+                bounded.check()  # write nothing for a result already too late
+                cache.store(self.cache_dir, key, features, stored)  # checks before publishing
         bounded.check()  # accept only a result finished in time: cold, cache hit or no cache
+        if self.rules:
+            self.rules.found[change["change_id"]] = {"pair": [name, baseline.version, new], **found}
         return result, cache_hit
+
+    def _rule_result(self, found: object) -> dict:
+        """found as analysis.rules.Results keeps it: {"checks", "cacheable"} with checks valid
+        for the ruleset, or {"error": text}; anything else (none, empty, partial) is an error."""
+        if isinstance(found, dict) and isinstance(found.get("error"), str):
+            return {"error": found["error"]}
+        checks = rules.checked(found.get("checks") if isinstance(found, dict) else None,
+                               self.rules.ruleset_version)  # fmt: skip
+        if checks is None:
+            return {"error": "규칙 스캔 결과가 없거나 형식이 맞지 않음"}
+        return {"checks": checks, "cacheable": found.get("cacheable") is True}
 
     def _model_accepts(self, features: dict) -> bool:
         """Whether the cache model scores these features. Missing or wrongly typed features are

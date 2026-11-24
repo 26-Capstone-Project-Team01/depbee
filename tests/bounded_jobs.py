@@ -140,8 +140,8 @@ def real_extract(files, name, old, new, packument, work):
             return data
 
     registry._open = Served
-    features, new_json = FeatureExtractorBackend()._extract_here(
+    features, new_json, found = FeatureExtractorBackend()._extract_here(
         name, old, new, packument, None, Path(work)
     )
     unpacked = sorted(p.relative_to(work).parts[1:] for p in Path(work).rglob("package.json"))
-    return {"features": features, "new_json": new_json, "unpacked": unpacked}
+    return {"features": features, "new_json": new_json, "unpacked": unpacked, "rules": found}
