@@ -19,14 +19,14 @@
 .overview .ov-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .6rem 1.5rem; }
 .overview .ov-title { margin: 0; }
 /* The way to add a project. The plus is drawn, so the link's name stays its text. */
-.overview .ov-add { display: inline-flex; align-items: center; gap: .5rem; min-height: 2.75rem; padding: .4rem .9rem; border: 1px solid var(--ink); border-radius: 3px; background: var(--sheet); font-size: .9375rem; font-weight: 700; text-decoration: none; white-space: nowrap; }
+.overview .ov-add { display: inline-flex; align-items: center; gap: .5rem; min-height: 2.75rem; padding: .4rem .9rem; border: 1px solid var(--line-2); border-radius: 6px; background: var(--sheet); font-size: .9375rem; font-weight: 700; text-decoration: none; white-space: nowrap; }
 .overview .ov-add::before { content: ""; flex: none; width: .7rem; height: .7rem; background: linear-gradient(currentColor, currentColor) 50% / 100% 2px no-repeat, linear-gradient(currentColor, currentColor) 50% / 2px 100% no-repeat; }
-.overview .ov-add:hover { background: #f1f0ea; }
+.overview .ov-add:hover { border-color: var(--ink); background: var(--head); }
 
 /* The chart: a state, its count, and one cell for each project in it. The cells of a state
    stand in a row, so a longer row is more projects; the number beside the name says how many.
    --ground is what a cell is drawn on. */
-.overview .ov-chart { margin: 1rem 0 0; padding: .8rem 1rem 1rem; border-top: 2px solid var(--ink); background: var(--sheet); --ground: var(--sheet); }
+.overview .ov-chart { margin: 1rem 0 0; padding: .8rem 1rem 1rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow); --ground: var(--sheet); }
 .overview .ov-chart h2 { margin: 0; color: var(--muted); font-size: .8125rem; font-weight: 600; }
 .overview .ov-states { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: .9rem 1.5rem; max-width: none; margin: .7rem 0 0; padding: 0; list-style: none; }
 .overview .ov-states li { display: flex; flex-wrap: wrap; align-items: baseline; align-content: flex-start; gap: .3rem .5rem; min-width: 0; }
@@ -50,7 +50,7 @@
 .overview .ov-board { display: block; width: 100%; margin: 1rem 0 0; border: 0; border-spacing: 0; font-size: .9375rem; --ground: var(--sheet); }
 .overview .ov-board thead { display: none; }
 .overview .ov-board tbody { display: block; }
-.overview .ov-row { display: grid; grid-template-columns: minmax(0, 1fr); margin-top: .75rem; border-top: 2px solid var(--ink); background: var(--sheet); }
+.overview .ov-row { display: grid; grid-template-columns: minmax(0, 1fr); margin-top: .75rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow); overflow: hidden; }
 .overview .ov-row:first-child { margin-top: 0; }
 .overview .ov-project, .overview .ov-rec { min-width: 0; font-weight: 400; text-align: start; }
 
@@ -92,11 +92,11 @@
 }
 /* Wide: one ledger. The kinds are the column heads and a row is read across. */
 @container overview (min-width: 56rem) {
-  .overview .ov-board { border-top: 2px solid var(--ink); background: var(--sheet); }
+  .overview .ov-board { border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow); overflow: hidden; }
   .overview .ov-board thead { display: block; }
   .overview .ov-cols, .overview .ov-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 1.1fr); }
   .overview .ov-cols th { display: block; padding: .5rem 1rem .5rem 1.15rem; color: var(--muted); font-size: .8125rem; font-weight: 600; text-align: start; }
-  .overview .ov-row { margin-top: 0; border-top: 1px solid var(--line); background: none; }
+  .overview .ov-row { margin-top: 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: none; box-shadow: none; overflow: visible; }
   /* A pointer's targets: closer, and the name's line level with the states beside it. */
   .overview .ov-project { grid-column: auto; padding-top: .45rem; }
   .overview .ov-name { padding-top: .55rem; }
