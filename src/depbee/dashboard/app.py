@@ -1607,6 +1607,25 @@ def _signal(row: dict, key: str, labels: dict, report: dict) -> dict:
     }
 
 
+def _gauge(score: object, threshold: object) -> dict | None:
+    """The ML tile's gauge in the inspector, drawn from 0 to 100: the score's bar (width), the
+    threshold's place (tick, None for one that is not a number from 0 to 1) and whether the score
+    is at or over it (over). None for a score that is not a number from 0 to 1: the tile then
+    shows the score's words alone."""
+
+    def place(value: object) -> float | int | None:
+        if isinstance(value, bool) or not isinstance(value, int | float) or not 0 <= value <= 1:
+            return None
+        spot = round(value * 100, 2)
+        return int(spot) if spot == int(spot) else spot
+
+    width = place(score)
+    if width is None:
+        return None
+    tick = place(threshold)
+    return {"width": width, "tick": tick, "over": tick is not None and score >= threshold}
+
+
 def _result(row: dict, report: dict) -> dict:
     """One result as the text output shows it; the facts and the model's explanation apart.
     score_raw: the stored score as the report's JSON writes it, None without one. decision:
@@ -1628,6 +1647,7 @@ def _result(row: dict, report: dict) -> dict:
         "npm": npm_link(row["package"]),
         "score": _ml_score(row, _text_label, report),
         "score_raw": None if row.get("score") is None else repr(row["score"]),
+        "gauge": _gauge(row.get("score"), report.get("threshold")),
         "compared": row.get("compared_version"),
         "reason": _text_label(REASON_LABELS, row["reason"]) if row.get("reason") else None,
         "alternative": None if alternative is None else (alternative[0], alternative[1]),

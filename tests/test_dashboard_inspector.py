@@ -335,43 +335,80 @@ class InspectorTests(test_dashboard.DashboardFixture):
         self.assertEqual((row["known"]["cell"], row["known"]["status"].split(" ")[0]),
                          ("hold", "실패"))  # fmt: skip
 
-    def test_the_inspector_says_the_decision_first_and_then_each_detector_alone(self):
+    def test_the_inspector_says_the_decision_then_the_three_detectors_then_the_evidence(self):
         tiny = 3.950535635136895e-07  # a real low score: its stored digits stay on the page
         report = self.rows(self.scanned(tiny, known_malicious=KnownList((ADVISORY,))), "other")
         run = self.check(report, targets=["other"])
         for view in (self.packages, self.updates):
             html = self.page(f"{view}?item={run}.0")
             panel = html.split('<aside class="inspector"', 1)[1].split("</aside>", 1)[0]
-            marks = ['<p class="decision risk"><span class="cell risk" aria-hidden="true"></span>'
+            # What a narrow screen never folds: the decision card, then one line per detector
+            # and what must not be misread; the evidence comes after.
+            top, body = panel.split('<div class="inspect-body">', 1)
+            marks = ['<div class="ruling risk">',
+                     '<p class="decision"><span class="cell risk" aria-hidden="true"></span>'
                      "반영 거부</p>", f'<p class="why">{self.app.REFUSED_WHY}</p>',
-                     # What must not be misread, right under the decision, never folded.
+                     '<dl class="detectors">',
+                     '<dt>기지 악성 색인</dt><dd><span class="cell risk" aria-hidden="true"></span>'
+                     "<b>일치</b>",
+                     '<dt>정적 규칙</dt><dd><span class="cell none" aria-hidden="true"></span>'
+                     "<b>미실행 (탐지기 연결 안 됨)</b>",
+                     "<dt>ML 점수</dt><dd><b>&lt;0.001 (기준 미만)</b>",
+                     '<rect class="fill" width="0" height="10"/>',
+                     '<line class="tick" x1="50" x2="50" y1="0" y2="10"/>',
                      "정적 규칙: 실행하지 않은 것은 통과가 아닙니다.",
-                     '<h3 id="known-title">기지 악성 색인</h3>', "<b>일치</b>",
-                     "EXAMPLE-ADVISORY-0001 (버전 목록에 있음, 영향 버전 1.1.0)",
-                     '<h3 id="rules-title">정적 규칙</h3>', "<b>미실행 (탐지기 연결 안 됨)</b>",
-                     '<h3 id="score-title">ML 모델</h3>',
+                     "이 화면에서는 반영하지 않습니다."]  # fmt: skip
+            places = [top.find(mark) for mark in marks]
+            self.assertNotIn(-1, places, view)
+            self.assertEqual(places, sorted(places), view)  # in this order
+            # The evidence keeps all it said before, each detector on its own.
+            marks = ['<h3 id="known-title">기지 악성 색인</h3>',
+                     "EXAMPLE-ADVISORY-0001 (버전 목록에 있음, 영향 버전 1.1.0)", "목록 기준 시점: ",
+                     '<h3 id="rules-title">정적 규칙</h3>', '<h3 id="score-title">ML 모델</h3>',
                      "<dt>ML 위험 점수</dt><dd>&lt;0.001 (기준 미만)</dd>",
                      f"<dt>점수 원값</dt><dd>{tiny!r}</dd>", "<dt>판정 기준 점수</dt><dd>0.5</dd>",
                      "<dt>모델</dt><dd>unit-test</dd>", "synthetic evidence",
                      '<h3 id="basis-title">저장된 보고서</h3>',
-                     f'<a href="{test_dashboard.S}/runs/{run}">#{run}</a>']  # fmt: skip
-            places = [panel.find(mark) for mark in marks]
+                     f'<a href="{test_dashboard.S}/runs/{run}">#{run}</a>',
+                     "보고서에서 전체 근거 보기"]  # fmt: skip
+            places = [body.find(mark) for mark in marks]
             self.assertNotIn(-1, places, view)
-            self.assertEqual(places, sorted(places), view)  # in this order
+            self.assertEqual(places, sorted(places), view)
+            # The status is said once, in the summary.
+            self.assertNotIn("<b>일치</b>", body)
             # The versions are the stored strings, each in full.
-            self.assertIn("<dt>사용 버전</dt><dd>1.0.0</dd>", panel)
-            self.assertIn("<dt>후보 버전</dt><dd>1.1.0</dd>", panel)
-            self.assertIn("이 화면에서는 반영하지 않습니다.", panel)
+            self.assertIn("<dt>사용 버전</dt><dd>1.0.0</dd>", top)
+            self.assertIn("<dt>후보 버전</dt><dd>1.1.0</dd>", top)
             self.assertNotIn("<form", panel if view == self.updates else "")
         # The list says the same decision in the candidate's own cell.
         cell = self.page(self.packages).split(f"item={run}.0#candidate-evidence", 1)[1]
         self.assertIn('<span class="verdict risk"><span class="cell risk" aria-hidden="true">'
                       "</span>반영 거부</span>", cell.split("</a>", 1)[0])  # fmt: skip
-        # A candidate without a score says so, and that it is no 0.
+        # A candidate without a score says so in place of the gauge, and that it is no 0.
         unscored = self.rows(self.scanned(analyzer=False, known_malicious=KnownList()), "other")
         run = self.check(unscored, targets=["other"])
         panel = self.page(f"{self.updates}?item={run}.0").split('<aside class="inspector"', 1)[1]
-        self.assertIn("<dt>ML 위험 점수</dt><dd>없음(미실행)</dd>", panel)
-        self.assertIn("점수가 없는 것은 0점이 아닙니다.", panel)
+        top, body = panel.split('<div class="inspect-body">', 1)
+        self.assertIn("<dt>ML 점수</dt><dd><b>점수 없음</b>", top)
+        self.assertIn("점수가 없는 것은 0점이 아닙니다.", top)
+        self.assertNotIn('class="gauge"', panel)
+        self.assertIn("<dt>ML 위험 점수</dt><dd>없음(미실행)</dd>", body)
         self.assertNotIn("점수 원값", panel)
-        self.assertIn('<p class="decision hold">', panel)
+        self.assertIn('<div class="ruling hold">', panel)
+        # A score over the threshold fills its gauge in the risk colour.
+        over = self.rows(self.scanned(0.87, known_malicious=KnownList()), "other")
+        run = self.check(over, targets=["other"])
+        panel = self.page(f"{self.updates}?item={run}.0").split('<aside class="inspector"', 1)[1]
+        self.assertIn('<rect class="fill over" width="87" height="10"/>', panel)
+        self.assertIn('<div class="ruling hold">', panel)
+
+    def test_a_gauge_is_drawn_only_for_a_score_from_0_to_1(self):
+        gauge = self.app._gauge
+        self.assertEqual(gauge(0.012, 0.5), {"width": 1.2, "tick": 50, "over": False})
+        self.assertEqual(gauge(0.87, 0.5), {"width": 87, "tick": 50, "over": True})
+        self.assertEqual(gauge(0.5, 0.5), {"width": 50, "tick": 50, "over": True})
+        self.assertEqual(gauge(0, None), {"width": 0, "tick": None, "over": False})
+        self.assertEqual(gauge(1, 1.5), {"width": 100, "tick": None, "over": False})
+        for score in (None, -0.1, 1.01, float("nan"), float("inf"), True, "0.5"):
+            self.assertIsNone(gauge(score, 0.5), score)
+        self.assertEqual(gauge(0.3, True), {"width": 30, "tick": None, "over": False})
