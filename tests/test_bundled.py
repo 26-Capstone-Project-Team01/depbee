@@ -13,6 +13,7 @@ import importlib.metadata
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 import tomllib
@@ -429,23 +430,48 @@ class ResolverTests(NativeAssets):
             return json.loads(err)["error"]
 
         installed = {"return_value": ["numpy>=1.26", f'{pin}; extra == "extract"']}
+        unknown = {"side_effect": importlib.metadata.PackageNotFoundError("depbee")}
+        # The Python of a virtual environment that is not activated, in a folder with a space
+        # and a quote. The shell's own "python" may then be another environment's.
+        windows = os.name == "nt"
+        python = (r"C:\Users\O'Brien\my env\Scripts\python.exe" if windows
+                  else "/home/o'brien/my env/bin/python")  # fmt: skip
+
+        def command(said):
+            """The command of an instruction: after its colon, before the import error."""
+            return said.partition(": ")[2].rpartition(" (")[0]
+
         with mock.patch.dict(sys.modules, missing):
             self.assertEqual(self.used(), ("synthetic-test-only", self.index_sha))
-            # An installed depbee names the public commit it pins: a command for any folder,
-            # where the old ".[extract]" meant whatever project the user stood in.
-            self.assertTrue(advice(installed).startswith(
-                "depbee-analyzer is missing. Install the commit that this depbee pins: "
-                f'python -m pip install "{pin}" ('))  # fmt: skip
+            with mock.patch.object(sys, "executable", python):
+                pinned, extra = advice(installed), advice(unknown)
+            # An installed depbee names the public commit it pins and the Python that runs it:
+            # a command for any folder and any PATH. A bare "python" could be another
+            # environment's, and the old ".[extract]" meant whatever project the user stood in.
+            self.assertTrue(pinned.startswith(
+                "depbee-analyzer is missing. Install the commit that this depbee pins into the "
+                "Python that runs it"), pinned)  # fmt: skip
+            # Run from a source tree, depbee has no metadata to name a commit from.
+            self.assertTrue(extra.startswith(
+                "depbee-analyzer is missing. In a depbee checkout, install it into the Python "
+                "that runs depbee"), extra)  # fmt: skip
+            for said, requirement in ((pinned, pin), (extra, ".[extract]")):
+                with self.subTest(requirement):
+                    if windows:  # PowerShell: & calls a quoted path, '' is a quote inside one
+                        self.assertIn(", in PowerShell: & ", said)
+                        self.assertEqual(
+                            command(said),
+                            r"& 'C:\Users\O''Brien\my env\Scripts\python.exe' -m pip install "
+                            f"'{requirement}'")  # fmt: skip
+                    else:  # what a POSIX shell reads: that interpreter and one requirement
+                        self.assertEqual(shlex.split(command(said)),
+                                         [python, "-m", "pip", "install", requirement])  # fmt: skip
             # depbee's image has no pip and no source tree: the default image, not an install.
             with mock.patch.dict(os.environ, {"DEPBEE_CONTAINER_PROJECTS": "/projects"}):
                 in_image = advice(installed)
             self.assertIn("built with --target core", in_image)
             self.assertIn("docker build -t depbee:local .", in_image)
             self.assertNotIn("pip", in_image)
-            # Run from a source tree, depbee has no metadata to name a commit from.
-            unknown = {"side_effect": importlib.metadata.PackageNotFoundError("depbee")}
-            self.assertIn('In a depbee checkout: python -m pip install ".[extract]"',
-                          advice(unknown))  # fmt: skip
 
 
 if __name__ == "__main__":
