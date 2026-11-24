@@ -1,23 +1,35 @@
 {# The report as the text output words it; the context is app._report() alone. Each result keeps
    what was found apart from what the model scored: the facts (where, the versions, the detectors,
    the extracted facts) on one side, the ML risk score and its explanation on the other. #}
-{# cli._notices puts the known malicious notice first; only that one is a risk, not a hold. #}
+{# A band at the top: the overall result and how many results of each status; then one line of
+   what the result was made with and its exit code, then the warnings (cli._notices: the known
+   malicious one first, the only one that is a risk), then what was checked. Each result is a
+   card: its verdict, the package and the versions on one line, then the two sides. #}
 {% set known = results|selectattr("known_hit")|list %}
 <div class="summary">
-<h2>검사 결과: {{ overall }}</h2>
-<ul>
-<li>{{ summary }}</li>
-{% for emphasized, rest in notices %}<li class="warning{% if known and loop.first %} risk{% endif %}"><strong>{{ emphasized }}</strong> {{ rest }}</li>
-{% endfor %}
+<div class="band">
+<h2 class="band-title">검사 결과: <span class="verdict {{ overall_cell }}"><span class="cell {{ overall_cell }}" aria-hidden="true"></span>{{ overall_label }}</span></h2>
+<ul class="band-counts">
+<li class="n-all">{{ "검사한 패키지" if package_input else "바뀐 의존성" }} <b>{{ counts.all }}</b></li>
+<li class="n-risk">위험 <b>{{ counts.risk }}</b></li>
+<li class="n-hold">보류 <b>{{ counts.hold }}</b></li>
+<li class="n-pass">통과 <b>{{ counts.pass }}</b></li>
+{% if counts.removed %}<li class="n-removed">삭제 <b>{{ counts.removed }}</b></li>
+{% endif %}</ul>
+</div>
+<ul class="meta">
 {% if model_id %}<li>모델: {{ model_id }}, 판정 기준 점수 {{ threshold|plain }}</li>{% endif %}
 {% for line in setup %}<li>{{ line }}</li>
 {% endfor %}
-<li>범위: {% if package_input %}lockfile 없이 registry 정보로 이 버전 하나만{% else %}lockfile에서 바뀐 의존성만{% endif %} 검사했습니다. 프로젝트 전체의 안전성 평가가 아닙니다.</li>
+<li>종료 코드 {{ exit_code }}</li>
 </ul>
+{% for emphasized, rest in notices %}<p class="warning{% if known and loop.first %} risk{% endif %}"><strong>{{ emphasized }}</strong> {{ rest }}</p>
+{% endfor %}
+<p class="note">범위: {% if package_input %}lockfile 없이 registry 정보로 이 버전 하나만{% else %}lockfile에서 바뀐 의존성만{% endif %} 검사했습니다. 프로젝트 전체의 안전성 평가가 아닙니다.</p>
 </div>
 {% for row in results %}
 <section class="result {{ row.status }}{% if row.known_hit %} known{% endif %}" id="r{{ row.position }}">
-<h3>[{{ row.label }}] {{ row.package }}@{{ row.version }}</h3>
+<h3 class="result-title"><span class="verdict {{ row.cell }}">{% if row.status != "removed" %}<span class="cell {{ row.cell }}" aria-hidden="true"></span>{% endif %}{{ row.label }}</span> <span class="ident">{{ row.package }}</span> <span class="move">{% if package_input or (row.before is none and row.after is none) %}{{ row.version }}{% else %}{% if row.before is none %}새로 추가{% else %}{{ row.before }}{% endif %} <span aria-hidden="true">→</span><span class="visually-hidden">에서</span> {% if row.after is none %}삭제{% else %}{{ row.after }}{% endif %}{% endif %}</span></h3>
 <div class="evidence">
 <div class="found">
 <p class="side">확인된 사실</p>

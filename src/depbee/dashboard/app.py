@@ -1533,13 +1533,19 @@ def _run_apply(project: Path, kept: dict, mode: str, confirmed: bool) -> tuple |
 
 def _report(report: dict) -> dict:
     """The context of report.html: the report as the text output shows it. Each result keeps
-    its position in the stored report, the anchor a candidate row links to."""
+    its position in the stored report, the anchor a candidate row links to. The band at its top:
+    the overall result (its words and mark) and how many results there are of each status."""
     package_input = report.get("input_kind") == "package"
     position = {id(row): index for index, row in enumerate(report["results"])}
+    found = Counter(row["status"] for row in report["results"])
     return {
-        "overall": f"{_text_label(OVERALL_LABELS, report['status'])}"
-                   f" (종료 코드 {_clean(report['exit_code'])})",
-        "summary": _summary(report["results"], package_input), "notices": _notices(report),
+        "overall_label": _text_label(OVERALL_LABELS, report["status"]),
+        "overall_cell": TAB_STATES.get(report["status"], ("none",))[0],
+        "exit_code": _clean(report["exit_code"]),
+        "counts": {"all": len(report["results"]), "risk": found["flagged"],
+                   "hold": found["incomplete"], "pass": found["not_flagged"],
+                   "removed": found["removed"]},
+        "notices": _notices(report),
         "model_id": report.get("model_id"), "threshold": report.get("threshold"),
         "setup": _detector_setup(report, _clean), "package_input": package_input,
         "results": [{**_result(row, report), "position": position[id(row)]}
@@ -1671,6 +1677,7 @@ def _result(row: dict, report: dict) -> dict:
         "rules": _signal(row, "rules", RULE_STATUS_LABELS, report),
         "package": row["package"],
         "version": row["after_version"] or row["before_version"],
+        "before": row.get("before_version"), "after": row.get("after_version"),
         "location": row["location"],
         "npm": npm_link(row["package"]),
         "score": _ml_score(row, _text_label, report),

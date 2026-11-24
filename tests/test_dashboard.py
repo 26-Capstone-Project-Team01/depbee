@@ -15,6 +15,7 @@ import re
 import sqlite3
 import sys
 import unittest
+from collections import Counter
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
@@ -192,6 +193,44 @@ class PageTests(DashboardFixture):
         self.assertIn("0123456789abcdef" * 4, model)  # provenance model_sha256, as stored
         self.assertIn("text/css", self.get("/static/style.css").headers["content-type"])
 
+    def test_a_report_opens_with_its_result_and_counts_in_a_band(self):
+        report = json.loads((EXAMPLES / "03-known-malicious-low-ml.json").read_text("utf-8"))
+        run = self.record(report)
+        text = self.page(f"/runs/{run}")
+        band = text.split('<div class="band">', 1)[1].split("</div>", 1)[0]
+        self.assertIn('<h2 class="band-title">검사 결과: <span class="verdict risk"><span class="cell risk" '
+                      'aria-hidden="true"></span>위험 판정 있음</span></h2>', band)  # fmt: skip
+        found = Counter(row["status"] for row in report["results"])
+        package_input = report.get("input_kind") == "package"
+        total = "검사한 패키지" if package_input else "바뀐 의존성"
+        expected = [("all", total, len(report["results"])), ("risk", "위험", found["flagged"]),
+                    ("hold", "보류", found["incomplete"]), ("pass", "통과", found["not_flagged"])]  # fmt: skip
+        if found["removed"]:
+            expected.append(("removed", "삭제", found["removed"]))
+        self.assertEqual(re.findall(r'<li class="n-(\w+)">([^<]+) <b>(\d+)</b></li>', band),
+                         [(key, label, str(count)) for key, label, count in expected])  # fmt: skip
+        # One line of what the result was made with, then the warnings, then the items.
+        meta = text.split('<ul class="meta">', 1)[1].split("</ul>", 1)[0]
+        for part in ("모델: ", "기지 악성 목록: ", "규칙: ", f"종료 코드 {report['exit_code']}"):
+            self.assertIn(part, meta)
+        warning = text.index('<p class="warning risk"><strong>경고: 기지 악성 기록 일치 1개.</strong>')
+        self.assertLess(text.index('<ul class="meta">'), warning)
+        self.assertLess(warning, text.index('<section class="result'))
+        # An item: its verdict, the package and the versions on its title line; the two sides
+        # and its anchor as before.
+        hit = next(row for row in report["results"] if (row.get("known_malicious") or {}).get("status") == "hit")
+        position = report["results"].index(hit)
+        # One version checked alone has no change to show; a lockfile's change has two.
+        move = (hit["after_version"] or hit["before_version"] if package_input else
+                f'{hit["before_version"]} <span aria-hidden="true">→</span>'
+                f'<span class="visually-hidden">에서</span> {hit["after_version"]}')  # fmt: skip
+        self.assertIn(f'<section class="result flagged known" id="r{position}">\n<h3 class="result-title">'
+                      '<span class="verdict risk"><span class="cell risk" aria-hidden="true"></span>위험</span> '
+                      f'<span class="ident">{hit["package"]}</span> <span class="move">{move}</span></h3>',
+                      text)  # fmt: skip
+        for side in ('<p class="side">확인된 사실</p>', '<p class="side">모델 점수</p>'):
+            self.assertIn(side, text)
+
     def test_values_are_the_stored_ones_and_known_malicious_is_emphasized(self):
         report = json.loads((EXAMPLES / "03-known-malicious-low-ml.json").read_text("utf-8"))
         text = self.page(f"/runs/{self.record(report)}")
@@ -207,7 +246,8 @@ class PageTests(DashboardFixture):
     def test_order_null_scores_and_unfinished_items(self):
         report = self.cases()["mixed"]
         text = self.page(f"/runs/{self.record(report)}")
-        heads = re.findall(r"<h3>\[([^\]]+)\] ([^@<]+)@", text)
+        heads = re.findall(r'<h3 class="result-title"><span class="verdict \w+">(?:<span class="cell \w+" '
+                           r'aria-hidden="true"></span>)?([^<]+)</span> <span class="ident">([^<]+)</span>', text)  # fmt: skip
         labels = {"flagged": "위험", "incomplete": "보류", "not_flagged": "통과", "removed": "삭제"}
         order = {key: index for index, key in enumerate(labels)}
         expected = sorted(report["results"],

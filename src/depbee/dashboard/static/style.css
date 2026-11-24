@@ -547,11 +547,21 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 
 /* A report: the overall result, then each item with what was found beside what was scored. */
 .summary, section.preview, section.apply { padding: .9rem 1.1rem 1rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow); }
+/* The report's band: the result and how many of each, a line of what it was made with, the
+   warnings under it. */
 .summary { margin-top: 1rem; }
-.summary ul { max-width: none; margin: 0; padding: 0; list-style: none; }
-.summary li { margin: 0; padding: .35rem 0; border-top: 1px solid var(--line); }
-.summary li:first-child { border-top: 0; font-weight: 700; }
-.summary li.warning { max-width: none; margin: .3rem 0; padding: .5rem .9rem; border-top: 0; }
+.band { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .6rem 1.5rem; }
+.band-title { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem; margin: 0; font-size: 1.125rem; }
+.band-counts { display: flex; flex-wrap: wrap; gap: .4rem; max-width: none; margin: 0; padding: 0; list-style: none; }
+.band-counts li { display: flex; flex-direction: column-reverse; align-items: center; min-width: 4.25rem; margin: 0; padding: .3rem .65rem; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: .8125rem; font-weight: 600; }
+.band-counts b { color: var(--ink); font: 800 1.25rem/1.2 var(--mono); font-variant-numeric: tabular-nums; }
+.band-counts .n-risk b { color: var(--risk); }
+.band-counts .n-hold b { color: var(--hold); }
+.band-counts .n-pass b { color: var(--pass); }
+.meta { display: flex; flex-wrap: wrap; gap: .2rem 1.25rem; max-width: none; margin: .7rem 0 0; padding: .6rem 0 0; border-top: 1px solid var(--line); color: var(--muted); font-size: .875rem; list-style: none; }
+.meta li { margin: 0; }
+.summary .warning { max-width: none; margin: .6rem 0 0; }
+.summary .note { margin: .6rem 0 0; }
 .result { margin: .75rem 0 0; padding: .9rem 1.1rem 1rem 1.4rem; border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); background: linear-gradient(var(--muted), var(--muted)) 0 0 / 6px 100% no-repeat, var(--sheet); scroll-margin-top: 1rem; --ground: var(--sheet); }
 .result.flagged { background-image: linear-gradient(var(--risk), var(--risk)); }
 /* A hold is a broken edge, so that it is not told from a risk by its colour alone. */
@@ -559,7 +569,9 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 .result.not_flagged { background-image: linear-gradient(var(--pass), var(--pass)); background-size: 3px 100%; }
 .result.known { border-color: var(--risk); }
 .result:target { outline: 3px solid var(--ink); outline-offset: 2px; box-shadow: 0 0 0 2px var(--honey); }
-.result h3 { margin: 0 0 .6rem; font-family: var(--mono); }
+.result-title { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .6rem; margin: 0 0 .7rem; }
+.result-title .ident { font: 700 1rem/1.4 var(--mono); }
+.result-title .move { color: var(--muted); font: 600 .875rem/1.4 var(--mono); }
 .result .ident { font-family: var(--mono); font-size: .875rem; }
 .score-history .score { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .evidence { display: grid; gap: 1rem 2rem; }
