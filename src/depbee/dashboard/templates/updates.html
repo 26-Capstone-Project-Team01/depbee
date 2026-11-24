@@ -26,7 +26,7 @@
 {% else %}<p>프로젝트 폴더를 찾을 수 없어 업데이트를 확인할 수 없습니다. 커밋하지 않은 변경도 검사할 수 없습니다.</p>{% endif %}
 <button type="button" class="help" popovertarget="help-check" aria-label="확인과 검사가 하는 일"><span aria-hidden="true">?</span></button>
 </div>
-<div class="help-pop" id="help-check" popover><p>업데이트 확인은 임시 사본에서 설치 스크립트를 끈 채 업데이트를 계산하고, 바뀌는 버전을 검사합니다. 결과를 검토하고 반영하기 전까지 프로젝트 파일은 그대로입니다. 확인은 몇 초에서 수십 초 걸리며 한 번에 한 요청만 실행합니다. 지정한 패키지 확인은 적은 이름만 계산합니다.</p><p>검사만은 현재 lockfile과 Git HEAD의 차이를 검사합니다. 프로젝트 파일은 그대로 두며, 모델이 없으면 ML 판정을 보류합니다.</p></div>
+<div class="help-pop" id="help-check" popover><p>업데이트 확인은 임시 사본에서 설치 스크립트를 끈 채 업데이트를 계산하고, 바뀌는 버전을 검사합니다. 결과를 검토하고 반영하기 전까지 프로젝트 파일은 그대로입니다. 확인은 몇 초에서 수십 초 걸리며 한 번에 한 요청만 실행합니다. 지정한 패키지 확인은 지정한 이름을 업데이트 대상으로 삼고, 그 결과 바뀌는 의존성을 검사합니다(함께 바뀐 하위 의존성 포함).</p><p>검사만은 현재 lockfile과 Git HEAD의 차이를 검사합니다. 프로젝트 파일은 그대로 두며, 모델이 없으면 ML 판정을 보류합니다.</p></div>
 {% if previews %}
 <section class="held" aria-labelledby="previews-title">
 <div class="titled"><h2 id="previews-title">열려 있는 미리보기</h2> <button type="button" class="help" popovertarget="help-held" aria-label="미리보기가 남아 있는 동안"><span aria-hidden="true">?</span></button></div>
@@ -68,7 +68,7 @@
 {% set open = picked is not none and row is sameas(picked) and not shown.inspector %}
 <tr><th scope="row">{{ row.package }}<span class="where">{{ row.location }}</span></th>
 <td>{% if row.before is none %}<span class="quiet">새로 추가</span>{% else %}{{ row.before }}{% endif %} <span aria-hidden="true">→</span><span class="visually-hidden">에서</span> {% if row.after is none %}<span class="quiet">삭제</span>{% else %}{{ row.after }}{% endif %}</td>
-<td><span class="verdict {{ row.cell }}"><span class="cell {{ row.cell }}" aria-hidden="true"></span>{{ row.label }}</span>{% if row.known_hit %} <strong class="known">기지 악성 기록 일치</strong>{% endif %}{% if row.reason is not none %}<p class="row-why">{{ row.reason }}</p>{% endif %}</td>
+<td><span class="verdict {{ row.cell }}"><span class="cell {{ row.cell }}" aria-hidden="true"></span>{{ row.label }}</span>{% if row.known_hit %} <strong class="known">기지 악성 기록 일치</strong>{% endif %}{% set why = row.reason if row.reason is not none else (row.decision.why if row.decision.key != "free" else none) %}{% if why is not none %}<p class="row-why">{{ why }}</p>{% endif %}</td>
 <td>{{ row.score if row.score is not none else "-" }}</td>
 <td><a class="pick"{% if open %} id="picked" aria-current="true"{% endif %} href="{{ pick }}{{ row.run_id }}.{{ row.position }}#candidate-evidence">근거 열기<span class="visually-hidden"> {{ row.package }}</span></a></td>
 </tr>

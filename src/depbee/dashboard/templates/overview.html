@@ -37,7 +37,7 @@
 {% set about = (why ~ " " ~ stored)|trim %}
 <tr class="ov-row" role="row">
 <th class="ov-project" role="rowheader" scope="row">
-<a class="ov-name" href="{{ base }}/projects/{{ row.id }}">{{ row.name }}</a>
+<a class="ov-name" href="{{ base }}/projects/{{ row.id }}" title="{{ row.name }}">{{ row.name }}</a>
 <span class="ov-path" title="{{ row.path }}">{{ row.path|short }}</span>
 </th>
 <td class="ov-rec" role="cell"><span class="ov-kind">최근 검사</span><span class="verdict {{ row.cell }}"{% if about %} title="{{ about }}"{% endif %}><span class="cell {{ row.cell }}" aria-hidden="true"></span>{{ row.label }}</span>{% if about %}<span class="visually-hidden">, {{ about }}</span>{% endif %}{% if run %} <a href="{{ base }}/runs/{{ run.id }}"><span class="visually-hidden">{{ row.name }} 최근 검사 </span>보고서 #{{ run.id }}</a>{% endif %}</td>

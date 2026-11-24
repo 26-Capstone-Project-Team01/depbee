@@ -336,7 +336,7 @@ class OverviewTests(test_dashboard.DashboardFixture):
 
         # Each project is the way into itself, with its folder under its name.
         for project_id, name in enumerate(("project", "fresh", "moved", "gone"), 1):
-            self.assertIn(f'<a class="ov-name" href="{S}/projects/{project_id}">{name}</a>', html)
+            self.assertIn(f'<a class="ov-name" href="{S}/projects/{project_id}" title="{name}">{name}</a>', html)
         full = str(self.project.resolve())
         self.assertIn(
             f'<span class="ov-path" title="{full}">{self.app._short_path(full)}</span>', html
@@ -397,6 +397,11 @@ class OverviewTests(test_dashboard.DashboardFixture):
         self.assertRegex(wide, r"\.overview \.ov-cols, \.overview \.ov-row \{ display: grid; "
                                r"grid-template-columns:(?: minmax\([^)]*\)){7}; \}")  # fmt: skip
         self.assertIn(".overview .ov-kind { display: none; }", wide)
+        # The way into a project and to a report: a target a finger can hit, and a pointer's
+        # in the wide table; a long name keeps the line one line there.
+        self.assertRegex(narrow, r"\.overview \.ov-name, \.overview \.ov-rec a, \.overview \.ov-apply a \{[^}]*min-height: 2\.75rem")
+        self.assertRegex(wide, r"\.overview \.ov-name, \.overview \.ov-rec a, \.overview \.ov-apply a \{[^}]*min-height: 2\.25rem")
+        self.assertRegex(wide, r"\.overview \.ov-name \{[^}]*text-overflow: ellipsis")
 
     def work(self):
         """(SQLite VM steps, context) of opening the overview once. The steps are counted on

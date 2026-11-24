@@ -4,7 +4,8 @@
 {# A band at the top: the overall result and how many results of each status; then one line of
    what the result was made with and its exit code, then the warnings (cli._notices: the known
    malicious one first, the only one that is a risk), then what was checked. Each result is a
-   card: its verdict, the package and the versions on one line, then the two sides. #}
+   card: its verdict, the package and the versions on one line (a removal is the stored status,
+   and a version the report does not have is never read as new or removed), then the two sides. #}
 {% set known = results|selectattr("known_hit")|list %}
 <div class="summary">
 <div class="band">
@@ -14,11 +15,11 @@
 <li class="n-risk">위험 <b>{{ counts.risk }}</b></li>
 <li class="n-hold">보류 <b>{{ counts.hold }}</b></li>
 <li class="n-pass">통과 <b>{{ counts.pass }}</b></li>
-{% if counts.removed %}<li class="n-removed">삭제 <b>{{ counts.removed }}</b></li>
+{% if not package_input %}<li class="n-removed">삭제 <b>{{ counts.removed }}</b></li>
 {% endif %}</ul>
 </div>
 <ul class="meta">
-{% if model_id %}<li>모델: {{ model_id }}, 판정 기준 점수 {{ threshold|plain }}</li>{% endif %}
+{% if model_id %}<li>모델: {{ model_id }}, 판정 기준 점수 {{ threshold|plain }}</li>{% else %}<li>모델: 기록 없음</li>{% endif %}
 {% for line in setup %}<li>{{ line }}</li>
 {% endfor %}
 <li>종료 코드 {{ exit_code }}</li>
@@ -29,7 +30,7 @@
 </div>
 {% for row in results %}
 <section class="result {{ row.status }}{% if row.known_hit %} known{% endif %}" id="r{{ row.position }}">
-<h3 class="result-title"><span class="verdict {{ row.cell }}">{% if row.status != "removed" %}<span class="cell {{ row.cell }}" aria-hidden="true"></span>{% endif %}{{ row.label }}</span> <span class="ident">{{ row.package }}</span> <span class="move">{% if package_input or (row.before is none and row.after is none) %}{{ row.version }}{% else %}{% if row.before is none %}새로 추가{% else %}{{ row.before }}{% endif %} <span aria-hidden="true">→</span><span class="visually-hidden">에서</span> {% if row.after is none %}삭제{% else %}{{ row.after }}{% endif %}{% endif %}</span></h3>
+<h3 class="result-title"><span class="verdict {{ row.cell }}">{% if row.status != "removed" %}<span class="cell {{ row.cell }}" aria-hidden="true"></span>{% endif %}{{ row.label }}</span> <span class="ident">{{ row.package }}</span> <span class="move">{% if row.status == "removed" %}{% if row.before is not none %}{{ row.before }} <span aria-hidden="true">→</span><span class="visually-hidden">에서</span> {% endif %}삭제{% elif not package_input and row.before is not none and row.after is not none %}{{ row.before }} <span aria-hidden="true">→</span><span class="visually-hidden">에서</span> {{ row.after }}{% elif row.version is not none %}{{ row.version }}{% else %}버전 기록 없음{% endif %}</span></h3>
 <div class="evidence">
 <div class="found">
 <p class="side">확인된 사실</p>

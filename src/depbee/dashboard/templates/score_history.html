@@ -12,14 +12,15 @@
 <line class="grid" x1="44" x2="420" y1="15" y2="15"/><line class="grid" x1="44" x2="420" y1="70" y2="70"/>
 <line class="axis" x1="44" x2="420" y1="125" y2="125"/>
 <text class="tick-label" x="36" y="19">1</text><text class="tick-label" x="36" y="74">0.5</text><text class="tick-label" x="36" y="129">0</text>
+{% for segment in chart.segments %}<polyline class="line" points="{{ segment }}"/>{% endfor %}
 {% if chart.threshold is not none %}<line class="threshold" x1="44" x2="420" y1="{{ chart.threshold }}" y2="{{ chart.threshold }}"/>{% endif %}
 {% for tick in chart.ticks %}<line class="threshold" x1="{{ tick.x - 9 }}" x2="{{ tick.x + 9 }}" y1="{{ tick.y }}" y2="{{ tick.y }}"/>{% endfor %}
-{% for segment in chart.segments %}<polyline class="line" points="{{ segment }}"/>{% endfor %}
 {% for point in chart.points %}
-{% if point.y is none %}<circle class="dot empty" cx="{{ point.x }}" cy="125" r="4"/>{% else %}<circle class="dot{% if point.over %} over{% endif %}" cx="{{ point.x }}" cy="{{ point.y }}" r="4"/>{% if point.over %}<text class="value" x="{{ point.x }}" y="{{ point.y - 9 }}">{{ point.label }}</text>{% endif %}{% endif %}
+{% if point.y is none %}<circle class="dot empty" cx="{{ point.x }}" cy="125" r="4"/>{% else %}<circle class="dot{% if point.over %} over{% endif %}" cx="{{ point.x }}" cy="{{ point.y }}" r="4"/>{% if point.over and chart.inline %}<text class="value" x="{{ point.x }}" y="{{ point.y - 9 }}">{{ point.label }}</text>{% endif %}{% endif %}
 <text class="run-label" x="{{ point.x }}" y="146">#{{ point.id }}</text>
 {% endfor %}
 </svg>
+{% if not chart.inline %}<p class="note chart-values">판정 기준 이상: {% for point in chart.points if point.over %}<span class="ident">#{{ point.id }} {{ point.label }}</span>{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
 {% endif %}
 <div class="scroll" role="region" aria-labelledby="score-history-title" tabindex="0">
 <table class="stack">

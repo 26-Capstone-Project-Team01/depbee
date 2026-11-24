@@ -555,7 +555,7 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 .band-counts .n-hold b { color: var(--hold); }
 .band-counts .n-pass b { color: var(--pass); }
 .meta { display: flex; flex-wrap: wrap; gap: .2rem 1.25rem; max-width: none; margin: .7rem 0 0; padding: .6rem 0 0; border-top: 1px solid var(--line); color: var(--muted); font-size: .875rem; list-style: none; }
-.meta li { margin: 0; }
+.meta li { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .summary .warning { max-width: none; margin: .6rem 0 0; }
 .summary .note { margin: .6rem 0 0; }
 .result { margin: .75rem 0 0; padding: .9rem 1.1rem 1rem 1.4rem; border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); background: linear-gradient(var(--muted), var(--muted)) 0 0 / 6px 100% no-repeat, var(--sheet); scroll-margin-top: 1rem; --ground: var(--sheet); }
@@ -708,3 +708,4 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 .score-chart .tick-label { text-anchor: end; }
 .score-chart .run-label { text-anchor: middle; }
 .score-chart .value { fill: var(--risk); font-weight: 700; text-anchor: middle; }
+.chart-values .ident { color: var(--risk); font-family: var(--mono); font-weight: 700; overflow-wrap: anywhere; }

@@ -157,6 +157,12 @@ class FocusAndPickTests(unittest.TestCase):
         # A score is read digit by digit in the tile too.
         self.assertRegex(css, r"(?m)^\.inspector \.detectors \.score \{[^}]*font-family: var\(--mono\)")
 
+    def test_a_long_identifier_in_a_report_breaks_inside_its_line(self):
+        css = strip_comments((STATIC / "style.css").read_text("utf-8"))
+        rule = re.search(r"^\.meta li \{([^}]*)\}", css, re.M).group(1)
+        self.assertIn("min-width: 0", rule)
+        self.assertIn("overflow-wrap: anywhere", rule)
+
     def test_a_picked_list_tab_has_an_ink_underline(self):
         css = strip_comments((STATIC / "style.css").read_text("utf-8"))
         # The open tab, a link or (with no rows) words.

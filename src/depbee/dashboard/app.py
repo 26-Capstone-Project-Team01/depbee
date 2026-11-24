@@ -1275,11 +1275,13 @@ def _score_chart(entries: list[dict]) -> dict | None:
     entries, newest first), drawn on a 440 by 160 box: runs from the oldest on the left (x 44 to
     420), scores from 0 at y 125 to 1 at y 15. None for fewer than two runs: the table is enough.
 
-    points (oldest first): x, y (None for a run without a score), id, label (the score as the
-    score filter words it, against that run's threshold) and over (at or over that threshold).
-    segments: the polyline points of each unbroken stretch of scored runs. threshold: the y of
-    the one threshold every run shares, else None and ticks: the x and y of each run's own.
-    summary: the chart said in words, for its aria-label."""
+    points (oldest first): x, y (None for a run without a score), id, score, threshold (each
+    None unless a number from 0 to 1), label (the score as the score filter words it, against
+    that run's threshold) and over (at or over that threshold). segments: the polyline points
+    of each unbroken stretch of scored runs. threshold: the y of the one threshold every run
+    shares, else None and ticks: the x and y of each run's own. inline: whether the values of
+    the points over their threshold fit beside them (else the page lists them under the chart).
+    summary: the chart said in words, for its aria-label, from the stored scores."""
     if len(entries) < 2:
         return None
 
@@ -1300,10 +1302,9 @@ def _score_chart(entries: list[dict]) -> dict | None:
         x = spot(44 + index * step)
         y = None if score is None else spot(125 - score * 110)
         points.append({
-            "x": x, "y": y, "id": run["id"],
+            "x": x, "y": y, "id": run["id"], "score": score, "threshold": threshold,
             "label": "점수 없음" if score is None else score_text(score, run["threshold"]),
             "over": score is not None and threshold is not None and score >= threshold,
-            "threshold": threshold,
         })  # fmt: skip
         if y is None:
             if line:
@@ -1319,18 +1320,24 @@ def _score_chart(entries: list[dict]) -> dict | None:
         {"x": point["x"], "y": spot(125 - point["threshold"] * 110)}
         for point in points if point["threshold"] is not None
     ]  # fmt: skip
-    scored = [point for point in points if point["y"] is not None]
-    over = sum(point["over"] for point in points)
+    # A value is drawn centred over its point in 11px mono, about 6.7 units a character.
+    labelled = [point for point in points if point["over"]]
+    inline = all(len(point["label"]) * 6.7 + 6 <= step for point in labelled)
+    scored = [point for point in points if point["score"] is not None]
+    compared = [point for point in scored if point["threshold"] is not None]
     summary = f"최근 {len(points)}회 실행의 최고 ML 위험 점수"
     if scored:
-        top = min(scored, key=lambda point: point["y"])
+        top = max(scored, key=lambda point: point["score"])
         summary += f", 가장 높은 값은 실행 #{top['id']}의 {top['label']}"
-    summary += f", 판정 기준 이상 {over}회"
+    if compared:
+        summary += f", 판정 기준 이상 {len(labelled)}회"
+    if len(compared) < len(scored):
+        summary += f", 기준을 비교할 수 없는 실행 {len(scored) - len(compared)}회"
     if len(scored) < len(points):
         summary += f", 점수 없는 실행 {len(points) - len(scored)}회"
     return {"width": 440, "height": 160, "points": points, "segments": segments,
             "threshold": None if threshold is None else spot(125 - threshold * 110),
-            "ticks": ticks, "summary": summary + "."}  # fmt: skip
+            "ticks": ticks, "inline": inline, "summary": summary + "."}  # fmt: skip
 
 
 def _grouped(rows: list[dict]) -> list[dict]:

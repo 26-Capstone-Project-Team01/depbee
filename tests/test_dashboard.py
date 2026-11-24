@@ -205,7 +205,7 @@ class PageTests(DashboardFixture):
         total = "검사한 패키지" if package_input else "바뀐 의존성"
         expected = [("all", total, len(report["results"])), ("risk", "위험", found["flagged"]),
                     ("hold", "보류", found["incomplete"]), ("pass", "통과", found["not_flagged"])]  # fmt: skip
-        if found["removed"]:
+        if not package_input:
             expected.append(("removed", "삭제", found["removed"]))
         self.assertEqual(re.findall(r'<li class="n-(\w+)">([^<]+) <b>(\d+)</b></li>', band),
                          [(key, label, str(count)) for key, label, count in expected])  # fmt: skip
@@ -236,6 +236,28 @@ class PageTests(DashboardFixture):
                       text)  # fmt: skip
         for side in ('<p class="side">확인된 사실</p>', '<p class="side">모델 점수</p>'):
             self.assertIn(side, text)
+
+    def test_a_report_title_says_only_the_versions_it_has(self):
+        row = self.scan_with(0.9)["results"][0]
+
+        def title(**changes):
+            report = {**self.scan_with(0.9), "model_id": None}
+            report["results"] = [{**row, **changes}]
+            html = self.page(f"/runs/{self.record(report)}")
+            found = re.search(r'<span class="ident">[^<]*</span> <span class="move">(.*?)</span></h3>', html)
+            return re.sub(r"<[^>]+>", "", found.group(1)), html
+
+        # A removal is the stored status, never a missing version.
+        before, after = row["before_version"], row["after_version"]
+        self.assertEqual(title(after_version=None, status="removed", score=None)[0], f"{before} →에서 삭제")
+        self.assertEqual(title(after_version=None, status="incomplete", score=None)[0], before)
+        self.assertEqual(title(before_version=None)[0], after)  # not said to be new
+        moved, html = title(before_version=None, after_version=None, status="incomplete", score=None)
+        self.assertEqual(moved, "버전 기록 없음")
+        self.assertNotIn("None", moved)
+        # The band says every count of a lockfile's report, 0 included, and a missing model.
+        self.assertIn('<li class="n-removed">삭제 <b>0</b></li>', html)
+        self.assertIn("<li>모델: 기록 없음</li>", html)
 
     def test_the_score_chart_draws_each_run_against_its_threshold(self):
         from depbee.actions import score_text
@@ -279,6 +301,23 @@ class PageTests(DashboardFixture):
         # One run, or none: no chart.
         self.assertIsNone(chart(entries[:1]))
         self.assertIsNone(chart([]))
+        # The highest run is the stored score's, not the drawn spot's.
+        close = [{**entries[0], "id": 2, "peak_score": 0.5000001}, {**entries[0], "id": 1, "peak_score": 0.4999999}]
+        found = chart(close)
+        self.assertIn("가장 높은 값은 실행 #2의", found["summary"])
+        self.assertIn("판정 기준 이상 1회", found["summary"])
+        # Runs whose threshold cannot be compared are said to be so, not counted as under it.
+        blind = [{**entries[0], "id": 2, "threshold": None}, {**entries[0], "id": 1, "threshold": -0.1}]
+        found = chart(blind)
+        self.assertIn("기준을 비교할 수 없는 실행 2회", found["summary"])
+        self.assertNotIn("판정 기준 이상", found["summary"])
+        # Values that fit beside their points are drawn there; else they are listed under it.
+        self.assertTrue(chart(entries)["inline"])
+        tiny = [{**entries[0], "id": n, "peak_score": 3.950535635136895e-07, "threshold": 1e-07}
+                for n in range(10, 0, -1)]  # fmt: skip
+        found = chart(tiny)
+        self.assertFalse(found["inline"])
+        self.assertEqual(len([p for p in found["points"] if p["over"]]), 10)
 
     def test_the_history_view_draws_the_chart_above_the_table(self):
         history.register_project(self.project)
@@ -296,6 +335,9 @@ class PageTests(DashboardFixture):
             html.index('<table class="stack">', html.index("score-history")),
         )
         self.assertNotIn("<meter", html)
+        # The threshold is drawn over the line, so a line on it does not hide it.
+        svg = html.split('<svg class="score-chart"', 1)[1].split("</svg>", 1)[0]
+        self.assertLess(svg.index('class="line"'), svg.index('class="threshold"'))
 
     def test_values_are_the_stored_ones_and_known_malicious_is_emphasized(self):
         report = json.loads((EXAMPLES / "03-known-malicious-low-ml.json").read_text("utf-8"))

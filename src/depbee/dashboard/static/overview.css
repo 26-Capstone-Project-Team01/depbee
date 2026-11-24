@@ -55,7 +55,9 @@
 
 /* A project: its name, the way into it, and its folder on one line under it (whole on hover). The
    name is a target a finger can hit, and the room around it is its focus ring's. */
-.overview .ov-name { display: inline-block; padding-block: 1rem .2rem; font: 800 1.0625rem/1.4 var(--sans); letter-spacing: -.01em; overflow-wrap: anywhere; }
+.overview .ov-name { margin-top: .5rem; font: 800 1.0625rem/1.4 var(--sans); letter-spacing: -.01em; overflow-wrap: anywhere; }
+/* The way into a project and to a report: a target a finger can hit. */
+.overview .ov-name, .overview .ov-rec a, .overview .ov-apply a { display: inline-flex; align-items: center; min-height: 2.75rem; }
 .overview .ov-path { display: block; color: var(--muted); font: .8125rem/1.45 var(--mono); overflow-wrap: anywhere; }
 
 /* A state is a chip, its mark and its words; why it is not the stored result is its title and,
@@ -71,7 +73,7 @@
 .overview .ov-n-hold { color: var(--hold); }
 .overview time { color: var(--muted); font-size: .875rem; font-variant-numeric: tabular-nums; }
 /* A report link is a target a finger can hit, with room for its focus ring above and below. */
-.overview .ov-rec a, .overview .ov-apply a { display: inline-block; padding-block: .55rem; font-size: .875rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.overview .ov-rec a, .overview .ov-apply a { font-size: .875rem; font-weight: 700; font-variant-numeric: tabular-nums; }
 
 /* Wide: one line a project, the column names its heads. */
 @container overview (min-width: 56rem) {
@@ -84,9 +86,10 @@
   .overview .ov-row:first-child { border-top: 0; }
   .overview .ov-project, .overview .ov-rec, .overview .ov-time, .overview .ov-apply { grid-column: auto; }
   .overview .ov-project, .overview .ov-row td { padding: .3rem .75rem; }
-  .overview .ov-name { padding-block: .35rem 0; }
+  /* A pointer's targets in the table, and a long name cut to one line (whole on hover). */
+  .overview .ov-name, .overview .ov-rec a, .overview .ov-apply a { min-height: 2.25rem; }
+  .overview .ov-name { display: block; margin-top: .15rem; overflow: hidden; line-height: 2.25rem; text-overflow: ellipsis; white-space: nowrap; }
   .overview .ov-path { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .overview .ov-num { text-align: end; }
   .overview .ov-kind { display: none; }
-  .overview .ov-rec a, .overview .ov-apply a { padding-block: .3rem; }
 }

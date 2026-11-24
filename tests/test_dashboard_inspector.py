@@ -273,6 +273,26 @@ class InspectorTests(test_dashboard.DashboardFixture):
                                rf'<form method="post" action="{test_dashboard.S}{self.packages}/previews"')  # fmt: skip
         self.assertIn('name="packages" type="text"', html)
 
+    def test_the_updates_view_opens_its_riskiest_candidate_and_says_why_each_waits(self):
+        def first(report, name):
+            return self.rows(report, name)["results"][0]
+
+        scored = first(self.scanned(0.9, known_malicious=KnownList()), "inner")  # an ML hit
+        refused = first(self.scanned(0.012, known_malicious=KnownList((ADVISORY,))), "other")
+        unlisted = first(self.scanned(0.1), "example")  # no known malicious list checked
+        report = self.scanned(0.1, known_malicious=KnownList())
+        self.check({**report, "results": [scored, refused, unlisted]}, targets=None)
+        # The report's own order puts the ML hit first; the view opens the refused one.
+        self.assertEqual(self.context(self.updates)["state"]["rows"][0]["package"], "inner")
+        self.assertEqual(self.selected(self.updates)["package"], "other")
+        html = self.page(self.updates)
+        row = html.split('<th scope="row">example<span', 1)[1].split("</tr>", 1)[0]
+        self.assertIn('<p class="row-why">', row)
+        self.assertIn("기지 악성 목록 미확인", row)
+        # The named check updates what it names and checks what that changes.
+        self.assertNotIn("적은 이름만 계산", html)
+        self.assertIn("지정한 이름을 업데이트 대상으로 삼고, 그 결과 바뀌는 의존성을 검사합니다", html)
+
     def test_grouped_puts_what_needs_a_look_first(self):
         def row(key, status="flagged", n=0):
             return {"decision": {"key": key}, "status": status, "n": n}
