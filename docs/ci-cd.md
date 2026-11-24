@@ -39,7 +39,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: 26-Capstone-Project-Team01/depbee@759cc6880452b178566fe0d3294dadaf1a249d2c
+      - uses: 26-Capstone-Project-Team01/depbee@863efe678224195ef5d026d693baaa1e13d3dbe8
         # with:
         #   fail-on: ml-hit, incomplete
 ```
@@ -56,7 +56,7 @@ jobs:
 고정한 커밋에 든 것과 다른 모델이나 색인을 쓰려면, 또는 이전 버전의 workflow처럼 Release 파일을 쓰려면 다음 다섯 입력을 모두 준다.
 
 ```yaml
-      - uses: 26-Capstone-Project-Team01/depbee@759cc6880452b178566fe0d3294dadaf1a249d2c
+      - uses: 26-Capstone-Project-Team01/depbee@863efe678224195ef5d026d693baaa1e13d3dbe8
         with:
           model-version: <모델이 첨부된 Release 태그>
           model-sha256: <model.txt의 sha256>
@@ -202,7 +202,7 @@ CLI 종료 코드 0/1/2의 의미는 그대로다.
 
 - depbee는 Git 소스로만 배포한다. PyPI 패키지, 컨테이너 레지스트리의 이미지, GitHub Release는 없다. action은 `uses:`의 커밋에서 depbee를 설치하고, 분석기는 그 커밋이 고정한 Git 주소에서 받는다.
 - 모델과 기지 악성 색인을 첨부한 Release가 없다. Release 다섯 입력 경로는 입력 검사와 단계 배선만 확인했고 실제 다운로드는 확인하지 않았다.
-- depbee 저장소의 CI는 PR에서 이 action을 그대로 실행한다(아래 자기 검사). 다른 저장소에서는 공개 시연 저장소의 PR이 위 사용 예시의 SHA로 실행했다. `ms` 2.1.1에서 2.1.3으로의 변경 하나는 통과로 판정됐고([run 45290776914](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/actions/runs/45290776914)), lockfile을 바꾸지 않은 PR은 바뀐 항목 0개로 끝났다([run 45290763429](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/actions/runs/45290763429)).
+- depbee 저장소의 CI는 PR에서 이 action을 그대로 실행한다(아래 자기 검사). 다른 저장소에서는 공개 시연 저장소의 PR이 `759cc68`로 고정한 action을 실행했다. `ms` 2.1.1에서 2.1.3으로의 변경 하나는 통과로 판정됐고([run 45290776914](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/actions/runs/45290776914)), lockfile을 바꾸지 않은 PR은 바뀐 항목 0개로 끝났다([run 45290763429](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/actions/runs/45290763429)). 위 사용 예시의 SHA(`863efe6`)는 그 뒤의 `main` 병합 커밋이고, 다른 저장소에서 이 SHA로 실행한 기록은 아직 없다.
 - fork PR과 Dependabot PR에서의 실행, 같은 PR의 두 번째 실행에서 캐시가 복원되는지, 경고·실패 항목의 lockfile 줄 주석이 PR 화면에 놓이는 모습은 확인하지 않았다. secret과 쓰기 권한을 쓰지 않으므로 fork PR과 Dependabot PR에서도 조건 분기 없이 같은 방식으로 동작하도록 만들었다. 확인한 범위는 아래 자기 검사와 `docs/validation.md`에 있다.
 - Linux runner만 고려했다. Windows·macOS runner는 확인하지 않았다(`bash`, `curl`, `sed`, `mktemp`를 쓴다).
 

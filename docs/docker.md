@@ -147,7 +147,7 @@ claude mcp list
 | `scan_lockfile` | `base_lock` (선택) | `/project` 아래의 이전 lockfile. 예시는 `/project/previous-package-lock.json` |
 | `scan_lockfile` | `base_ref` (선택) | 기준으로 쓸 Git 커밋, 브랜치, 태그. `base_lock`과 함께 쓸 수 없음 |
 
-패키지 하나만 검사하면 마운트 없이 `docker run --rm -i depbee:local mcp`를 등록할 수 있습니다. `--rm`으로 실행한 컨테이너의 이력과 캐시는 종료 시 사라집니다. 보고서를 호스트에 남기려면 `--format json`으로 출력해 저장합니다. [에이전트 지침 예시](usage.md#에이전트-지침-예시-설치업데이트-전에-먼저-검사)
+패키지 하나만 검사하면 마운트 없이 `docker run --rm -i depbee:local mcp`를 등록할 수 있습니다. `--rm`으로 실행한 컨테이너의 이력과 캐시는 종료 시 사라집니다. 보고서를 호스트에 남기려면 `--format json`으로 출력해 저장합니다. [에이전트 지침](../README.md#에이전트-지침)
 
 ## 대시보드
 
