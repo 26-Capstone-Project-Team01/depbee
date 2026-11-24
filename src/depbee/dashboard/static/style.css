@@ -637,7 +637,7 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 }
 @media (scripting: none) and (min-width: 46rem) and (max-width: 79.99rem) {
   .tabs ul { flex-wrap: wrap; overflow-x: visible; }
-  html { scroll-padding-block: 1rem; }
+  html { scroll-padding-block: 1.5rem; }
 }
 @media (min-width: 60rem) {
   .jobs { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); }

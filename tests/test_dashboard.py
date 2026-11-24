@@ -458,7 +458,7 @@ class ConsoleTests(DashboardFixture):
         medium = re.search(r"@media \(min-width: 46rem\) and \(max-width: 79\.99rem\) \{\n(.*?)\n\}", css, re.S)
         self.assertIn("  .tabs { flex-basis: 100%; }", medium.group(1))
         self.assertRegex(css, r"@media \(scripting: none\) and \(min-width: 46rem\) and "
-                              r"\(max-width: 79\.99rem\) \{\n  \.tabs ul \{[^}]*\}\n  html \{ scroll-padding-block: 1rem; \}")  # fmt: skip
+                              r"\(max-width: 79\.99rem\) \{\n  \.tabs ul \{[^}]*\}\n  html \{ scroll-padding-block: 1\.5rem; \}")  # fmt: skip
         # A project that takes the focus is scrolled to with room for its ring, in the bar, in
         # the wide rail and on the page.
         self.assertRegex(css, r"(?m)^\.tab \{[^}]*scroll-margin: \.5rem;")
