@@ -144,7 +144,8 @@ class PageTests(DashboardFixture):
         self.assertIn("<strong>경고: 기지 악성 기록 일치 1개.</strong>", text)
         self.assertIn('class="result flagged known"', text)
         self.assertIn("<dd>0.040 (기준 미만)</dd>", text)  # a low score stays as stored
-        self.assertIn("<dd>2.0.0 (비교 기준 버전)</dd>", text)  # cli._alternative
+        # cli._alternative; the version in the identifiers' face, the words around it not.
+        self.assertIn('<dd><span class="ident">2.0.0</span> (비교 기준 버전)</dd>', text)
         self.assertIn("<h4>추출된 사실</h4>", text)
         self.assertIn("<h4>모델 설명:", text)
         self.assertIn('<rect class="normal" width="100" height="8"/>', text)
