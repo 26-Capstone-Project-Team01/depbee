@@ -1049,12 +1049,16 @@ class PinnedLoaderTests(Fixture):
 
 
 # For each statement of $env:DEPBEE_COMMANDS: its number of commands, the call operator, then each
-# command element (a string's value, anything else as written) as base64 of UTF-8.
+# command element (a string's value, anything else as written) as base64 of UTF-8. Parse errors
+# go to stderr as plain lines.
 READ_BACK = """
 $parser = [Management.Automation.Language.Parser]
 $errors = $null
 $ast = $parser::ParseInput($env:DEPBEE_COMMANDS, [ref]$null, [ref]$errors)
-if ($errors) { exit 3 }
+if ($errors) {
+    foreach ($e in $errors) { [Console]::Error.WriteLine($e.Message + ' at: ' + $e.Extent.Text) }
+    exit 3
+}
 foreach ($statement in $ast.EndBlock.Statements) {
     $command = $statement.PipelineElements
     $words = foreach ($element in $command.CommandElements) {
@@ -1073,7 +1077,9 @@ class PowerShellInstallCommandTests(unittest.TestCase):
     """The analyzer install command of a Windows depbee (extractor._with_this_python), read back
     by the parser of each PowerShell found here: Windows PowerShell 5.1 and PowerShell 7 (CI's
     Windows runner has both, its Linux runner pwsh). The path and the requirement are opaque
-    text: whatever they hold, PowerShell must call that Python with that one requirement."""
+    text: whatever they hold, the parser must read one call of that Python with that one
+    requirement. Only the parse is checked: when it runs the call, 5.1 splits a requirement that
+    holds a double quote on python.exe's command line, and depbee's requirements never do."""
 
     def test_each_powershell_reads_back_the_python_and_the_requirement(self):
         shells = [shell for shell in ("powershell", "pwsh") if shutil.which(shell)]
@@ -1103,7 +1109,8 @@ class PowerShellInstallCommandTests(unittest.TestCase):
                     [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand",
                      base64.b64encode(READ_BACK.encode("utf-16-le")).decode()],
                     env={**os.environ, "DEPBEE_COMMANDS": "\n".join(commands)},
-                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120,
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace",
+                    timeout=120,
                 )  # fmt: skip
                 self.assertEqual(done.returncode, 0, done.stderr)
                 read = [line.split(" ") for line in done.stdout.splitlines()]
