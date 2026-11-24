@@ -117,7 +117,6 @@ class ThemeTokenTests(unittest.TestCase):
             self.assertEqual(literals, [], name)
 
 
-@unittest.skipUnless(WEB, NO_WEB)
 class FocusAndPickTests(unittest.TestCase):
     def test_on_the_rail_the_ring_is_the_rails_own_light_ink(self):
         css = strip_comments((STATIC / "style.css").read_text("utf-8"))
@@ -125,12 +124,29 @@ class FocusAndPickTests(unittest.TestCase):
         self.assertIsNotNone(rule)
         self.assertIn("outline-color: var(--rail-ink)", rule.group(1))
 
+    def test_a_running_request_holds_the_theme_form_of_its_own_page(self):
+        script = (STATIC / "app.js").read_text("utf-8")
+        self.assertIn("document.querySelectorAll('[data-busy-label], form.theme button')", script)
+        handler = script[script.index("addEventListener('submit'") :]
+        self.assertLess(
+            handler.index("classList.contains('theme')"), handler.index("dataset.busyLabel")
+        )
+        self.assertIn(
+            "if (running) event.preventDefault();", handler[: handler.index("dataset.busyLabel")]
+        )
+
+    def test_a_narrow_update_form_shrinks_with_the_page(self):
+        css = strip_comments((STATIC / "style.css").read_text("utf-8"))
+        self.assertRegex(css, r"(?m)^\.field input \{[^}]*min-width: 0;")
+        self.assertRegex(css, r"(?m)^\.actions form \{ min-width: 0; \}")
+
     def test_a_picked_filter_has_an_ink_border(self):
         css = strip_comments((STATIC / "style.css").read_text("utf-8"))
         rule = re.search(r"^\.toggle\[aria-current\] \{([^}]*)\}", css, re.M)
         self.assertIn("border-color: var(--ink)", rule.group(1))
 
 
+@unittest.skipUnless(WEB, NO_WEB)
 class MarkTests(unittest.TestCase):
     """A verdict's mark is a hexagon of its colour with a sign inside (style.css .cell)."""
 

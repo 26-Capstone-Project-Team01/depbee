@@ -233,7 +233,7 @@ input[type=radio], input[type=checkbox] { width: 1.1rem; height: 1.1rem; vertica
 label, legend { font-weight: 600; }
 fieldset { max-width: 46rem; margin: 1rem 0; padding: .4rem 1rem; border: 1px solid var(--line-2); }
 .field { display: flex; flex-wrap: wrap; gap: .5rem; max-width: 46rem; margin-top: .25rem; }
-.field input { flex: 1 1 11rem; width: auto; }
+.field input { flex: 1 1 11rem; width: auto; min-width: 0; }
 
 /* Before the first project: the whole page is honey and holds one button. */
 body.start { display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; min-height: 100vh; min-height: 100dvh; background: var(--honey); color: var(--on-honey); }
@@ -266,6 +266,7 @@ body.start { display: grid; grid-template-columns: minmax(0, 1fr); place-items: 
 .theme { margin: 0; }
 .theme button { min-height: 2.75rem; padding: .3rem .7rem; border-color: var(--rail-line); background: transparent; color: var(--rail-ink); font-size: .8125rem; font-weight: 600; }
 .theme button:hover { border-color: var(--rail-muted); background: var(--rail-current); }
+.theme button[aria-disabled=true] { border-color: var(--rail-line); background: transparent; color: var(--rail-muted); }
 .tabs { flex: 1 1 9rem; min-width: 0; }
 .tabs ul { display: flex; gap: .25rem; max-width: none; margin: 0; padding: 0; list-style: none; }
 .tabs li { display: none; min-width: 0; }
@@ -323,7 +324,7 @@ footer p { margin: 0; }
 .reading .note { max-width: 46rem; }
 
 /* Tables are ledgers on paper: a heavy rule on top, a quiet head, hairlines between rows. */
-table { width: 100%; margin: .75rem 0; border: 1px solid var(--line); border-radius: 8px; border-collapse: separate; border-spacing: 0; background: var(--sheet); font-size: .9375rem; line-height: 1.45; --ground: var(--sheet); }
+table { width: 100%; margin: .75rem 0; border: 1px solid var(--line); border-radius: 8px; border-collapse: separate; border-spacing: 0; background: var(--sheet); box-shadow: var(--shadow); font-size: .9375rem; line-height: 1.45; --ground: var(--sheet); }
 th, td { padding: .55rem .8rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
 thead th { color: var(--muted); font-size: .8125rem; font-weight: 600; white-space: nowrap; }
 tbody tr:last-child > th, tbody tr:last-child > td { border-bottom: 0; }
@@ -430,6 +431,7 @@ meter::-moz-meter-bar { background: var(--ink); }
 .jobs p { margin-top: 0; font-size: .875rem; }
 .held { margin-top: .75rem; }
 .actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .75rem 1.5rem; }
+.actions form { min-width: 0; }
 .actions form:last-child { flex: 1 1 16rem; }
 .previews { padding-left: 1.1rem; }
 .previews > li { margin-bottom: .75rem; }
@@ -479,6 +481,7 @@ meter::-moz-meter-bar { background: var(--ink); }
 .result.known { border-color: var(--risk); }
 .result:target { outline: 3px solid var(--ink); outline-offset: 2px; box-shadow: 0 0 0 2px var(--honey); }
 .result h3 { margin: 0 0 .6rem; font-family: var(--mono); }
+.result .ident { font-family: var(--mono); font-size: .875rem; }
 .score-history .score { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .evidence { display: grid; gap: 1rem 2rem; }
 .evidence > * { min-width: 0; }
