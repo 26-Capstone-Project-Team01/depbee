@@ -1,5 +1,44 @@
 # 검증 기록
 
+## 2026-11-24: 정적 규칙 결과를 공통 보고서에 연결
+
+- 변경: pyproject가 고정한 depbee-analyzer 커밋 `917ba903`의 정적 규칙 여섯 개(규칙 묶음 `2026-11-16.1`)를 특징 추출과 같은 자식 프로세스에서, 특징 추출이 확인하고 푼 같은 두 버전에 실행해 보고서의 `rules`에 담는다([연결 규약](contracts.md) 4절 "정적 규칙"). 압축 해제 단계는 쓰지 않은 항목(링크 등)을 함께 알리고, 캐시 형식을 3으로 올려 규칙 결과를 특징과 함께 저장한다. MCP 응답에는 규칙 결과를 읽는 안내 한 줄을 더했다. 판정 규칙(D-2, D-4, D-7, 종료 코드 0/1/2, Action 판정)은 바꾸지 않았다.
+- 실행 환경: Windows 11, Python 3.13.5. 테스트를 실행한 프로세스의 `depbee`는 이 브랜치의 `src`였고, `depbee_analyzer`는 고정 커밋의 Git 설치(`direct_url.json`의 커밋 `917ba903bb2e719419ad5f2daeb7d542940703d5`, depbee가 확인한 설치 파일 digest 일치)였다. 설치된 `rules/diff_scan.py`의 Git blob은 고정 커밋의 것(`acea86ce`)과 같다.
+- 테스트: `python -m unittest discover -s tests` 789개 통과, 4개 skip(변경 전과 같은 Windows 전용 skip). `ruff check .` 통과. 새 `tests/test_rules.py`의 `PinnedRulesTests`는 설치된 고정 분석기의 스캐너를 실제 서비스 경로(`scan_project`, `check_package`)로 부른다. registry만 메모리에서 합성 tarball을 내주고 분석기 자신의 네트워크 호출은 실패하게 해 둔다.
+
+고정 판정표(합성, 비실행). 비교 기준 1.0.1과 새 버전 1.1.0의 차이만 적었다. 두 검토용 적중은 알려진 정상 반례(내려받은 SVG를 검사 스크립트의 데이터 인자로 넘김, 주석 속 `eval(`와 `atob(`)이며 실행되지 않는 문자열이다.
+
+| 새 버전의 차이 | 규칙별 결과 | 규칙 칸 | 항목·종료 코드 |
+|---|---|---|---|
+| 내용만 바뀐 파일 | 여섯 개 `not_hit` | `not_hit` | ML 결과 그대로 |
+| 위 두 정상 반례 | `R_download_exec`·`R_diff_obfuscation` `hit`(`검토용 적중(review)`, 위치 `package.json` 행과 `lib/util.js:1`), 나머지 `not_hit` | `hit` | ML 결과 그대로(`rule_only` 또는 `both_hit`) |
+| 어느 규칙도 읽지 않는 `.wasm`이 스캐너 크기 상한 초과 | 여섯 개 `not_hit` | `not_hit` | ML 결과 그대로 |
+| 새 `.js`가 크기 상한 초과(두 버전에 같은 큰 `.js`도 있음) | `R_diff_obfuscation` `failed`(판정 불가, 새 파일만 이름), 나머지 `not_hit` | `failed`(`detector_failed`) | `incomplete`(`detection_failed`)·2, 점수 유지 |
+| 이전 버전의 `lib/util.js`가 링크라 풀지 않았고 새 버전의 같은 파일에 난독화 단서 | `R_diff_obfuscation` `failed`(판정 불가, 새로 생긴 것인지 확정할 수 없음), `package.json`만 읽는 두 규칙 `not_hit` | `failed` | `incomplete`·2 |
+| 다른 이름이나 다른 version의 `package.json`, 두 버전 모두 이름이 배열 | 여섯 개 `failed`(판정 불가) | `failed` | `incomplete`·2 |
+| 스캐너 예외, 규칙 없는 응답 | 없음. `rules.detail`이 `규칙 스캔 오류(RuntimeError)` 또는 형식 오류 | `failed`(`detector_failed`) | `incomplete`·2, 특징 29개와 점수 유지 |
+| 이전 stable이 없는 새 의존성, integrity 불일치 | 없음 | `not_run`(`analysis_unsupported`), `failed`(`input_failed`) | 기존 보류 이유 그대로 |
+| `--analysis` 파일 | 없음 | `not_run`(`detector_not_configured`), `detectors.rules` null | ML 결과 그대로 |
+
+같은 쌍을 캐시로 두 번 검사하면 두 번째는 tarball을 받지 않았고 규칙·특징·점수·근거가 첫 실행과 같았다. 규칙 결과가 비었거나 일부만 있거나 없는 캐시 항목은 다시 스캔했고, 스캔 오류나 읽기 오류가 있었던 결과는 저장하지 않았다.
+
+네 진입점(같은 합성 쌍, 로컬). lockfile은 `depbee-review-only` 1.0.0 → 1.0.2, registry의 비교 기준은 1.0.1, 기준 lockfile은 Git HEAD다. registry는 메모리 스텁이고 분석의 자식 프로세스 단계는 그 스텁을 보도록 같은 프로세스에서 실행했다. 모델과 색인은 설치본 자산이고(기지 악성 시나리오만 합성 색인), 스캔 오류 시나리오만 스캐너의 `scan_pair`를 예외로 바꿨다. CLI는 `main()`, 대시보드는 앱에 폴더 등록 → 검사 버튼의 POST → 303 → 실행 화면(Starlette TestClient), MCP는 SDK의 메모리 클라이언트로 두 도구, Action은 `action.yml`과 같은 scan 인자로 만든 보고서와 Markdown을 `actions.py report`에 넘겼다.
+
+| 시나리오 | CLI JSON(`scan`, `check`) | text·Markdown·대시보드 표시 | Action 판정 |
+|---|---|---|---|
+| 완료 | `not_flagged`·0, 여섯 `not_hit` | 규칙 여섯 줄 `미적중` | 통과, 주석 없음 |
+| 검토용 적중 | `not_flagged`·0, `rule_only` | `검토용 적중(review)` 근거와 `package.json:5`, `lib/util.js:1` | 통과, 주석 없음 |
+| 판정 불가 | `incomplete`·2(ML 기준 이상 점수 유지) | `실패 ..., 상세: 판정 불가: ...` | 기본 경고, `fail-on: incomplete`이면 실패 |
+| 적중과 판정 불가 | `incomplete`·2, 규칙 칸 `적중, 실패 1개` | 두 줄이 함께 보임 | 기본 경고, `fail-on: incomplete`이면 실패 |
+| 스캔 오류 | `incomplete`·2, `rules.detail` `규칙 스캔 오류(RuntimeError)` | 규칙 칸 상세에만 보이고 예외 메시지의 로컬 경로는 없음 | 기본 경고, `fail-on: incomplete`이면 실패 |
+| 미실행(새 의존성) | `incomplete`·2(`no_baseline`), 규칙 `not_run` | `미실행 (분석기가 지원하지 않는 변경)` | 기본 경고, `fail-on: incomplete`이면 실패 |
+| 기지 악성 일치와 판정 불가 | `flagged`·1(D-2) | 규칙 칸의 판정 불가는 그대로 | 실패(`::error`) |
+
+모든 시나리오에서 대시보드에 저장된 보고서, MCP 응답, Action 보고서의 해당 행(비교 버전, 상태, 점수, 특징, 기지 악성, 규칙, ML, 일치 표기)이 CLI JSON과 같았고, `check`도 같은 쌍의 같은 행을 냈다. MCP 응답에는 규칙 안내가 있었고 규칙의 위치·상세가 `package_data`에도 복사됐다. 대시보드에서 규칙 탐지기 이전 보고서(`detectors.rules` null)는 `연결 안 됨`, 탐지기 필드가 없는 보고서는 `확인 안 됨`으로 보였다.
+
+- 기존 특징·점수: 병합 커밋 `7415685`의 `src`를 `git archive`로 풀어 같은 일곱 시나리오를 CLI로 검사했다. 비교 버전, 특징 29개(키 순서 포함), 점수, 설명, 기지 악성, `ml`이 모두 같았다. 달라진 것은 `rules`와, 규칙 판정 불가나 스캔 오류인 항목의 `status`(D-7)뿐이다.
+- 확인하지 못한 것: 실제 npm registry와 GitHub 호스팅 러너의 실행(CI의 lodash 확인은 규칙 여섯 개가 판정했는지까지 보도록 바꿨지만 이 기록을 쓸 때는 push 전이다), Docker 이미지 재빌드, 브라우저 렌더링, MCP stdio 자식 프로세스 경로, 실제 패키지에서 크기·링크 누락이 판정 불가를 얼마나 자주 만드는지.
+
 ## 2026-11-24: 공개 빌드 변경의 독립 검토 후속
 
 - 계기: 아래 기록의 변경(`6fd53f5`)을 독립 검토가 다시 실행해, CI 검사가 성공으로 끝나는데 scan은 실패한 두 경우를 재현했다. 확인 스크립트가 보지 않는 해시 두 개, `core` 이미지에서 따를 수 없는 설치 안내, 아래 기록의 범위 문장도 지적했다. 다섯 건을 고쳤다. 아래 기록의 범위 문장과 호스팅 러너 항목은 `checks`가 registry에 연결하지 않는다는 점이 드러나게 바로잡았다.

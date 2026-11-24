@@ -46,6 +46,15 @@ def main(file: str, analyzer_files: str | None = None) -> None:
     known = report["detectors"]["known_malicious"]
     assert (known["list_as_of"], known["list_sha256"]) == (index["list_as_of"],
                                                          index["index_sha256"])  # fmt: skip
+    # The pinned analyzer's six static rules ran on the same two tarballs and each one judged
+    # (a hit is display only and allowed; undetermined or failed would hold the item).
+    ruleset = (report["detectors"].get("rules") or {}).get("ruleset_version")
+    assert isinstance(ruleset, str) and ruleset, ruleset
+    checks = row["rules"]["checks"]
+    assert row["rules"]["status"] in ("hit", "not_hit"), row["rules"]
+    assert len({c["rule_id"] for c in checks}) == len(checks) == 6, checks
+    assert all((c["status"] in ("hit", "not_hit"), c["rule_version"]) == (True, ruleset)
+               for c in checks), checks  # fmt: skip
     # The commit and the digest of the installed files are in a report only for the unchanged
     # Git install of that pin (extractor._installed_identity); otherwise this entry is null.
     analyzer = report["provenance"]["feature_extractor"]
