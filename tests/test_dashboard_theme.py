@@ -327,6 +327,12 @@ class ThemeRouteTests(DashboardFixture):
             )
         response = self.choose("light", f"{S}/projects/1/updates?item=3.2")
         self.assertEqual(response.headers["location"], f"{S}/projects/1/updates?item=3.2")
+        # A "//" in the query is part of a search, not a way out of the console; one in the path
+        # or a digit that is not ASCII is not a page of it.
+        response = self.choose("light", f"{S}/projects/1?q=a//b")
+        self.assertEqual(response.headers["location"], f"{S}/projects/1?q=a//b")
+        for back in (f"{S}/projects//1", f"{S}/projects/１"):
+            self.assertEqual(self.choose("light", back).headers["location"], f"{S}/", back)
 
     def test_the_way_back_drops_a_checks_one_time_return(self):
         history.register_project(self.project)
