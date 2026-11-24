@@ -46,7 +46,7 @@ jobs:
 
 - depbee와 depbee-analyzer는 공개 저장소다. 이 예시는 다른 저장소에서 secret, 토큰, 저장소 변수 없이 그대로 동작한다.
 - `uses:`의 ref는 태그나 브랜치가 아니라 40자리 commit SHA로 고정한다. 예시의 SHA는 depbee `main`에 있는 커밋이고, 더 새 `main` 커밋으로 올릴 때도 전체 SHA를 적는다. 이 SHA 하나가 action 코드, 설치되는 depbee(`$GITHUB_ACTION_PATH`), 그 안의 모델과 색인을 함께 정한다. 태그와 브랜치는 다른 커밋으로 옮겨질 수 있고, depbee 저장소에는 지금 태그와 Release가 없다.
-- `pull_request` 이벤트에서만 동작한다. 기준은 `github.event.pull_request.base.sha`이고, 이 값이 없으면(다른 이벤트) 입력 오류로 실패한다.
+- 예시 workflow는 `pull_request` 이벤트로 실행한다. 실제 검사(scan)의 기준은 `github.event.pull_request.base.sha`이고, 이 값이 commit SHA가 아니면(`push`처럼 payload에 PR이 없는 이벤트 등) 입력 오류로 실패한다. 입력 검사는 이벤트 이름을 보지 않고 이 값만 확인한다. `report` 입력을 준 자기 검사는 scan하지 않으므로 이 값을 요구하지 않는다(아래 "자기 검사").
 - checkout은 `fetch-depth: 0`으로 기준 커밋까지 받는다. depbee가 기준 lockfile을 `git cat-file`로 읽기 때문이다. 토큰은 checkout 뒤 남기지 않는다(`persist-credentials: false`).
 - job `timeout-minutes`는 호출하는 workflow가 정한다(composite action은 job 시간 제한을 둘 수 없다). depbee는 변경 하나에 300초 예산을 쓰므로 `max-changes`와 함께 정한다.
 - 이 action을 필수 검사로 쓰면 workflow에 `paths` 필터를 두지 않는다. 필터로 건너뛴 workflow의 검사는 "Pending"으로 남아 병합을 막는다([GitHub 문서](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks)).
@@ -173,7 +173,7 @@ CLI 종료 코드 0/1/2의 의미는 그대로다.
 - `<신원>`은 입력 검사 단계가 정한다. Release 입력을 주면 `model-sha256` 값이고, 기본 사용에서는 `bundled-` 뒤에 action 커밋의 depbee 패키지 폴더(`src/depbee`, 내장 모델과 색인 포함, `__pycache__` 제외)에 있는 모든 파일의 경로와 내용으로 계산한 SHA-256이다. 빈 값이 되는 경우가 없으므로 모델이 다른 실행끼리 같은 키를 쓰지 않는다. 기본 사용에서는 depbee 패키지 파일이 달라진 커밋으로 `uses:`의 SHA를 바꾸면 캐시가 새로 시작한다.
 - 키에 색인은 따로 넣지 않는다(캐시는 feature만 담고, 색인이 바꿀 수 있는 비교 기준 버전은 이미 캐시 항목의 키에 있다).
 - 캐시는 판정의 신뢰 근거가 아니다. depbee는 캐시 항목마다 모델 입력·depbee-analyzer 설치 출처·depbee 버전·형식을 키로 확인하고 맞지 않으면 다시 추출한다.
-- 범위: `pull_request` 실행이 저장한 캐시는 그 PR의 merge ref(`refs/pull/N/merge`) 범위라 같은 PR의 다음 실행과 재실행만 복원한다. 다른 PR과 기본 브랜치는 쓰지 못한다. 이 action은 `pull_request`에서만 동작하므로 기본 브랜치 캐시를 만들지 않는다. 그래서 새 PR의 첫 실행은 캐시 없이 시작한다.
+- 범위: `pull_request` 실행이 저장한 캐시는 그 PR의 merge ref(`refs/pull/N/merge`) 범위라 같은 PR의 다음 실행과 재실행만 복원한다. 다른 PR과 기본 브랜치는 쓰지 못한다. 예시처럼 `pull_request`에서 실행하면 기본 브랜치 캐시를 만들지 않는다. 그래서 새 PR의 첫 실행은 캐시 없이 시작한다.
 - 저장 권한이 없는 실행에서는 저장만 실패하고 step과 job은 실패하지 않는다([GitHub 문서](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)). 저장소 캐시는 기본 10 GB이고 7일 동안 쓰지 않은 항목은 지워진다.
 
 ### 권한과 secret

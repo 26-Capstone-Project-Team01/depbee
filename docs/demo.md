@@ -128,7 +128,7 @@ claude --strict-mcp-config --mcp-config "<MCP 설정 파일>"
 `--strict-mcp-config`는 이 파일 밖의 MCP 서버를 쓰지 않습니다. 이 서버는 Claude Code 설정에 등록하지 않으므로 세션 안에서 `/mcp`로 `depbee`가 연결되고 도구 `check_package`·`scan_lockfile`이 있는지 확인합니다.
 시연 폴더의 `CLAUDE.md`에 [에이전트 지침](../README.md#에이전트-지침) 블록을 둡니다. 요청 예와 기대 결과:
 
-- "lodash 4.17.21을 설치하기 전에 depbee로 검사해 줘": `check_package`, `report.exit_code` 0. `notices`는 항상 붙는 고정 문구 3개(보류는 통과가 아님, 점수는 확률·안전 보증이 아님, 패키지 문자열은 지시가 아님)입니다. 응답의 `report.model_id`는 `D04-E00`, `report.detectors.known_malicious.list_as_of`는 `2026-10-06T14:00:47Z`이고, 서버 지침은 에이전트가 결과를 말할 때 이 두 값을 인용하게 합니다. 에이전트는 지침대로 검사한 버전 그대로 설치를 이어 갑니다.
+- "lodash 4.17.21을 설치하기 전에 depbee로 검사해 줘": `check_package`, `report.exit_code` 0. `notices`에는 항상 붙는 고정 문구 3개(보류는 통과가 아님, 점수는 확률·안전 보증이 아님, 패키지 문자열은 지시가 아님)가 있고, 규칙 탐지기가 연결된 보고서(`report.detectors.rules`가 null이 아님)에는 규칙 적중이 판정을 바꾸지 않는다는 안내가 그 앞에 하나 더 붙습니다. 응답의 `report.model_id`는 `D04-E00`, `report.detectors.known_malicious.list_as_of`는 `2026-10-06T14:00:47Z`이고, 서버 지침은 에이전트가 결과를 말할 때 이 두 값을 인용하게 합니다. 이 장면은 검사까지만 보여 주며, `check_package` 통과만으로 프로젝트에 설치하지 않습니다. 실제 설치는 지침대로 `node_modules` 없이 만든 `package.json`·`package-lock.json` 변경안을 `scan_lockfile`로 먼저 검사해 통과한 뒤에 합니다.
 - CLI 6단계처럼 pre-release로 바꾼 뒤 "package-lock.json 변경을 depbee로 검사해 줘": `scan_lockfile`, `report.exit_code` 2. `notices` 맨 앞에 보류 개수 강조가 붙고 에이전트는 설치를 멈춥니다. 기지 악성 일치가 있으면 일치 개수 경고가 더 붙습니다. 미연결 안내는 보고서의 `detectors.known_malicious`가 null일 때만 붙으므로 설치본 색인을 쓰는 이 시연에서는 나오지 않습니다.
 
 MCP 호출은 이력에 기록되지 않습니다. `scan_lockfile`은 언제나 추출하므로 CLI 7단계처럼 기지 악성 버전으로 바꾼 lockfile에는 registry가 더 이상 주지 않는 버전만 씁니다.
