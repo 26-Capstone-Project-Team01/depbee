@@ -16,7 +16,9 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import unittest
+import venv
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -1073,6 +1075,10 @@ foreach ($statement in $ast.EndBlock.Statements) {
 """
 
 
+PIN = ("depbee-analyzer @ git+https://github.com/26-Capstone-Project-Team01/depbee-analyzer@"
+       + "a" * 40)  # fmt: skip
+
+
 class PowerShellInstallCommandTests(unittest.TestCase):
     """The analyzer install command of a Windows depbee (extractor._with_this_python), read back
     by the parser of each PowerShell found here: Windows PowerShell 5.1 and PowerShell 7 (CI's
@@ -1086,16 +1092,15 @@ class PowerShellInstallCommandTests(unittest.TestCase):
         if not shells:
             self.skipTest("no PowerShell here")
         # Each character that ends a PowerShell single-quoted string (' and U+2018 to U+201B),
-        # alone, doubled and next to another; the double quotes, backtick and $ that mean
-        # something only outside one; spaces and Hangul.
+        # alone, doubled and next to another; the double quotes, $, backtick and brackets that
+        # mean something only outside one; spaces and Hangul. A path with [, ] or ` takes the
+        # other form (PowerShellLiteralPathTests), so those are in the requirement only.
         odd = ("O'Brien O\u2019Brien \u2018\u201a\u201b '' \u2019\u2019 '\u2019 "
-               "\u201c\u201d\u201e\" `$HOME 한글")  # fmt: skip
-        pin = ("depbee-analyzer @ git+https://github.com/26-Capstone-Project-Team01/"
-               "depbee-analyzer@" + "a" * 40)  # fmt: skip
+               "\u201c\u201d\u201e\" $HOME 한글")  # fmt: skip
         cases = [
-            ("C:\\Users\\A O\u2019Brien space\\venv\\Scripts\\python.exe", pin),
+            ("C:\\Users\\A O\u2019Brien space\\venv\\Scripts\\python.exe", PIN),
             (f"C:\\Users\\{odd}\\my env\\Scripts\\python.exe", ".[extract]"),
-            ("C:\\Program Files\\Python313\\python.exe", f"{odd} @ file:///C:/{odd}"),
+            ("C:\\Program Files\\Python313\\python.exe", f"{odd} `$x [y] @ file:///C:/{odd}"),
         ]
         commands = []
         for python, requirement in cases:
@@ -1120,6 +1125,68 @@ class PowerShellInstallCommandTests(unittest.TestCase):
                     [["1", "Ampersand", python, "-m", "pip", "install", requirement]
                      for python, requirement in cases],
                 )  # fmt: skip
+
+
+# A pip that installs nothing: one JSON line with the Python that ran it and its arguments.
+FAKE_PIP = "import json, sys\nprint(json.dumps([sys.executable, sys.argv[1:]]))\n"
+
+
+@unittest.skipUnless(os.name == "nt", "Windows paths and Windows PowerShell")
+class PowerShellLiteralPathTests(unittest.TestCase):
+    """The printed command run by each PowerShell found here, against stand-in virtual
+    environments whose pip only reports how it was run. To &, a path with [ ] is a wildcard
+    pattern: 5.1 ran a sibling environment that the pattern matched, and 7 did so too once the
+    named one was gone. The command must run that Python with that requirement, or nothing."""
+
+    def setUp(self):
+        self.shells = [shell for shell in ("powershell", "pwsh") if shutil.which(shell)]
+        if not self.shells:
+            self.skipTest("no PowerShell here")
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+
+    def python(self, folder):
+        """A stand-in environment under root/folder: its python.exe, with FAKE_PIP as pip."""
+        home = self.root / folder / "venv"
+        venv.create(home, with_pip=False)
+        (home / "Lib" / "site-packages" / "pip").mkdir()
+        (home / "Lib" / "site-packages" / "pip" / "__main__.py").write_text(FAKE_PIP, "utf-8")
+        return home / "Scripts" / "python.exe"
+
+    def ran(self, python, cwd):
+        """{shell: [(interpreter, arguments)]} for the command depbee prints for that Python."""
+        with mock.patch.object(sys, "executable", str(python)):
+            command = _with_this_python(PIN).removeprefix(", in PowerShell: ")
+        # Without PowerShell 7's module path a Windows PowerShell child loads its own modules.
+        env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+        ran = {}
+        for shell in self.shells:
+            done = subprocess.run(
+                [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                 base64.b64encode(command.encode("utf-16-le")).decode()],
+                cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                errors="replace", timeout=120,
+            )  # fmt: skip
+            ran[shell] = [(Path(exe), args) for exe, args in
+                          map(json.loads, filter(None, done.stdout.splitlines()))]  # fmt: skip
+        return ran
+
+    def test_that_python_runs_and_a_pattern_match_never_does(self):
+        named = "A O\u2019Brien 'q' 한글"
+        for folder, decoy in ((named, None), (f"proj [old] {named}", f"proj o {named}"),
+                              ("open x[1", None), ("tick `x", "tick x")):  # fmt: skip
+            with self.subTest(folder):
+                python = self.python(folder)
+                if decoy:
+                    self.python(decoy)
+                for shell, ran in self.ran(python, self.root).items():
+                    self.assertEqual(len(ran), 1, (shell, ran))
+                    self.assertTrue(ran[0][0].samefile(python), (shell, ran))
+                    self.assertEqual(ran[0][1], ["install", PIN], shell)
+
+    def test_a_missing_folder_runs_nothing_not_even_where_the_user_stands(self):
+        missing = self.root / "gone [old]" / "venv" / "Scripts" / "python.exe"
+        other = self.python("gone o")  # matches the missing folder's pattern
+        self.assertEqual(self.ran(missing, other.parent), dict.fromkeys(self.shells, []))
 
 
 if __name__ == "__main__":

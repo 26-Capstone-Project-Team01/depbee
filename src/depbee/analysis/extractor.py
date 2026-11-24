@@ -10,6 +10,7 @@ import dataclasses
 import hashlib
 import importlib.metadata
 import json
+import ntpath
 import os
 import platform
 import shlex
@@ -104,6 +105,10 @@ def _with_this_python(requirement: str) -> str:
     with spaces or quotes. On Windows it is PowerShell's, the shell of the guides, where & calls
     a quoted path and a single quote inside one is doubled: PowerShell 5.1 and 7 read U+2018 to
     U+201B (the curly ones, as in a user name O'Brien typed with U+2019) as single quotes too.
+    But & reads a path with [, ] or a backtick as a wildcard pattern (5.1 always, 7 when the file
+    is missing) and can run another environment's python.exe. For such a path the command opens
+    the folder with -LiteralPath and runs the file there by name; -ErrorAction Stop keeps a
+    missing folder from running the python.exe of the folder the user is in.
     Elsewhere the POSIX shells' quoting."""
     python = sys.executable or "python"
     if os.name == "nt":
@@ -111,7 +116,16 @@ def _with_this_python(requirement: str) -> str:
         def quote(text: str) -> str:
             return "'" + text.translate({ord(q): q * 2 for q in "'\u2018\u2019\u201a\u201b"}) + "'"
 
-        return f", in PowerShell: & {quote(python)} -m pip install {quote(requirement)}"
+        install = f"-m pip install {quote(requirement)}"
+        if not any(c in python for c in "[]`"):
+            return f", in PowerShell: & {quote(python)} {install}"
+        # shortcut: a relative requirement (.[extract], from a source tree) is then read in that
+        # folder and pip stops; give the checkout's path if such a setup ever needs it.
+        folder, name = ntpath.split(python)
+        return (
+            f", in PowerShell: Push-Location -LiteralPath {quote(folder)} -ErrorAction Stop; "
+            f".\\{name} {install}; Pop-Location"
+        )
     return f": {shlex.quote(python)} -m pip install {shlex.quote(requirement)}"
 
 
