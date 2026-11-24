@@ -18,6 +18,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 ASSETS = ROOT / "src" / "depbee" / "assets"
+# The ruleset and rules of the analyzer that pyproject.toml pins (917ba903, rules/diff_scan.py).
+RULESET = "2026-11-16.1"
+RULE_IDS = ["R_download_exec", "R_secret_send", "R_ci_secret_send", "R_install_root_wipe",
+            "R_remote_admin_auth_override", "R_diff_obfuscation"]  # fmt: skip
 
 
 def main(file: str, analyzer_files: str | None = None) -> None:
@@ -46,15 +50,17 @@ def main(file: str, analyzer_files: str | None = None) -> None:
     known = report["detectors"]["known_malicious"]
     assert (known["list_as_of"], known["list_sha256"]) == (index["list_as_of"],
                                                          index["index_sha256"])  # fmt: skip
-    # The pinned analyzer's six static rules ran on the same two tarballs and each one judged
-    # (a hit is display only and allowed; undetermined or failed would hold the item).
-    ruleset = (report["detectors"].get("rules") or {}).get("ruleset_version")
-    assert isinstance(ruleset, str) and ruleset, ruleset
+    # The pinned analyzer's six static rules ran on the same two tarballs and each one judged:
+    # a hit is display only and allowed, undetermined or failed would hold the item. The slot's
+    # status is the one its checks give (hit if any is, else not_hit).
+    rules = report["detectors"].get("rules") or {}
+    assert rules.get("ruleset_version") == RULESET, rules
     checks = row["rules"]["checks"]
-    assert row["rules"]["status"] in ("hit", "not_hit"), row["rules"]
-    assert len({c["rule_id"] for c in checks}) == len(checks) == 6, checks
-    assert all((c["status"] in ("hit", "not_hit"), c["rule_version"]) == (True, ruleset)
+    assert [c["rule_id"] for c in checks] == RULE_IDS, checks
+    assert all((c["rule_version"], c["status"] in ("hit", "not_hit")) == (RULESET, True)
                for c in checks), checks  # fmt: skip
+    expected = "hit" if any(c["status"] == "hit" for c in checks) else "not_hit"
+    assert row["rules"]["status"] == expected, row["rules"]
     # The commit and the digest of the installed files are in a report only for the unchanged
     # Git install of that pin (extractor._installed_identity); otherwise this entry is null.
     analyzer = report["provenance"]["feature_extractor"]

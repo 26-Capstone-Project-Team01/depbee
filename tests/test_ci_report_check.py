@@ -128,6 +128,15 @@ class ReportCheckTests(unittest.TestCase):
             "five rules": changed(*row, "rules", "checks",
                                   to=self.report["results"][0]["rules"]["checks"][:5]),
             "another rule version": changed(*row, "rules", "checks", 0, "rule_version", to="0"),
+            "another ruleset": changed("detectors", "rules", "ruleset_version", to="0"),
+            "other rules, one version": {**changed(*row, "rules", "checks", to=[
+                {"rule_id": f"R{i}", "rule_version": "0", "status": "not_hit"}
+                for i in range(6)]), "detectors": {**self.report["detectors"],
+                                                    "rules": {"ruleset_version": "0"}}},
+            "the rules in another order": changed(*row, "rules", "checks", to=list(reversed(
+                self.report["results"][0]["rules"]["checks"]))),
+            "not_hit over a hit": changed(*row, "rules", "checks", 2, "status", to="hit"),
+            "hit over no hit": changed(*row, "rules", "status", to="hit"),
         }
         for name, report in cases.items():
             with self.subTest(name):
