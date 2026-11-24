@@ -21,7 +21,7 @@ from test_extract import FakeBackend, PackagePredictor, packument
 from test_registry import FakeRegistry, linked_tgz, sri, tarball_url
 from test_workflow import FakePredictor, Fixture
 
-from depbee.analysis import rules
+from depbee.analysis import cache, registry, rules
 from depbee.analysis.extractor import ExtractorAnalyzer
 from depbee.contracts import GuardError
 from depbee.pipeline import scan
@@ -232,9 +232,32 @@ class ConversionTests(unittest.TestCase):
 class UnpackNamesTests(Fixture):
     """analysis.registry.unpack reports names spelled in two cases and the files it wrote."""
 
-    def test_names_and_folders_spelled_in_two_cases(self):
-        from depbee.analysis import registry
+    def unpack(self, *entries):
+        omitted, written = [], []
+        target = self.root / f"unpacked-{len(list(self.root.glob('unpacked-*')))}"
+        target.mkdir()
+        root = registry.unpack(linked_tgz(*entries), target, "x tarball", omitted, written)
+        return root, sorted(omitted), sorted(written)
 
+    def test_the_package_root_spelled_in_two_cases(self):
+        two = (("package/package.json", b"{}"), ("package/index.js", b"a"),
+               ("Package/package.json", b"{}"))  # fmt: skip
+        if case_ignored(self.root):  # one folder: either package.json may be the one there
+            root, omitted, written = self.unpack(*two)
+            self.assertEqual(root.name, "package")
+            self.assertEqual(omitted, ["package.json:case"])  # under the root, not outside it
+            self.assertEqual(written, ["index.js", "package.json", "package.json"])
+        else:  # two folders, each holding a package.json: no single package root, as before
+            with self.assertRaisesRegex(registry.RegistryError, "no single package root"):
+                self.unpack(*two)
+        # A folder spelled like the root without a package.json is the root's on every platform.
+        root, omitted, _ = self.unpack(("package/package.json", b"{}"), ("Package/notes.txt", b"n"))
+        self.assertEqual((root.name, omitted), ("package", ["notes.txt:case"]))
+        # An unrelated folder beside a plain root stays outside it, as before.
+        root, omitted, _ = self.unpack(("package/package.json", b"{}"), ("docs/readme.md", b"r"))
+        self.assertEqual((root.name, omitted), ("package", ["docs/readme.md:outside_root"]))
+
+    def test_names_and_folders_spelled_in_two_cases(self):
         data = linked_tgz(("package/package.json", b"{}"), ("package/Src/readme.txt", b"a"),
                           ("package/src/index.js", b"b"), ("package/A.js", b"c"),
                           ("package/a.js", b"d"), ("package/A.js", b"e"),
@@ -313,8 +336,17 @@ class CheckedTests(unittest.TestCase):
             "failed that is not undetermined": {**failed, "detail": "timeout"},
             "failed with an overlong detail": {**failed,
                                                "detail": failed["detail"] + "x" * rules.MAX_TEXT},
+            # What a hand-edited entry could hold that no scan writes.
+            "hit with a blank reason": {**hit, "evidence": ["검토용 적중(review):   "]},
+            "hit with blank evidence": {**hit, "evidence": [" "]},
+            "hit without its strength": {**hit, "evidence": ["synthetic reason"]},
+            "hit with another rule's strength": {
+                **hit, "evidence": ["강한 정적 근거(high_evidence): synthetic reason"]},
+            "failed with a blank reason": {**failed, "detail": "판정 불가:   "},
         }.items():  # fmt: skip
             cases[label] = [check] + full[1:]
+        cases["the rules in another order"] = list(reversed(full))
+        cases["two rules swapped"] = [full[1], full[0], *full[2:]]
         for label, value in cases.items():
             with self.subTest(label):
                 self.assertIsNone(rules.checked(value, rules.RULESET))
@@ -446,6 +478,16 @@ class RealFeatureModel(PackagePredictor):
         return self.score
 
 
+def case_ignored(folder):
+    """Whether the file system of folder ignores case in names (Windows, macOS by default)."""
+    probe = folder / "case-probe"
+    probe.write_bytes(b"")
+    try:
+        return (folder / "CASE-PROBE").exists()
+    finally:
+        probe.unlink()
+
+
 def manifest(version, **extra):
     return json.dumps({"name": "example", "version": version, **extra}, indent=2).encode()
 
@@ -484,8 +526,8 @@ class PinnedRulesTests(Fixture):
             for path, data in files.items():
                 if isinstance(path, tuple):  # (name, target): a symbolic link, never unpacked
                     entries.append((f"package/{path[0]}", tarfile.SYMTYPE, path[1]))
-                else:
-                    entries.append((f"package/{path}", data))
+                else:  # "/NAME": a member outside package/
+                    entries.append((path[1:] if path.startswith("/") else f"package/{path}", data))
             data = linked_tgz(*entries)
             self.doc["versions"][version]["dist"]["integrity"] = sri(data)
             self.served.files[tarball_url("example", version)] = data
@@ -501,6 +543,36 @@ class PinnedRulesTests(Fixture):
 
     def statuses(self, row):
         return {check["rule_id"]: check["status"] for check in row["rules"]["checks"]}
+
+    def test_the_pinned_rules_are_the_installed_scanners(self):
+        from depbee_analyzer.rules import diff_scan
+
+        self.assertEqual(diff_scan.RULESET_VERSION, rules.RULESET)
+        self.assertEqual([(i, d) for i, d, _ in diff_scan.RULES], list(rules.PINNED))
+        self.assertEqual(set(rules.READS), {i for i, _ in rules.PINNED})
+
+    def test_a_folder_the_scan_could_not_list_is_not_cached(self):
+        # A walk that misses a folder (rglob passes over an error listing it) leaves a file the
+        # archive named unseen: undetermined now, and not stored, so a later scan recovers.
+        files = {"package.json": manifest("1.0.1"), "notes/a.txt": b"plain\n"}
+        self.publish(files, {**files, "package.json": manifest("1.1.0")})
+        read_root = importlib.import_module("depbee_analyzer.rules.diff_scan").read_root
+
+        def unlisted(root):
+            found, skipped = read_root(root)
+            found.pop("notes/a.txt", None)
+            return found, skipped
+
+        with mock.patch("depbee_analyzer.rules.diff_scan.read_root", side_effect=unlisted):
+            (held,) = self.cached_scans(1)
+        detail = {c["rule_id"]: c["detail"] for c in held["rules"]["checks"]}["R_secret_send"]
+        self.assertIn("notes/a.txt(보관된 이름과 읽힌 이름이 다름)", detail)
+        self.assertEqual((held["status"], list((self.root / "cache").glob("*.json"))),
+                         ("incomplete", []))  # fmt: skip
+        first, second = self.cached_scans()
+        self.assertEqual([(r["cache_hit"], self.statuses(r)) for r in (first, second)],
+                         [(False, dict.fromkeys(RULE_IDS, "not_hit")),
+                          (True, dict.fromkeys(RULE_IDS, "not_hit"))])  # fmt: skip
 
     def test_clean_pair_runs_six_rules_on_the_compared_versions(self):
         for label, run in (("scan", self.scan),
@@ -693,6 +765,10 @@ class PinnedRulesTests(Fixture):
             ("rule_id an array", array_id), ("a check that is text", ["R_download_exec"]
                                              + stored["rules"][1:]),
             ("an absolute location", absolute), ("an object", {"checks": stored["rules"]}),
+            ("a hit with a blank reason", [stored["rules"][0], {**stored["rules"][1],
+                                           "status": "hit", "evidence": [" "]},
+                                           *stored["rules"][2:]]),
+            ("the rules reversed", list(reversed(stored["rules"]))),
         ):  # fmt: skip
             with self.subTest(label):
                 entry.write_text(json.dumps({**stored, "rules": damaged}), encoding="utf-8")
@@ -822,6 +898,80 @@ class PinnedRulesTests(Fixture):
         detail = {c["rule_id"]: c["detail"] for c in row["rules"]["checks"]}["R_diff_obfuscation"]
         self.assertIn("LIB/readme.txt(대소문자만 다른 이름)", detail)
         self.assertIn("이름이 두 가지로 쓰여 적중한 경로를 확정할 수 없음", detail)
+
+    def cached_scans(self, runs=2):
+        """runs scans with the feature cache of a verified analyzer: their first results."""
+        verified = {"commit": "c" * 40, "url": "https://example.test/x", "files_sha256": "f" * 64,
+                    "python": "3.13.5"}  # fmt: skip
+        with mock.patch("depbee.analysis.extractor._installed_identity", return_value=verified):
+            return [self.scan(no_cache=False, cache_dir=self.root / "cache")["results"][0]
+                    for _ in range(runs)]  # fmt: skip
+
+    @staticmethod
+    def verdict(row):
+        return {k: v for k, v in row.items() if k not in ("elapsed_seconds", "cache_hit")}
+
+    def test_a_package_root_spelled_in_two_cases_holds_every_rule(self):
+        # Two valid manifests in package/ and Package/: one folder where case is ignored, so the
+        # package.json read may be either; two package roots elsewhere, which fails as before.
+        scripts = {"postinstall": DATA_ARGUMENT}
+        self.publish({"package.json": manifest("1.0.1")},
+                     {"package.json": manifest("1.1.0"), "verify.js": VERIFY,
+                      "/Package/package.json": manifest("1.1.0", scripts=scripts)},
+                     scripts)  # fmt: skip
+        cold, warm = self.cached_scans()
+        if case_ignored(self.root):
+            self.assertEqual(self.statuses(cold), dict.fromkeys(RULE_IDS, "failed"))
+            self.assertIn("새 버전의 package.json이 하나로 정해지지 않음",
+                          cold["rules"]["checks"][0]["detail"])  # fmt: skip
+            self.assertEqual((cold["status"], cold["score"], cold["cache_hit"], warm["cache_hit"]),
+                             ("incomplete", 0.1, False, True))  # fmt: skip
+        else:
+            self.assertEqual((cold["rules"]["status"], cold["rules"]["reason"], cold["reason"]),
+                             ("failed", "input_failed", "analysis_failed"))  # fmt: skip
+            self.assertEqual((cold["cache_hit"], warm["cache_hit"]), (False, False))
+        self.assertEqual(self.verdict(warm), self.verdict(cold))
+        # A plain root with an unrelated folder beside it keeps the results it had before: the
+        # two rules that read package.json only are judged, the rest are held as before.
+        self.publish(
+            {"package.json": manifest("1.0.1")},
+            {"package.json": manifest("1.1.0"), "/docs/readme.md": b"notes\n"},
+        )
+        cold, warm = self.cached_scans()
+        self.assertEqual(self.statuses(cold), {**dict.fromkeys(RULE_IDS, "failed"),
+                                               "R_download_exec": "not_hit",
+                                               "R_install_root_wipe": "not_hit"})  # fmt: skip
+        self.assertIn("docs/readme.md(패키지 폴더 밖)", cold["rules"]["checks"][1]["detail"])
+        self.assertEqual((warm["cache_hit"], self.verdict(warm)), (True, self.verdict(cold)))
+
+    def test_a_cache_entry_of_the_earlier_format_is_scanned_again(self):
+        # The hook names a file the package lacks: 44806f5 (cache format 3) judged
+        # R_secret_send not_hit there, this format holds it undetermined.
+        scripts = {"postinstall": "node scripts/setup.js"}
+        self.publish(
+            {"package.json": manifest("1.0.1")},
+            {"package.json": manifest("1.1.0", scripts=scripts)},
+            scripts,
+        )
+        with mock.patch.object(cache, "FORMAT", 3):
+            self.cached_scans(1)
+        (entry,) = (self.root / "cache").glob("*.json")
+        old = json.loads(entry.read_bytes())
+        self.assertEqual(old["format"], 3)
+        old["rules"] = [convert(rule_id) for rule_id in RULE_IDS]  # a sound entry of that format
+        entry.write_text(json.dumps(old), encoding="utf-8")
+        with mock.patch.object(cache, "FORMAT", 3):  # control: under format 3 it is used as it is
+            (row,) = self.cached_scans(1)
+        self.assertEqual((row["cache_hit"], self.statuses(row)["R_secret_send"]), (True, "not_hit"))
+        # This format: the first scan misses and scans again, the second uses the new entry.
+        self.served.opened = []
+        first, second = self.cached_scans()
+        self.assertIn(tarball_url("example", "1.1.0"), self.served.opened)
+        self.assertEqual([(r["cache_hit"], self.statuses(r)["R_secret_send"]) for r in (first, second)],
+                         [(False, "failed"), (True, "failed")])  # fmt: skip
+        self.assertEqual(self.verdict(second), self.verdict(first))
+        self.assertEqual(json.loads(entry.read_bytes()), old)  # left alone, never read again
+        self.assertEqual(len(list((self.root / "cache").glob("*.json"))), 2)
 
     def test_a_new_dependency_without_an_earlier_version_is_not_scanned(self):
         self.old["packages"].pop("node_modules/example")

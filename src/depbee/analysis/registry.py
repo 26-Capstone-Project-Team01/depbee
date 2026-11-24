@@ -199,7 +199,9 @@ def unpack(
     on Windows and macOS, the two are one folder or file, so a reader may find it under the other
     spelling; reported on every platform), and a file outside the package root (outside_root).
     written, if given, gets the path of each file the archive names in the package root, to set
-    against the names a reader finds there. PATHs are "/"-separated, relative to the root."""
+    against the names a reader finds there. PATHs are "/"-separated, relative to the root; a
+    first folder spelled like the root in another case counts as the root, as where case is
+    ignored (two package.json files there are package.json:case, not outside_root)."""
     try:
         with gzip.GzipFile(fileobj=io.BytesIO(data)) as stream:
             raw = stream.read(MAX_UNPACKED_BYTES + 1)  # never inflates more than this
@@ -249,8 +251,13 @@ def unpack(
     inside = os.path.relpath(root, directory)  # "." or the root folder's name
 
     def relative(name: str) -> tuple[str, ...] | None:
+        """name's parts under the root, None outside it. A first folder spelled like the root in
+        another case is the root where case is ignored, so its files (its package.json too) are
+        under the root: a reader there may have read either."""
         parts = Path(name).parts
-        return parts if inside == "." else parts[1:] if parts[0] == inside else None
+        if inside == ".":
+            return parts
+        return parts[1:] if parts[0].casefold() == inside.casefold() else None
 
     if omitted is not None:
         dropped += [(name, "outside_root") for name, size in files.items()

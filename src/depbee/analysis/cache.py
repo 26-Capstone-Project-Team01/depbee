@@ -23,7 +23,9 @@ from . import bounded
 # a change alters stored entries or the features depbee extracts without a new depbee version;
 # nothing detects such a change. 2: features keep the extractor's key order (1 sorted them).
 # 3: the entry holds the rule checks too (rules), so an entry without them is a miss.
-FORMAT = 3
+# 4: rule checks hold more missing inputs undetermined (files an install hook names, strict
+# package.json, names spelled two ways, no second read of skipped files); a 3 can say not_hit.
+FORMAT = 4
 MAX_ENTRY_BYTES = 1024 * 1024
 
 

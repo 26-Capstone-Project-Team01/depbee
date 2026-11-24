@@ -57,6 +57,16 @@ READS = {
 }
 # Entries whose path may not be the one the scanner read it under, in either version.
 AMBIGUOUS = ("case", "alias")
+# The rules of RULESET in the scanner's order with their strength (diff_scan.RULES at 917ba903):
+# a result for RULESET has them in this order, a hit with its own strength (checked).
+PINNED = (
+    ("R_download_exec", "review"),
+    ("R_secret_send", "high_evidence"),
+    ("R_ci_secret_send", "high_evidence"),
+    ("R_install_root_wipe", "high_evidence"),
+    ("R_remote_admin_auth_override", "review"),
+    ("R_diff_obfuscation", "review"),
+)
 DISPOSITIONS = {
     "review": "검토용 적중(review)",
     "high_evidence": "강한 정적 근거(high_evidence)",
@@ -120,8 +130,10 @@ def scan(
             lost[side] += [f"{path}:absent" for path in sorted(refs[side])
                            if path not in files[side] and path not in named]  # fmt: skip
         checks = [convert(f, ruleset, lost, refs["old"] | refs["new"]) for f in found]
-    unread = any(entry.endswith(":read_error") for entry in lost["old"] + lost["new"])
-    return {"checks": checks, "cacheable": not unread}
+    # An unreadable file may read next time, and a name the scanner did not find where the
+    # archive put it (alias) may be a folder its walk could not list then: neither is stored.
+    one_off = any(entry.endswith((":read_error", ":alias")) for entry in lost["old"] + lost["new"])
+    return {"checks": checks, "cacheable": not one_off}
 
 
 def _aliases(names: list[str], read: dict, lost: list[str]) -> list[str]:
@@ -310,10 +322,20 @@ def _text(value: object) -> bool:
     return isinstance(value, str) and 0 < len(value) <= MAX_TEXT + 3  # _cut's longest
 
 
+def _labelled(text: object, label: str | None) -> bool:
+    """Whether text is "LABEL: reason" with a reason that is not blank, as convert() and
+    _failed() write it; label None: any label (a ruleset whose strengths are not in PINNED)."""
+    if not _text(text):
+        return False
+    head, colon, reason = text.partition(": ")
+    return bool(colon) and bool(reason.strip()) and (label is None or head == label)
+
+
 def _made(check: object, ruleset: str) -> bool:
     """Whether check is one convert() or _failed() can make for ruleset: its fields, and for its
-    status the evidence, locations and detail that go with it (a hit: one evidence line and
-    _locations' files and lines; not_hit: nothing; failed: an undetermined detail only)."""
+    status the evidence, locations and detail that go with it (a hit: one evidence line naming
+    its strength, PINNED's for RULESET, and a reason, with _locations' files and lines; not_hit:
+    nothing; failed: an undetermined detail with a reason)."""
     if not isinstance(check, dict) or set(check) != CHECK_FIELDS:
         return False
     rule_id, status = check["rule_id"], check["status"]
@@ -321,8 +343,10 @@ def _made(check: object, ruleset: str) -> bool:
         return False
     evidence, locations, detail = check["evidence"], check["locations"], check["detail"]
     if status == "hit":
+        strength = dict(PINNED).get(rule_id) if ruleset == RULESET else None
+        label = DISPOSITIONS[strength] if strength else None
         return (
-            isinstance(evidence, list) and len(evidence) == 1 and _text(evidence[0])
+            isinstance(evidence, list) and len(evidence) == 1 and _labelled(evidence[0], label)
             and detail is None and isinstance(locations, list)
             and len(locations) <= MAX_LOCATIONS
             and all(isinstance(x, dict) and set(x) == {"file", "line"}
@@ -333,8 +357,7 @@ def _made(check: object, ruleset: str) -> bool:
     if status == "not_hit":
         return evidence == [] and locations == [] and detail is None
     if status == "failed":
-        undetermined = _text(detail) and detail.startswith(f"{UNDETERMINED}: ")
-        return evidence == [] and locations == [] and undetermined
+        return evidence == [] and locations == [] and _labelled(detail, UNDETERMINED)
     return False
 
 
@@ -345,8 +368,8 @@ def checked(value: object, ruleset: str) -> list[dict] | None:
     if not isinstance(value, list) or not value or not all(_made(c, ruleset) for c in value):
         return None
     ids = [check["rule_id"] for check in value]  # all text now
-    if len(set(ids)) != len(ids) or (ruleset == RULESET and set(ids) != set(READS)):
-        return None
+    if len(set(ids)) != len(ids) or (ruleset == RULESET and ids != [i for i, _ in PINNED]):
+        return None  # RULESET: its six rules in the scanner's order, as scan() keeps them
     return value
 
 
