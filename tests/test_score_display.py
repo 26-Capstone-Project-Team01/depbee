@@ -287,8 +287,9 @@ class DashboardTests(test_dashboard.DashboardFixture):
         self.assertEqual([(r["id"], r["peak_score"], r["threshold"]) for r in rows],
                          [(custom, TINY, 1e-06), (usual, TINY, 0.5)])  # fmt: skip
         page = self.page("/projects/1/history")
-        self.assertIn(f"<span>{FULL}</span>", page)  # against its own threshold of 0.000001
-        self.assertIn("<span>&lt;0.001</span>", page)
+        # against its own threshold of 0.000001
+        self.assertIn(f'<span class="score">{FULL}</span>', page)
+        self.assertIn('<span class="score">&lt;0.001</span>', page)
         self.assertIn(f'<meter min="0" max="1" value="{TINY!r}"', page)
 
     def test_update_candidate_and_its_inspector_show_the_same_score(self):
