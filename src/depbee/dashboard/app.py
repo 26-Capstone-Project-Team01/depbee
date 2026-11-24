@@ -107,10 +107,10 @@ TAB_STATES = {
     "incomplete": ("hold", "보류"),
     "passed": ("pass", "통과"),
 }
-# The rail's order of the projects by their tab's mark (_rail): what needs a look first, then
-# what was never checked, then what passed. The first three are what the rail counts as needing
-# a look.
-RAIL_ORDER = ("gone", "risk", "hold", "none", "pass")
+# The rail's order of the projects by their state (_rail): what needs a look first, then a run
+# whose result is not one a report has (drawn as none), then what was never checked, then what
+# passed. The first three are what the rail counts as needing a look.
+RAIL_ORDER = ("gone", "risk", "hold", "unknown", "none", "pass")
 # The overview's state of a project (_portfolio), in the order its chart lists them, what needs
 # a look first: the hexagon mark, the words, and whether the chart lists the state while no
 # project is in it. The first three are the stored status of the project's newest run.
@@ -965,14 +965,15 @@ def _project(project_id: int) -> dict | None:
 def _short_path(path: str) -> str:
     """A registered path as the overview and a project's head show it: "…", its separator and
     its last three folders, or the path itself when it has no more than three below its drive
-    or root. The separator is the path's own (a Windows path, a container's POSIX one); the
-    whole path is on hover (title) and on project management."""
-    windows = "\\" in path or re.match(r"[A-Za-z]:", path) is not None
+    or root. A path is a Windows one by its drive or its UNC "\\\\", else a POSIX one (a
+    container's), where a backslash is part of a folder's name. The separator shown is the one
+    the path is written with; the whole path is on hover (title) and on project management."""
+    windows = re.match(r"[A-Za-z]:|\\\\", path) is not None
     pure = PureWindowsPath(path) if windows else PurePosixPath(path)
     parts = pure.parts[1:] if pure.anchor else pure.parts
     if len(parts) <= 3:
         return path
-    separator = "\\" if windows else "/"
+    separator = "\\" if windows and "\\" in path else "/"
     return "…" + separator + separator.join(parts[-3:])
 
 
@@ -1010,7 +1011,7 @@ def _tabs(current: dict | None, recent: int = 1) -> list[dict]:
             cell, state = "none", "실행 기록 없음"
         else:
             status = runs[0]["status"]
-            cell, short = TAB_STATES.get(status) or ("none", "-" if status is None else status)
+            cell, short = TAB_STATES.get(status) or ("none", "알 수 없음")
             state = f"최근 실행 {short}"
         tabs.append({
             **project, "name": name, "found": found, "cell": cell, "state": state,
@@ -1033,10 +1034,14 @@ def _head(found: dict, dependencies: list[dict], problem: str | None, state: dic
 
 
 def _rail(tabs: list[dict]) -> list[dict]:
-    """The tabs (_tabs) in the rail's order (RAIL_ORDER), each mark in registration order. The
-    mark is the tab's, a stored status: the rail hashes no file, so "파일 바뀜" is the
-    overview's alone."""
-    return sorted(tabs, key=lambda tab: RAIL_ORDER.index(tab["cell"]))
+    """The tabs (_tabs) in the rail's order (RAIL_ORDER), each state in registration order. The
+    state is the tab's, a stored status (a none mark with a run is a result that is unknown):
+    the rail hashes no file, so "파일 바뀜" is the overview's alone."""
+
+    def state(tab: dict) -> str:
+        return "unknown" if tab["cell"] == "none" and tab["runs"] else tab["cell"]
+
+    return sorted(tabs, key=lambda tab: RAIL_ORDER.index(state(tab)))
 
 
 def _portfolio(tabs: list[dict]) -> list[dict]:

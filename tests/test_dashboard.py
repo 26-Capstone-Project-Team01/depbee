@@ -61,10 +61,41 @@ class Elements(HTMLParser):
         self.found.append((tag, dict(attrs)))
 
 
+class Head(HTMLParser):
+    """A project view's head (header.project-head), parsed: the name (h1), the path as shown and
+    the whole path (its title), with character references decoded."""
+
+    def __init__(self, html):
+        super().__init__()
+        self.depth, self.into, self.name, self.shown, self.whole = 0, None, "", "", None
+        self.feed(html)
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "header" and attrs.get("class") == "project-head":
+            self.depth = 1
+        elif self.depth:
+            self.depth += tag == "header"
+            if tag == "h1":
+                self.into = "name"
+            elif tag == "p" and attrs.get("class") == "path":
+                self.into, self.whole = "shown", attrs.get("title")
+
+    def handle_endtag(self, tag):
+        if self.depth and tag == "header":
+            self.depth -= 1
+        if tag in ("h1", "p"):
+            self.into = None
+
+    def handle_data(self, data):
+        if self.depth and self.into:
+            setattr(self, self.into, getattr(self, self.into) + data)
+
+
 def project_head(html):
     """(name, the path as shown, the whole path) of a project view's head."""
-    found = re.search(r'<h1>([^<]*)</h1>.*?<p class="path" title="([^"]*)">([^<]*)</p>', html, re.S)
-    return found.group(1), found.group(3), found.group(2)
+    head = Head(html)
+    return head.name, head.shown, head.whole
 
 
 def assert_one_script(case, html):
@@ -386,14 +417,31 @@ class ConsoleTests(DashboardFixture):
                                  r'<span class="visually-hidden">[^<]*</span>'
                                  r'<span class="tab-count">((?:<span class="n-\w+">[^<]*</span> ?)*)'
                                  r"</span></a>", html))  # fmt: skip
+        # A folder that is gone keeps what its last run found.
         self.assertEqual(counts, {str(flagged): '<span class="n-risk">위험 1</span>',
                                   str(held): '<span class="n-hold">보류 1</span>',
-                                  str(passed): "", str(fresh): "", str(gone): ""})  # fmt: skip
+                                  str(passed): "", str(fresh): "",
+                                  str(gone): '<span class="n-risk">위험 1</span>'})  # fmt: skip
 
-    def test_the_rail_says_only_the_count_when_nothing_needs_a_look(self):
+    def test_the_rail_says_0_when_nothing_needs_a_look(self):
         history.register_project(self.project)
         history.record("scan", self.project, self.scan_with(0.1))
-        self.assertIn('<p class="rail-title">프로젝트 1개</p>', self.page("/model"))
+        self.assertIn('<p class="rail-title">프로젝트 1개 · 조치 필요 0</p>', self.page("/model"))
+
+    def test_a_run_whose_result_is_unknown_comes_before_no_run(self):
+        from test_history import sql
+
+        fresh = history.register_project(self.folder("fresh"))
+        odd = history.register_project(self.project)
+        history.record("scan", self.project, self.scan_with(0.1))
+        for status in (None, "odd"):
+            with self.subTest(status=status):
+                sql(self.db, "UPDATE runs SET status = ?", status)
+                html = self.page("/model")
+                order = re.findall(rf'<a class="tab" href="{re.escape(S)}/projects/(\d+)"', html)
+                self.assertEqual(order, [str(odd), str(fresh)])
+                self.assertEqual(self.tab(html, odd)[1:], ("none", "project", "최근 실행 알 수 없음"))
+                self.assertEqual(self.tab(html, fresh)[1:], ("none", "fresh", "실행 기록 없음"))
 
     def test_without_a_project_the_first_page_is_one_button_that_adds_it(self):
         for url in ("/", "/?manage=1"):  # nothing to manage yet: the same page
@@ -538,6 +586,10 @@ class ConsoleTests(DashboardFixture):
                          "…\\acme\\repos\\storefront-web")  # fmt: skip
         self.assertEqual(short("/projects/web/app/x/y"), "…/app/x/y")
         self.assertEqual(short("\\\\server\\share\\a\\b\\c\\d"), "…\\b\\c\\d")
+        # A POSIX folder may have a backslash in its name; a Windows path written with "/"
+        # keeps it.
+        self.assertEqual(short("/projects/group/my\\team/repo"), "…/group/my\\team/repo")
+        self.assertEqual(short("C:/work/client/app/src"), "…/client/app/src")
         for whole in (r"C:\a\b", r"C:\a\b\c", "D:\\", "/", "/projects/app-a", "/a/b/c", "relative"):
             self.assertEqual(short(whole), whole)
         # Shown cut, whole on hover; project management keeps the whole path.
@@ -663,6 +715,9 @@ class CandidateTests(DashboardFixture):
             outside = re.sub(
                 r'<div class="help-pop" id="[\w-]+" popover>.*?</div>', "", html, flags=re.S
             )
+            # Below 64rem the picked candidate's evidence is folded until it is opened.
+            outside = re.sub(r'(<aside class="inspector" [^>]*>.*?)<div class="inspect-body">.*?</aside>',
+                             r"\1</aside>", outside, flags=re.S)  # fmt: skip
             visible = " ".join(unescape(re.sub(r"<[^>]+>", " ", outside)).split())
             for sentence in shown[name]:
                 self.assertIn(" ".join(sentence.split()), visible, name)
@@ -671,9 +726,23 @@ class CandidateTests(DashboardFixture):
                              "이 화면에서는 반영하지 않습니다.", "미확인은 확인된 후보 0개와 다릅니다"):  # fmt: skip
                 if sentence in unescape(html):
                     self.assertIn(sentence, visible, name)
+        self.assertIn("실행하지 않은 것은 통과가 아닙니다.", unescape(pages["packages"]))
         # The stylesheet never hides a popover itself: a browser without them shows it in place.
         css = (Path(self.app.__file__).parent / "static" / "style.css").read_text("utf-8")
         self.assertEqual(re.findall(r"\[popover\](?!:popover-open)[^{,]*[{,]", css), [])
+        # A question mark takes its whole 44px: nothing next to it lies over its lower part.
+        rule = re.search(r"^\.help \{([^}]*)\}", css, re.M).group(1)
+        self.assertNotRegex(rule, r"margin[^;]*-")
+        # The footer's sentence is as wide as the footer.
+        self.assertRegex(css, r"(?m)^footer \.note \{[^}]*max-width: none")
+
+    def test_how_long_a_check_takes_is_behind_a_question_mark(self):
+        unchecked = self.page(self.packages)
+        self.assertIn("미확인은 확인된 후보 0개와 다릅니다.", unchecked)
+        self.assertRegex(unchecked, r'(?s)<div class="help-pop" id="[\w-]+" popover>'
+                                    r"(?:(?!</div>).)*확인은 몇 초에서 수십 초 걸립니다")  # fmt: skip
+        # The buttons each page names are the ones its head has.
+        self.assertNotIn("전체 업데이트 확인", self.page(f"{self.packages}/history"))
 
     def test_the_updates_tab_counts_the_current_candidates_and_stands_out(self):
         self.check()
@@ -1466,8 +1535,10 @@ class EscapeTests(DashboardFixture):
         self.assertNotIn("<img", html)
         self.assertNotIn("onmouseover='x", html)
         self.assertNotRegex(html, r'href="(?!/|#main"|https://www\.npmjs\.com/package/)')
-        # A hostile path may end only a title (the rail's tooltip): inert, escaped text.
-        self.assertNotRegex(html, r'(?<! title)="[^"]*javascript:alert\(1\)"')
+        # A hostile string is text wherever it lands (a title, an aria-label), never an address.
+        held = [(tag, name) for tag, attrs in Elements(html).found for name, value in attrs.items()
+                if name in ("href", "src", "action", "formaction") and "javascript:" in value]  # fmt: skip
+        self.assertEqual(held, [])
         for character in "\u202e\u200c\x1b\r":
             self.assertNotIn(character, html)
         self.assertTrue(all(c.isprintable() or c in "\n" for c in html))
@@ -1664,7 +1735,10 @@ class UpdateCheckTests(ScreenFixture):
         self.assertIn("<li>대상: example, other, third</li>", html)
         self.assertIn(f'<a href="{S}/runs/{run["id"]}">실행 #{run["id"]}</a>', html)
         self.assertIn("검사 결과: ", html)  # the report, rendered as on the run page
-        self.assertIn("대시보드 프로세스 메모리에만 있습니다", html)
+        self.assertIn("반영은 한 미리보기에 한 번만 시도할 수 있습니다.", html)
+        # How long the preview is kept is behind a question mark.
+        self.assertRegex(html, r'<div class="help-pop" id="[\w-]+" popover><p>[^<]*'
+                               r"대시보드 프로세스 메모리에만 있습니다")  # fmt: skip
         self.assertNotIn(self.app.PREVIEW_NOT_RECORDED, html)
         self.preview_id()
         self.assertEqual(self.previewed[1][1], [])  # an empty field previews everything

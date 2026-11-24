@@ -36,11 +36,11 @@
 {# A project on one line: its mark, its name (the whole path on hover), its state said for a
    screen reader, and the risk and hold counts of its newest run. #}
 <nav class="tabs" aria-label="프로젝트">
-<p class="rail-title">프로젝트 {{ tabs|length }}개{% if attention %} · 조치 필요 {{ attention }}{% endif %}</p>
+<p class="rail-title">프로젝트 {{ tabs|length }}개 · 조치 필요 {{ attention }}</p>
 {% if rail %}
 <ul>
 {% for tab in rail %}
-{% set counts = tab.runs[0].counts if tab.found and tab.runs else none %}
+{% set counts = tab.runs[0].counts if tab.runs else none %}
 <li{% if tab.current %} class="here"{% endif %}><a class="tab" href="{{ base }}/projects/{{ tab.id }}" title="{{ tab.path }}"{% if tab.current %} aria-current="{{ "page" if section == "packages" else "true" }}"{% endif %}><span class="cell {{ tab.cell }}" aria-hidden="true"></span><span class="tab-name">{{ tab.name }}</span><span class="visually-hidden">, {{ tab.state }}</span><span class="tab-count">{% if counts and counts.flagged %}<span class="n-risk">위험 {{ counts.flagged }}</span>{% endif %}{% if counts and counts.flagged and counts.incomplete %} {% endif %}{% if counts and counts.incomplete %}<span class="n-hold">보류 {{ counts.incomplete }}</span>{% endif %}</span></a></li>
 {% endfor %}
 </ul>

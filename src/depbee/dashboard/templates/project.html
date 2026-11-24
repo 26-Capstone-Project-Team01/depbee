@@ -26,7 +26,7 @@
 <p class="tally">직접 {{ direct_count }}개, 중첩 {{ nested_count }}개. 지금 package-lock.json에 있는 항목입니다. <button type="button" class="help" popovertarget="help-reading" aria-label="종류와 후보 표시 읽는 법"><span aria-hidden="true">?</span></button></p>
 <div class="help-pop" id="help-reading" popover>
 <p>종류의 "직접"은 package-lock.json 루트 항목에 선언된 패키지이고, 뒤의 일반·개발·선택·피어는 그 선언이 dependencies·devDependencies·optionalDependencies·peerDependencies 중 어디에 있는지입니다(여러 곳이면 모두). "선언 이름"은 패키지 이름과 다른 이름(alias)으로 선언된 경우입니다. "중첩"은 루트에 선언되지 않은 항목입니다.</p>
-<p>후보는 package.json이 허용하는 범위 안에서 npm이 고른 버전이며, 지금의 package.json과 package-lock.json으로 확인한 결과만 보입니다. 후보 옆의 반영 가능·확인 필요·반영 거부는 그 후보 하나를 업데이트 반영 기준으로 본 결과입니다. "미확인" 항목은 업데이트 후보 확인으로 한꺼번에 확인합니다. "후보 없음"은 그 확인에서 바뀌지 않은 항목입니다. 후보 옆의 "근거"는 그 확인을 저장한 보고서의 해당 항목을 엽니다.</p>
+<p>후보는 package.json이 허용하는 범위 안에서 npm이 고른 버전이며, 지금의 package.json과 package-lock.json으로 확인한 결과만 보입니다. 후보 옆의 반영 가능·확인 필요·반영 거부는 그 후보 하나를 업데이트 반영 기준으로 본 결과입니다. "미확인" 항목은 업데이트 후보 확인으로 한꺼번에 확인합니다. 확인은 몇 초에서 수십 초 걸립니다. "후보 없음"은 그 확인에서 바뀌지 않은 항목입니다. 후보 옆의 "근거"는 그 확인을 저장한 보고서의 해당 항목을 엽니다.</p>
 </div>
 <div class="tools">
 <form method="get" action="{{ url }}" class="filters" role="search" aria-label="패키지 검색">
@@ -64,7 +64,7 @@
 {% elif state.checks %}일부 패키지만 확인했고 그 패키지에는 업데이트 후보가 없었습니다. 나머지 패키지는 미확인입니다.
 {% elif not state.readable %}package.json이나 package-lock.json을 읽을 수 없어 업데이트 후보를 알 수 없습니다.
 {% elif state.last %}마지막 업데이트 확인 뒤에 package.json이나 package-lock.json이 바뀌었습니다. 후보를 다시 확인하세요.
-{% else %}업데이트 후보는 아직 확인하지 않았습니다. 미확인은 확인된 후보 0개와 다릅니다. 확인은 몇 초에서 수십 초 걸립니다.
+{% else %}업데이트 후보는 아직 확인하지 않았습니다. 미확인은 확인된 후보 0개와 다릅니다.
 {% endif %}
 </p>
 {% if query or scope != "all" or only %}
