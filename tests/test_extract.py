@@ -10,6 +10,7 @@ import dataclasses
 import hashlib
 import importlib.util
 import io
+import itertools
 import json
 import os
 import shutil
@@ -1144,7 +1145,8 @@ class PowerShellLiteralPathTests(unittest.TestCase):
     pattern: 5.1 ran a sibling environment that the pattern matched, and 7 did so too once the
     named one was gone. The command must run that Python with that requirement or nothing, leave
     pip and the session in the user's folder (a checkout's .[extract] is relative to it), and
-    fail as a line ($? false) whenever pip did not succeed, with pip's own error shown."""
+    fail as a line ($? false) whenever pip did not succeed, with pip's own error shown. Each run
+    is made under the default and the Stop error preference, which must stay as it was."""
 
     def setUp(self):
         self.shells = [shell for shell in ("powershell", "pwsh") if shutil.which(shell)]
@@ -1167,20 +1169,22 @@ class PowerShellLiteralPathTests(unittest.TestCase):
         return python
 
     def ran(self, python, where, **env):
-        """{shell: (runs, $? of the line, the session's folder afterwards, stderr)} for the
-        command depbee prints for that Python and .[extract], typed in folder where; runs are
-        (interpreter, arguments, pip's folder)."""
+        """{(shell, error preference): (runs, $? of the line, the session's folder afterwards,
+        stderr)} for the command depbee prints for that Python and .[extract], typed in folder
+        where; runs are (interpreter, arguments, pip's folder). Asserts the preference is kept."""
         with mock.patch.object(sys, "executable", str(python)):
             command = _with_this_python(".[extract]").removeprefix(", in PowerShell: ")
-        # 5.1 reads a start folder with [ ] as a pattern too: enter it as a user should.
-        script = ("Set-Location -LiteralPath $env:WHERE -ErrorAction Stop\n"
-                  f"try {{ {command}; 'OK ' + $? }} finally {{ 'HERE ' + [Convert]::ToBase64String("
-                  "[Text.Encoding]::UTF8.GetBytes((Get-Location).ProviderPath)) }")  # fmt: skip
         # Without PowerShell 7's module path a Windows PowerShell child loads its own modules.
         env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"} | env
         env["WHERE"] = str(where)
         ran = {}
-        for shell in self.shells:
+        for shell, preference in itertools.product(self.shells, ("Continue", "Stop")):
+            # 5.1 reads a start folder with [ ] as a pattern too: enter it as a user should.
+            script = (f"$ErrorActionPreference = '{preference}'\n"
+                      "Set-Location -LiteralPath $env:WHERE\n"
+                      f"try {{ {command}; 'OK ' + $? }} finally {{ 'HERE ' + [Convert]::ToBase64String("
+                      "[Text.Encoding]::UTF8.GetBytes((Get-Location).ProviderPath))\n"
+                      "'PREF ' + $ErrorActionPreference }")  # fmt: skip
             done = subprocess.run(
                 [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand",
                  base64.b64encode(script.encode("utf-16-le")).decode()],
@@ -1188,12 +1192,45 @@ class PowerShellLiteralPathTests(unittest.TestCase):
                 text=True, errors="replace", timeout=120,
             )  # fmt: skip
             lines = done.stdout.splitlines()
+            self.assertIn(f"PREF {preference}", lines, (shell, done.stderr))
             pips = [json.loads(line[4:]) for line in lines if line.startswith("PIP ")]
             runs = [(Path(exe), args, Path(cwd)) for exe, args, cwd in pips]
             ok = [line == "OK True" for line in lines if line.startswith("OK ")]
             here = [base64.b64decode(line[5:]).decode() for line in lines if line[:5] == "HERE "]
-            ran[shell] = (runs, ok == [True], Path(here[0]) if here else None, done.stderr)  # fmt: skip
+            ran[shell, preference] = (runs, ok == [True], Path(here[0]) if here else None,
+                                      done.stderr)  # fmt: skip
         return ran
+
+    def test_a_file_name_powershell_reads_as_a_pattern_goes_to_command_prompt(self):
+        """[, ] or ` in the file name itself (never a real interpreter's): every PowerShell
+        lookup reads it as a pattern, so depbee gives Command Prompt's command, which runs that
+        file or, when it is missing, none (not the python.exe the pattern would match)."""
+        python = self.python("names [n]")
+        for exe, there in (("py[thon.exe", True), ("py[t]hon.exe", False)):
+            with self.subTest(exe):
+                target = python.with_name(exe)
+                if there:
+                    shutil.copyfile(python, target)
+                with mock.patch.object(sys, "executable", str(target)):
+                    said = _with_this_python(".[extract]")
+                self.assertTrue(said.startswith(", in Command Prompt (cmd): "), said)
+                line = said.removeprefix(", in Command Prompt (cmd): ")
+                # cmd /s /c drops the outer quotes and runs the rest as typed at its prompt.
+                done = subprocess.run(
+                    f'cmd.exe /d /s /c "{line}"', cwd=self.root, stdin=subprocess.DEVNULL,
+                    capture_output=True, text=True, errors="replace", timeout=120,
+                )  # fmt: skip
+                runs = [json.loads(out[4:]) for out in done.stdout.splitlines()
+                        if out.startswith("PIP ")]  # fmt: skip
+                if there:
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    self.assertEqual(len(runs), 1, runs)
+                    self.assertTrue(Path(runs[0][0]).samefile(target), runs)
+                    self.assertEqual(runs[0][1], ["install", ".[extract]"])
+                    self.assertTrue(Path(runs[0][2]).samefile(self.root), runs)
+                else:
+                    self.assertNotEqual(done.returncode, 0)
+                    self.assertEqual(runs, [])
 
     def test_that_python_runs_in_the_users_folder_and_a_pattern_match_never_does(self):
         named = "A O\u2019Brien 'q' 한글"

@@ -109,8 +109,12 @@ def _with_this_python(requirement: str) -> str:
     is missing) and can run another environment's python.exe. For such a path the command finds
     the file by name in the folder opened with -LiteralPath, goes back and calls what it found,
     so pip still runs where the user is (a relative requirement like .[extract] keeps its
-    meaning); -ErrorAction Stop keeps a missing folder from finding the python.exe of the folder
-    the user is in. Elsewhere the POSIX shells' quoting."""
+    meaning). -ErrorAction Stop keeps a missing folder from finding the python.exe of the folder
+    the user is in; Get-Command's own -ErrorAction Continue keeps a user's Stop preference from
+    skipping Pop-Location. A file name with [, ] or a backtick is a pattern to every PowerShell
+    lookup, escaped or not one way in 5.1 and the other in 7, so that one (never a real
+    interpreter's) is given to Command Prompt, which takes a quoted path as it is.
+    Elsewhere the POSIX shells' quoting."""
     python = sys.executable or "python"
     if os.name == "nt":
 
@@ -118,14 +122,17 @@ def _with_this_python(requirement: str) -> str:
             return "'" + text.translate({ord(q): q * 2 for q in "'\u2018\u2019\u201a\u201b"}) + "'"
 
         install = f"-m pip install {quote(requirement)}"
-        if not any(c in python for c in "[]`"):
-            return f", in PowerShell: & {quote(python)} {install}"
+        pattern = set("[]`")
         folder, name = ntpath.split(python)
-        found = quote(".\\" + name)
-        return (
-            f", in PowerShell: & $(Push-Location -LiteralPath {quote(folder)} -ErrorAction Stop; "
-            f"Get-Command {found}; Pop-Location) {install}"
-        )
+        if pattern.isdisjoint(python):
+            return f", in PowerShell: & {quote(python)} {install}"
+        if pattern.isdisjoint(name):
+            found = quote(".\\" + name)
+            return (
+                f", in PowerShell: & $(Push-Location -LiteralPath {quote(folder)} -ErrorAction Stop; "
+                f"Get-Command {found} -ErrorAction Continue; Pop-Location) {install}"
+            )
+        return f', in Command Prompt (cmd): "{python}" -m pip install "{requirement}"'
     return f": {shlex.quote(python)} -m pip install {shlex.quote(requirement)}"
 
 
