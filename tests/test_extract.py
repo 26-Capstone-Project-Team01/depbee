@@ -1127,8 +1127,14 @@ class PowerShellInstallCommandTests(unittest.TestCase):
                 )  # fmt: skip
 
 
-# A pip that installs nothing: one JSON line with the Python that ran it and its arguments.
-FAKE_PIP = "import json, sys\nprint(json.dumps([sys.executable, sys.argv[1:]]))\n"
+# A pip that installs nothing: the Python that ran it, its arguments and its working folder.
+# With FAKE_PIP_FAIL set it fails the way pip does: a message on stderr and a nonzero exit.
+FAKE_PIP = (
+    "import json, os, sys\n"
+    "print('PIP', json.dumps([sys.executable, sys.argv[1:], os.getcwd()]))\n"
+    "if os.environ.get('FAKE_PIP_FAIL'):\n"
+    "    sys.exit('ERROR: the stand-in pip failed')\n"
+)
 
 
 @unittest.skipUnless(os.name == "nt", "Windows paths and Windows PowerShell")
@@ -1136,7 +1142,9 @@ class PowerShellLiteralPathTests(unittest.TestCase):
     """The printed command run by each PowerShell found here, against stand-in virtual
     environments whose pip only reports how it was run. To &, a path with [ ] is a wildcard
     pattern: 5.1 ran a sibling environment that the pattern matched, and 7 did so too once the
-    named one was gone. The command must run that Python with that requirement, or nothing."""
+    named one was gone. The command must run that Python with that requirement or nothing, leave
+    pip and the session in the user's folder (a checkout's .[extract] is relative to it), and
+    fail as a line ($? false) whenever pip did not succeed, with pip's own error shown."""
 
     def setUp(self):
         self.shells = [shell for shell in ("powershell", "pwsh") if shutil.which(shell)]
@@ -1144,49 +1152,89 @@ class PowerShellLiteralPathTests(unittest.TestCase):
             self.skipTest("no PowerShell here")
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
 
-    def python(self, folder):
-        """A stand-in environment under root/folder: its python.exe, with FAKE_PIP as pip."""
+    def python(self, folder, *, exe="python.exe"):
+        """A stand-in environment under root/folder with FAKE_PIP as pip: the path of its
+        python.exe, copied under the name exe (None: no python.exe at all)."""
         home = self.root / folder / "venv"
         venv.create(home, with_pip=False)
         (home / "Lib" / "site-packages" / "pip").mkdir()
         (home / "Lib" / "site-packages" / "pip" / "__main__.py").write_text(FAKE_PIP, "utf-8")
-        return home / "Scripts" / "python.exe"
+        python = home / "Scripts" / "python.exe"
+        if exe is None:
+            python.unlink()
+        elif exe != python.name:
+            python = python.rename(python.with_name(exe))
+        return python
 
-    def ran(self, python, cwd):
-        """{shell: [(interpreter, arguments)]} for the command depbee prints for that Python."""
+    def ran(self, python, where, **env):
+        """{shell: (runs, $? of the line, the session's folder afterwards, stderr)} for the
+        command depbee prints for that Python and .[extract], typed in folder where; runs are
+        (interpreter, arguments, pip's folder)."""
         with mock.patch.object(sys, "executable", str(python)):
-            command = _with_this_python(PIN).removeprefix(", in PowerShell: ")
+            command = _with_this_python(".[extract]").removeprefix(", in PowerShell: ")
+        # 5.1 reads a start folder with [ ] as a pattern too: enter it as a user should.
+        script = ("Set-Location -LiteralPath $env:WHERE -ErrorAction Stop\n"
+                  f"try {{ {command}; 'OK ' + $? }} finally {{ 'HERE ' + [Convert]::ToBase64String("
+                  "[Text.Encoding]::UTF8.GetBytes((Get-Location).ProviderPath)) }")  # fmt: skip
         # Without PowerShell 7's module path a Windows PowerShell child loads its own modules.
-        env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+        env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"} | env
+        env["WHERE"] = str(where)
         ran = {}
         for shell in self.shells:
             done = subprocess.run(
                 [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand",
-                 base64.b64encode(command.encode("utf-16-le")).decode()],
-                cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                errors="replace", timeout=120,
+                 base64.b64encode(script.encode("utf-16-le")).decode()],
+                cwd=self.root, env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                text=True, errors="replace", timeout=120,
             )  # fmt: skip
-            ran[shell] = [(Path(exe), args) for exe, args in
-                          map(json.loads, filter(None, done.stdout.splitlines()))]  # fmt: skip
+            lines = done.stdout.splitlines()
+            pips = [json.loads(line[4:]) for line in lines if line.startswith("PIP ")]
+            runs = [(Path(exe), args, Path(cwd)) for exe, args, cwd in pips]
+            ok = [line == "OK True" for line in lines if line.startswith("OK ")]
+            here = [base64.b64decode(line[5:]).decode() for line in lines if line[:5] == "HERE "]
+            ran[shell] = (runs, ok == [True], Path(here[0]) if here else None, done.stderr)  # fmt: skip
         return ran
 
-    def test_that_python_runs_and_a_pattern_match_never_does(self):
+    def test_that_python_runs_in_the_users_folder_and_a_pattern_match_never_does(self):
         named = "A O\u2019Brien 'q' 한글"
-        for folder, decoy in ((named, None), (f"proj [old] {named}", f"proj o {named}"),
-                              ("open x[1", None), ("tick `x", "tick x")):  # fmt: skip
+        checkout = self.root / "checkout [c] O\u2019Brien"
+        checkout.mkdir()
+        cases = [(named, None, "python.exe"), (f"proj [old] {named}", f"proj o {named}", "python.exe"),
+                 ("open x[1", None, "python.exe"), ("tick `x", "tick x", "python.exe"),
+                 ("space [s]", None, "py thon.exe")]  # fmt: skip
+        for folder, decoy, exe in cases:
             with self.subTest(folder):
-                python = self.python(folder)
+                python = self.python(folder, exe=exe)
                 if decoy:
                     self.python(decoy)
-                for shell, ran in self.ran(python, self.root).items():
-                    self.assertEqual(len(ran), 1, (shell, ran))
-                    self.assertTrue(ran[0][0].samefile(python), (shell, ran))
-                    self.assertEqual(ran[0][1], ["install", PIN], shell)
+                for shell, (runs, ok, here, err) in self.ran(python, checkout).items():
+                    self.assertEqual(len(runs), 1, (shell, runs, err))
+                    found, args, cwd = runs[0]
+                    self.assertTrue(found.samefile(python), (shell, found))
+                    self.assertEqual(args, ["install", ".[extract]"], shell)
+                    self.assertTrue(cwd.samefile(checkout), (shell, cwd))
+                    self.assertTrue(ok, (shell, err))
+                    self.assertTrue(here.samefile(checkout), (shell, here))
 
-    def test_a_missing_folder_runs_nothing_not_even_where_the_user_stands(self):
-        missing = self.root / "gone [old]" / "venv" / "Scripts" / "python.exe"
-        other = self.python("gone o")  # matches the missing folder's pattern
-        self.assertEqual(self.ran(missing, other.parent), dict.fromkeys(self.shells, []))
+    def test_a_pip_failure_fails_the_line_with_pips_own_error(self):
+        python = self.python("proj [old]")
+        for shell, (runs, ok, here, err) in self.ran(python, self.root, FAKE_PIP_FAIL="1").items():
+            self.assertEqual(len(runs), 1, (shell, err))
+            self.assertFalse(ok, shell)
+            self.assertIn("ERROR: the stand-in pip failed", err, shell)
+            self.assertTrue(here.samefile(self.root), (shell, here))
+
+    def test_a_missing_python_runs_nothing_not_even_where_the_user_stands(self):
+        # Each matches its decoy's pattern; the user stands in that decoy's Scripts folder.
+        for missing, decoy in ((self.root / "gone [old]" / "venv" / "Scripts" / "python.exe", "gone o"),
+                               (self.python("nopy [old]", exe=None), "nopy o")):  # fmt: skip
+            with self.subTest(missing.parents[2].name):
+                where = self.python(decoy).parent
+                for shell, (runs, ok, here, err) in self.ran(missing, where).items():
+                    self.assertEqual(runs, [], shell)
+                    self.assertFalse(ok, shell)
+                    self.assertTrue(err.strip(), shell)  # PowerShell says why
+                    self.assertTrue(here.samefile(where), (shell, here))
 
 
 if __name__ == "__main__":

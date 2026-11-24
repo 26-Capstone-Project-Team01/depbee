@@ -106,10 +106,11 @@ def _with_this_python(requirement: str) -> str:
     a quoted path and a single quote inside one is doubled: PowerShell 5.1 and 7 read U+2018 to
     U+201B (the curly ones, as in a user name O'Brien typed with U+2019) as single quotes too.
     But & reads a path with [, ] or a backtick as a wildcard pattern (5.1 always, 7 when the file
-    is missing) and can run another environment's python.exe. For such a path the command opens
-    the folder with -LiteralPath and runs the file there by name; -ErrorAction Stop keeps a
-    missing folder from running the python.exe of the folder the user is in.
-    Elsewhere the POSIX shells' quoting."""
+    is missing) and can run another environment's python.exe. For such a path the command finds
+    the file by name in the folder opened with -LiteralPath, goes back and calls what it found,
+    so pip still runs where the user is (a relative requirement like .[extract] keeps its
+    meaning); -ErrorAction Stop keeps a missing folder from finding the python.exe of the folder
+    the user is in. Elsewhere the POSIX shells' quoting."""
     python = sys.executable or "python"
     if os.name == "nt":
 
@@ -119,12 +120,11 @@ def _with_this_python(requirement: str) -> str:
         install = f"-m pip install {quote(requirement)}"
         if not any(c in python for c in "[]`"):
             return f", in PowerShell: & {quote(python)} {install}"
-        # shortcut: a relative requirement (.[extract], from a source tree) is then read in that
-        # folder and pip stops; give the checkout's path if such a setup ever needs it.
         folder, name = ntpath.split(python)
+        found = quote(".\\" + name)
         return (
-            f", in PowerShell: Push-Location -LiteralPath {quote(folder)} -ErrorAction Stop; "
-            f".\\{name} {install}; Pop-Location"
+            f", in PowerShell: & $(Push-Location -LiteralPath {quote(folder)} -ErrorAction Stop; "
+            f"Get-Command {found}; Pop-Location) {install}"
         )
     return f": {shlex.quote(python)} -m pip install {shlex.quote(requirement)}"
 
