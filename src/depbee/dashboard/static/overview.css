@@ -90,6 +90,6 @@
   .overview .ov-name, .overview .ov-rec a, .overview .ov-apply a { min-height: 2.25rem; }
   .overview .ov-name { display: block; margin-top: .15rem; overflow: hidden; line-height: 2.25rem; text-overflow: ellipsis; white-space: nowrap; }
   .overview .ov-path { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .overview .ov-num { text-align: end; }
+  .overview .ov-row .ov-num { text-align: end; }
   .overview .ov-kind { display: none; }
 }

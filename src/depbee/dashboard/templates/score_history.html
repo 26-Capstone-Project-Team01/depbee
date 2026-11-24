@@ -8,6 +8,7 @@
    colour with its value. The table under it holds the exact values. #}
 {% set chart = score_chart %}
 {% if chart %}
+<div class="scroll chart-scroll" role="region" aria-label="점수 그래프" tabindex="0">
 <svg class="score-chart" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="{{ chart.summary }}">
 <line class="grid" x1="44" x2="420" y1="15" y2="15"/><line class="grid" x1="44" x2="420" y1="70" y2="70"/>
 <line class="axis" x1="44" x2="420" y1="125" y2="125"/>
@@ -20,6 +21,7 @@
 <text class="run-label" x="{{ point.x }}" y="146">#{{ point.id }}</text>
 {% endfor %}
 </svg>
+</div>
 {% if not chart.inline %}<p class="note chart-values">판정 기준 이상: {% for point in chart.points if point.over %}<span class="ident">#{{ point.id }} {{ point.label }}</span>{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
 {% endif %}
 <div class="scroll" role="region" aria-labelledby="score-history-title" tabindex="0">

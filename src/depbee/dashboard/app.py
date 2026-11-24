@@ -1320,9 +1320,14 @@ def _score_chart(entries: list[dict]) -> dict | None:
         {"x": point["x"], "y": spot(125 - point["threshold"] * 110)}
         for point in points if point["threshold"] is not None
     ]  # fmt: skip
-    # A value is drawn centred over its point in 11px mono, about 6.7 units a character.
+    # A value is drawn centred over its point in 12px mono, about 7.3 units a character: it
+    # fits when it clears its neighbours and both ends of the box.
     labelled = [point for point in points if point["over"]]
-    inline = all(len(point["label"]) * 6.7 + 6 <= step for point in labelled)
+    inline = all(
+        len(point["label"]) * 7.3 + 6 <= step
+        and len(point["label"]) * 7.3 / 2 <= min(point["x"], 440 - point["x"])
+        for point in labelled
+    )
     scored = [point for point in points if point["score"] is not None]
     compared = [point for point in scored if point["threshold"] is not None]
     summary = f"최근 {len(points)}회 실행의 최고 ML 위험 점수"

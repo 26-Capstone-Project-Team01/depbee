@@ -157,6 +157,14 @@ class FocusAndPickTests(unittest.TestCase):
         # A score is read digit by digit in the tile too.
         self.assertRegex(css, r"(?m)^\.inspector \.detectors \.score \{[^}]*font-family: var\(--mono\)")
 
+    def test_the_chart_text_and_the_folded_check_keep_their_size(self):
+        css = strip_comments((STATIC / "style.css").read_text("utf-8"))
+        chart = re.search(r"^\.score-chart \{([^}]*)\}", css, re.M).group(1)
+        self.assertIn("min-width: 440px", chart)  # its 12px text stays 12px or more
+        self.assertRegex(css, r"(?m)^\.score-chart text \{[^}]*12px")
+        summary = re.search(r"^\.named > summary \{([^}]*)\}", css, re.M).group(1)
+        self.assertIn("width: auto", summary)  # the whole folded box opens it
+
     def test_a_long_identifier_in_a_report_breaks_inside_its_line(self):
         css = strip_comments((STATIC / "style.css").read_text("utf-8"))
         rule = re.search(r"^\.meta li \{([^}]*)\}", css, re.M).group(1)

@@ -397,6 +397,7 @@ class OverviewTests(test_dashboard.DashboardFixture):
         self.assertRegex(wide, r"\.overview \.ov-cols, \.overview \.ov-row \{ display: grid; "
                                r"grid-template-columns:(?: minmax\([^)]*\)){7}; \}")  # fmt: skip
         self.assertIn(".overview .ov-kind { display: none; }", wide)
+        self.assertIn(".overview .ov-row .ov-num { text-align: end; }", wide)  # under its head
         # The way into a project and to a report: a target a finger can hit, and a pointer's
         # in the wide table; a long name keeps the line one line there.
         self.assertRegex(narrow, r"\.overview \.ov-name, \.overview \.ov-rec a, \.overview \.ov-apply a \{[^}]*min-height: 2\.75rem")

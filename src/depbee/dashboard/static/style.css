@@ -497,7 +497,7 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 /* The updates view's action line: the named check folded until opened, and its help. */
 .action-line { display: flex; flex-wrap: wrap; align-items: flex-start; gap: .5rem .75rem; margin: 0 0 .75rem; }
 .named { flex: 1 1 20rem; min-width: 0; max-width: 46rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); }
-.named > summary { display: flex; align-items: center; min-height: 2.75rem; padding: .3rem .9rem; font-weight: 700; cursor: pointer; }
+.named > summary { display: flex; align-items: center; width: auto; min-height: 2.75rem; padding: .3rem .9rem; font-weight: 700; cursor: pointer; }
 .named[open] > summary { border-bottom: 1px solid var(--line); }
 .named form { min-width: 0; padding: .8rem .9rem 1rem; }
 .held { margin-top: 0; padding: .9rem 1.1rem 1rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow); }
@@ -696,7 +696,10 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 }
 
 /* The history view's score chart: drawn by the server as attributes; colours and lines here. */
-.score-chart { display: block; width: 100%; max-width: 44rem; height: auto; margin: .5rem 0 .75rem; overflow: visible; }
+/* Never drawn below its own 440px, so its text stays 12px or more: a narrow page scrolls it
+   inside its box, as the table under it. */
+.chart-scroll { max-width: 36rem; margin: .5rem 0 .75rem; }
+.score-chart { display: block; width: 100%; min-width: 440px; height: auto; overflow: visible; }
 .score-chart .grid { stroke: var(--line); stroke-width: 1; }
 .score-chart .axis { stroke: var(--line-2); stroke-width: 1.5; }
 .score-chart .threshold { stroke: var(--risk); stroke-width: 1.5; stroke-dasharray: 5 4; }
@@ -704,7 +707,7 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 .score-chart .dot { fill: var(--ink); stroke: var(--sheet); stroke-width: 1.5; }
 .score-chart .dot.over { fill: var(--risk); }
 .score-chart .dot.empty { fill: var(--sheet); stroke: var(--muted); stroke-width: 1.5; }
-.score-chart text { fill: var(--muted); font: 600 11px var(--mono); }
+.score-chart text { fill: var(--muted); font: 600 12px var(--mono); }
 .score-chart .tick-label { text-anchor: end; }
 .score-chart .run-label { text-anchor: middle; }
 .score-chart .value { fill: var(--risk); font-weight: 700; text-anchor: middle; }

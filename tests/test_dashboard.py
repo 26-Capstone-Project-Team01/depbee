@@ -318,6 +318,9 @@ class PageTests(DashboardFixture):
         found = chart(tiny)
         self.assertFalse(found["inline"])
         self.assertEqual(len([p for p in found["points"] if p["over"]]), 10)
+        # Two runs leave room between them, but not past the chart's two ends.
+        self.assertFalse(chart(tiny[:2])["inline"])
+        self.assertTrue(chart([{**entries[0], "id": 2, "peak_score": 0.87}, {**entries[0], "id": 1}])["inline"])
 
     def test_the_history_view_draws_the_chart_above_the_table(self):
         history.register_project(self.project)
@@ -335,6 +338,8 @@ class PageTests(DashboardFixture):
             html.index('<table class="stack">', html.index("score-history")),
         )
         self.assertNotIn("<meter", html)
+        # Never drawn smaller than its own size: a narrow page scrolls it inside its box.
+        self.assertIn('<div class="scroll chart-scroll" role="region" aria-label="점수 그래프" tabindex="0">', html)
         # The threshold is drawn over the line, so a line on it does not hide it.
         svg = html.split('<svg class="score-chart"', 1)[1].split("</svg>", 1)[0]
         self.assertLess(svg.index('class="line"'), svg.index('class="threshold"'))
