@@ -1,17 +1,39 @@
-{# The head of a project's three views: its name, its folder and the links between the views.
-   Where the folder is not found, a container's page (contained, app.page) says how it comes
-   back there: by mounting the folder again at the path shown, under the name its records are
-   kept by. A desktop's says to put the folder back, or to register the moved one. #}
+{# The head of a project's three views, on one line: its name with the state of its newest run
+   and its folder (cut to its last folders, whole on hover), and on the right the two things to
+   do: check the updates, or scan what is not committed. Under it the links between the views,
+   each with how many it holds (app._head: lockfile entries, current candidates, stored runs).
+   The check sent from the packages view comes back to its list (back, app._back); kept and
+   picked are that view's. Where the folder is not found, a container's page (contained,
+   app.page) says how it comes back there: by mounting the folder again at the path shown,
+   under the name its records are kept by. A desktop's says to put the folder back, or to
+   register the moved one. #}
 {% set url = base ~ "/projects/" ~ project.id %}
 <header class="project-head">
-<h1>{{ project.name }}</h1>
+<div class="head-line">
+<div class="head-name">
+<div class="head-title"><h1>{{ project.name }}</h1> <span class="verdict {{ project.cell }}"><span class="cell {{ project.cell }}" aria-hidden="true"></span>{{ project.state }}</span></div>
 <p class="path" title="{{ project.path }}">{{ project.path|short }}</p>
+</div>
+{% if project.found %}
+<div class="head-actions">
+<form method="post" action="{{ url }}/previews" id="preview-project">
+<input type="hidden" name="session" value="{{ session }}">
+{% if section == "packages" %}<input type="hidden" name="back" value="{{ kept }}{% if picked is not none %}item={{ picked.run_id }}.{{ picked.position }}{% endif %}">
+{% endif %}<button class="primary" type="submit" data-busy-label="후보 확인 중…" name="packages" value="">{{ "업데이트 후보 다시 확인" if head.full else "업데이트 후보 확인" }}</button>
+</form>
+<form method="post" action="{{ url }}/scans">
+<input type="hidden" name="session" value="{{ session }}"><button type="submit" data-busy-label="검사 중…">검사만</button>
+</form>
+</div>
+{% endif %}
+</div>
 {% if not project.found %}
 <p class="error">프로젝트 폴더를 찾을 수 없습니다. {% if contained %}대시보드 컨테이너를 종료한 뒤 이 폴더를 같은 별칭으로(위의 컨테이너 경로) 다시 연결해 시작하면 다시 읽습니다.{% else %}폴더를 원래 위치로 되돌리면 다시 읽습니다. 옮긴 폴더는 <a href="{{ base }}/?manage=1">프로젝트 관리</a>에서 새로 등록하세요.{% endif %} 지난 실행과 반영 기록은 <a href="{{ url }}/history">기록</a>에 그대로 있습니다.</p>
 {% endif %}
 <nav class="views" aria-label="{{ project.name }} 화면">
 {% for key, path, label in (("packages", "", "패키지"), ("updates", "/updates", "업데이트"), ("history", "/history", "기록")) %}
-<a href="{{ url }}{{ path }}"{% if section == key %} aria-current="page"{% endif %}>{{ label }}</a>
+{% set count = head[key] %}
+<a href="{{ url }}{{ path }}"{% if section == key %} aria-current="page"{% endif %}>{{ label }}{% if count is not none %}<span class="view-count{% if key == "updates" and count %} hot{% endif %}">{{ count }}</span>{% endif %}</a>
 {% endfor %}
 </nav>
 </header>

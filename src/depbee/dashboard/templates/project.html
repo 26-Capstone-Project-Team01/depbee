@@ -16,14 +16,6 @@
 <section class="pane" aria-labelledby="packages-title">
 <div class="pane-head">
 <h2 id="packages-title">패키지</h2>
-{% if project.found %}
-{# back: this view as it is now. A check sent with it comes back to this list (app.check_update). #}
-<form method="post" action="{{ url }}/previews" id="preview-project">
-<input type="hidden" name="session" value="{{ session }}">
-<input type="hidden" name="back" value="{{ kept }}{% if picked is not none %}item={{ picked.run_id }}.{{ picked.position }}{% endif %}">
-<button class="primary" type="submit" data-busy-label="후보 확인 중…" name="packages" value="">{{ "업데이트 후보 다시 확인" if state.full else "업데이트 후보 확인" }}</button>
-</form>
-{% endif %}
 </div>
 {% if not project.found %}
 {# The head above says that the folder is missing and where to go. #}

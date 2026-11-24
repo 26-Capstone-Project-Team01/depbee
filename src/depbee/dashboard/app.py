@@ -594,6 +594,7 @@ def build_app(
             for row in _listed(dependencies, query, scope)
             if not only or row["location"] in candidates
         ]  # fmt: skip
+        head = _head(found, dependencies, problem, state)
         targets = _preview_targets(found["path"]) if any(row["direct"] for row in rows) else set()
         shown = [row["candidate"] for row in rows if row["candidate"] is not None]
         selected = _selected(params, shown)
@@ -602,7 +603,8 @@ def build_app(
                     direct_count=direct_count, nested_count=len(dependencies) - direct_count,
                     query=query, scope=scope, only=only, candidate_count=candidate_count,
                     targets=targets, max_query=MAX_NAME_LENGTH, problem=problem, state=state,
-                    returned=returned, selected=selected, previews=held(found, state))  # fmt: skip
+                    returned=returned, selected=selected, previews=held(found, state),
+                    head=head)  # fmt: skip
 
     def updates(request: Request) -> Response:
         """The updates view: the current candidates with their evidence, the previews this
@@ -619,7 +621,9 @@ def build_app(
             if applied and applied[0]["run_id"] == last["id"] and applied[0]["outcome"] == "applied"
             else None
         )
+        head = _head(found, *_dependencies(found["path"]), state)
         return page(request, "updates.html", project=found, section="updates", state=state,
+                    head=head,
                     previews=held(found, state), applied_at=applied_at, max_targets=MAX_TARGETS,
                     selected=_selected(request.query_params, state["rows"]))  # fmt: skip
 
@@ -630,7 +634,9 @@ def build_app(
             return _text(404, "등록된 프로젝트가 아닙니다.")
         runs = [_run_row(run) for run in history.list_runs(found["id"])]
         applies = [_apply_row(row) for row in history.list_applies(found["id"])]
+        head = _head(found, *_dependencies(found["path"]), _update_state(found), len(runs))
         return page(request, "history.html", project=found, section="history", runs=runs,
+                    head=head,
                     applies=applies, score_history=history.list_run_scores(found["id"]))  # fmt: skip
 
     def run(request: Request) -> Response:
@@ -1012,6 +1018,18 @@ def _tabs(current: dict | None, recent: int = 1) -> list[dict]:
             "current": current is not None and project["id"] == current["id"],
         })  # fmt: skip
     return tabs
+
+
+def _head(found: dict, dependencies: list[dict], problem: str | None, state: dict,
+          runs: int | None = None) -> dict:  # fmt: skip
+    """How many each view of a project holds, for its head's links: packages, the lockfile's
+    entries (None when it cannot be read); updates, the current candidates (_update_state);
+    history, the stored runs (counted here unless given). full: whether a current check covers
+    everything, so the head's check button says it checks again."""
+    if runs is None:
+        runs = history.count_runs(found["id"])
+    return {"packages": None if problem else len(dependencies), "updates": len(state["rows"]),
+            "history": runs, "full": state["full"] is not None}  # fmt: skip
 
 
 def _rail(tabs: list[dict]) -> list[dict]:

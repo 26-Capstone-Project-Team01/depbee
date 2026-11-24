@@ -62,7 +62,7 @@ class Elements(HTMLParser):
 
 def project_head(html):
     """(name, the path as shown, the whole path) of a project view's head."""
-    found = re.search(r'<h1>([^<]*)</h1>\n<p class="path" title="([^"]*)">([^<]*)</p>', html)
+    found = re.search(r'<h1>([^<]*)</h1>.*?<p class="path" title="([^"]*)">([^<]*)</p>', html, re.S)
     return found.group(1), found.group(3), found.group(2)
 
 
@@ -492,6 +492,44 @@ class ConsoleTests(DashboardFixture):
         outer, inner = str(Path("app")), str(Path("app", "app"))
         self.assertEqual(self.app._names([outer, inner]), [outer, inner])
 
+    def test_each_view_heads_with_the_two_actions_and_how_many_each_view_holds(self):
+        project = history.register_project(self.project)
+        history.record("scan", self.project, self.scan_with(0.9))
+        entries = len(self.app._dependencies(str(self.project.resolve()))[0])
+        self.assertGreater(entries, 0)
+        for view in ("", "/updates", "/history"):
+            html = self.page(f"/projects/{project}{view}")
+            head = html[
+                html.index('<header class="project-head">') : html.index(
+                    "</header>", html.index('<header class="project-head">')
+                )
+            ]
+            self.assertIn(
+                '<span class="verdict risk"><span class="cell risk" aria-hidden="true"></span>최근 실행 위험</span>',
+                head,
+            )
+            check = re.search(
+                rf'<form method="post" action="{S}/projects/{project}/previews" id="preview-project">(.*?)</form>',
+                head,
+                re.S,
+            )
+            self.assertIsNotNone(check, view)
+            self.assertIn('name="packages" value="">업데이트 후보 확인</button>', check[1])
+            # Only a check sent from the packages view comes back to its list (app._back).
+            self.assertEqual('name="back"' in check[1], view == "", view)
+            self.assertIn(f'<form method="post" action="{S}/projects/{project}/scans">', head)
+            self.assertIn('data-busy-label="검사 중…">검사만</button>', head)
+            for label, count in (("패키지", entries), ("업데이트", 0), ("기록", 1)):
+                self.assertIn(f'{label}<span class="view-count">{count}</span></a>', head, view)
+            # The packages view holds no second check button of its own.
+            self.assertEqual(html.count('id="preview-project"'), 1, view)
+        # A folder that is gone: no action, and no count of packages it cannot read.
+        self.head.unlink()
+        self.project.rmdir()
+        html = self.page(f"/projects/{project}")
+        self.assertNotIn("/previews", html)
+        self.assertIn("패키지</a>", html)
+
     def test_a_path_is_cut_to_its_last_three_folders(self):
         short = self.app._short_path
         self.assertEqual(short(r"C:\Users\dev\work\clients\acme\repos\storefront-web"),
@@ -524,7 +562,10 @@ class ConsoleTests(DashboardFixture):
             self.assertIn('<nav class="views" aria-label="project 화면">', html)
             for other, text in views.items():
                 current = ' aria-current="page"' if other == view else ""
-                self.assertIn(f'<a href="{S}/projects/{project}{other}"{current}>{text}</a>', html)
+                self.assertIn(
+                    f'<a href="{S}/projects/{project}{other}"{current}>{text}<span class="view-count',
+                    html,
+                )
             if view:  # the views take GET only
                 response = self.client.post(f"{S}/projects/{project}{view}",
                                             data={"session": SESSION}, headers={"origin": BASE})  # fmt: skip
@@ -592,6 +633,11 @@ class CandidateTests(DashboardFixture):
 
     def nothing(self):
         return {**self.report, "results": []}
+
+    def test_the_updates_tab_counts_the_current_candidates_and_stands_out(self):
+        self.check()
+        for view in (self.packages, self.updates, f"{self.packages}/history"):
+            self.assertIn('업데이트<span class="view-count hot">1</span></a>', self.page(view))
 
     def cells(self, html=None):
         """{location: the candidate cell} of the packages table."""

@@ -275,7 +275,7 @@ body.start { display: grid; grid-template-columns: minmax(0, 1fr); place-items: 
    risk and hold counts of its newest run, in the rail's verdict colours. */
 .tab { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0 .5rem; min-height: 2.75rem; padding: .3rem .7rem; }
 .tab-name { overflow: hidden; font-size: .9375rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
-.tab-count { display: flex; gap: .4rem; font-size: .75rem; font-weight: 700; white-space: nowrap; }
+.tab-count { display: flex; gap: .4rem; font-size: .8125rem; font-weight: 700; white-space: nowrap; }
 .tab-count .n-risk { color: var(--rail-risk); }
 .tab-count .n-hold { color: var(--rail-hold); }
 .tab:hover, .aux a:hover { background: var(--rail-current); --ground: var(--rail-current); }
@@ -291,6 +291,17 @@ footer p { margin: 0; }
 
 /* The head of a project's views, and the way back from a page under them. */
 .project-head { margin-bottom: 1rem; }
+/* One line: the name with its state and folder, and on the right the check and the scan. */
+.head-line { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: .75rem 1.5rem; }
+.head-name { min-width: 0; }
+.head-title { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .75rem; }
+.head-title h1 { margin: 0; }
+.head-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.head-actions form { margin: 0; }
+/* How many a view holds; the updates of a current check stand out in ink, not honey (honey is
+   what is picked). */
+.view-count { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.25rem; margin-left: .4rem; padding: 0 .4rem; border-radius: 999px; background: var(--head); color: var(--muted); font: 700 .8125rem/1 var(--mono); font-variant-numeric: tabular-nums; }
+.view-count.hot { background: var(--ink); color: var(--sheet); }
 .path, .where { color: var(--muted); font-family: var(--mono); font-size: .8125rem; overflow-wrap: anywhere; }
 .path { margin: 0; }
 .where { display: block; font-weight: 400; }

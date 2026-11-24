@@ -17,10 +17,6 @@
 <div class="actions">
 <form method="post" action="{{ url }}/previews">
 <input type="hidden" name="session" value="{{ session }}">
-<button class="primary" type="submit" data-busy-label="후보 확인 중…" name="packages" value="">전체 업데이트 확인</button>
-</form>
-<form method="post" action="{{ url }}/previews">
-<input type="hidden" name="session" value="{{ session }}">
 <label for="packages">패키지 이름 (공백으로 구분)</label>
 <div class="field">
 <input id="packages" name="packages" type="text" maxlength="{{ max_targets }}" required>
@@ -33,9 +29,7 @@
 <section aria-labelledby="scan-title">
 <h2 id="scan-title">커밋하지 않은 변경 검사</h2>
 <p>현재 lockfile과 Git HEAD의 차이를 검사합니다. 프로젝트 파일은 그대로 두며, 모델이 없으면 ML 판정을 보류합니다.</p>
-{% if project.found %}<form method="post" action="{{ url }}/scans">
-<input type="hidden" name="session" value="{{ session }}"><button type="submit" data-busy-label="검사 중…">검사만</button>
-</form>{% else %}<p>프로젝트 폴더를 찾을 수 없어 검사할 수 없습니다.</p>{% endif %}
+{% if project.found %}<p>위의 "검사만"으로 실행합니다.</p>{% else %}<p>프로젝트 폴더를 찾을 수 없어 검사할 수 없습니다.</p>{% endif %}
 </section>
 </div>
 {% if previews %}
