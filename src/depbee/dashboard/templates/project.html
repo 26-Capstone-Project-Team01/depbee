@@ -5,11 +5,13 @@
 {% set url = base ~ "/projects/" ~ project.id %}
 {# selected: the candidate the view opens (app.project), one of the rows listed here. A pick
    keeps the search, the kind and the tab (show), the name percent-encoded, and names its item
-   last. search: the search and the kind alone, what each tab's own link keeps. #}
+   last. search: the search and the kind alone, what each tab's own link keeps; a tab and the
+   search form keep the open candidate too, which stays open while the new list has it. #}
 {% set picked = selected if selected is defined and selected else none %}
 {% set search = ("q=" ~ query|urlencode ~ "&" if query else "") ~ ("scope=" ~ scope ~ "&" if scope != "all" else "") %}
 {% set kept = search ~ ("show=" ~ show ~ "&" if show != "all" else "") %}
 {% set pick = url ~ "?" ~ kept ~ "item=" %}
+{% set open_item = "item=" ~ picked.run_id ~ "." ~ picked.position ~ "&" if picked is not none else "" %}
 {% set shown = namespace(inspector=false) %}
 {% include "project_head.html" %}
 <div class="bench">
@@ -26,15 +28,15 @@
 <p class="tally">직접 {{ direct_count }}개, 중첩 {{ nested_count }}개. 지금 package-lock.json에 있는 항목입니다. <button type="button" class="help" popovertarget="help-reading" aria-label="종류와 후보 표시 읽는 법"><span aria-hidden="true">?</span></button></p>
 <div class="help-pop" id="help-reading" popover>
 <p>종류의 "직접"은 package-lock.json 루트 항목에 선언된 패키지이고, 뒤의 일반·개발·선택·피어는 그 선언이 dependencies·devDependencies·optionalDependencies·peerDependencies 중 어디에 있는지입니다(여러 곳이면 모두). "선언 이름"은 패키지 이름과 다른 이름(alias)으로 선언된 경우입니다. "중첩"은 루트에 선언되지 않은 항목입니다.</p>
-<p>후보는 package.json이 허용하는 범위 안에서 npm이 고른 버전이며, 지금의 package.json과 package-lock.json으로 확인한 결과만 보입니다. 후보 옆의 반영 가능·확인 필요·반영 거부는 그 후보 하나를 업데이트 반영 기준으로 본 결과입니다. "미확인" 항목은 업데이트 후보 확인으로 한꺼번에 확인합니다. 확인은 몇 초에서 수십 초 걸립니다. "후보 없음"은 그 확인에서 바뀌지 않은 항목입니다. 후보 옆의 "근거"는 그 확인을 저장한 보고서의 해당 항목을 엽니다.</p>
+<p>후보는 package.json이 허용하는 범위 안에서 npm이 고른 버전이며, 지금의 package.json과 package-lock.json으로 확인한 결과만 보입니다. 후보 옆의 반영 가능·확인 필요·반영 거부는 그 후보 하나를 업데이트 반영 기준으로 본 결과입니다. "미확인" 항목은 업데이트 후보 확인으로 한꺼번에 확인합니다. 확인은 몇 초에서 수십 초 걸립니다. "후보 없음"은 그 확인에서 바뀌지 않은 항목입니다. 후보를 누르면 검사 근거가 열리고, 그 안의 "보고서에서 전체 근거 보기"가 그 확인을 저장한 보고서의 해당 항목을 엽니다.</p>
 </div>
 {# The tabs (app.SHOWS): links that keep the search and the kind, each with how many of the
    rows those leave it holds (app.project). A tab with none is words, not a link; before any
    check every row is unchecked, which is not "0 candidates". #}
 <nav class="filter-tabs" aria-label="패키지 목록 거르기">
 {% for key, label in (("all", "전체"), ("candidates", "후보"), ("unchecked", "미확인"), ("none", "후보 없음")) %}
-{% set target = search ~ ("show=" ~ key ~ "&" if key != "all" else "") %}
-{% if key == "all" or counts[key] %}<a href="{{ url }}{% if target %}?{{ target[:-1] }}{% endif %}"{% if show == key %} aria-current="true"{% endif %}>{{ label }} <span class="filter-count">{{ counts[key] }}</span></a>{% else %}<span class="filter-off">{{ label }} <span class="filter-count">0</span></span>{% endif %}
+{% set target = search ~ ("show=" ~ key ~ "&" if key != "all" else "") ~ open_item %}
+{% if counts[key] %}<a href="{{ url }}{% if target %}?{{ target[:-1] }}{% endif %}"{% if show == key %} aria-current="true"{% endif %}>{{ label }} <span class="filter-count">{{ counts[key] }}</span></a>{% else %}<span class="filter-off"{% if show == key %} aria-current="true"{% endif %}>{{ label }} <span class="filter-count">0</span></span>{% endif %}
 {% endfor %}
 </nav>
 <div class="tools">
@@ -50,6 +52,7 @@
 </select>
 </div>
 {% if show != "all" %}<input type="hidden" name="show" value="{{ show }}">{% endif %}
+{% if picked is not none %}<input type="hidden" name="item" value="{{ picked.run_id }}.{{ picked.position }}">{% endif %}
 <button type="submit">검색</button>
 </form>
 </div>
@@ -86,7 +89,7 @@
 {% set after = (candidate.after if candidate.after is not none else "삭제") if candidate else none %}
 <tr><th scope="row">{{ row.name if row.name is not none else "이름 없음" }}<span class="row-tags"> {% if row.direct %}직접{% if row.declared %} {{ row.declared }}{% endif %}{% else %}중첩{% endif %}</span>{% if row.declared_as is not none %}<span class="where">선언 이름 {{ row.declared_as }}</span>{% endif %}<span class="where">{{ row.location }}</span></th><td>{{ row.version if row.version is not none else "-" }}{% if candidate %}<span aria-hidden="true"> → </span><span class="visually-hidden">에서 </span>{{ after }}{% endif %}</td>
 <td>{% if candidate %}
-<a class="pick"{% if open %} id="picked" aria-current="true"{% endif %} href="{{ pick }}{{ candidate.run_id }}.{{ candidate.position }}#candidate-evidence">{% if candidate.status != "removed" %}<span class="verdict {{ candidate.decision.cell }}"><span class="cell {{ candidate.decision.cell }}" aria-hidden="true"></span>{{ candidate.decision.label }}</span>{% else %}<span class="move">삭제</span>{% endif %}<span class="visually-hidden">후보 버전 {{ after }}</span><span class="visually-hidden"> 검사 근거 열기</span></a>
+<a class="pick"{% if open %} id="picked" aria-current="true"{% endif %} href="{{ pick }}{{ candidate.run_id }}.{{ candidate.position }}#candidate-evidence"><span class="verdict {{ candidate.decision.cell }}"><span class="cell {{ candidate.decision.cell }}" aria-hidden="true"></span>{{ candidate.decision.label }}</span><span class="visually-hidden">: {{ row.name if row.name is not none else "이름 없음" }}, {{ row.location }}, 후보 버전 {{ after }}, 검사 근거 열기</span></a>
 {% if candidate.known_hit %}<strong class="known">기지 악성 기록 일치</strong>{% endif %}<span class="chev" aria-hidden="true">›</span>
 {% elif row.checked %}<span class="quiet">후보 없음</span>
 {% elif row.direct and row.name in targets and row.location == "node_modules/" ~ row.name %}

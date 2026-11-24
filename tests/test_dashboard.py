@@ -785,6 +785,8 @@ class CandidateTests(DashboardFixture):
 
     def test_how_long_a_check_takes_is_behind_a_question_mark(self):
         unchecked = self.page(self.packages)
+        self.assertNotIn('후보 옆의 "근거"', unchecked)
+        self.assertIn("보고서에서 전체 근거 보기", unchecked)
         self.assertIn("미확인은 확인된 후보 0개와 다릅니다.", unchecked)
         self.assertRegex(unchecked, r'(?s)<div class="help-pop" id="[\w-]+" popover>'
                                     r"(?:(?!</div>).)*확인은 몇 초에서 수십 초 걸립니다")  # fmt: skip
@@ -851,7 +853,8 @@ class CandidateTests(DashboardFixture):
         self.assertIn("업데이트 후보 1개를 확인했습니다.", html)
         cells = self.cells(html)
         candidate = cells["node_modules/example"]
-        self.assertIn('<span class="visually-hidden">후보 버전 1.2.0</span>', candidate)
+        self.assertIn('<span class="visually-hidden">: example, node_modules/example, 후보 버전 1.2.0, '
+                      "검사 근거 열기</span>", candidate)  # fmt: skip
         # Whether the candidate could be applied, as the update gate decides it: an ML hit that
         # no known malicious list was checked against needs the user's confirmation.
         self.assertIn('<span class="verdict hold"><span class="cell hold" aria-hidden="true">'
@@ -891,12 +894,12 @@ class CandidateTests(DashboardFixture):
     def test_a_check_of_named_packages_covers_only_them(self):
         first = self.check(targets=["example"])
         cells = self.cells()
-        self.assertIn(" 1.2.0</span>", cells["node_modules/example"])
+        self.assertIn("후보 버전 1.2.0,", cells["node_modules/example"])
         self.assertIn("후보 확인</button>", cells["node_modules/other"])  # not checked yet
         self.assertIn("미확인", cells["node_modules/example/node_modules/inner"])
         second = self.check(self.nothing(), targets=["other"], changed_count=0)
         cells = self.cells()
-        self.assertIn(" 1.2.0</span>", cells["node_modules/example"])  # the older check stands
+        self.assertIn("후보 버전 1.2.0,", cells["node_modules/example"])  # the older check stands
         self.assertEqual(cells["node_modules/other"], '<span class="quiet">후보 없음</span>')
         self.assertIn("미확인", cells["node_modules/example/node_modules/inner"])
         updates = self.page(self.updates)
@@ -933,7 +936,7 @@ class CandidateTests(DashboardFixture):
                 changed.write_bytes(before)
         # The same bytes again are the files the check was made from.
         self.assertEqual(self.head.read_bytes(), current)
-        self.assertIn(" 1.2.0</span>", self.cells()["node_modules/example"])
+        self.assertIn("후보 버전 1.2.0,", self.cells()["node_modules/example"])
 
     def test_another_projects_results_are_not_candidates(self):
         other = self.root / "other"
@@ -989,9 +992,12 @@ class CandidateTests(DashboardFixture):
                    "score": None}  # fmt: skip
         run = self.check({**self.report, "results": [added, removed]}, targets=None)
         cells = self.cells()
-        self.assertIn('<span class="move">삭제</span><span class="visually-hidden">후보 버전 삭제</span>',
-                      cells["node_modules/other"])  # fmt: skip
-        self.assertNotIn("verdict", cells["node_modules/other"])
+        self.assertIn('<span class="verdict pass"><span class="cell pass" aria-hidden="true"></span>'
+                      '반영 가능</span><span class="visually-hidden">: other, node_modules/other, '
+                      "후보 버전 삭제, 검사 근거 열기</span>", cells["node_modules/other"])  # fmt: skip
+        panel = self.page(f"{self.packages}?item={run}.1").split('<aside class="inspector"', 1)[1]
+        self.assertIn("<dt>ML 점수</dt><dd><b>해당 없음(삭제)</b></dd>", panel)
+        self.assertNotIn("0점이 아닙니다", panel)
         updates = self.page(self.updates)
         self.assertIn('<td><span class="quiet">새로 추가</span> <span aria-hidden="true">→</span>'
                       '<span class="visually-hidden">에서</span> 3.0.0</td>', updates)  # fmt: skip
@@ -1016,7 +1022,7 @@ class CandidateTests(DashboardFixture):
         html = self.page(self.packages)
         self.assertIn("업데이트 후보 1개를 확인했습니다.", html)
         cells = self.cells(html)
-        self.assertIn(" 1.2.0</span>", cells["node_modules/example"])
+        self.assertIn("후보 버전 1.2.0,", cells["node_modules/example"])
         self.assertIn(f'?item={everything}.0#candidate-evidence"', cells["node_modules/example"])
         for location in ("node_modules/other", "node_modules/example/node_modules/inner"):
             self.assertEqual(cells[location], '<span class="quiet">후보 없음</span>')
@@ -1039,7 +1045,7 @@ class CandidateTests(DashboardFixture):
         self.assertRegex(html, r"\d\d:\d\d UTC에 확인했고 바뀌는 항목이 없었습니다.")
         self.assertNotIn("1.2.0", "".join(self.cells(html).values()))
         self.head.write_bytes(original)  # the same bytes as when the first check ran
-        self.assertIn(" 1.2.0</span>", self.cells()["node_modules/example"])
+        self.assertIn("후보 버전 1.2.0,", self.cells()["node_modules/example"])
         updates = self.page(self.updates)
         self.assertIn("확인한 결과입니다. 바뀐 의존성 1개: 위험 1, 통과 0, 보류 0.", updates)
         self.assertNotIn("그 결과는 현재 후보로 보지 않습니다.", updates)
@@ -1124,9 +1130,9 @@ class CandidateTests(DashboardFixture):
         both = [row(lone, "\udc80x", "7.0.0", "7.1.0"), row(text, "\\udc80x", "8.0.0", "8.1.0")]
         first = self.check({**self.report, "results": both}, targets=None)
         of_lone, of_text = cells()
-        self.assertIn(" 7.1.0</span>", of_lone)
+        self.assertIn("후보 버전 7.1.0,", of_lone)
         self.assertIn(f'?item={first}.0#candidate-evidence"', of_lone)
-        self.assertIn(" 8.1.0</span>", of_text)
+        self.assertIn("후보 버전 8.1.0,", of_text)
         self.assertIn(f'?item={first}.1#candidate-evidence"', of_text)
         updates = self.page(self.updates)
         self.assertIn("바뀐 의존성 2개: 위험 2, 통과 0, 보류 0.", updates)
@@ -1138,7 +1144,7 @@ class CandidateTests(DashboardFixture):
                             targets=["\\udc80x"])  # fmt: skip
         of_lone, of_text = cells()
         self.assertIn(f'?item={first}.0#candidate-evidence"', of_lone)
-        self.assertIn(" 8.2.0</span>", of_text)
+        self.assertIn("후보 버전 8.2.0,", of_text)
         self.assertIn(f'?item={second}.0#candidate-evidence"', of_text)
         updates = self.page(self.updates)
         self.assertIn(f'href="{S}/runs/{first}#r0"', updates)
@@ -1173,7 +1179,7 @@ class CandidateTests(DashboardFixture):
         self.check(targets=None)
         self.check(self.nothing(), targets=["other"], changed_count=0)
         expected = self.cells()
-        self.assertIn(" 1.2.0</span>", expected["node_modules/example"])
+        self.assertIn("후보 버전 1.2.0,", expected["node_modules/example"])
         with contextlib.closing(sqlite3.connect(self.db)) as connection:
             connection.execute("DROP TABLE previews")  # as the version 2 code left the file
             connection.execute("DROP INDEX runs_by_kind")
@@ -1193,7 +1199,8 @@ class CandidateTests(DashboardFixture):
         def tabs(html):
             nav = re.search(r'<nav class="filter-tabs" aria-label="패키지 목록 거르기">(.*?)</nav>',
                             html, re.S)[1]  # fmt: skip
-            return re.findall(r'<(a href="[^"]*"(?: aria-current="true")?|span class="filter-off")>'
+            return re.findall(r'<(a href="[^"]*"(?: aria-current="true")?|span class="filter-off"'
+                              r'(?: aria-current="true")?)>'
                               r'([^<]*) <span class="filter-count">(\d+)</span>', nav)  # fmt: skip
 
         # Nothing checked: everything is unchecked, which is not 0 candidates.
@@ -1210,20 +1217,23 @@ class CandidateTests(DashboardFixture):
                 listed(self.page(self.packages + address)), ["example", "inner", "other"]
             )
         run = self.check(targets=None)  # a check of everything: example has a candidate
-        # The counts are of what the search and the kind leave, and each tab keeps both.
+        # The counts are of what the search and the kind leave, and each tab keeps both and
+        # the open candidate.
         html = self.page(f"{self.packages}?q=e&scope=direct")
+        item = f"&amp;item={run}.0"
         self.assertEqual(tabs(html), [
-            (f'a href="{url}?q=e&amp;scope=direct" aria-current="true"', "전체", "2"),
-            (f'a href="{url}?q=e&amp;scope=direct&amp;show=candidates"', "후보", "1"),
+            (f'a href="{url}?q=e&amp;scope=direct{item}" aria-current="true"', "전체", "2"),
+            (f'a href="{url}?q=e&amp;scope=direct&amp;show=candidates{item}"', "후보", "1"),
             ('span class="filter-off"', "미확인", "0"),
-            (f'a href="{url}?q=e&amp;scope=direct&amp;show=none"', "후보 없음", "1")])  # fmt: skip
+            (f'a href="{url}?q=e&amp;scope=direct&amp;show=none{item}"', "후보 없음", "1")])  # fmt: skip
         self.assertEqual(listed(html), ["example", "other"])
         self.assertNotIn('name="show"', html)
         self.assertIn(f'검색 결과 <strong>2개</strong>. <a href="{url}">필터 초기화</a>', html)
         # A tab narrows the list; a new search keeps the tab, and a pick keeps all three.
         on = self.page(f"{self.packages}?q=e&scope=direct&show=candidates")
         self.assertIn(
-            f'<a href="{url}?q=e&amp;scope=direct&amp;show=candidates" aria-current="true">후보', on
+            f'<a href="{url}?q=e&amp;scope=direct&amp;show=candidates{item}" aria-current="true">후보',
+            on,
         )
         self.assertIn('<input type="hidden" name="show" value="candidates">', on)
         self.assertIn('name="q" maxlength="214" value="e"', on)
@@ -1260,7 +1270,7 @@ class CandidateTests(DashboardFixture):
                 for html in (packages, updates):
                     EscapeTests.check(self, html)
                 shown = escape(_clean(text))
-                self.assertIn(f"후보 버전 {shown}</span>", packages)  # the candidate version
+                self.assertIn(f"후보 버전 {shown}, 검사 근거 열기</span>", packages)  # the candidate
                 self.assertIn(f'<th scope="row">{shown}<span class="where">', updates)
                 self.assertIn(f"<li>{shown}</li>", updates)
                 self.assertIn(f", {shown})", updates)  # the check's target

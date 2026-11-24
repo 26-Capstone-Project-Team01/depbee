@@ -231,6 +231,27 @@ class InspectorTests(test_dashboard.DashboardFixture):
         for query in ("only=0", "only=", "only=true", "only=1&only=1"):  # the old filter: no more
             self.assertEqual(self.get(f"{self.packages}?{query}").status_code, 200, query)
 
+    def test_a_tab_keeps_the_open_candidate_and_an_empty_tab_is_no_link(self):
+        inner = self.keys["inner"]
+        html = self.page(f"{self.packages}?item={inner}")
+        tabs = html.split('<nav class="filter-tabs"', 1)[1].split("</nav>", 1)[0]
+        self.assertIn(
+            f'href="{test_dashboard.S}/projects/{self.project_id}?show=candidates&amp;item={inner}"',
+            tabs,
+        )
+        self.assertIn(f'<input type="hidden" name="item" value="{inner}">', html)
+        self.assertEqual(
+            self.selected(f"{self.packages}?show=candidates&item={inner}")["package"], "inner"
+        )
+        # A search that leaves nothing: every tab is words, the open one marked.
+        tabs = self.page(f"{self.packages}?q=missing").split('<nav class="filter-tabs"', 1)[1]
+        tabs = tabs.split("</nav>", 1)[0]
+        self.assertNotIn("<a ", tabs)
+        self.assertIn(
+            '<span class="filter-off" aria-current="true">전체 <span class="filter-count">0</span></span>',
+            tabs,
+        )
+
     def test_a_tab_with_nothing_to_show_lists_everything(self):
         # No current check: nothing is known, and an address kept from before lists everything.
         self.head.write_bytes(self.head.read_bytes() + b"\n")

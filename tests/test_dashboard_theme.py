@@ -140,6 +140,17 @@ class FocusAndPickTests(unittest.TestCase):
         self.assertRegex(css, r"(?m)^\.field input \{[^}]*min-width: 0;")
         self.assertRegex(css, r"(?m)^\.actions form \{ min-width: 0; \}")
 
+    def test_the_packages_table_and_the_inspector_keep_to_their_own(self):
+        css = strip_comments((STATIC / "style.css").read_text("utf-8"))
+        # A long version breaks inside its cell rather than push a narrow page sideways.
+        rule = re.search(r"^\.packages td:nth-child\(2\) \{([^}]*)\}", css, re.M)
+        self.assertTrue(rule is None or "nowrap" not in rule.group(1))
+        # The inspector's tiles are its own: the updates list has its own detectors list.
+        self.assertNotRegex(css, r"(?m)^\.detectors")
+        self.assertRegex(css, r"(?m)^\.inspector \.detectors \{")
+        # The row's mark sits at the row's end, whatever the decision's words.
+        self.assertRegex(css, r"(?m)^\.packages \.chev \{ position: absolute;")
+
     def test_a_picked_list_tab_has_an_ink_underline(self):
         css = strip_comments((STATIC / "style.css").read_text("utf-8"))
         rule = re.search(r"^\.filter-tabs a\[aria-current\] \{([^}]*)\}", css, re.M)
