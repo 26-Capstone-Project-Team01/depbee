@@ -432,9 +432,10 @@ class ResolverTests(NativeAssets):
         installed = {"return_value": ["numpy>=1.26", f'{pin}; extra == "extract"']}
         unknown = {"side_effect": importlib.metadata.PackageNotFoundError("depbee")}
         # The Python of a virtual environment that is not activated, in a folder with a space
-        # and a quote. The shell's own "python" may then be another environment's.
+        # and a quote (on Windows also U+2019 and Hangul). The shell's own "python" may then be
+        # another environment's.
         windows = os.name == "nt"
-        python = (r"C:\Users\O'Brien\my env\Scripts\python.exe" if windows
+        python = ("C:\\Users\\O'Brien\\A O\u2019Brien 한글\\Scripts\\python.exe" if windows
                   else "/home/o'brien/my env/bin/python")  # fmt: skip
 
         def command(said):
@@ -457,12 +458,13 @@ class ResolverTests(NativeAssets):
                 "that runs depbee"), extra)  # fmt: skip
             for said, requirement in ((pinned, pin), (extra, ".[extract]")):
                 with self.subTest(requirement):
-                    if windows:  # PowerShell: & calls a quoted path, '' is a quote inside one
+                    if windows:  # PowerShell: & calls a quoted path, a quote inside one doubled
+                        # (test_extract.PowerShellInstallCommandTests has PowerShell read it)
                         self.assertIn(", in PowerShell: & ", said)
                         self.assertEqual(
                             command(said),
-                            r"& 'C:\Users\O''Brien\my env\Scripts\python.exe' -m pip install "
-                            f"'{requirement}'")  # fmt: skip
+                            "& 'C:\\Users\\O''Brien\\A O\u2019\u2019Brien 한글\\Scripts\\python.exe'"
+                            f" -m pip install '{requirement}'")  # fmt: skip
                     else:  # what a POSIX shell reads: that interpreter and one requirement
                         self.assertEqual(shlex.split(command(said)),
                                          [python, "-m", "pip", "install", requirement])  # fmt: skip

@@ -13,6 +13,7 @@ import json
 import os
 import platform
 import shlex
+import subprocess
 import sys
 import tempfile
 import time
@@ -102,14 +103,32 @@ def _with_this_python(requirement: str) -> str:
     is a supported way to run it (docs/usage.md), and there the shell's python can be another
     environment's: a bare "python -m pip" would install into that one. Each form takes a path
     with spaces or quotes. On Windows it is PowerShell's, the shell of the guides, where & calls
-    a quoted path and a quote inside one is doubled; elsewhere the POSIX shells' quoting."""
+    a quoted path and a single quote inside one is doubled: PowerShell 5.1 and 7 read U+2018 to
+    U+201B (the curly ones, as in a user name O'Brien typed with U+2019) as single quotes too.
+    But & reads a path with [, ] or a backtick as a wildcard pattern (5.1 always, 7 when the file
+    is missing) and can run another environment's python.exe; so do Get-Command and
+    Start-Process, escaped or not. Such a path goes as it is to Windows' process API
+    (ProcessStartInfo without the shell), started in the user's folder so that a relative
+    requirement like .[extract] keeps its meaning. A script block keeps its variables local; its
+    own Stop preference makes a failed start end the line too (otherwise only that statement
+    failed and the line ended with $? true), as a nonzero exit does, without ending PowerShell.
+    Elsewhere the POSIX shells' quoting."""
     python = sys.executable or "python"
     if os.name == "nt":
 
         def quote(text: str) -> str:
-            return "'" + text.replace("'", "''") + "'"
+            return "'" + text.translate({ord(q): q * 2 for q in "'\u2018\u2019\u201a\u201b"}) + "'"
 
-        return f", in PowerShell: & {quote(python)} -m pip install {quote(requirement)}"
+        if set("[]`").isdisjoint(python):
+            return f", in PowerShell: & {quote(python)} -m pip install {quote(requirement)}"
+        arguments = subprocess.list2cmdline(["-m", "pip", "install", requirement])
+        return (
+            ", in PowerShell: & { $ErrorActionPreference = 'Stop'; "
+            "$p = [Diagnostics.Process]::Start([Diagnostics.ProcessStartInfo]@{"
+            f"FileName = {quote(python)}; Arguments = {quote(arguments)}; UseShellExecute = $false; "
+            "WorkingDirectory = $PWD.ProviderPath}); $p.WaitForExit(); "
+            'if ($p.ExitCode) { throw "pip exited with code $($p.ExitCode)" } }'
+        )
     return f": {shlex.quote(python)} -m pip install {shlex.quote(requirement)}"
 
 

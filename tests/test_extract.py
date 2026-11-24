@@ -3,16 +3,23 @@
 No network access and no package code: depbee-analyzer is replaced by FakeBackend.
 """
 
+import base64
 import contextlib
 import copy
 import dataclasses
 import hashlib
 import importlib.util
 import io
+import itertools
 import json
 import os
+import shutil
+import subprocess
+import sys
 import tarfile
+import tempfile
 import unittest
+import venv
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -34,7 +41,7 @@ from test_workflow import FakePredictor, Fixture, package
 
 from depbee.analysis import registry
 from depbee.analysis.baseline import select_baseline
-from depbee.analysis.extractor import ExtractorAnalyzer, FeatureExtractorBackend
+from depbee.analysis.extractor import ExtractorAnalyzer, FeatureExtractorBackend, _with_this_python
 from depbee.cli import _print_text, main
 from depbee.contracts import GuardError, read_json
 from depbee.inputs.npm import build_package_request, check_package_spec
@@ -1042,6 +1049,237 @@ class PinnedLoaderTests(Fixture):
         # Only the baseline tarball came from the registry.
         self.assertEqual(self.served.opened, [self.packument_url, tarball_url("example", "1.0.1")])
         self.own_requests.assert_not_called()
+
+
+# For each statement of $env:DEPBEE_COMMANDS: its number of commands, the call operator, then each
+# command element (a string's value, anything else as written) as base64 of UTF-8. Parse errors
+# go to stderr as plain lines.
+READ_BACK = """
+$parser = [Management.Automation.Language.Parser]
+$errors = $null
+$ast = $parser::ParseInput($env:DEPBEE_COMMANDS, [ref]$null, [ref]$errors)
+if ($errors) {
+    foreach ($e in $errors) { [Console]::Error.WriteLine($e.Message + ' at: ' + $e.Extent.Text) }
+    exit 3
+}
+foreach ($statement in $ast.EndBlock.Statements) {
+    $command = $statement.PipelineElements
+    $words = foreach ($element in $command.CommandElements) {
+        $text = $element.Extent.Text
+        if ($element -is [Management.Automation.Language.StringConstantExpressionAst]) {
+            $text = $element.Value
+        }
+        [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text))
+    }
+    (@($command.Count, $command.InvocationOperator) + $words) -join ' '
+}
+"""
+
+
+PIN = ("depbee-analyzer @ git+https://github.com/26-Capstone-Project-Team01/depbee-analyzer@"
+       + "a" * 40)  # fmt: skip
+
+
+class PowerShellInstallCommandTests(unittest.TestCase):
+    """The analyzer install command of a Windows depbee (extractor._with_this_python), read back
+    by the parser of each PowerShell found here: Windows PowerShell 5.1 and PowerShell 7 (CI's
+    Windows runner has both, its Linux runner pwsh). The path and the requirement are opaque
+    text: whatever they hold, the parser must read one call of that Python with that one
+    requirement. Only the parse is checked: when it runs the call, 5.1 splits a requirement that
+    holds a double quote on python.exe's command line, and depbee's requirements never do."""
+
+    def test_each_powershell_reads_back_the_python_and_the_requirement(self):
+        shells = [shell for shell in ("powershell", "pwsh") if shutil.which(shell)]
+        if not shells:
+            self.skipTest("no PowerShell here")
+        # Each character that ends a PowerShell single-quoted string (' and U+2018 to U+201B),
+        # alone, doubled and next to another; the double quotes, $, backtick and brackets that
+        # mean something only outside one; spaces and Hangul. A path with [, ] or ` takes the
+        # other form (PowerShellLiteralPathTests), so those are in the requirement only.
+        odd = ("O'Brien O\u2019Brien \u2018\u201a\u201b '' \u2019\u2019 '\u2019 "
+               "\u201c\u201d\u201e\" $HOME 한글")  # fmt: skip
+        cases = [
+            ("C:\\Users\\A O\u2019Brien space\\venv\\Scripts\\python.exe", PIN),
+            (f"C:\\Users\\{odd}\\my env\\Scripts\\python.exe", ".[extract]"),
+            ("C:\\Program Files\\Python313\\python.exe", f"{odd} `$x [y] @ file:///C:/{odd}"),
+        ]
+        commands = []
+        for python, requirement in cases:
+            with mock.patch.object(os, "name", "nt"), mock.patch.object(sys, "executable", python):
+                said = _with_this_python(requirement)
+            self.assertTrue(said.startswith(", in PowerShell: & "), said)
+            commands.append(said.removeprefix(", in PowerShell: "))
+        for shell in shells:
+            with self.subTest(shell):
+                done = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                     base64.b64encode(READ_BACK.encode("utf-16-le")).decode()],
+                    env={**os.environ, "DEPBEE_COMMANDS": "\n".join(commands)},
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace",
+                    timeout=120,
+                )  # fmt: skip
+                self.assertEqual(done.returncode, 0, done.stderr)
+                read = [line.split(" ") for line in done.stdout.splitlines()]
+                self.assertEqual(
+                    [[*line[:2], *(base64.b64decode(word).decode() for word in line[2:])]
+                     for line in read],
+                    [["1", "Ampersand", python, "-m", "pip", "install", requirement]
+                     for python, requirement in cases],
+                )  # fmt: skip
+
+
+# A pip that installs nothing: the Python that ran it, its arguments and its working folder.
+# With FAKE_PIP_FAIL set it fails the way pip does: a message on stderr and a nonzero exit.
+FAKE_PIP = (
+    "import json, os, sys\n"
+    "print('PIP', json.dumps([sys.executable, sys.argv[1:], os.getcwd()]))\n"
+    "if os.environ.get('FAKE_PIP_FAIL'):\n"
+    "    sys.exit('ERROR: the stand-in pip failed')\n"
+)
+
+
+@unittest.skipUnless(os.name == "nt", "Windows paths and Windows PowerShell")
+class PowerShellLiteralPathTests(unittest.TestCase):
+    """The printed command run by each PowerShell found here, against stand-in virtual
+    environments whose pip only reports how it was run. A path with [, ] or ` is a pattern to
+    every PowerShell lookup: 5.1 ran a sibling environment that the pattern matched, 7 did so
+    once the named one was gone, and Start-Process ran a neighbor in the same folder. The command
+    must run that file with that requirement or nothing, leave pip and the session in the user's
+    folder (a checkout's .[extract] is relative to it), fail as a line ($? false) whenever pip
+    did not succeed, with pip's own error shown, and keep the user's variables and session. Each
+    run is made under the default and the Stop error preference, which must stay as it was."""
+
+    def setUp(self):
+        self.shells = [shell for shell in ("powershell", "pwsh") if shutil.which(shell)]
+        if not self.shells:
+            self.skipTest("no PowerShell here")
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+
+    def python(self, folder, exe="python.exe"):
+        """A stand-in environment under root/folder (made once) with FAKE_PIP as pip: its
+        python.exe copied under the name exe, or with exe None, removed."""
+        scripts = self.root / folder / "venv" / "Scripts"
+        if not scripts.is_dir():
+            venv.create(scripts.parent, with_pip=False)
+            (scripts.parent / "Lib" / "site-packages" / "pip").mkdir()
+            (scripts.parent / "Lib" / "site-packages" / "pip" / "__main__.py").write_text(
+                FAKE_PIP, "utf-8")  # fmt: skip
+        if exe is None:
+            (scripts / "python.exe").unlink()
+            return scripts / "python.exe"
+        if exe != "python.exe":
+            shutil.copyfile(scripts / "python.exe", scripts / exe)
+        return scripts / exe
+
+    def ran(self, python, where, requirement=".[extract]", **env):
+        """{(shell, error preference): (runs, $? of the line, the session's folder afterwards,
+        stderr)} for the command depbee prints for that Python and requirement, typed in folder
+        where; runs are (interpreter, arguments, pip's folder). Asserts that the preference and a
+        variable of the user's are as before and that the session went on after the line."""
+        with mock.patch.object(sys, "executable", str(python)):
+            command = _with_this_python(requirement).removeprefix(", in PowerShell: ")
+        # Without PowerShell 7's module path a Windows PowerShell child loads its own modules.
+        env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"} | env
+        env["WHERE"] = str(where)
+        ran = {}
+        for shell, preference in itertools.product(self.shells, ("Continue", "Stop")):
+            # 5.1 reads a start folder with [ ] as a pattern too: enter it as a user should.
+            script = (f"$ErrorActionPreference = '{preference}'\n$p = 'user'\n"
+                      "Set-Location -LiteralPath $env:WHERE\n"
+                      f"try {{ {command}; 'OK ' + $? }} "
+                      "catch { [Console]::Error.WriteLine($_.ToString()) } finally { "
+                      "'HERE ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("
+                      "(Get-Location).ProviderPath))\n'PREF ' + $ErrorActionPreference }\n"
+                      "'VAR ' + $p\n")  # fmt: skip
+            done = subprocess.run(
+                [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                 base64.b64encode(script.encode("utf-16-le")).decode()],
+                cwd=self.root, env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                text=True, errors="replace", timeout=120,
+            )  # fmt: skip
+            lines = done.stdout.splitlines()
+            self.assertIn(f"PREF {preference}", lines, (shell, done.stderr))
+            self.assertIn("VAR user", lines, (shell, done.stderr))
+            pips = [json.loads(line[4:]) for line in lines if line.startswith("PIP ")]
+            runs = [(Path(exe), args, Path(cwd)) for exe, args, cwd in pips]
+            ok = [line == "OK True" for line in lines if line.startswith("OK ")]
+            here = [base64.b64decode(line[5:]).decode() for line in lines if line[:5] == "HERE "]
+            ran[shell, preference] = (runs, ok == [True], Path(here[0]) if here else None,
+                                      done.stderr)  # fmt: skip
+        return ran
+
+    def exits(self, python, **env):
+        """{(shell, error preference): exit code} when the printed line is the whole script. A
+        line whose failure ends only one statement inside it would exit 0 here."""
+        with mock.patch.object(sys, "executable", str(python)):
+            command = _with_this_python(".[extract]").removeprefix(", in PowerShell: ")
+        env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"} | env
+        codes = {}
+        for shell, preference in itertools.product(self.shells, ("Continue", "Stop")):
+            script = f"$ErrorActionPreference = '{preference}'\n{command}"
+            codes[shell, preference] = subprocess.run(
+                [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                 base64.b64encode(script.encode("utf-16-le")).decode()],
+                cwd=self.root, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=120,
+            ).returncode  # fmt: skip
+        return codes
+
+    def test_that_python_runs_in_the_users_folder_and_a_pattern_match_never_does(self):
+        named = "A O\u2019Brien 'q' 한글"
+        checkout = self.root / "checkout [c] O\u2019Brien"
+        checkout.mkdir()
+        cases = [  # folder, file name, decoys as (folder, file name), requirement
+            (named, "python.exe", [], ".[extract]"),
+            (f"proj [old] {named}", "python.exe",
+             [(f"proj o {named}", "python.exe"), (f"proj `[old`] {named}", "python.exe")], PIN),
+            ("open x[1", "python.exe", [], ".[extract]"),
+            ("space [s]", "py thon.exe", [], ".[extract]"),
+            ("pct %PATH% 한글", "py[thon.exe", [], ".[extract]"),
+            ("names", "py[t]x.exe", [("names", "pytx.exe")], PIN),
+            ("names", "py`y.exe", [("names", "pyy.exe")], ".[extract]"),
+        ]  # fmt: skip
+        for folder, exe, decoys, requirement in cases:
+            with self.subTest(f"{folder}/{exe}"):
+                for decoy in decoys:
+                    self.python(*decoy)
+                python = self.python(folder, exe)
+                for key, (runs, ok, here, err) in self.ran(python, checkout, requirement).items():
+                    self.assertEqual(len(runs), 1, (key, runs, err))
+                    found, args, cwd = runs[0]
+                    self.assertTrue(found.samefile(python), (key, found))
+                    self.assertEqual(args, ["install", requirement], key)
+                    self.assertTrue(cwd.samefile(checkout), (key, cwd))
+                    self.assertTrue(ok, (key, err))
+                    self.assertTrue(here.samefile(checkout), (key, here))
+
+    def test_a_pip_failure_fails_the_line_with_pips_own_error(self):
+        for python in (self.python("plain"), self.python("proj [old]")):
+            with self.subTest(python.parents[2].name):
+                for key, (runs, ok, here, err) in self.ran(python, self.root,
+                                                           FAKE_PIP_FAIL="1").items():  # fmt: skip
+                    self.assertEqual(len(runs), 1, (key, err))
+                    self.assertFalse(ok, key)
+                    self.assertIn("ERROR: the stand-in pip failed", err, key)
+                    self.assertTrue(here.samefile(self.root), (key, here))
+                for key, code in self.exits(python, FAKE_PIP_FAIL="1").items():
+                    self.assertNotEqual(code, 0, key)
+
+    def test_a_missing_python_runs_nothing_not_even_where_the_user_stands(self):
+        # Each is next to or matched by a stand-in that must not run; the user stands in its folder.
+        cases = [
+            (self.root / "gone [old]" / "venv" / "Scripts" / "python.exe", self.python("gone o")),
+            (self.python("nopy [old]", None), self.python("nopy o")),
+            (self.python("names").with_name("py[t]hon.exe"), self.python("names")),
+        ]
+        for missing, other in cases:
+            with self.subTest(f"{missing.parents[2].name}/{missing.name}"):
+                for key, (runs, ok, here, err) in self.ran(missing, other.parent).items():
+                    self.assertEqual(runs, [], key)
+                    self.assertFalse(ok, key)
+                    self.assertTrue(err.strip(), key)  # PowerShell says why
+                    self.assertTrue(here.samefile(other.parent), (key, here))
+                for key, code in self.exits(missing).items():
+                    self.assertNotEqual(code, 0, key)
 
 
 if __name__ == "__main__":
