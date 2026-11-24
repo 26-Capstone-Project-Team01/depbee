@@ -244,15 +244,21 @@ class PageTests(DashboardFixture):
             report = {**self.scan_with(0.9), "model_id": None}
             report["results"] = [{**row, **changes}]
             html = self.page(f"/runs/{self.record(report)}")
-            found = re.search(r'<span class="ident">[^<]*</span> <span class="move">(.*?)</span></h3>', html)
+            found = re.search(
+                r'<span class="ident">[^<]*</span> <span class="move">(.*?)</span></h3>', html
+            )
             return re.sub(r"<[^>]+>", "", found.group(1)), html
 
         # A removal is the stored status, never a missing version.
         before, after = row["before_version"], row["after_version"]
-        self.assertEqual(title(after_version=None, status="removed", score=None)[0], f"{before} →에서 삭제")
+        self.assertEqual(
+            title(after_version=None, status="removed", score=None)[0], f"{before} →에서 삭제"
+        )
         self.assertEqual(title(after_version=None, status="incomplete", score=None)[0], before)
         self.assertEqual(title(before_version=None)[0], after)  # not said to be new
-        moved, html = title(before_version=None, after_version=None, status="incomplete", score=None)
+        moved, html = title(
+            before_version=None, after_version=None, status="incomplete", score=None
+        )
         self.assertEqual(moved, "버전 기록 없음")
         self.assertNotIn("None", moved)
         # The band says every count of a lockfile's report, 0 included, and a missing model.
@@ -302,12 +308,18 @@ class PageTests(DashboardFixture):
         self.assertIsNone(chart(entries[:1]))
         self.assertIsNone(chart([]))
         # The highest run is the stored score's, not the drawn spot's.
-        close = [{**entries[0], "id": 2, "peak_score": 0.5000001}, {**entries[0], "id": 1, "peak_score": 0.4999999}]
+        close = [
+            {**entries[0], "id": 2, "peak_score": 0.5000001},
+            {**entries[0], "id": 1, "peak_score": 0.4999999},
+        ]
         found = chart(close)
         self.assertIn("가장 높은 값은 실행 #2의", found["summary"])
         self.assertIn("판정 기준 이상 1회", found["summary"])
         # Runs whose threshold cannot be compared are said to be so, not counted as under it.
-        blind = [{**entries[0], "id": 2, "threshold": None}, {**entries[0], "id": 1, "threshold": -0.1}]
+        blind = [
+            {**entries[0], "id": 2, "threshold": None},
+            {**entries[0], "id": 1, "threshold": -0.1},
+        ]
         found = chart(blind)
         self.assertIn("기준을 비교할 수 없는 실행 2회", found["summary"])
         self.assertNotIn("판정 기준 이상", found["summary"])
@@ -318,9 +330,37 @@ class PageTests(DashboardFixture):
         found = chart(tiny)
         self.assertFalse(found["inline"])
         self.assertEqual(len([p for p in found["points"] if p["over"]]), 10)
-        # Two runs leave room between them, but not past the chart's two ends.
-        self.assertFalse(chart(tiny[:2])["inline"])
-        self.assertTrue(chart([{**entries[0], "id": 2, "peak_score": 0.87}, {**entries[0], "id": 1}])["inline"])
+        # Two runs leave room: a value runs from its point at the value axis's side and ends at
+        # its point at the box's other end, inside both.
+        found = chart(tiny[:2])
+        self.assertTrue(found["inline"])
+        self.assertEqual(
+            [(p["anchor"], p["lx"]) for p in found["points"]], [("start", 41), ("end", 423)]
+        )
+        found = chart(
+            [
+                {**entries[0], "id": 2, "peak_score": 0.87},
+                {**entries[0], "id": 1, "peak_score": 0.87},
+            ]
+        )
+        self.assertTrue(found["inline"])
+        self.assertEqual(found["points"][0]["anchor"], "start")  # clear of the axis's "1"
+        # A value at 1 has its room above the box (style.css gives the box its padding).
+        self.assertTrue(
+            chart(
+                [
+                    {**entries[0], "id": n, "peak_score": s}
+                    for n, s in ((3, 1.0), (2, 0.999), (1, 1.0))
+                ]
+            )["inline"]
+        )
+        # Run numbers that do not fit between the points: every few, the newest always.
+        ids = [{**entries[0], "id": 100000 + n} for n in range(9, -1, -1)]
+        ticks = [p["tick"] for p in chart(ids)["points"]]
+        self.assertTrue(ticks[-1])
+        self.assertLess(sum(ticks), 10)
+        self.assertNotIn([True, True], [ticks[n : n + 2] for n in range(9)])
+        self.assertTrue(all(p["tick"] for p in chart(entries)["points"]))
 
     def test_the_history_view_draws_the_chart_above_the_table(self):
         history.register_project(self.project)
@@ -339,7 +379,10 @@ class PageTests(DashboardFixture):
         )
         self.assertNotIn("<meter", html)
         # Never drawn smaller than its own size: a narrow page scrolls it inside its box.
-        self.assertIn('<div class="scroll chart-scroll" role="region" aria-label="점수 그래프" tabindex="0">', html)
+        self.assertIn(
+            '<div class="scroll chart-scroll" role="region" aria-label="점수 그래프" tabindex="0">',
+            html,
+        )
         # The threshold is drawn over the line, so a line on it does not hide it.
         svg = html.split('<svg class="score-chart"', 1)[1].split("</svg>", 1)[0]
         self.assertLess(svg.index('class="line"'), svg.index('class="threshold"'))

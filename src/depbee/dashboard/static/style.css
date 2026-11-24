@@ -698,7 +698,7 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 /* The history view's score chart: drawn by the server as attributes; colours and lines here. */
 /* Never drawn below its own 440px, so its text stays 12px or more: a narrow page scrolls it
    inside its box, as the table under it. */
-.chart-scroll { max-width: 36rem; margin: .5rem 0 .75rem; }
+.chart-scroll { max-width: 36rem; margin: .5rem 0 .75rem; padding-top: 1rem; }
 .score-chart { display: block; width: 100%; min-width: 440px; height: auto; overflow: visible; }
 .score-chart .grid { stroke: var(--line); stroke-width: 1; }
 .score-chart .axis { stroke: var(--line-2); stroke-width: 1.5; }
@@ -710,5 +710,5 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 .score-chart text { fill: var(--muted); font: 600 12px var(--mono); }
 .score-chart .tick-label { text-anchor: end; }
 .score-chart .run-label { text-anchor: middle; }
-.score-chart .value { fill: var(--risk); font-weight: 700; text-anchor: middle; }
+.score-chart .value { fill: var(--risk); font-weight: 700; }
 .chart-values .ident { color: var(--risk); font-family: var(--mono); font-weight: 700; overflow-wrap: anywhere; }

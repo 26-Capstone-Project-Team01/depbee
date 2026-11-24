@@ -161,6 +161,10 @@ class FocusAndPickTests(unittest.TestCase):
         css = strip_comments((STATIC / "style.css").read_text("utf-8"))
         chart = re.search(r"^\.score-chart \{([^}]*)\}", css, re.M).group(1)
         self.assertIn("min-width: 440px", chart)  # its 12px text stays 12px or more
+        # Room above the chart for a value drawn over a point at 1, inside the box that scrolls.
+        self.assertRegex(css, r"(?m)^\.chart-scroll \{[^}]*padding-top: 1rem")
+        # Where a value stands is the chart's own attribute, not the stylesheet's.
+        self.assertNotRegex(css, r"(?m)^\.score-chart \.value \{[^}]*text-anchor")
         self.assertRegex(css, r"(?m)^\.score-chart text \{[^}]*12px")
         summary = re.search(r"^\.named > summary \{([^}]*)\}", css, re.M).group(1)
         self.assertIn("width: auto", summary)  # the whole folded box opens it

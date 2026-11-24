@@ -29,6 +29,7 @@ moves the focus to the first candidate a check returned.
 import hashlib
 import hmac
 import importlib.resources
+import math
 import os
 import re
 import secrets
@@ -1320,14 +1321,30 @@ def _score_chart(entries: list[dict]) -> dict | None:
         {"x": point["x"], "y": spot(125 - point["threshold"] * 110)}
         for point in points if point["threshold"] is not None
     ]  # fmt: skip
-    # A value is drawn centred over its point in 12px mono, about 7.3 units a character: it
-    # fits when it clears its neighbours and both ends of the box.
+    # A value is drawn over its point in 12px mono, about 7.3 units a character: centred, or
+    # from the point where centring would reach the value axis's labels (x under 40), or up to
+    # the point where it would pass the box's right end. The values are drawn where no two of
+    # them meet; else the page lists them under the chart.
     labelled = [point for point in points if point["over"]]
-    inline = all(
-        len(point["label"]) * 7.3 + 6 <= step
-        and len(point["label"]) * 7.3 / 2 <= min(point["x"], 440 - point["x"])
-        for point in labelled
+    spans = []
+    for point in labelled:
+        width = len(point["label"]) * 7.3
+        if point["x"] - width / 2 < 40:
+            point["anchor"], point["lx"] = "start", spot(point["x"] - 3)
+            spans.append((point["lx"], point["lx"] + width))
+        elif point["x"] + width / 2 > 440:
+            point["anchor"], point["lx"] = "end", spot(point["x"] + 3)
+            spans.append((point["lx"] - width, point["lx"]))
+        else:
+            point["anchor"], point["lx"] = "middle", point["x"]
+            spans.append((point["x"] - width / 2, point["x"] + width / 2))
+    inline = all(left >= 37 and right <= 443 for left, right in spans) and all(
+        later[0] - earlier[1] >= 6 for earlier, later in zip(spans, spans[1:], strict=False)
     )
+    # The run numbers under the axis: every k-th where they would meet, the newest always.
+    every = max(1, math.ceil((max(len(f"#{point['id']}") for point in points) * 7.3 + 6) / step))
+    for index, point in enumerate(points):
+        point["tick"] = (len(points) - 1 - index) % every == 0
     scored = [point for point in points if point["score"] is not None]
     compared = [point for point in scored if point["threshold"] is not None]
     summary = f"최근 {len(points)}회 실행의 최고 ML 위험 점수"
