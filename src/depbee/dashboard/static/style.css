@@ -358,10 +358,10 @@ footer .note { max-width: none; }
 .filter-tabs { display: flex; flex-wrap: wrap; gap: 0 1rem; margin-top: .75rem; border-bottom: 1px solid var(--line); }
 .filter-tabs a, .filter-tabs .filter-off { display: inline-flex; align-items: center; gap: .35rem; min-height: 2.75rem; margin-bottom: -1px; padding: .2rem .1rem; border-bottom: 2px solid transparent; font-size: .9375rem; font-weight: 600; text-decoration: none; }
 .filter-tabs a:hover { border-bottom-color: var(--line-2); }
-.filter-tabs a[aria-current] { border-bottom-color: var(--ink); font-weight: 800; }
+.filter-tabs > [aria-current] { border-bottom-color: var(--ink); font-weight: 800; }
 .filter-tabs .filter-off { color: var(--muted); }
 .filter-count { font: 700 .8125rem/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--muted); }
-.filter-tabs a[aria-current] .filter-count { color: var(--ink); }
+.filter-tabs > [aria-current] .filter-count { color: var(--ink); }
 /* The search: a magnifier drawn in the field's left padding; the labels are for a screen reader. */
 .search-box { position: relative; }
 .search-box input { padding-left: 2.1rem; }
@@ -405,7 +405,7 @@ meter::-moz-meter-bar { background: var(--ink); }
 .packages .pick::after { content: ""; position: absolute; inset: 0; }
 /* The row's mark at the row's end, whatever the decision's words; a match of the known
    malicious list under the decision. */
-.packages .chev { position: absolute; top: 50%; right: .8rem; color: var(--muted); font-weight: 700; transform: translateY(-50%); }
+.packages .chev { position: absolute; top: 50%; right: .8rem; color: var(--muted); font-weight: 700; transform: translateY(-50%); pointer-events: none; }
 .packages tr:not(.inspect) > td:last-child { padding-right: 2rem; }
 .packages tr:not(.inspect) > td:last-child > * { margin: .15rem .5rem .15rem 0; vertical-align: middle; }
 .packages tr:not(.inspect) button { min-height: 2.25rem; padding: .2rem .7rem; font-size: .875rem; }
@@ -468,6 +468,7 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 .inspector .detectors dt { color: var(--muted); font-size: .75rem; font-weight: 600; }
 .inspector .detectors dd { margin: 0; font-size: .875rem; line-height: 1.35; }
 .inspector .detectors dd .cell { margin-right: .3rem; vertical-align: -.2em; }
+.inspector .detectors .score { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .gauge { display: block; width: 100%; height: .5rem; margin-top: .15rem; overflow: visible; }
 .gauge .track { fill: var(--line); }
 .gauge .fill { fill: var(--muted); }
@@ -576,6 +577,7 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
   .scroll .stack { min-width: 0; }
   .score-history tr { grid-template-columns: minmax(0, 1fr); }
   .packages tbody th { grid-area: 1 / 1; }
+  .packages tbody tr:not(.inspect) { padding-right: 2rem; }
   /* The picked row is a block here: its honey edge runs down the whole of it. */
   .packages tbody tr:has(.pick[aria-current]) { box-shadow: inset 4px 0 0 var(--honey); }
   .packages tbody tr:has(.pick[aria-current]) > th { box-shadow: none; }

@@ -374,7 +374,7 @@ class InspectorTests(test_dashboard.DashboardFixture):
                      "<b>일치</b>",
                      '<dt>정적 규칙</dt><dd><span class="cell none" aria-hidden="true"></span>'
                      "<b>미실행 (탐지기 연결 안 됨)</b>",
-                     "<dt>ML 점수</dt><dd><b>&lt;0.001 (기준 미만)</b>",
+                     '<dt>ML 점수</dt><dd><b class="score">&lt;0.001 (기준 미만)</b>',
                      '<rect class="fill" width="0" height="10"/>',
                      '<line class="tick" x1="50" x2="50" y1="0" y2="10"/>',
                      "정적 규칙: 실행하지 않은 것은 통과가 아닙니다.",
