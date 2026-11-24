@@ -213,12 +213,18 @@ class PageTests(DashboardFixture):
         meta = text.split('<ul class="meta">', 1)[1].split("</ul>", 1)[0]
         for part in ("모델: ", "기지 악성 목록: ", "규칙: ", f"종료 코드 {report['exit_code']}"):
             self.assertIn(part, meta)
-        warning = text.index('<p class="warning risk"><strong>경고: 기지 악성 기록 일치 1개.</strong>')
+        warning = text.index(
+            '<p class="warning risk"><strong>경고: 기지 악성 기록 일치 1개.</strong>'
+        )
         self.assertLess(text.index('<ul class="meta">'), warning)
         self.assertLess(warning, text.index('<section class="result'))
         # An item: its verdict, the package and the versions on its title line; the two sides
         # and its anchor as before.
-        hit = next(row for row in report["results"] if (row.get("known_malicious") or {}).get("status") == "hit")
+        hit = next(
+            row
+            for row in report["results"]
+            if (row.get("known_malicious") or {}).get("status") == "hit"
+        )
         position = report["results"].index(hit)
         # One version checked alone has no change to show; a lockfile's change has two.
         move = (hit["after_version"] or hit["before_version"] if package_input else
@@ -230,6 +236,66 @@ class PageTests(DashboardFixture):
                       text)  # fmt: skip
         for side in ('<p class="side">확인된 사실</p>', '<p class="side">모델 점수</p>'):
             self.assertIn(side, text)
+
+    def test_the_score_chart_draws_each_run_against_its_threshold(self):
+        from depbee.actions import score_text
+
+        chart = self.app._score_chart
+        scores = [0.001, 0.87, 0.012, 0.42, 0.61, 0.05]  # oldest first
+        entries = [{"id": n + 1, "created_at": "2026-11-21T00:00:00.000Z", "model_id": "m",
+                    "scored_count": 1, "peak_score": score, "threshold": 0.5}
+                   for n, score in enumerate(scores)][::-1]  # newest first, as the history gives  # fmt: skip
+        found = chart(entries)
+        self.assertEqual((found["width"], found["height"]), (440, 160))
+        self.assertEqual([p["x"] for p in found["points"]], [44, 119.2, 194.4, 269.6, 344.8, 420])
+        self.assertEqual(
+            [p["y"] for p in found["points"]], [124.89, 29.3, 123.68, 78.8, 57.9, 119.5]
+        )
+        self.assertEqual([p["id"] for p in found["points"]], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(found["threshold"], 70)  # one line: every run has the same threshold
+        self.assertEqual(found["ticks"], [])
+        self.assertEqual([p["id"] for p in found["points"] if p["over"]], [2, 5])
+        self.assertEqual(
+            [p["label"] for p in found["points"]], [score_text(s, 0.5) for s in scores]
+        )
+        self.assertEqual(
+            found["segments"], [" ".join(f"{p['x']},{p['y']}" for p in found["points"])]
+        )
+        self.assertIn("6회", found["summary"])
+        # Thresholds that differ: a short mark on each run instead of one line.
+        mixed = [
+            {**e, "threshold": t}
+            for e, t in zip(entries, (0.5, 0.6, 0.5, 0.7, 0.5, 0.4), strict=True)
+        ]
+        found = chart(mixed)
+        self.assertIsNone(found["threshold"])
+        self.assertEqual(len(found["ticks"]), 6)
+        # A run without a score is a gap in the line, its point empty.
+        gap = [dict(e) for e in entries]
+        gap[2]["peak_score"] = None  # the fourth from the oldest
+        found = chart(gap)
+        self.assertIsNone(found["points"][3]["y"])
+        self.assertEqual([len(s.split()) for s in found["segments"]], [3, 2])
+        # One run, or none: no chart.
+        self.assertIsNone(chart(entries[:1]))
+        self.assertIsNone(chart([]))
+
+    def test_the_history_view_draws_the_chart_above_the_table(self):
+        history.register_project(self.project)
+        history.record("scan", self.project, self.scan_with(0.9))
+        one = self.page("/projects/1/history")
+        self.assertNotIn('class="score-chart"', one)  # one run: the table alone
+        self.assertIn('class="score-history"', one)
+        history.record("scan", self.project, self.scan_with(0.1))
+        html = self.page("/projects/1/history")
+        self.assertRegex(
+            html, r'<svg class="score-chart" viewBox="0 0 440 160" role="img" aria-label="[^"]+">'
+        )
+        self.assertLess(
+            html.index('class="score-chart"'),
+            html.index('<table class="stack">', html.index("score-history")),
+        )
+        self.assertNotIn("<meter", html)
 
     def test_values_are_the_stored_ones_and_known_malicious_is_emphasized(self):
         report = json.loads((EXAMPLES / "03-known-malicious-low-ml.json").read_text("utf-8"))
@@ -495,7 +561,9 @@ class ConsoleTests(DashboardFixture):
         # Between 46rem and 80rem the projects take a line of their own under the menu: a
         # focused project with long counts fits the row whole, and a wrapped list leaves the
         # menu at the top. Without the script the page leaves room for a focused ring too.
-        medium = re.search(r"@media \(min-width: 46rem\) and \(max-width: 79\.99rem\) \{\n(.*?)\n\}", css, re.S)
+        medium = re.search(
+            r"@media \(min-width: 46rem\) and \(max-width: 79\.99rem\) \{\n(.*?)\n\}", css, re.S
+        )
         self.assertIn("  .tabs { flex-basis: 100%; }", medium.group(1))
         self.assertRegex(css, r"@media \(scripting: none\) and \(min-width: 46rem\) and "
                               r"\(max-width: 79\.99rem\) \{\n  \.tabs ul \{[^}]*\}\n  html \{ scroll-padding-block: 1\.5rem; \}")  # fmt: skip
@@ -524,7 +592,9 @@ class ConsoleTests(DashboardFixture):
                 html = self.page("/model")
                 order = re.findall(rf'<a class="tab" href="{re.escape(S)}/projects/(\d+)"', html)
                 self.assertEqual(order, [str(odd), str(fresh)])
-                self.assertEqual(self.tab(html, odd)[1:], ("none", "project", "최근 실행 알 수 없음"))
+                self.assertEqual(
+                    self.tab(html, odd)[1:], ("none", "project", "최근 실행 알 수 없음")
+                )
                 self.assertEqual(self.tab(html, fresh)[1:], ("none", "fresh", "실행 기록 없음"))
                 # The same mark, told apart in view by a word.
                 line = html.split(f'href="{S}/projects/{odd}"', 1)[1].split("</a>", 1)[0]
@@ -1314,7 +1384,9 @@ class CandidateTests(DashboardFixture):
                 for html in (packages, updates):
                     EscapeTests.check(self, html)
                 shown = escape(_clean(text))
-                self.assertIn(f"후보 버전 {shown}, 검사 근거 열기</span>", packages)  # the candidate
+                self.assertIn(
+                    f"후보 버전 {shown}, 검사 근거 열기</span>", packages
+                )  # the candidate
                 self.assertIn(f'<th scope="row">{shown}<span class="where">', updates)
                 self.assertIn(f"<li>{shown}</li>", updates)
                 self.assertIn(f", {shown})", updates)  # the check's target

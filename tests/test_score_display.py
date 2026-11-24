@@ -290,7 +290,11 @@ class DashboardTests(test_dashboard.DashboardFixture):
         # against its own threshold of 0.000001
         self.assertIn(f'<span class="score">{FULL}</span>', page)
         self.assertIn('<span class="score">&lt;0.001</span>', page)
-        self.assertIn(f'<meter min="0" max="1" value="{TINY!r}"', page)
+        # The chart above the table, no meter in it; a point's words are those of the table.
+        self.assertIn('<svg class="score-chart"', page)
+        self.assertNotIn("<meter", page)
+        chart = self.app._score_chart(rows)
+        self.assertEqual([point["label"] for point in chart["points"]], ["<0.001", FULL])
 
     def test_update_candidate_and_its_inspector_show_the_same_score(self):
         self.manifest = self.project / "package.json"

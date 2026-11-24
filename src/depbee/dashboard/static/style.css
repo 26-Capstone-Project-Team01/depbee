@@ -386,10 +386,6 @@ td ul { padding-left: 1.1rem; }
 .count .cell { margin-right: .35rem; vertical-align: -.1em; }
 .applies td:nth-child(-n+3) { white-space: nowrap; }
 .applies td:nth-child(6), .packages tbody th, .packages td:nth-child(2), .candidates tbody th, .candidates td:nth-child(2), .move { font-family: var(--mono); font-size: .875rem; }
-meter { width: 7rem; height: .6rem; margin-right: .4rem; vertical-align: middle; }
-meter::-webkit-meter-bar { height: .6rem; border: 0; border-radius: 0; background: var(--head); }
-meter::-webkit-meter-optimum-value { background: var(--ink); }
-meter::-moz-meter-bar { background: var(--ink); }
 
 /* The packages: what is installed, and in the last cell the candidate of a current check. The
    candidate itself is the link that picks it; the picked one is honey with an ink border. */
@@ -698,3 +694,17 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
   html { scroll-behavior: smooth; }
   button[aria-busy=true]::before { animation: turn .8s linear infinite; }
 }
+
+/* The history view's score chart: drawn by the server as attributes; colours and lines here. */
+.score-chart { display: block; width: 100%; max-width: 44rem; height: auto; margin: .5rem 0 .75rem; overflow: visible; }
+.score-chart .grid { stroke: var(--line); stroke-width: 1; }
+.score-chart .axis { stroke: var(--line-2); stroke-width: 1.5; }
+.score-chart .threshold { stroke: var(--risk); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.score-chart .line { fill: none; stroke: var(--muted); stroke-width: 2; }
+.score-chart .dot { fill: var(--ink); stroke: var(--sheet); stroke-width: 1.5; }
+.score-chart .dot.over { fill: var(--risk); }
+.score-chart .dot.empty { fill: var(--sheet); stroke: var(--muted); stroke-width: 1.5; }
+.score-chart text { fill: var(--muted); font: 600 11px var(--mono); }
+.score-chart .tick-label { text-anchor: end; }
+.score-chart .run-label { text-anchor: middle; }
+.score-chart .value { fill: var(--risk); font-weight: 700; text-anchor: middle; }

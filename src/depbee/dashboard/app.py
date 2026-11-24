@@ -650,9 +650,11 @@ def build_app(
         runs = [_run_row(run) for run in history.list_runs(found["id"])]
         applies = [_apply_row(row) for row in history.list_applies(found["id"])]
         head = _head(found, *_dependencies(found["path"]), _update_state(found), len(runs))
+        scores = history.list_run_scores(found["id"])
         return page(request, "history.html", project=found, section="history", runs=runs,
                     head=head,
-                    applies=applies, score_history=history.list_run_scores(found["id"]))  # fmt: skip
+                    applies=applies, score_history=scores,
+                    score_chart=_score_chart(scores))  # fmt: skip
 
     def run(request: Request) -> Response:
         run_id = request.path_params["run_id"]
@@ -1268,6 +1270,69 @@ def _selected(params, shown: list[dict]) -> dict | None:
     return next((row for row in shown if f"{row['run_id']}.{row['position']}" == given[0]), first)
 
 
+def _score_chart(entries: list[dict]) -> dict | None:
+    """The history view's chart of the peak ML score of each run (history.list_run_scores
+    entries, newest first), drawn on a 440 by 160 box: runs from the oldest on the left (x 44 to
+    420), scores from 0 at y 125 to 1 at y 15. None for fewer than two runs: the table is enough.
+
+    points (oldest first): x, y (None for a run without a score), id, label (the score as the
+    score filter words it, against that run's threshold) and over (at or over that threshold).
+    segments: the polyline points of each unbroken stretch of scored runs. threshold: the y of
+    the one threshold every run shares, else None and ticks: the x and y of each run's own.
+    summary: the chart said in words, for its aria-label."""
+    if len(entries) < 2:
+        return None
+
+    def number(value: object) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, int | float) or not 0 <= value <= 1:
+            return None
+        return value
+
+    def spot(value: float) -> float | int:
+        value = round(value, 2)
+        return int(value) if value == int(value) else value
+
+    runs = entries[::-1]
+    step = (420 - 44) / (len(runs) - 1)
+    points, segments, line = [], [], []
+    for index, run in enumerate(runs):
+        score, threshold = number(run["peak_score"]), number(run["threshold"])
+        x = spot(44 + index * step)
+        y = None if score is None else spot(125 - score * 110)
+        points.append({
+            "x": x, "y": y, "id": run["id"],
+            "label": "점수 없음" if score is None else score_text(score, run["threshold"]),
+            "over": score is not None and threshold is not None and score >= threshold,
+            "threshold": threshold,
+        })  # fmt: skip
+        if y is None:
+            if line:
+                segments.append(" ".join(line))
+            line = []
+        else:
+            line.append(f"{x},{y}")
+    if line:
+        segments.append(" ".join(line))
+    shared = {point["threshold"] for point in points}
+    threshold = next(iter(shared)) if len(shared) == 1 else None
+    ticks = [] if threshold is not None else [
+        {"x": point["x"], "y": spot(125 - point["threshold"] * 110)}
+        for point in points if point["threshold"] is not None
+    ]  # fmt: skip
+    scored = [point for point in points if point["y"] is not None]
+    over = sum(point["over"] for point in points)
+    summary = f"최근 {len(points)}회 실행의 최고 ML 위험 점수"
+    if scored:
+        top = min(scored, key=lambda point: point["y"])
+        summary += f", 가장 높은 값은 실행 #{top['id']}의 {top['label']}"
+    summary += f", 판정 기준 이상 {over}회"
+    if len(scored) < len(points):
+        summary += f", 점수 없는 실행 {len(points) - len(scored)}회"
+    return {"width": 440, "height": 160, "points": points, "segments": segments,
+            "threshold": None if threshold is None else spot(125 - threshold * 110),
+            "ticks": ticks, "summary": summary + "."}  # fmt: skip
+
+
 def _grouped(rows: list[dict]) -> list[dict]:
     """The updates view's candidates (_update_state rows) in groups, GROUPS' order, the empty ones
     left out: {key, cell (None for removals), label, rows (in the given order)}. A removal that
@@ -1677,7 +1742,8 @@ def _result(row: dict, report: dict) -> dict:
         "rules": _signal(row, "rules", RULE_STATUS_LABELS, report),
         "package": row["package"],
         "version": row["after_version"] or row["before_version"],
-        "before": row.get("before_version"), "after": row.get("after_version"),
+        "before": row.get("before_version"),
+        "after": row.get("after_version"),
         "location": row["location"],
         "npm": npm_link(row["package"]),
         "score": _ml_score(row, _text_label, report),
