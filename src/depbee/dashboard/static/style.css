@@ -593,11 +593,12 @@ meter::-moz-meter-bar { background: var(--ink); }
   .candidates td:nth-child(5) { grid-area: facts; }
   .candidates tr:not(.inspect) > td:last-child { grid-area: links; }
 }
-/* Medium: every project fits the bar as one row that scrolls sideways within itself. The row
-   is never narrower than one whole project with its focus ring (.tabs, else it takes a line of
-   its own), and a focused project is brought wholly into it with its ring (app.js). Without the
-   script the row wraps: a browser leaves a focused link whose edge shows where it is. */
+/* Medium: every project fits the bar as one row of its own under the menu, which scrolls
+   sideways within itself, and a focused project is brought wholly into it with its ring
+   (app.js). With JavaScript off the row wraps: a browser leaves a focused link whose edge shows
+   where it is, and the page leaves room for the ring of a link it scrolls to. */
 @media (min-width: 46rem) and (max-width: 79.99rem) {
+  .tabs { flex-basis: 100%; }
   .tabs ul { margin: -.375rem; padding: .375rem; overflow-x: auto; scroll-padding-inline: .5rem; }
   /* A project is one line here, its name cut at 10rem: a line that may wrap is only as wide as
      its widest part, which would put every count under its name. */
@@ -607,7 +608,7 @@ meter::-moz-meter-bar { background: var(--ink); }
 }
 @media (scripting: none) and (min-width: 46rem) and (max-width: 79.99rem) {
   .tabs ul { flex-wrap: wrap; overflow-x: visible; }
-  .tabs { flex-basis: 100%; }
+  html { scroll-padding-block: 1rem; }
 }
 @media (min-width: 60rem) {
   .jobs { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); }
