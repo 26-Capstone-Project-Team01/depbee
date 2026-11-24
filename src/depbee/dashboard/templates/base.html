@@ -14,8 +14,9 @@
 {# shell: a view with the inspector beside its list says class="split" (docs/dashboard-design.md). #}
 <body{% block shell %}{% endblock %}>
 <a class="skip" href="#main">본문으로 건너뛰기</a>
-{# The rail, a bar on a narrow screen: the brand, the registered projects as tabs (links, the
-   open one marked aria-current), then the overview, project management and the model page. #}
+{# The rail, a bar on a narrow screen: the brand, the theme, the overview, project management and
+   the model page, then the registered projects as tabs (links, the open one marked aria-current),
+   those that need a look first (app._rail). #}
 <header class="masthead">
 <a class="brand" href="{{ base }}/"><span class="comb" aria-hidden="true"><span></span><span></span><span></span></span><span class="wordmark">depbee</span> <span class="brand-note">npm 업데이트 검사</span></a>
 {# The theme: the system's, or the one chosen here (theme.py), saved by a POST that comes back to
@@ -27,20 +28,23 @@
 <button type="submit" name="theme" value="{{ theme_next }}">화면: {{ theme_words[theme][0] }}<span class="visually-hidden">. {{ theme_words[theme_next][1] }}</span></button>
 </form>
 {% endif %}
-<nav class="tabs" aria-label="프로젝트">
-<p class="rail-title">프로젝트 {{ tabs|length }}개</p>
-{% if tabs %}
-<ul>
-{% for tab in tabs %}
-<li{% if tab.current %} class="here"{% endif %}><a class="tab" href="{{ base }}/projects/{{ tab.id }}"{% if tab.current %} aria-current="{{ "page" if section == "packages" else "true" }}"{% endif %}><span class="cell {{ tab.cell }}" aria-hidden="true"></span><span class="tab-name">{{ tab.name }}</span> <span class="tab-state">{{ tab.state }}</span></a></li>
-{% endfor %}
-</ul>
-{% endif %}
-</nav>
 <nav class="aux" aria-label="관리와 정보">
 <a href="{{ base }}/"{% if section == "overview" %} aria-current="page"{% endif %}>프로젝트 현황판</a>
 <a class="tab manage" href="{{ base }}/?manage=1"{% if section == "manage" %} aria-current="page"{% endif %}>프로젝트 관리</a>
 <a href="{{ base }}/model"{% if section == "model" %} aria-current="page"{% endif %}>모델 정보</a>
+</nav>
+{# A project on one line: its mark, its name (the whole path on hover), its state said for a
+   screen reader, and the risk and hold counts of its newest run. #}
+<nav class="tabs" aria-label="프로젝트">
+<p class="rail-title">프로젝트 {{ tabs|length }}개{% if attention %} · 조치 필요 {{ attention }}{% endif %}</p>
+{% if rail %}
+<ul>
+{% for tab in rail %}
+{% set counts = tab.runs[0].counts if tab.found and tab.runs else none %}
+<li{% if tab.current %} class="here"{% endif %}><a class="tab" href="{{ base }}/projects/{{ tab.id }}" title="{{ tab.path }}"{% if tab.current %} aria-current="{{ "page" if section == "packages" else "true" }}"{% endif %}><span class="cell {{ tab.cell }}" aria-hidden="true"></span><span class="tab-name">{{ tab.name }}</span><span class="visually-hidden">, {{ tab.state }}</span><span class="tab-count">{% if counts and counts.flagged %}<span class="n-risk">위험 {{ counts.flagged }}</span>{% endif %}{% if counts and counts.flagged and counts.incomplete %} {% endif %}{% if counts and counts.incomplete %}<span class="n-hold">보류 {{ counts.incomplete }}</span>{% endif %}</span></a></li>
+{% endfor %}
+</ul>
+{% endif %}
 </nav>
 </header>
 <main id="main">

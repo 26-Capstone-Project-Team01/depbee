@@ -107,6 +107,10 @@ TAB_STATES = {
     "incomplete": ("hold", "보류"),
     "passed": ("pass", "통과"),
 }
+# The rail's order of the projects by their tab's mark (_rail): what needs a look first, then
+# what was never checked, then what passed. The first three are what the rail counts as needing
+# a look.
+RAIL_ORDER = ("gone", "risk", "hold", "none", "pass")
 # The overview's state of a project (_portfolio), in the order its chart lists them, what needs
 # a look first: the hexagon mark, the words, and whether the chart lists the state while no
 # project is in it. The first three are the stored status of the project's newest run.
@@ -408,7 +412,8 @@ def build_app(
         html = ENV.get_template(name).render(
             safety_note=SAFETY_NOTE, base=base, session=session, tabs=tabs, section=section,
             contained=mounted.root() is not None,
-            project=next((tab for tab in tabs if tab["current"]), None),
+            project=next((tab for tab in tabs if tab["current"]), None), rail=_rail(tabs),
+            attention=sum(tab["cell"] in RAIL_ORDER[:3] for tab in tabs),
             theme=chosen, theme_next=theme.next_of(chosen), theme_words=THEME_WORDS,
             theme_back=back if request.method == "GET" else None, **context,
         )  # fmt: skip
@@ -992,6 +997,13 @@ def _tabs(current: dict | None, recent: int = 1) -> list[dict]:
             "current": current is not None and project["id"] == current["id"],
         })  # fmt: skip
     return tabs
+
+
+def _rail(tabs: list[dict]) -> list[dict]:
+    """The tabs (_tabs) in the rail's order (RAIL_ORDER), each mark in registration order. The
+    mark is the tab's, a stored status: the rail hashes no file, so "파일 바뀜" is the
+    overview's alone."""
+    return sorted(tabs, key=lambda tab: RAIL_ORDER.index(tab["cell"]))
 
 
 def _portfolio(tabs: list[dict]) -> list[dict]:

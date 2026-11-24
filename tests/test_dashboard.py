@@ -338,15 +338,51 @@ class ConsoleTests(DashboardFixture):
         return path
 
     def tab(self, html, project_id):
-        """(the rest of the link's opening tag, cell, name, state) of a project's tab."""
+        """(the rest of the link's opening tag after its title, cell, name, state) of a
+        project's tab. The state is said for a screen reader; the counts follow it."""
         found = re.search(
-            rf'<a class="tab" href="{re.escape(S)}/projects/{project_id}"([^>]*)>'
+            rf'<a class="tab" href="{re.escape(S)}/projects/{project_id}" title="[^"]*"([^>]*)>'
             r'<span class="cell (\w+)" aria-hidden="true"></span>'
-            r'<span class="tab-name">([^<]*)</span> <span class="tab-state">([^<]*)</span></a>',
+            r'<span class="tab-name">([^<]*)</span>'
+            r'<span class="visually-hidden">, ([^<]*)</span>',
             html,
         )
         self.assertIsNotNone(found, project_id)
         return found.groups()
+
+    def test_the_rail_lists_its_menu_first_and_the_projects_that_need_a_look_first(self):
+        passed = history.register_project(self.folder("passed"))
+        flagged = history.register_project(self.project)
+        fresh = history.register_project(self.folder("fresh"))
+        held = history.register_project(self.folder("held"))
+        gone = history.register_project(self.folder("gone"))
+        history.record("scan", self.root / "passed", self.scan_with(0.1))
+        history.record("scan", self.project, self.scan_with(0.9))
+        history.record("scan", self.root / "held", self.scan_with(analyzer=False))
+        history.record("scan", self.root / "gone", self.scan_with(0.9))  # hidden by the folder
+        (self.root / "gone" / "package-lock.json").unlink()
+        (self.root / "gone").rmdir()
+        html = self.page("/model")
+        self.assertLess(html.index('<nav class="aux" aria-label="관리와 정보">'),
+                        html.index('<nav class="tabs" aria-label="프로젝트">'))  # fmt: skip
+        self.assertIn('<p class="rail-title">프로젝트 5개 · 조치 필요 3</p>', html)
+        order = [int(i) for i in re.findall(rf'<a class="tab" href="{re.escape(S)}/projects/(\d+)"', html)]
+        self.assertEqual(order, [gone, flagged, held, fresh, passed])
+        # Each line: the full path on hover, and the risk and hold counts of the newest run.
+        self.assertIn(f'href="{S}/projects/{flagged}" title="{self.project.resolve()}"', html)
+        counts = dict(re.findall(r'/projects/(\d+)" title="[^"]*"[^>]*><span class="cell \w+" '
+                                 r'aria-hidden="true"></span><span class="tab-name">[^<]*</span>'
+                                 r'<span class="visually-hidden">[^<]*</span>'
+                                 r'<span class="tab-count">((?:<span class="n-\w+">[^<]*</span> ?)*)'
+                                 r"</span></a>", html))  # fmt: skip
+        self.assertEqual(counts, {str(flagged): '<span class="n-risk">위험 1</span>',
+                                  str(held): '<span class="n-hold">보류 1</span>',
+                                  str(passed): "", str(fresh): "", str(gone): ""})  # fmt: skip
+
+    def test_the_rail_says_only_the_count_when_nothing_needs_a_look(self):
+        history.register_project(self.project)
+        history.record("scan", self.project, self.scan_with(0.1))
+        self.assertIn('<p class="rail-title">프로젝트 1개</p>', self.page("/model"))
 
     def test_without_a_project_the_first_page_is_one_button_that_adds_it(self):
         for url in ("/", "/?manage=1"):  # nothing to manage yet: the same page
@@ -1312,7 +1348,8 @@ class EscapeTests(DashboardFixture):
         self.assertNotIn("<img", html)
         self.assertNotIn("onmouseover='x", html)
         self.assertNotRegex(html, r'href="(?!/|#main"|https://www\.npmjs\.com/package/)')
-        self.assertNotIn('javascript:alert(1)"', html)
+        # A hostile path may end only a title (the rail's tooltip): inert, escaped text.
+        self.assertNotRegex(html, r'(?<! title)="[^"]*javascript:alert\(1\)"')
         for character in "\u202e\u200c\x1b\r":
             self.assertNotIn(character, html)
         self.assertTrue(all(c.isprintable() or c in "\n" for c in html))

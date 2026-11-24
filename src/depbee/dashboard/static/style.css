@@ -271,9 +271,13 @@ body.start { display: grid; grid-template-columns: minmax(0, 1fr); place-items: 
 .tabs ul { display: flex; gap: .25rem; max-width: none; margin: 0; padding: 0; list-style: none; }
 .tabs li { display: none; min-width: 0; }
 .tabs li.here { display: block; }
-.tab { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 0 .5rem; min-height: 2.75rem; padding: .3rem .7rem; }
+/* A project on one line: its mark, its name cut short with an ellipsis, and on the right the
+   risk and hold counts of its newest run, in the rail's verdict colours. */
+.tab { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0 .5rem; min-height: 2.75rem; padding: .3rem .7rem; }
 .tab-name { overflow: hidden; font-size: .9375rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
-.tab-state { grid-column: 2; overflow: hidden; color: var(--rail-muted); font-size: .8125rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.tab-count { display: flex; gap: .4rem; font-size: .75rem; font-weight: 700; white-space: nowrap; }
+.tab-count .n-risk { color: var(--rail-risk); }
+.tab-count .n-hold { color: var(--rail-hold); }
 .tab:hover, .aux a:hover { background: var(--rail-current); --ground: var(--rail-current); }
 .tab, .aux a { border-radius: 6px; }
 .tab[aria-current], .aux a[aria-current] { background: var(--rail-current); box-shadow: inset 0 -3px 0 var(--honey); font-weight: 800; --ground: var(--rail-current); }
@@ -594,7 +598,7 @@ meter::-moz-meter-bar { background: var(--ink); }
   .tabs li { display: block; }
   .tab { padding: .45rem .6rem .5rem .8rem; }
   .tab[aria-current], .aux a[aria-current] { box-shadow: inset 4px 0 0 var(--honey); }
-  .aux { flex-direction: column; margin: .9rem 0 0; padding-top: .9rem; border-top: 1px solid var(--rail-line); }
+  .aux { flex-direction: column; margin: 0 0 .9rem; padding-bottom: .9rem; border-bottom: 1px solid var(--rail-line); }
   .aux a { padding-left: .8rem; }
   main, footer { grid-column: 2; }
 }
