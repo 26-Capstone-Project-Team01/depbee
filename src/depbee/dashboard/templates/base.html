@@ -34,14 +34,15 @@
 <a href="{{ base }}/model"{% if section == "model" %} aria-current="page"{% endif %}>모델 정보</a>
 </nav>
 {# A project on one line: its mark, its name (the whole path on hover), its state said for a
-   screen reader, and the risk and hold counts of its newest run. #}
+   screen reader, and the risk and hold counts of its newest run; a run whose result is unknown
+   says so in view, as its mark is that of no run (app._rail). #}
 <nav class="tabs" aria-label="프로젝트">
 <p class="rail-title">프로젝트 {{ tabs|length }}개 · 조치 필요 {{ attention }}</p>
 {% if rail %}
 <ul>
 {% for tab in rail %}
 {% set counts = tab.runs[0].counts if tab.runs else none %}
-<li{% if tab.current %} class="here"{% endif %}><a class="tab" href="{{ base }}/projects/{{ tab.id }}" title="{{ tab.path }}"{% if tab.current %} aria-current="{{ "page" if section == "packages" else "true" }}"{% endif %}><span class="cell {{ tab.cell }}" aria-hidden="true"></span><span class="tab-name">{{ tab.name }}</span><span class="visually-hidden">, {{ tab.state }}</span><span class="tab-count">{% if counts and counts.flagged %}<span class="n-risk">위험 {{ counts.flagged }}</span>{% endif %}{% if counts and counts.flagged and counts.incomplete %} {% endif %}{% if counts and counts.incomplete %}<span class="n-hold">보류 {{ counts.incomplete }}</span>{% endif %}</span></a></li>
+<li{% if tab.current %} class="here"{% endif %}><a class="tab" href="{{ base }}/projects/{{ tab.id }}" title="{{ tab.path }}"{% if tab.current %} aria-current="{{ "page" if section == "packages" else "true" }}"{% endif %}><span class="cell {{ tab.cell }}" aria-hidden="true"></span><span class="tab-name">{{ tab.name }}</span><span class="visually-hidden">, {{ tab.state }}</span><span class="tab-count">{% if counts and counts.flagged %}<span class="n-risk">위험 {{ counts.flagged }}</span>{% endif %}{% if counts and counts.flagged and counts.incomplete %} {% endif %}{% if counts and counts.incomplete %}<span class="n-hold">보류 {{ counts.incomplete }}</span>{% endif %}{% if tab.cell == "none" and tab.runs %}<span class="n-unknown">알 수 없음</span>{% endif %}</span></a></li>
 {% endfor %}
 </ul>
 {% endif %}

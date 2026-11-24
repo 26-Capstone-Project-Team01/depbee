@@ -423,6 +423,20 @@ class ConsoleTests(DashboardFixture):
                                   str(passed): "", str(fresh): "",
                                   str(gone): '<span class="n-risk">위험 1</span>'})  # fmt: skip
 
+    def test_the_bar_keeps_each_name_in_view(self):
+        css = (Path(self.app.__file__).parent / "static" / "style.css").read_text("utf-8")
+        # The project row is never narrower than one whole project with its ring: below 46rem
+        # the open one has its name, between 46rem and 80rem the row scrolls.
+        self.assertRegex(css, r"(?m)^\.tabs \{ flex: 1 1 15rem;")
+        # Without the script (app.js brings a focused project into the row) the row wraps.
+        found = re.search(r"@media \(scripting: none\) and \(min-width: 46rem\) and "
+                          r"\(max-width: 79\.99rem\) \{\n  \.tabs ul \{([^}]*)\}", css)  # fmt: skip
+        self.assertIn("flex-wrap: wrap", found.group(1))
+        # The rail on a wide screen leaves room for the ring of a project it scrolls to.
+        self.assertRegex(css, r"(?m)^  \.masthead \{ position: sticky;[^}]*scroll-padding-block: 6px;")
+        # The views' links wrap rather than push a narrow page sideways.
+        self.assertRegex(css, r"(?m)^\.views \{ display: flex; flex-wrap: wrap;")
+
     def test_the_rail_says_0_when_nothing_needs_a_look(self):
         history.register_project(self.project)
         history.record("scan", self.project, self.scan_with(0.1))
@@ -442,6 +456,11 @@ class ConsoleTests(DashboardFixture):
                 self.assertEqual(order, [str(odd), str(fresh)])
                 self.assertEqual(self.tab(html, odd)[1:], ("none", "project", "최근 실행 알 수 없음"))
                 self.assertEqual(self.tab(html, fresh)[1:], ("none", "fresh", "실행 기록 없음"))
+                # The same mark, told apart in view by a word.
+                line = html.split(f'href="{S}/projects/{odd}"', 1)[1].split("</a>", 1)[0]
+                self.assertIn('<span class="tab-count"><span class="n-unknown">알 수 없음</span></span>', line)
+                line = html.split(f'href="{S}/projects/{fresh}"', 1)[1].split("</a>", 1)[0]
+                self.assertIn('<span class="tab-count"></span>', line)
 
     def test_without_a_project_the_first_page_is_one_button_that_adds_it(self):
         for url in ("/", "/?manage=1"):  # nothing to manage yet: the same page
@@ -743,6 +762,17 @@ class CandidateTests(DashboardFixture):
                                     r"(?:(?!</div>).)*확인은 몇 초에서 수십 초 걸립니다")  # fmt: skip
         # The buttons each page names are the ones its head has.
         self.assertNotIn("전체 업데이트 확인", self.page(f"{self.packages}/history"))
+
+    def test_a_gone_folder_without_a_run_names_no_button(self):
+        moved = self.project.with_name(self.project.name + "-moved")
+        self.project.rename(moved)
+        try:
+            history_html = self.page(f"{self.packages}/history")
+        finally:
+            moved.rename(self.project)
+        self.assertIn("기록된 실행이 없습니다.", history_html)
+        self.assertNotIn('위의 "업데이트 후보 확인"', history_html)
+        self.assertNotIn('id="preview-project"', history_html)
 
     def test_the_updates_tab_counts_the_current_candidates_and_stands_out(self):
         self.check()

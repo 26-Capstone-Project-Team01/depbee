@@ -283,7 +283,7 @@ body.start { display: grid; grid-template-columns: minmax(0, 1fr); place-items: 
 .theme button { min-height: 2.75rem; padding: .3rem .7rem; border-color: var(--rail-line); background: transparent; color: var(--rail-ink); font-size: .8125rem; font-weight: 600; }
 .theme button:hover { border-color: var(--rail-muted); background: var(--rail-current); }
 .theme button[aria-disabled=true] { border-color: var(--rail-line); background: transparent; color: var(--rail-muted); }
-.tabs { flex: 1 1 9rem; min-width: 0; }
+.tabs { flex: 1 1 15rem; min-width: 0; }
 .tabs ul { display: flex; gap: .25rem; max-width: none; margin: 0; padding: 0; list-style: none; }
 .tabs li { display: none; min-width: 0; }
 .tabs li.here { display: block; }
@@ -296,6 +296,7 @@ body.start { display: grid; grid-template-columns: minmax(0, 1fr); place-items: 
 .tab-count { display: flex; gap: .4rem; font-size: .8125rem; font-weight: 700; white-space: nowrap; }
 .tab-count .n-risk { color: var(--rail-risk); }
 .tab-count .n-hold { color: var(--rail-hold); }
+.tab-count .n-unknown { color: var(--rail-muted); font-weight: 600; }
 .tab:hover, .aux a:hover { background: var(--rail-current); --ground: var(--rail-current); }
 .tab, .aux a { border-radius: 6px; }
 .tab[aria-current], .aux a[aria-current] { background: var(--rail-current); box-shadow: inset 0 -3px 0 var(--honey); font-weight: 800; --ground: var(--rail-current); }
@@ -324,7 +325,7 @@ footer .note { max-width: none; }
 .path, .where { color: var(--muted); font-family: var(--mono); font-size: .8125rem; overflow-wrap: anywhere; }
 .path { margin: 0; }
 .where { display: block; font-weight: 400; }
-.views { display: flex; gap: 1.5rem; margin-top: .9rem; border-bottom: 1px solid var(--line-2); }
+.views { display: flex; flex-wrap: wrap; gap: 0 1.5rem; margin-top: .9rem; border-bottom: 1px solid var(--line-2); }
 .views a { display: inline-flex; flex: 1; align-items: center; justify-content: center; min-height: 2.75rem; margin-bottom: -1px; padding: .4rem .25rem; border-bottom: 3px solid transparent; font-weight: 600; text-decoration: none; }
 .views a:hover { border-bottom-color: var(--line-2); }
 .views a[aria-current] { border-bottom-color: var(--honey); font-weight: 800; }
@@ -590,12 +591,15 @@ meter::-moz-meter-bar { background: var(--ink); }
   .candidates tr:not(.inspect) > td:last-child { grid-area: links; }
 }
 /* Medium: every project fits the bar as one row that scrolls sideways within itself. The row
-   is never narrower than one whole project with its focus ring (else it takes a line of its
-   own), and a focused project is brought wholly into it with its ring (app.js). */
+   is never narrower than one whole project with its focus ring (.tabs, else it takes a line of
+   its own), and a focused project is brought wholly into it with its ring (app.js). Without the
+   script the row wraps: a browser leaves a focused link whose edge shows where it is. */
 @media (min-width: 46rem) and (max-width: 79.99rem) {
-  .tabs { flex-basis: 15rem; }
   .tabs ul { margin: -.375rem; padding: .375rem; overflow-x: auto; scroll-padding-inline: .5rem; }
   .tabs li { display: block; flex: none; max-width: 14rem; }
+}
+@media (scripting: none) and (min-width: 46rem) and (max-width: 79.99rem) {
+  .tabs ul { flex-wrap: wrap; overflow-x: visible; }
 }
 @media (min-width: 60rem) {
   .jobs { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); }
@@ -618,7 +622,7 @@ meter::-moz-meter-bar { background: var(--ink); }
 /* Widest: the bar becomes the rail, with every project listed under the brand. */
 @media (min-width: 80rem) {
   body { display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); grid-template-rows: 1fr auto; }
-  .masthead { position: sticky; top: 0; grid-row: 1 / span 2; flex-flow: column nowrap; align-items: stretch; gap: 0; height: 100vh; padding: 1.1rem .75rem 1rem; overflow-y: auto; border-right: 1px solid var(--rail-line); border-bottom: 0; }
+  .masthead { position: sticky; top: 0; grid-row: 1 / span 2; flex-flow: column nowrap; align-items: stretch; gap: 0; height: 100vh; padding: 1.1rem .75rem 1rem; overflow-y: auto; border-right: 1px solid var(--rail-line); border-bottom: 0; scroll-padding-block: 6px; }
   .brand, .aux { flex: none; }
   .theme { margin: 0 .35rem 1rem; }
   .theme button { width: 100%; justify-content: flex-start; }
