@@ -101,9 +101,13 @@ class ContainerFixture(DashboardFixture):
     def unhinted(self, page):
         """The page without what says where the folder button leads: its note paragraphs (the
         hints of the folder button and of the typed path are among them), the start page's hint
-        for a screen reader, and the folder button's words while its request runs. They alone
-        differ between a container's page and a desktop's."""
+        for a screen reader, the folder button's words while its request runs, and the footer's
+        explanation of where the page opens (its help popover). They alone differ between a
+        container's page and a desktop's."""
         page = re.sub(r'<p class="note"[^>]*>[^<]*</p>\n', "", page)
+        page = re.sub(
+            r'<div class="help-pop" id="help-where" popover>.*?</div>', "", page, flags=re.S
+        )
         page = re.sub(r'<p class="visually-hidden" id="start-hint">[^<]*</p>\n', "", page)
         folder_button = r">프로젝트 (?:추가|폴더 선택)</button>"
         return re.sub(rf' data-busy-label="[^"]*"(?={folder_button})', "", page)

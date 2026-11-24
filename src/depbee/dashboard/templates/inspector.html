@@ -109,7 +109,8 @@
 <li><a class="action" href="{{ url }}/updates?item={{ key }}#candidate-evidence">업데이트 화면에서 보기</a></li>
 {% endif %}
 </ul>
-<p class="note">이 화면에서는 반영하지 않습니다. 반영 여부는 이 후보 하나를 본 결과이고, 실제 반영은 미리보기에서 그 확인의 전체 결과로 정합니다. 미리보기는 대시보드를 끄면 사라집니다.</p>
+<p class="note">이 화면에서는 반영하지 않습니다. <button type="button" class="help" popovertarget="help-apply" aria-label="반영은 어디서 하나요"><span aria-hidden="true">?</span></button></p>
+<div class="help-pop" id="help-apply" popover><p>반영 여부는 이 후보 하나를 본 결과이고, 실제 반영은 미리보기에서 그 확인의 전체 결과로 정합니다. 미리보기는 대시보드를 끄면 사라집니다.</p></div>
 </div>
 </aside>
 {% else %}

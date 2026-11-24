@@ -24,6 +24,7 @@
   --line-2: #cbbd9a;
   --muted: #665e4f;
   --shadow: 0 1px 0 rgba(60, 45, 10, .07);
+  --shadow-pop: 0 10px 30px rgba(28, 25, 18, .2);
   /* Honey: the brand, the filled buttons, and the open project, view, filter and candidate.
      On honey the text is ink (on-honey). */
   --honey: #f0ae18;
@@ -79,6 +80,7 @@
     --line-2: #3b414c;
     --muted: #9ca3af;
     --shadow: none;
+    --shadow-pop: 0 10px 30px rgba(0, 0, 0, .55);
     --honey: #f5b82e;
     --honey-strong: #f7c552;
     --honey-wash: #2a2413;
@@ -116,6 +118,7 @@
   --line-2: #3b414c;
   --muted: #9ca3af;
   --shadow: none;
+  --shadow-pop: 0 10px 30px rgba(0, 0, 0, .55);
   --honey: #f5b82e;
   --honey-strong: #f7c552;
   --honey-wash: #2a2413;
@@ -262,6 +265,19 @@ body.start { display: grid; grid-template-columns: minmax(0, 1fr); place-items: 
 .comb span:nth-child(2) { left: .93rem; background: var(--rail-ink); }
 .comb span:nth-child(2)::after { content: ""; position: absolute; inset: 1.5px; background: var(--rail-bg); clip-path: var(--hex); }
 .comb span:nth-child(3) { top: .78rem; left: .465rem; background: var(--rail-ink); }
+/* A question mark that opens an explanation (popover, no script). The button is a target a
+   finger can hit around a small ring. A browser without popovers ignores the attribute and
+   shows the explanation in place, so nothing here hides a popover itself. */
+.help { display: inline-grid; place-items: center; width: 2.75rem; height: 2.75rem; min-height: 0; margin: -.6rem 0; padding: 0; border: 0; background: none; color: var(--muted); vertical-align: middle; }
+.help:hover { border: 0; background: none; color: var(--ink); }
+.help span { display: grid; place-items: center; width: 1.375rem; height: 1.375rem; border: 1.5px solid currentColor; border-radius: 50%; font-size: .8125rem; font-weight: 800; line-height: 1; }
+.help-pop { max-width: min(30rem, calc(100vw - 2rem)); padding: .9rem 1.1rem; border: 1px solid var(--line-2); border-radius: 8px; background: var(--sheet); color: var(--ink); box-shadow: var(--shadow-pop); font-size: .9375rem; }
+.help-pop:popover-open { margin: auto; }
+.help-pop p { margin: 0; }
+.help-pop p + p { margin-top: .6rem; }
+.titled { display: flex; align-items: center; gap: .25rem; }
+.titled h2 { margin: 0; }
+
 /* The theme button: quiet on the rail, a target a finger can hit. */
 .theme { margin: 0; }
 .theme button { min-height: 2.75rem; padding: .3rem .7rem; border-color: var(--rail-line); background: transparent; color: var(--rail-ink); font-size: .8125rem; font-weight: 600; }

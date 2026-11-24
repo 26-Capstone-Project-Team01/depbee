@@ -15,6 +15,7 @@ import re
 import sqlite3
 import sys
 import unittest
+from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from unittest import mock
@@ -587,9 +588,10 @@ class ConsoleTests(DashboardFixture):
             self.assertIn(f'<a href="{S}/projects/{project}/history">기록</a>에 그대로', html)
             for form in ("/previews", "/scans"):
                 self.assertNotIn(form, html)
-            # No button but the rail's theme one.
+            # No button but the rail's theme one and the question marks of the explanations.
             self.assertEqual(
-                html.count("<button"), html.count('<button type="submit" name="theme"')
+                html.count("<button"),
+                html.count('<button type="submit" name="theme"') + html.count('class="help"'),
             )
         self.assertIn(f'<a href="{S}/runs/{run}">#{run}</a>', html)  # the history view
         self.assertIn("찾을 수 없음. 폴더를 원래 위치로", self.page("/?manage=1"))
@@ -633,6 +635,44 @@ class CandidateTests(DashboardFixture):
 
     def nothing(self):
         return {**self.report, "results": []}
+
+    def test_explanations_wait_behind_a_question_mark_and_safety_sentences_stay_in_view(self):
+        unchecked = self.page(self.packages)
+        self.check()  # a current candidate: the inspector beside the list
+        pages = {"unchecked": unchecked, "packages": self.page(self.packages),
+                 "updates": self.page(self.updates), "history": self.page(f"{self.packages}/history")}  # fmt: skip
+        session = "주소에 이번 실행의 세션 값이 들어 있으니 다른 사람에게 보이지 않게 합니다."
+        always = (SAFETY_NOTE, session)
+        shown = {
+            "unchecked": always + ("미확인은 확인된 후보 0개와 다릅니다",),
+            "packages": always + ("이 화면에서는 반영하지 않습니다.",),
+            "updates": always, "history": always,
+        }  # fmt: skip
+        for name, html in pages.items():
+            popovers = re.findall(
+                r'<div class="help-pop" id="([\w-]+)" popover>(.*?)</div>', html, re.S
+            )
+            self.assertTrue(popovers, name)
+            ids = re.findall(r'\sid="([^"]+)"', html)
+            self.assertEqual(len(ids), len(set(ids)), name)
+            targets = re.findall(r'<button type="button" class="help" popovertarget="([\w-]+)" '
+                                 r'aria-label="[^"]+">', html)  # fmt: skip
+            self.assertEqual(sorted(targets), sorted(pop for pop, _ in popovers), name)
+            self.assertEqual(html.count("popovertarget="), len(targets), name)
+            outside = re.sub(
+                r'<div class="help-pop" id="[\w-]+" popover>.*?</div>', "", html, flags=re.S
+            )
+            visible = " ".join(unescape(re.sub(r"<[^>]+>", " ", outside)).split())
+            for sentence in shown[name]:
+                self.assertIn(" ".join(sentence.split()), visible, name)
+            # Every safety sentence a page holds at all is in view, never behind a question mark.
+            for sentence in ("실행하지 않은 것은 통과가 아닙니다.", "점수가 없는 것은 0점이 아닙니다.",
+                             "이 화면에서는 반영하지 않습니다.", "미확인은 확인된 후보 0개와 다릅니다"):  # fmt: skip
+                if sentence in unescape(html):
+                    self.assertIn(sentence, visible, name)
+        # The stylesheet never hides a popover itself: a browser without them shows it in place.
+        css = (Path(self.app.__file__).parent / "static" / "style.css").read_text("utf-8")
+        self.assertEqual(re.findall(r"\[popover\](?!:popover-open)[^{,]*[{,]", css), [])
 
     def test_the_updates_tab_counts_the_current_candidates_and_stands_out(self):
         self.check()
