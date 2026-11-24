@@ -276,7 +276,8 @@ class PageTests(DashboardFixture):
 
     def test_resources_have_no_external_urls(self):
         package_dir = Path(self.app.__file__).parent
-        files = [*package_dir.glob("templates/*.html"), *package_dir.glob("static/*")]
+        files = [*package_dir.glob("templates/*.html"),
+                 *(p for p in package_dir.glob("static/*") if p.is_file())]  # fmt: skip
         self.assertEqual(sorted(p.name for p in files), [
             "app.js", "applied.html", "apply_lines.html", "base.html", "counts.html",
             "error.html", "history.html", "inspector.html", "model.html", "mounted.html",
@@ -285,7 +286,17 @@ class PageTests(DashboardFixture):
             "score_history.html", "start.html", "style.css", "trail.html", "updates.html"])  # fmt: skip
         for path in files:
             self.assertIsNone(re.search(r"https?:|//", path.read_text("utf-8")), path.name)
-        text = "".join(p.read_text("utf-8") for p in files)
+        # The bundled fonts, their licences and the list of what they cover; nothing else.
+        self.assertEqual(sorted(p.name for p in (package_dir / "static" / "fonts").iterdir()), [
+            "JetBrainsMono-depbee.woff2", "NotoSansKR-depbee.woff2", "OFL-JetBrainsMono.txt",
+            "OFL-NotoSansKR.txt", "coverage.txt"])  # fmt: skip
+        # The stylesheet's two font faces name the bundled files, beside it under fonts/.
+        css = (package_dir / "static" / "style.css").read_text("utf-8")
+        self.assertEqual(css.count("@font-face"), 2)
+        self.assertEqual(re.findall(r"url\(([^)]*)\)", css),
+                         [f"fonts/{name}" for name in self.app.FONTS])  # fmt: skip
+        text = "".join(p.read_text("utf-8") for p in files if p.name != "style.css")
+        text += re.sub(r"@font-face \{[^}]*\}", "", css)
         # CSP: style-src 'self' refuses a style attribute or element.
         for refused in ("<style", " style=", "url(", "@import", "@font-face"):
             self.assertNotIn(refused, text)
@@ -964,9 +975,10 @@ class SecurityTests(DashboardFixture):
         headers = response.headers
         self.assertEqual(headers["content-security-policy"], self.app.CSP)
         # Each source list is 'self' or 'none' alone: no inline script or style, no eval, no
-        # other host. script-src 'self' is the one file of static/.
+        # other host. script-src 'self' is the one file of static/, font-src 'self' the two
+        # bundled fonts.
         self.assertEqual(sorted(headers["content-security-policy"].split("; ")), [
-            "base-uri 'none'", "default-src 'none'", "form-action 'self'",
+            "base-uri 'none'", "default-src 'none'", "font-src 'self'", "form-action 'self'",
             "frame-ancestors 'none'", "img-src 'self'", "script-src 'self'",
             "style-src 'self'"])  # fmt: skip
         self.assertEqual(headers["x-content-type-options"], "nosniff")

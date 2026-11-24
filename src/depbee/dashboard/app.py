@@ -152,6 +152,9 @@ NPM_PAGE = "https://www.npmjs.com/package/"
 # static/ is served, and no file name is ever taken from a request.
 STYLES = ("style.css", "overview.css")
 SCRIPT = "app.js"
+# The two bundled fonts (scripts/build_dashboard_fonts.py), under static/fonts/, each on its own
+# route like the stylesheets: the licences and the coverage list beside them are not served.
+FONTS = ("NotoSansKR-depbee.woff2", "JetBrainsMono-depbee.woff2")
 # The tab icon, the brand's hexagon cell. Served under the session like the stylesheet: without
 # it a browser asks for /favicon.ico, which has no session and is a 403 in its console.
 ICON = (
@@ -159,8 +162,9 @@ ICON = (
     'stroke="#18202b" d="M8 1l6 3.5v7L8 15l-6-3.5v-7z"/></svg>'
 )
 # script-src 'self' is the one script file (SCRIPT): no inline script or handler ever runs.
+# font-src 'self' is the bundled fonts (FONTS): no font is loaded from elsewhere.
 CSP = (
-    "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; "
+    "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; font-src 'self'; "
     "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
 )
 # What a browser says of where a request comes from (Sec-Fetch-Site): the dashboard's own page,
@@ -816,10 +820,13 @@ def build_app(
         return RedirectResponse(_way_back(base, back[0] if back else ""), 303)
 
     def asset(name: str, media_type: str):
-        """The handler of one file of static/ (STYLES, SCRIPT): the file is the route's own."""
+        """The handler of one file of static/ (STYLES, SCRIPT, fonts/ FONTS): the file is the
+        route's own."""
 
         def served(request: Request) -> Response:
-            file = importlib.resources.files("depbee.dashboard").joinpath("static", name)
+            file = importlib.resources.files("depbee.dashboard").joinpath(
+                "static", *name.split("/")
+            )
             return Response(file.read_bytes(), media_type=media_type)
 
         return served
@@ -849,6 +856,10 @@ def build_app(
             Route("/theme", choose_theme, methods=["POST"]),
             *(Route(f"/static/{name}", asset(name, "text/css; charset=utf-8")) for name in STYLES),
             Route(f"/static/{SCRIPT}", asset(SCRIPT, "text/javascript; charset=utf-8")),
+            *(
+                Route(f"/static/fonts/{name}", asset(f"fonts/{name}", "font/woff2"))
+                for name in FONTS
+            ),
             Route("/static/icon.svg", icon),
         ],
         exception_handlers={Exception: failed},

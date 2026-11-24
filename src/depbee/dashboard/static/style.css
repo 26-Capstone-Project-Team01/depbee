@@ -6,6 +6,10 @@
    (.start). A verdict has its own colour and its own mark, and is always said in words beside it.
    Two themes: the system's, or the one chosen on the rail (data-theme on the root). No external
    font or image; the one script is static/app.js. */
+/* The two bundled fonts (scripts/build_dashboard_fonts.py): Noto Sans KR for text and project
+   names, JetBrains Mono for identifiers. Variable weights; nothing is loaded from elsewhere. */
+@font-face { font-family: "depbee Noto Sans KR"; src: url(fonts/NotoSansKR-depbee.woff2) format("woff2"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "depbee JetBrains Mono"; src: url(fonts/JetBrainsMono-depbee.woff2) format("woff2"); font-weight: 100 800; font-display: swap; }
 :root {
   color-scheme: light;
   /* Ink: the text, and the ring around what is picked. */
@@ -50,10 +54,11 @@
   --rail-fail: #eea05a;
   --rail-none: #9ca3af;
   --rail-glyph: #0f1115;
-  --sans: "Pretendard Variable", Pretendard, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", "Noto Sans CJK KR", system-ui, sans-serif;
+  --sans: "depbee Noto Sans KR", "Pretendard Variable", Pretendard, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", "Noto Sans CJK KR", system-ui, sans-serif;
   /* Identifiers (package names, versions, lockfile locations, paths, hashes, exact scores):
-     every character has to be told apart, as a look-alike name is how a bad package gets in. */
-  --mono: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, "DejaVu Sans Mono", "Liberation Mono", "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", monospace;
+     every character has to be told apart, as a look-alike name is how a bad package gets in.
+     Hangul in one is drawn by the bundled Noto Sans KR. */
+  --mono: "depbee JetBrains Mono", "depbee Noto Sans KR", "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, "DejaVu Sans Mono", "Liberation Mono", "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", monospace;
   --hex: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
   --rail: 15rem;
   --inspect: clamp(20rem, 28vw, 27rem);
@@ -261,7 +266,7 @@ body.start { display: grid; grid-template-columns: minmax(0, 1fr); place-items: 
 .tabs li { display: none; min-width: 0; }
 .tabs li.here { display: block; }
 .tab { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 0 .5rem; min-height: 2.75rem; padding: .3rem .7rem; }
-.tab-name { overflow: hidden; font-family: var(--mono); font-size: .9375rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.tab-name { overflow: hidden; font-size: .9375rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .tab-state { grid-column: 2; overflow: hidden; color: var(--rail-muted); font-size: .8125rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
 .tab:hover, .aux a:hover { background: var(--rail-current); --ground: var(--rail-current); }
 .tab, .aux a { border-radius: 6px; }
@@ -276,7 +281,6 @@ footer p { margin: 0; }
 
 /* The head of a project's views, and the way back from a page under them. */
 .project-head { margin-bottom: 1rem; }
-.project-head h1 { font-family: var(--mono); }
 .path, .where { color: var(--muted); font-family: var(--mono); font-size: .8125rem; overflow-wrap: anywhere; }
 .path { margin: 0; }
 .where { display: block; font-weight: 400; }
@@ -439,7 +443,7 @@ meter::-moz-meter-bar { background: var(--ink); }
 .add details { max-width: none; margin: .8rem 0 0; border-top: 1px solid var(--line); }
 .projects { display: grid; gap: .75rem; max-width: none; margin: .75rem 0 0; padding: 0; list-style: none; }
 .projects li { padding: .9rem 1.1rem 1rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow); --ground: var(--sheet); }
-.projects h3 { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .55rem; margin: 0; font-family: var(--mono); }
+.projects h3 { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .55rem; margin: 0; }
 .project-state { color: var(--muted); font-family: var(--sans); font-size: .8125rem; font-weight: 600; }
 .projects details { max-width: none; }
 .latest { display: flex; flex-wrap: wrap; gap: .4rem 1.5rem; max-width: none; margin: .6rem 0; }

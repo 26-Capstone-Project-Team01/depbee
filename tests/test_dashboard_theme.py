@@ -135,6 +135,47 @@ class MarkTests(unittest.TestCase):
         self.assertEqual(len(set(signs.values())), len(kinds), signs)
 
 
+def covered(path):
+    """The code points of coverage.txt: lines of U+XXXX or U+XXXX-U+YYYY."""
+    points = set()
+    for line in path.read_text("utf-8").split():
+        first, _, last = line.partition("-")
+        points.update(range(int(first[2:], 16), int((last or first)[2:], 16) + 1))
+    return points
+
+
+class FontCoverageTests(unittest.TestCase):
+    def test_the_subset_covers_every_character_the_console_can_show(self):
+        """A new message with a syllable the bundled subset lacks would be drawn in another font:
+        rebuild the fonts (scripts/build_dashboard_fonts.py) when this fails."""
+        points = covered(STATIC / "fonts" / "coverage.txt")
+        package = STATIC.parent.parent
+        texts = [*STATIC.parent.glob("templates/*.html"), *package.rglob("*.py")]
+        missing = sorted(
+            {c for path in texts for c in path.read_text("utf-8") if ord(c) > 0x7E}
+            - {chr(p) for p in points}
+        )
+        self.assertEqual(missing, [])
+
+
+class FontTests(DashboardFixture):
+    def test_the_two_fonts_are_served_and_nothing_else(self):
+        self.assertEqual(self.app.FONTS, ("NotoSansKR-depbee.woff2", "JetBrainsMono-depbee.woff2"))
+        for name in self.app.FONTS:
+            response = self.get(f"/static/fonts/{name}")
+            self.assertEqual(
+                (response.status_code, response.headers["content-type"]), (200, "font/woff2")
+            )
+            self.assertEqual(response.content, (STATIC / "fonts" / name).read_bytes())
+        for name in ("x.woff2", "OFL-NotoSansKR.txt", "coverage.txt", "%2e%2e/style.css"):
+            self.assertEqual(self.get(f"/static/fonts/{name}").status_code, 404, name)
+
+    def test_the_page_may_load_its_own_fonts_and_nothing_from_elsewhere(self):
+        policy = self.get("/").headers["content-security-policy"]
+        self.assertIn("font-src 'self'", policy)
+        self.assertIn("default-src 'none'", policy)
+
+
 class ThemeChoiceTests(unittest.TestCase):
     """The theme chosen on the rail, as saved in the user's settings folder (theme.py)."""
 
