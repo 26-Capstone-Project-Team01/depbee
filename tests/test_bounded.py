@@ -91,7 +91,7 @@ class BoundedTests(Fixture):
         build_snapshot and build_row are stand-ins (module functions, so they cross by pickle)."""
         backend = FeatureExtractorBackend.__new__(FeatureExtractorBackend)
         backend.errors = (bounded.StepError, bounded.TimeLimitError)
-        backend.version, backend.identity = "stand-in", None
+        backend.version, backend.identity, backend.ruleset_version = "stand-in", None, None
         backend._build_snapshot, backend._build_row = bounded_jobs.snapshot, row
         backend._extractors, backend._local_source = [], None
         return backend
@@ -109,8 +109,9 @@ class BoundedTests(Fixture):
         self.assertEqual(list(self.root.glob("depbee_src_*")), [])
         # Within the budget the same path returns the child's features.
         quick = self.stand_in(bounded_jobs.quick_row)
-        features, new_json = quick.extract("example", "1.0.1", "1.1.0", self.doc(), None)
+        features, new_json, found = quick.extract("example", "1.0.1", "1.1.0", self.doc(), None)
         self.assertEqual(features, {"signal": 0.2, "obfChangedFileCount": 0, "name": "example"})
+        self.assertIsNone(found)  # a backend without a ruleset scans no rules
         self.assertEqual(new_json["version"], "1.1.0")
 
     def test_one_budget_is_shared_by_the_steps_of_a_change(self):

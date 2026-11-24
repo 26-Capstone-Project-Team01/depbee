@@ -183,8 +183,25 @@ def _data_without_symlinks(member: tarfile.TarInfo, path: str) -> tarfile.TarInf
     return None if member.issym() else member
 
 
-def unpack(data: bytes, directory: Path, what: str) -> Path:
-    """Unpack a checked .tgz into directory within the limits and return its package root."""
+def unpack(
+    data: bytes,
+    directory: Path,
+    what: str,
+    omitted: list[str] | None = None,
+    written: list[str] | None = None,
+) -> Path:
+    """Unpack a checked .tgz into directory within the limits and return its package root.
+
+    omitted, if given, gets "PATH:KIND" for each member that is not written as a file of the
+    package root, so that a reader of the root (analysis.rules) knows what it cannot see: a
+    symbolic link (symlink), a hard link to no earlier file (link), a file whose path spells a
+    folder or file name of an earlier member in another case (case: where names ignore case, as
+    on Windows and macOS, the two are one folder or file, so a reader may find it under the other
+    spelling; reported on every platform), and a file outside the package root (outside_root).
+    written, if given, gets the path of each file the archive names in the package root, to set
+    against the names a reader finds there. PATHs are "/"-separated, relative to the root; a
+    first folder spelled like the root in another case counts as the root, as where case is
+    ignored (two package.json files there are package.json:case, not outside_root)."""
     try:
         with gzip.GzipFile(fileobj=io.BytesIO(data)) as stream:
             raw = stream.read(MAX_UNPACKED_BYTES + 1)  # never inflates more than this
@@ -192,6 +209,7 @@ def unpack(data: bytes, directory: Path, what: str) -> Path:
         raise RegistryError(f"{what} is not a complete gzip file") from exc
     if len(raw) > MAX_UNPACKED_BYTES:
         raise RegistryError(f"{what} unpacks to more than {MAX_UNPACKED_BYTES} bytes")
+    dropped, spelled = [], {}  # (name, kind) left out; each path prefix by its casefold()
     try:
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
             members, declared, files = [], 0, {}  # files: size of each name, None if no file
@@ -205,10 +223,15 @@ def unpack(data: bytes, directory: Path, what: str) -> Path:
                     size = files[name] = files.get(os.path.normpath(member.linkname))
                     if size is None:
                         tarfile.data_filter(member, str(directory))  # links out are still refused
+                        dropped.append((name, "link"))
                         continue
                 else:
                     size = max(member.size, 0)  # a sparse member can declare more than it holds
                     files[name] = size if member.isreg() else None
+                    if member.issym():
+                        dropped.append((name, "symlink"))  # _data_without_symlinks skips it
+                if _respelled(spelled, Path(name).parts) and files[name] is not None:
+                    dropped.append((name, "case"))
                 members.append(member)
                 declared += size
                 if declared > MAX_UNPACKED_BYTES:
@@ -219,8 +242,40 @@ def unpack(data: bytes, directory: Path, what: str) -> Path:
     # depbee-analyzer's _locate_package_root (loader.py:123-142): the folder or its one child
     # that holds package.json.
     if (directory / "package.json").is_file():
-        return directory
-    roots = [child for child in sorted(directory.iterdir()) if (child / "package.json").is_file()]
-    if len(roots) != 1:
-        raise RegistryError(f"{what} has no single package root containing package.json")
-    return roots[0]
+        root = directory
+    else:
+        roots = [c for c in sorted(directory.iterdir()) if (c / "package.json").is_file()]
+        if len(roots) != 1:
+            raise RegistryError(f"{what} has no single package root containing package.json")
+        root = roots[0]
+    inside = os.path.relpath(root, directory)  # "." or the root folder's name
+
+    def relative(name: str) -> tuple[str, ...] | None:
+        """name's parts under the root, None outside it. A first folder spelled like the root in
+        another case is the root where case is ignored, so its files (its package.json too) are
+        under the root: a reader there may have read either."""
+        parts = Path(name).parts
+        if inside == ".":
+            return parts
+        return parts[1:] if parts[0].casefold() == inside.casefold() else None
+
+    if omitted is not None:
+        dropped += [(name, "outside_root") for name, size in files.items()
+                    if size is not None and relative(name) is None]  # fmt: skip
+        for name, kind in dropped:
+            parts = relative(name) if kind != "outside_root" else None
+            omitted.append(f"{'/'.join(parts or Path(name).parts)}:{kind}")
+    if written is not None:
+        written += ["/".join(relative(name)) for name, size in files.items()
+                    if size is not None and relative(name)]  # fmt: skip
+    return root
+
+
+def _respelled(spelled: dict, parts: tuple[str, ...]) -> bool:
+    """Whether a member path spells a folder or file name that an earlier member spelled in
+    another case. spelled holds each path prefix seen, by its casefold()."""
+    clash = False
+    for end in range(1, len(parts) + 1):
+        prefix = parts[:end]
+        clash |= spelled.setdefault(tuple(p.casefold() for p in prefix), prefix) != prefix
+    return clash

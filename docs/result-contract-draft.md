@@ -1,6 +1,6 @@
 # 결과 계약 초안: 기지 악성·규칙 근거·ML 위험 점수·미완료
 
-> **필드는 구현됐고 실제 탐지기는 기지 악성 목록만 있다.** 3절의 필드는 모두 `pipeline.scan()`이 출력한다(`provenance`는 SVC-02, 나머지는 SVC-03에서 구현). 기지 악성 목록은 KM-01에서 구현했고(OSV npm `MAL-` 스냅샷 색인), 진입점(`scan`, `check`, `update`, `mcp`, `dashboard`)의 `--known-malicious-dir`이나 환경 변수 `DEPBEE_KNOWN_MALICIOUS_DIR`로 연결한다. 규칙은 구현되지 않았다. 그래서 색인을 주지 않은 명령의 출력은 지금도 탐지기 미연결 상태다(최상위 `detectors`의 두 값이 null, 항목 `known_malicious`·`rules`는 `not_run`·`detector_not_configured`). 지금 보고서와 일치하는 요약은 [연결 규약](contracts.md) 4절이다.
+> **필드는 구현됐고 실제 탐지기는 기지 악성 목록과 depbee-analyzer 고정 커밋의 정적 규칙이다.** 정적 규칙은 추출 실행에 연결했고 스캐너 결과의 변환·판정 불가·스캔 오류의 구분은 [연결 규약](contracts.md) 4절 "정적 규칙"에 있다. 아래 "규칙은 구현되지 않았다"는 그 전의 기록이다. 3절의 필드는 모두 `pipeline.scan()`이 출력한다(`provenance`는 SVC-02, 나머지는 SVC-03에서 구현). 기지 악성 목록은 KM-01에서 구현했고(OSV npm `MAL-` 스냅샷 색인), 진입점(`scan`, `check`, `update`, `mcp`, `dashboard`)의 `--known-malicious-dir`이나 환경 변수 `DEPBEE_KNOWN_MALICIOUS_DIR`로 연결한다. 규칙은 구현되지 않았다. 그래서 색인을 주지 않은 명령의 출력은 지금도 탐지기 미연결 상태다(최상위 `detectors`의 두 값이 null, 항목 `known_malicious`·`rules`는 `not_run`·`detector_not_configured`). 지금 보고서와 일치하는 요약은 [연결 규약](contracts.md) 4절이다.
 > 기준 코드: main `daabb54`(PR #11 병합, SVC-03)에 SVC-04(텍스트·Markdown 표시) 변경을 더한 것. 본문에서 `90a61bb`로 적은 코드의 행 번호와 성질은 그 커밋 기준이고, 그 뒤 `pipeline.py`는 SVC-02·SVC-03에서 바뀌었다. 9절의 결정 16개는 하람이 2026-11-11에 권장안대로 모두 채택했다(이 문서에서는 "채택(D-n)"으로 적는다). 채택한 내용 중 현행 동작을 바꾸는 D-2·D-7(그리고 D-5의 대조 범위)은 SVC-03에서 적용했고(9.1절), 8절 예시 JSON은 적용 후 동작이다.
 
 CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 네 근거와 네 상태를 구분해 담는 방법을 제안한다. 판정과 결합은 지금처럼 `pipeline.scan()` 한 곳에서만 만들고, 진입점은 같은 보고서를 표시만 한다.
@@ -53,7 +53,7 @@ CLI, GitHub Actions, MCP, 로컬 대시보드가 함께 쓸 보고서 JSON에 �
 | `compared_version`, `features` | 결과 항목 | 그대로 |
 | `evidence` | 결과 항목 | 그대로 "추출된 사실"(분석기가 만든 사실). 규칙 근거를 여기에 섞지 않고 `rules.checks[].evidence`에 따로 둔다 |
 | `explanation`, `explanation_rest` | 결과 항목 | 그대로 ML 모델 설명(SHAP, log-odds) |
-| `cache_hit` | 결과 항목 | 그대로 feature 캐시 사용 여부. 캐시는 feature만 담고 탐지기 결과는 매번 다시 계산한다 |
+| `cache_hit` | 결과 항목 | 그대로 feature 캐시 사용 여부. 캐시는 feature와 같은 두 버전의 정적 규칙 결과를 담고(정적 규칙 연결 뒤, [연결 규약](contracts.md) 4절) 기지 악성 대조는 매번 다시 계산한다 |
 | `change_id`, `location`, `package`, `before_version`, `after_version` | 결과 항목 | 기지 악성 대조 대상은 이 항목의 `package`와 `after_version`(설치될 버전)이다. 일치 기록에 다시 적지 않는다 |
 
 ## 3. 새 필드 정의

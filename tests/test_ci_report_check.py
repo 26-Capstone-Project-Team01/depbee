@@ -19,6 +19,9 @@ from pathlib import Path
 REPOSITORY = Path(__file__).resolve().parents[1]
 SCRIPT = REPOSITORY / ".github" / "scripts" / "check_lodash_report.py"
 FILES = "a" * 64  # a digest of installed analyzer files, in the form depbee writes
+RULESET = "2026-11-16.1"
+RULE_IDS = ("R_download_exec", "R_secret_send", "R_ci_secret_send", "R_install_root_wipe",
+            "R_remote_admin_auth_override", "R_diff_obfuscation")  # fmt: skip
 GONE = object()  # in place of a value: the key is not in the report at all
 
 
@@ -38,7 +41,8 @@ class ReportCheckTests(unittest.TestCase):
         self.report = {
             "status": "passed", "exit_code": 0, "model_id": model["model_id"], "threshold": 0.5,
             "detectors": {"known_malicious": {"list_as_of": index["list_as_of"],
-                                              "list_sha256": index["index_sha256"]}},
+                                              "list_sha256": index["index_sha256"]},
+                          "rules": {"ruleset_version": RULESET}},
             "provenance": {
                 "model": {"model_sha256": model["model_sha256"],
                           "manifest_sha256": hashlib.sha256(manifest).hexdigest()},
@@ -48,6 +52,9 @@ class ReportCheckTests(unittest.TestCase):
                 "package": "lodash", "before_version": "4.17.20", "after_version": "4.17.21",
                 "compared_version": "4.17.20", "status": "not_flagged", "score": 3.9e-07,
                 "ml": {"status": "not_hit"}, "known_malicious": {"status": "not_hit"},
+                "rules": {"status": "not_hit", "checks": [
+                    {"rule_id": rule_id, "rule_version": RULESET, "status": "not_hit"}
+                    for rule_id in RULE_IDS]},
             }],
         }  # fmt: skip
 
@@ -67,6 +74,11 @@ class ReportCheckTests(unittest.TestCase):
         self.assertFalse(self.refused({"preview": {}, "report": self.report}))  # depbee update
         # With the digest of the analyzer installed where the report was made.
         self.assertFalse(self.refused(self.report, FILES))
+        # A review-level rule hit is display only and passes.
+        hit = copy.deepcopy(self.report)
+        hit["results"][0]["rules"]["status"] = "hit"
+        hit["results"][0]["rules"]["checks"][0]["status"] = "hit"
+        self.assertFalse(self.refused(hit))
 
     def test_a_report_that_does_not_prove_the_scan_is_refused(self):
         def changed(*path, to):
@@ -108,6 +120,23 @@ class ReportCheckTests(unittest.TestCase):
             "no digest of the installed files": changed(*analyzer, "files_sha256", to=GONE),
             "a digest one digit short": changed(*analyzer, "files_sha256", to="a" * 63),
             "a digest in capitals": changed(*analyzer, "files_sha256", to="A" * 64),
+            # The pinned analyzer's rules did not judge this update.
+            "no rule detector": changed("detectors", "rules", to=None),
+            "no rules entry": changed("detectors", "rules", to=GONE),
+            "rules not run": changed(*row, "rules", to={"status": "not_run", "checks": []}),
+            "an undetermined rule": changed(*row, "rules", "checks", 5, "status", to="failed"),
+            "five rules": changed(*row, "rules", "checks",
+                                  to=self.report["results"][0]["rules"]["checks"][:5]),
+            "another rule version": changed(*row, "rules", "checks", 0, "rule_version", to="0"),
+            "another ruleset": changed("detectors", "rules", "ruleset_version", to="0"),
+            "other rules, one version": {**changed(*row, "rules", "checks", to=[
+                {"rule_id": f"R{i}", "rule_version": "0", "status": "not_hit"}
+                for i in range(6)]), "detectors": {**self.report["detectors"],
+                                                    "rules": {"ruleset_version": "0"}}},
+            "the rules in another order": changed(*row, "rules", "checks", to=list(reversed(
+                self.report["results"][0]["rules"]["checks"]))),
+            "not_hit over a hit": changed(*row, "rules", "checks", 2, "status", to="hit"),
+            "hit over no hit": changed(*row, "rules", "status", to="hit"),
         }
         for name, report in cases.items():
             with self.subTest(name):

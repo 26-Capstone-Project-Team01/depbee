@@ -148,7 +148,8 @@ class FakeBackend:
 
     def extract(self, name, old, new, doc, local):
         self.calls.append((name, old, new, local))
-        return dict(self.features), self.new_json or doc["versions"][new]
+        # No ruleset_version, so ExtractorAnalyzer connects no rule detector and reads no result.
+        return dict(self.features), self.new_json or doc["versions"][new], None
 
 
 class ExtractorAnalyzerTests(Fixture):
@@ -410,6 +411,7 @@ def stand_in_backend(fetch, snapshots):
 
     backend = FeatureExtractorBackend.__new__(FeatureExtractorBackend)
     backend.errors, backend.version = (registry.RegistryError,), "stand-in"
+    backend.ruleset_version = None  # these stand-ins read no rules (test_rules.py does)
     backend.fetch_packument = fetch
     backend._build_snapshot, backend._build_row = build_snapshot, build_row
     backend._extractors, backend._local_source = [], None

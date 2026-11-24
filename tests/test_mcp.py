@@ -78,7 +78,7 @@ class Backend(FakeBackend):
         self.calls.append((name, old, new, local))
         if self.scores[name] is None:
             raise GuardError("synthetic extraction failure")
-        return {"signal": self.scores[name], "obfChangedFileCount": 2}, doc["versions"][new]
+        return {"signal": self.scores[name], "obfChangedFileCount": 2}, doc["versions"][new], None
 
 
 class Listed(KnownList):
@@ -291,6 +291,7 @@ class ResponseTests(MCPFixture):
                 self.assertTrue(any(n.startswith("보류 ") for n in emphasized))
                 self.assertEqual(any(n.startswith("경고: ") for n in emphasized), compared)
                 middle = [] if compared else [mcp.KNOWN_MALICIOUS_NOTICE]
+                middle += [mcp.RULES_NOTICE] if rules else []  # only with a rule detector
                 self.assertEqual(response["notices"], [*emphasized, *middle, *mcp.NOTICES])
                 self.assertEqual(response["report"]["detectors"]["known_malicious"] is None,
                                  not compared)  # fmt: skip
