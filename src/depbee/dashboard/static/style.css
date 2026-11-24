@@ -287,16 +287,19 @@ body.start { display: grid; grid-template-columns: minmax(0, 1fr); place-items: 
 .tabs ul { display: flex; gap: .25rem; max-width: none; margin: 0; padding: 0; list-style: none; }
 .tabs li { display: none; min-width: 0; }
 .tabs li.here { display: block; }
-/* A project on one line: its mark, its name cut short with an ellipsis, and on the right the
-   risk and hold counts of its newest run, in the rail's verdict colours. The tab holds its
+/* A project on one line: its mark, its name cut short with an ellipsis, and on the right its
+   state in words and the risk and hold counts of its newest run, in the rail's verdict colours.
+   Short of room, the words go under the name rather than cut it to a letter. The tab holds its
    hidden state words (position: relative), so that they stay inside the bar that scrolls
-   sideways and never widen the page. */
-.tab { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0 .5rem; min-height: 2.75rem; padding: .3rem .7rem; }
-.tab-name { overflow: hidden; font-size: .9375rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
-.tab-count { display: flex; gap: .4rem; font-size: .8125rem; font-weight: 700; white-space: nowrap; }
-.tab-count .n-risk { color: var(--rail-risk); }
+   sideways and never widen the page. Scrolled to for the focus, it brings room for its ring. */
+.tab { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: .1rem .5rem; min-height: 2.75rem; padding: .3rem .7rem; scroll-margin: .5rem; }
+.tab .cell { flex: none; }
+.tab-name { flex: 1 1 5rem; min-width: 0; overflow: hidden; font-size: .9375rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.tab-count { display: flex; gap: .4rem; margin-left: auto; font-size: .8125rem; font-weight: 700; white-space: nowrap; }
+.tab-count .n-risk, .tab-count .n-gone { color: var(--rail-risk); }
 .tab-count .n-hold { color: var(--rail-hold); }
-.tab-count .n-unknown { color: var(--rail-muted); font-weight: 600; }
+.tab-count .n-pass { color: var(--rail-pass); }
+.tab-count .n-none, .tab-count .n-unknown { color: var(--rail-muted); font-weight: 600; }
 .tab:hover, .aux a:hover { background: var(--rail-current); --ground: var(--rail-current); }
 .tab, .aux a { border-radius: 6px; }
 .tab[aria-current], .aux a[aria-current] { background: var(--rail-current); box-shadow: inset 0 -3px 0 var(--honey); font-weight: 800; --ground: var(--rail-current); }
@@ -623,10 +626,15 @@ meter::-moz-meter-bar { background: var(--ink); }
    script the row wraps: a browser leaves a focused link whose edge shows where it is. */
 @media (min-width: 46rem) and (max-width: 79.99rem) {
   .tabs ul { margin: -.375rem; padding: .375rem; overflow-x: auto; scroll-padding-inline: .5rem; }
-  .tabs li { display: block; flex: none; max-width: 14rem; }
+  /* A project is one line here, its name cut at 10rem: a line that may wrap is only as wide as
+     its widest part, which would put every count under its name. */
+  .tabs li { display: block; flex: none; }
+  .tab { flex-wrap: nowrap; }
+  .tab-name { max-width: 10rem; }
 }
 @media (scripting: none) and (min-width: 46rem) and (max-width: 79.99rem) {
   .tabs ul { flex-wrap: wrap; overflow-x: visible; }
+  .tabs { flex-basis: 100%; }
 }
 @media (min-width: 60rem) {
   .jobs { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); }
@@ -649,7 +657,7 @@ meter::-moz-meter-bar { background: var(--ink); }
 /* Widest: the bar becomes the rail, with every project listed under the brand. */
 @media (min-width: 80rem) {
   body { display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); grid-template-rows: 1fr auto; }
-  .masthead { position: sticky; top: 0; grid-row: 1 / span 2; flex-flow: column nowrap; align-items: stretch; gap: 0; height: 100vh; padding: 1.1rem .75rem 1rem; overflow-y: auto; border-right: 1px solid var(--rail-line); border-bottom: 0; scroll-padding-block: 6px; }
+  .masthead { position: sticky; top: 0; grid-row: 1 / span 2; flex-flow: column nowrap; align-items: stretch; gap: 0; height: 100vh; padding: 1.1rem .75rem 1rem; overflow-y: auto; border-right: 1px solid var(--rail-line); border-bottom: 0; scroll-padding-block: 1rem; }
   .brand, .aux { flex: none; }
   .theme { margin: 0 .35rem 1rem; }
   .theme button { width: 100%; justify-content: flex-start; }

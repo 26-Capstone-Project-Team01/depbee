@@ -430,13 +430,18 @@ class ConsoleTests(DashboardFixture):
         counts = dict(re.findall(r'/projects/(\d+)" title="[^"]*"[^>]*><span class="cell \w+" '
                                  r'aria-hidden="true"></span><span class="tab-name">[^<]*</span>'
                                  r'<span class="visually-hidden">[^<]*</span>'
-                                 r'<span class="tab-count">((?:<span class="n-\w+">[^<]*</span> ?)*)'
+                                 r'<span class="tab-count">((?:<span class="n-\w+"[^>]*>[^<]*</span> ?)*)'
                                  r"</span></a>", html))  # fmt: skip
-        # A folder that is gone keeps what its last run found.
+        # Each state in words beside its mark, where its counts do not say it already (for a
+        # screen reader the hidden state says it, so these words are not said twice); a folder
+        # that is gone keeps what its last run found.
+        word = '<span class="n-{}" aria-hidden="true">{}</span>'
         self.assertEqual(counts, {str(flagged): '<span class="n-risk">위험 1</span>',
                                   str(held): '<span class="n-hold">보류 1</span>',
-                                  str(passed): "", str(fresh): "",
-                                  str(gone): '<span class="n-risk">위험 1</span>'})  # fmt: skip
+                                  str(passed): word.format("pass", "통과"),
+                                  str(fresh): word.format("none", "미검사"),
+                                  str(gone): word.format("gone", "폴더 없음")
+                                  + ' <span class="n-risk">위험 1</span>'})  # fmt: skip
 
     def test_the_bar_keeps_each_name_in_view(self):
         css = (Path(self.app.__file__).parent / "static" / "style.css").read_text("utf-8")
@@ -447,8 +452,13 @@ class ConsoleTests(DashboardFixture):
         found = re.search(r"@media \(scripting: none\) and \(min-width: 46rem\) and "
                           r"\(max-width: 79\.99rem\) \{\n  \.tabs ul \{([^}]*)\}", css)  # fmt: skip
         self.assertIn("flex-wrap: wrap", found.group(1))
-        # The rail on a wide screen leaves room for the ring of a project it scrolls to.
-        self.assertRegex(css, r"(?m)^  \.masthead \{ position: sticky;[^}]*scroll-padding-block: 6px;")
+        self.assertRegex(css, r"@media \(scripting: none\) and \(min-width: 46rem\) and "
+                              r"\(max-width: 79\.99rem\) \{\n  \.tabs ul \{[^}]*\}\n  \.tabs \{ flex-basis: 100%; \}")  # fmt: skip
+        # A project that takes the focus is scrolled to with room for its ring, in the bar, in
+        # the wide rail and on the page.
+        self.assertRegex(css, r"(?m)^\.tab \{[^}]*scroll-margin: \.5rem;")
+        # The lines wrap their counts under the name rather than cut the name to a letter.
+        self.assertRegex(css, r"(?m)^\.tab-name \{ flex: 1 1 5rem;")
         # The views' links wrap rather than push a narrow page sideways.
         self.assertRegex(css, r"(?m)^\.views \{ display: flex; flex-wrap: wrap;")
 
@@ -473,9 +483,11 @@ class ConsoleTests(DashboardFixture):
                 self.assertEqual(self.tab(html, fresh)[1:], ("none", "fresh", "실행 기록 없음"))
                 # The same mark, told apart in view by a word.
                 line = html.split(f'href="{S}/projects/{odd}"', 1)[1].split("</a>", 1)[0]
-                self.assertIn('<span class="tab-count"><span class="n-unknown">알 수 없음</span></span>', line)
+                self.assertIn('<span class="tab-count"><span class="n-unknown" aria-hidden="true">'
+                              "알 수 없음</span></span>", line)  # fmt: skip
                 line = html.split(f'href="{S}/projects/{fresh}"', 1)[1].split("</a>", 1)[0]
-                self.assertIn('<span class="tab-count"></span>', line)
+                self.assertIn('<span class="tab-count"><span class="n-none" aria-hidden="true">'
+                              "미검사</span></span>", line)  # fmt: skip
 
     def test_without_a_project_the_first_page_is_one_button_that_adds_it(self):
         for url in ("/", "/?manage=1"):  # nothing to manage yet: the same page
@@ -788,6 +800,8 @@ class CandidateTests(DashboardFixture):
             moved.rename(self.project)
         self.assertIn("기록된 실행이 없습니다.", history_html)
         self.assertNotIn('위의 "업데이트 후보 확인"', history_html)
+        self.assertNotIn("미리보기에서 반영하면", history_html)
+        self.assertIn("기록된 반영이 없습니다.", history_html)
         self.assertNotIn('id="preview-project"', history_html)
 
     def test_the_updates_tab_counts_the_current_candidates_and_stands_out(self):
