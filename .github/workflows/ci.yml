@@ -115,30 +115,39 @@ jobs:
       # A push has no base commit in its event, so the action cannot scan there. Its install,
       # scan and decision commands run here with HEAD as the base, and the action then judges
       # and publishes that report (its report input, which installs and scans nothing).
+      # The scan of this known update must itself succeed: bash ends the step at any other exit
+      # code. Its report is a new file in a folder made here, so no file that was checked out
+      # or left by an earlier command can pass for it. The folder is in the workspace because
+      # the action takes its report input from there.
       - if: github.event_name != 'pull_request'
+        id: scanned
         name: Install, scan and decide as the action does, with HEAD as the base
         shell: bash
         run: |
-          out="$(mktemp -d "$RUNNER_TEMP/scan.XXXXXX")"
-          (cd "$out" && python -I -m pip install --disable-pip-version-check --no-input \
+          work="$(mktemp -d "$RUNNER_TEMP/scan.XXXXXX")"
+          out="$(mktemp -d "$GITHUB_WORKSPACE/scanned.XXXXXX")"
+          (cd "$work" && python -I -m pip install --disable-pip-version-check --no-input \
             "$GITHUB_WORKSPACE[extract]")
-          code=0
           python -I -m depbee scan examples/lodash-update --base-ref "$(git rev-parse HEAD)" \
-            --extract --cache-dir "$out/cache" \
-            --format markdown --output scanned-report.json > "$out/summary.md" || code=$?
-          echo "depbee scan exit code: $code"
-          GITHUB_STEP_SUMMARY="$out/gate.md" python -I src/depbee/actions.py \
-            report scanned-report.json --lockfile examples/lodash-update/package-lock.json \
-            --markdown "$out/summary.md" > /dev/null
+            --extract --cache-dir "$work/cache" \
+            --format markdown --output "$out/report.json" > "$work/summary.md"
+          GITHUB_STEP_SUMMARY="$work/gate.md" python -I src/depbee/actions.py \
+            report "$out/report.json" --lockfile examples/lodash-update/package-lock.json \
+            --markdown "$work/summary.md" > /dev/null
+          echo "report=${out#"$GITHUB_WORKSPACE"/}/report.json" >> "$GITHUB_OUTPUT"
       - if: github.event_name != 'pull_request'
         uses: ./
         with:
           lockfile: examples/lodash-update/package-lock.json
-          report: scanned-report.json
-      # Either way the action left one report, in the folder it made for this run.
+          report: ${{ steps.scanned.outputs.report }}
+      # Either way the action left one report, in the folder it made for this run. The analyzer
+      # it names must be the one installed in this job, by depbee's digest of the installed files.
       - name: The action's report names the update, the model, the index and the analyzer
         shell: bash
-        run: python -I .github/scripts/check_lodash_report.py "$RUNNER_TEMP"/depbee.*/report.json
+        run: |
+          files="$(python -I -c \
+            'from depbee.analysis.extractor import _installed_identity as identity; print(identity()["files_sha256"])')"
+          python -I .github/scripts/check_lodash_report.py "$RUNNER_TEMP"/depbee.*/report.json "$files"
 
   # The default image as docs/docker.md builds it: no secret, no build argument and no token.
   # The build fetches the analyzer that pyproject.toml pins from its public repository. The
@@ -158,6 +167,11 @@ jobs:
           docker build -t depbee:ci .
           user="$(docker image inspect --format '{{.Config.User}}' depbee:ci)"
           case "${user%%:*}" in '' | 0 | root) echo "depbee:ci runs as root"; exit 1 ;; esac
+          # The digest the image's depbee gives its installed analyzer files. Every report of a
+          # real scan below must name it.
+          files="$(docker run --rm --network none --read-only --entrypoint python depbee:ci -I -c \
+            'from depbee.analysis.extractor import _installed_identity as identity; print(identity()["files_sha256"])')"
+          echo "ANALYZER_FILES=$files" >> "$GITHUB_ENV"
       - name: Scan the synthetic example offline with the image's model and index
         shell: bash
         run: |
@@ -201,7 +215,7 @@ jobs:
             > docker-lodash-report.json || status=$?
           cat docker-lodash-report.json
           test "$status" -eq 0
-          python3 -I .github/scripts/check_lodash_report.py docker-lodash-report.json
+          python3 -I .github/scripts/check_lodash_report.py docker-lodash-report.json "$ANALYZER_FILES"
       # The default base: no --base-lock and no --base-ref, so the image's Git reads HEAD of an
       # ordinary repository that the runner's user owns, allowed by safe.directory /project alone.
       - name: Plan against Git HEAD in a project another user owns
@@ -288,7 +302,7 @@ jobs:
           server.stdin.close()
           assert server.wait() == 0  # The server ends when its client closes stdin.
           PY
-          python3 -I .github/scripts/check_lodash_report.py docker-mcp-scan.json
+          python3 -I .github/scripts/check_lodash_report.py docker-mcp-scan.json "$ANALYZER_FILES"
       # The dashboard as docs/docker.md starts it: the image's own port, published on the runner's
       # 127.0.0.1 alone under the same number, the Git project of the step above mounted read-only
       # under /projects, and a volume for the home folder. What the pages do is tested in tests/;
@@ -369,15 +383,21 @@ jobs:
           def usable(link):
               """The project behind its link: its page lists the lockfile's package, and a scan
               of it compares HEAD's lockfile under /projects with the working one. The image's
-              analyzer checks that update with the registry, and the run it is recorded as
-              shows the package, its new version and the image's model."""
+              analyzer checks that update with the registry. The page of the run it is recorded
+              as must show one result, scored and not flagged, for that version and the
+              image's model. A scan that the registry or the analyzer did not finish answers
+              with the same redirect and a page that names the same package and model, but its
+              result is held: another class and no score. Returns the run's path."""
               status, _, page = call("GET", link)
               assert status == 200 and "lodash" in page, status
               status, run, _ = call("POST", link + "/scans")
               assert status == 303 and re.fullmatch(re.escape(base) + r"/runs/\d+", run), status
               status, _, page = call("GET", run)
               assert status == 200, status
-              for shown in ("lodash", "4.17.21", MODEL):
+              results = re.findall(r'<section class="result ([^"]*)"', page)
+              assert results == ["not_flagged"], results
+              assert page.count('<div class="scored">') == 1
+              for shown in ("lodash@4.17.21", MODEL):
                   assert shown in page, shown
               return run.removeprefix(base)
 
@@ -421,14 +441,26 @@ jobs:
               assert base != first  # each container prints an address of its own
               (link,) = links()
               status, _, page = call("GET", base + run)  # the first container's run
-              assert status == 200 and "4.17.21" in page, status
-              usable(link)
+              assert status == 200 and "lodash@4.17.21" in page, status
+              again = usable(link)
               # The same folder is still that project: registering it again adds no second one.
               assert register(first=False) == link
               print("A new container read the registered project and its run from the home volume")
+              Path("docker-dashboard-runs.txt").write_text(
+                  " ".join(path.rsplit("/", 1)[1] for path in (run, again)))
           finally:
               docker("rm", "--force", "depbee-dashboard", "depbee-dashboard-again", check=False)
           PY
+          # The two runs as the home volume keeps them, read with the image's own history
+          # module: each recorded report must pass the check that the CLI's report passes.
+          for run in $(cat docker-dashboard-runs.txt); do
+            docker run --rm --network none --read-only \
+              --mount type=volume,source=depbee-ci-home,target=/home/depbee \
+              --entrypoint python depbee:ci -I -c \
+              'import json, sys; from depbee import history; print(json.dumps(history.get_run(int(sys.argv[1]))["report"]))' \
+              "$run" > "docker-dashboard-run-$run.json"
+            python3 -I .github/scripts/check_lodash_report.py "docker-dashboard-run-$run.json" "$ANALYZER_FILES"
+          done
       # The npm the image ships for the update check, run as depbee runs it (inputs.npm_cli):
       # node with the npm-cli.js copied next to it, and no npm command on PATH. A scratch project
       # without dependencies needs no registry, so this runs offline.
@@ -484,7 +516,7 @@ jobs:
           updated = Path("examples/lodash-updated/package-lock.json").read_bytes()
           assert preview["new_package_lock_sha256"] == hashlib.sha256(updated).hexdigest()
           PY
-          python3 -I .github/scripts/check_lodash_report.py docker-update.json
+          python3 -I .github/scripts/check_lodash_report.py docker-update.json "$ANALYZER_FILES"
       # The core target stays a build of its own: depbee without the analyzer, which fetches no
       # Git repository. It checks what needs no analyzer and says what to install for the rest.
       - name: Build the core target and run it offline without the analyzer

@@ -214,7 +214,9 @@ CLI 종료 코드 0/1/2의 의미는 그대로다.
 - 실제 변경을 만든다. 작업 폴더의 `examples/lodash-update/package-lock.json`을 `examples/lodash-updated/`의 lockfile(npm이 lodash 4.17.21로 올려 쓴 결과)로 바꾼다. Git에 있는 쪽은 4.17.20이므로 바뀐 항목이 하나다.
 - `pull_request` 실행은 `uses: ./`로 action을 그대로 실행한다. `[extract]` 설치(분석기의 고정 커밋을 로그인 없이 받음), PR 기준 커밋의 lockfile 읽기, 변경 수 확인, 캐시 복원, `depbee scan --extract`(registry에서 두 버전의 tarball을 받아 실행 없이 분석), 캐시 저장, artifact, 판정까지 action의 모든 단계가 돈다.
 - `push` 실행에는 PR 기준 커밋이 없어 action이 scan할 수 없다. 같은 설치·scan·판정 명령을 HEAD를 기준으로 직접 실행하고, 그 보고서를 `report` 입력으로 넘겨 `uses: ./`의 입력 검사, summary, artifact 배선을 확인한다. `report`가 있으면 설치·다운로드·변경 수·캐시·scan 단계는 건너뛰고 Release 입력도 검사하지 않으며, summary에 자기 검사라고 적힌다.
-- 어느 쪽이든 마지막 단계(`.github/scripts/check_lodash_report.py`)가 action이 남긴 `report.json`을 확인한다. 전체가 통과(종료 코드 0)이고 항목은 lodash 4.17.20 → 4.17.21 하나이며, 비교 버전이 4.17.20, ML 판정이 기준 미만, 기지 악성이 미적중이어야 한다. `model_id`·모델 해시·색인 기준 시점·색인 해시는 저장소의 manifest와 같아야 하고, `provenance.feature_extractor.commit`은 `pyproject.toml`이 고정한 커밋이어야 한다. 이 값은 설치된 분석기가 그 커밋의 Git 설치 그대로일 때만 보고서에 들어간다.
+- 그 직접 실행의 scan은 통과하는 변경이므로 종료 코드 0이어야 하고, 다른 종료 코드면 단계가 실패한다. 보고서는 이 단계가 workspace 안에 새로 만든 폴더에 쓴다. 체크아웃에 들어 있던 파일이나 앞 명령이 남긴 파일이 이번 scan의 보고서로 판정되는 일이 없다. action 자신의 scan 단계는 종료 코드를 로그에만 남기고 보고서로 판정하는 원래 정책 그대로다.
+- 어느 쪽이든 마지막 단계(`.github/scripts/check_lodash_report.py`)가 action이 남긴 `report.json`을 확인한다. 전체가 통과(종료 코드 0)이고 항목은 lodash 4.17.20 → 4.17.21 하나이며, 비교 버전이 4.17.20, ML 판정이 기준 미만, 기지 악성이 미적중이어야 한다. `model_id`·모델 해시·색인 기준 시점·색인 해시는 저장소의 manifest와 같아야 하고, `provenance.model.manifest_sha256`은 저장소 manifest 파일의 SHA-256이어야 한다. `provenance.feature_extractor.commit`은 `pyproject.toml`이 고정한 커밋이어야 하고, `files_sha256`은 그 job에 설치된 분석기 파일에 대해 depbee가 계산한 값(`extractor._installed_identity`)과 같아야 한다. 두 값은 설치된 분석기가 그 커밋의 Git 설치 그대로일 때만 보고서에 들어간다.
+- 이 확인 스크립트가 받아들이는 보고서와 거절하는 보고서(보류, 다른 모델·manifest·색인, 검증되지 않은 분석기, 빠지거나 형식이 틀린 digest)는 단위 테스트 `tests/test_ci_report_check.py`가 합성 보고서로 본다.
 - 판정 모듈의 단위 테스트는 `tests/test_actions.py`이다(적대적 패키지 이름 이스케이프, lockfile 줄 찾기, Release 입력의 전부·전무·부분·형식 오류, 두 모드의 기준 커밋 검사, 모델 ID와 색인 기준 시점이 없는 scan 보고서의 실패와 자기 검사 호환, summary의 code span 표시, 캐시 신원 계산, 경로 입력의 링크 workspace 경계(심볼릭 링크는 POSIX, junction은 Windows에서 돎), `verify` 여러 쌍, `action.yml` 단계 순서·조건·인자를 텍스트로 확인 포함).
 
 ### Docker 이미지 검사 (depbee CI `docker` job)
@@ -226,11 +228,11 @@ CI는 기본 이미지를 문서의 명령 그대로 빌드한다(`docker build 
 - Git HEAD: 소유자가 다른 Git 저장소(HEAD는 4.17.20, 작업 파일은 4.17.21)의 HEAD를 기준으로 `plan`이 되는지 확인한다.
 - MCP: 문서의 등록 방식으로 띄운 stdio 서버가 초기화되고 도구 두 개를 내는지, `scan_lockfile`이 그 저장소의 변경을 실제로 검사해 같은 보고서 확인을 통과하는지 본다.
 - 대시보드: 문서의 실행 방식(호스트의 `127.0.0.1`에만 같은 번호로 게시한 포트, `/projects` 아래의 읽기 전용 연결, 홈 볼륨)으로 띄운다. 출력한 주소, Host와 세션 검사, 연결한 폴더 목록, 그 밖의 경로 거부를 확인한다.
-- 등록한 프로젝트: 빈 볼륨의 첫 등록은 현황판(첫 화면)으로 이어져야 한다. 현황판에 나온 그 프로젝트의 링크를 열어 lockfile의 패키지가 보이는지 확인한다. **검사만** 요청이 `/projects` 아래 저장소의 HEAD lockfile과 비교해 실제로 검사하고, 기록된 실행 화면에 패키지와 새 버전, 이미지의 모델 ID가 나오는지 확인한다.
-- 홈 볼륨: 첫 컨테이너를 종료해 지운 뒤 같은 볼륨으로 새 컨테이너를 만든다. 등록한 프로젝트와 첫 컨테이너의 실행 기록이 그대로 열리는지, 같은 폴더를 다시 등록하면 프로젝트가 늘지 않고 그 프로젝트의 화면으로 이어지는지 확인한다.
+- 등록한 프로젝트: 빈 볼륨의 첫 등록은 현황판(첫 화면)으로 이어져야 한다. 현황판에 나온 그 프로젝트의 링크를 열어 lockfile의 패키지가 보이는지 확인한다. **검사만** 요청이 `/projects` 아래 저장소의 HEAD lockfile과 비교해 실제로 검사하고, 기록된 실행 화면의 결과가 점수가 매겨진 통과(`not_flagged`) 하나이며 그 패키지와 새 버전, 이미지의 모델 ID가 나오는지 확인한다. registry나 분석기 문제로 끝내지 못한 검사는 같은 redirect와 화면으로 답하지만 결과가 보류라서 이 확인에서 실패한다.
+- 홈 볼륨: 첫 컨테이너를 종료해 지운 뒤 같은 볼륨으로 새 컨테이너를 만든다. 등록한 프로젝트와 첫 컨테이너의 실행 기록이 그대로 열리는지, 같은 폴더를 다시 등록하면 프로젝트가 늘지 않고 그 프로젝트의 화면으로 이어지는지 확인한다. 끝으로 볼륨에 기록된 두 실행의 보고서를 이미지의 이력 모듈로 읽어 CLI 보고서와 같은 스크립트로 확인한다.
 - 이미지의 npm: PATH에 `npm`과 `npx`가 없는지 확인한다. depbee가 업데이트 확인 때 쓰는 호출(`inputs.npm_cli`)이 Node.js 24.11.0의 npm 11.6.1을 찾아, 의존성 없는 임시 프로젝트의 lockfile을 네트워크 없이 다시 쓰는지 확인한다.
 - 업데이트 미리보기: 읽기 전용으로 연결한 `examples/lodash-update`에 `depbee update`를 실행한다. 이미지의 npm이 사본에서 lockfile을 다시 쓰고(`--ignore-scripts`, 설치 없음) 분석기가 그 변경을 검사한다. npm이 쓴 lockfile의 SHA-256이 저장소의 `examples/lodash-updated/package-lock.json`과 같은지, 보고서가 위와 같은 확인을 통과하는지 본다. 반영은 하지 않는다.
-- `core` 단계: `docker build --target core`로 따로 빌드한다. root가 아닌 사용자이고 분석기 모듈이 없는지, 합성 예시의 보고서가 기본 이미지의 것과 바이트 단위로 같은지, `check`가 `[extract]` 설치를 안내하는 오류(종료 코드 2)로 끝나는지 네트워크 없이 확인한다.
+- `core` 단계: `docker build --target core`로 따로 빌드한다. root가 아닌 사용자이고 분석기 모듈이 없는지, 합성 예시의 보고서가 기본 이미지의 것과 바이트 단위로 같은지 네트워크 없이 확인한다. `check`는 종료 코드 2로 끝나야 하고, 그 오류는 이 이미지에서 실제로 할 수 있는 일인 기본 이미지 빌드(`docker build -t depbee:local .`)를 안내해야 하며 pip 설치 명령을 적으면 실패한다(이 이미지에는 pip과 소스가 없다).
 - CI가 하지 않는 것: 대시보드의 업데이트 확인 화면과 반영(같은 서비스 함수를 CLI의 `depbee update` 미리보기로 실행한다), 브라우저로 누르는 조작. [정해 둔 정상 예시](docker.md#전체-이미지-확인)로 직접 확인할 수 있다.
 
 ## CI 신뢰 경계
