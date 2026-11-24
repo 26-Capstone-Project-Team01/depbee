@@ -11,44 +11,52 @@ hit / no_hit / unknown become the contract's hit / not_hit / failed here, and on
   the locations are the package-relative files and lines it gave (a line it did not find is null).
 - failed is undetermined (판정 불가), never an error: the scanner's unknown, a no_hit that a missing
   input could have changed, a hit that a file missing from the earlier version could have made
-  (the behaviour may not be new), or two package.json files that are not the compared versions.
-  Its detail starts with UNDETERMINED. pipeline.scan() holds such an item (D-7).
+  (the behaviour may not be new) or that names in either version spelled two ways make uncertain,
+  or two package.json files that are not surely the compared versions. Its detail starts with
+  UNDETERMINED. pipeline.scan() holds such an item (D-7) unless a known malicious match flags it.
 - An error of the scan itself (an exception, or an answer that is not the six rules of the pinned
   ruleset) is no check: Results.check() raises it, so the slot is failed / detector_failed with
   no checks and a detail that names the error's type only (a message can hold local paths).
 
-Missing inputs come from two places, and both count: analysis.registry.unpack leaves out links,
-case-only duplicates and files outside the package root, and the scanner's read_root skips files
-over its size limits, links and unreadable files. A missing file changes a rule only if the rule
-reads it; READS says which files each rule of RULESET reads besides package.json (diff_scan.py at
-the pinned commit). A missing entry that is no plain file may stand for any path, so it counts for
-every rule that reads more than package.json, as every entry does for a ruleset READS does not
-describe.
+Missing inputs come from four places, and all count: analysis.registry.unpack leaves out links
+and files outside the package root and reports names spelled in two cases, the files the scanner
+finds can differ from the names the archive gave (alias: a folder or name merged on unpacking),
+the scanner's read_root skips files over its size limits, links and unreadable files, and an
+install hook can name a file the package does not have. A missing file changes a rule only if the
+rule reads it; READS says which files each rule of RULESET reads besides package.json (diff_scan.py
+at the pinned commit). A missing entry that is no plain file may stand for any path, so it counts
+for every rule that reads more than package.json, as every entry does for another ruleset. A file
+the scanner skipped is never read again here: whether it changed is not known. Both package.json files
+must read as strict JSON objects naming the compared versions, with nothing missing in their
+place, or no rule is judged: a manifest decoded or chosen differently than the scanner's would
+otherwise decide the six results.
 """
 
 import copy
-import hashlib
-import json
+import re
 from pathlib import Path, PurePosixPath
 
-from ..contracts import GuardError
+from ..contracts import GuardError, parse_json
 
 # The ruleset of the analyzer that pyproject.toml pins (917ba903), which READS describes.
 RULESET = "2026-11-16.1"
 CODE_SUFFIXES = (".js", ".cjs", ".mjs", ".ts", ".tsx", ".jsx")
 INSTALL_HOOKS = ("preinstall", "install", "postinstall")
-# Per rule of RULESET: (whether PATH, a package-relative file, is one it reads besides
-# package.json, or None if it reads package.json only; whether a file left the same in both
-# versions cannot change it).
+# The files R_secret_send reads: node FILE in a preinstall, install or postinstall command of
+# either version, as the pinned diff_scan.py (_telemetry_upload, _install_scripts) finds them.
+NODE_FILE = re.compile(r"\bnode\s+(?:\./)?([\w./-]+\.(?:js|cjs|mjs))\b", re.I)
+# Per rule of RULESET only: whether PATH, a package-relative file, is one it reads besides
+# package.json, given the NODE_FILE paths of both versions; None if it reads package.json only.
 READS = {
-    "R_download_exec": (None, True),
-    "R_install_root_wipe": (None, True),
-    # node FILE in an install hook of either version, matched as text: a superset of its pattern.
-    "R_secret_send": (lambda path, hooks: path in hooks, False),
-    "R_ci_secret_send": (lambda path, hooks: path.startswith(".github/workflows/"), True),
-    "R_remote_admin_auth_override": (lambda path, hooks: path == "src/index.js", True),
-    "R_diff_obfuscation": (lambda path, hooks: path.lower().endswith(CODE_SUFFIXES), True),
+    "R_download_exec": None,
+    "R_install_root_wipe": None,
+    "R_secret_send": lambda path, refs: path in refs,
+    "R_ci_secret_send": lambda path, refs: path.startswith(".github/workflows/"),
+    "R_remote_admin_auth_override": lambda path, refs: path == "src/index.js",
+    "R_diff_obfuscation": lambda path, refs: path.lower().endswith(CODE_SUFFIXES),
 }
+# Entries whose path may not be the one the scanner read it under, in either version.
+AMBIGUOUS = ("case", "alias")
 DISPOSITIONS = {
     "review": "검토용 적중(review)",
     "high_evidence": "강한 정적 근거(high_evidence)",
@@ -60,30 +68,42 @@ KIND_LABELS = {
     "symlink": "링크",
     "link": "하드 링크",
     "case": "대소문자만 다른 이름",
+    "alias": "보관된 이름과 읽힌 이름이 다름",
     "outside_root": "패키지 폴더 밖",
+    "absent": "설치 훅이 가리키지만 패키지에 없음",
 }
 MAX_LOCATIONS = 10
+MAX_PATH = 256  # a location's file, as MCP's package data
 MAX_TEXT = 300
 _SHOWN = 3  # missing files named in a detail
 
 
 def scan(
-    old_root: Path, new_root: Path, missing: dict[str, list[str]], pair: tuple[str, str, str]
+    old_root: Path,
+    new_root: Path,
+    missing: dict[str, list[str]],
+    pair: tuple[str, str, str],
+    names: dict[str, list[str] | None] | None = None,
 ) -> dict:
     """{"checks": [...], "cacheable": bool} for the two package roots of pair (name, old, new).
 
     missing: {"old": [...], "new": [...]}, the "PATH:KIND" entries unpack left out of each root.
-    cacheable is false when a file could not be read, which may not happen again. Raises for an
-    error of the scan itself (GuardError for an answer that is not the pinned ruleset's)."""
+    names: the files the archive named in each root (unpack's written), None for a root that is
+    no archive (a local copy). cacheable is false when a file could not be read, which may not
+    happen again. Raises for an error of the scan itself (GuardError for an answer that is not
+    the pinned ruleset's)."""
     from depbee_analyzer.rules import diff_scan
 
     files, lost = {}, {}
     for side, root in (("old", old_root), ("new", new_root)):
         files[side], skipped = diff_scan.read_root(root)
         lost[side] = list(missing.get(side, [])) + list(skipped)
+        if (names or {}).get(side) is not None:
+            lost[side] += _aliases(names[side], files[side], lost[side])
     ruleset = diff_scan.RULESET_VERSION
     expected = {rule_id: disposition for rule_id, disposition, _ in diff_scan.RULES}
-    mismatch = _identity_problem(files, pair)
+    manifests = {side: _manifest(files[side]) for side in files}
+    mismatch = _identity_problem(manifests, lost, pair)
     if mismatch:
         checks = [_failed(rule_id, ruleset, mismatch) for rule_id in expected]
     else:
@@ -94,11 +114,23 @@ def scan(
             f["disposition"] != expected[f["rule_id"]] for f in found
         ):
             raise GuardError("The rule scan did not return each rule of its ruleset once")
-        hooks = "\n".join(_hooks(files["old"]) + _hooks(files["new"]))
-        same = _unchanged(old_root, new_root, lost)
-        checks = [convert(f, ruleset, lost, hooks, same) for f in found]
-    cacheable = not any(entry.endswith(":read_error") for entry in lost["old"] + lost["new"])
-    return {"checks": checks, "cacheable": cacheable}
+        refs = {side: _node_files(manifests[side]) for side in files}
+        for side in files:  # named by an install hook, not in the package (nor already missing)
+            named = {entry.rpartition(":")[0] for entry in lost[side]}
+            lost[side] += [f"{path}:absent" for path in sorted(refs[side])
+                           if path not in files[side] and path not in named]  # fmt: skip
+        checks = [convert(f, ruleset, lost, refs["old"] | refs["new"]) for f in found]
+    unread = any(entry.endswith(":read_error") for entry in lost["old"] + lost["new"])
+    return {"checks": checks, "cacheable": not unread}
+
+
+def _aliases(names: list[str], read: dict, lost: list[str]) -> list[str]:
+    """An entry "PATH:alias" for each file the archive named that the scanner neither read nor
+    skipped under that name, and for each file it read that the archive did not name: a folder or
+    file name the file system merged or changed on unpacking (case, a trailing dot on Windows)."""
+    seen = set(read) | {entry.rpartition(":")[0] for entry in lost}
+    named = set(names)
+    return [f"{path}:alias" for path in sorted((named - seen) | (set(read) - named))]
 
 
 def _as_dict(finding: object) -> dict:
@@ -121,20 +153,28 @@ def _finding(value: dict) -> dict:
 
 
 def _manifest(files: dict) -> dict | None:
+    """The package.json the scanner read, as a strict JSON object (UTF-8, unique keys), or None."""
+    raw = files.get("package.json")
+    if raw is None:
+        return None
     try:
-        value = json.loads(files["package.json"].decode("utf-8"))
-    except (KeyError, UnicodeError, ValueError, RecursionError):
+        return parse_json(raw, "package.json")[0]
+    except GuardError:
         return None
-    return value if isinstance(value, dict) else None
 
 
-def _identity_problem(files: dict, pair: tuple[str, str, str]) -> str | None:
-    """Why the two package.json files are not name@old and name@new, if they are not. A missing
-    or unreadable one is left to the scanner, which answers unknown for every rule."""
+def _identity_problem(manifests: dict, lost: dict, pair: tuple[str, str, str]) -> str | None:
+    """Why the two package.json files are not surely name@old and name@new, if they are not: one
+    is missing, cannot be read as a strict JSON object, has an entry left out in its place (its
+    size, a link, or a name that differs only in case, on any platform), or names other values."""
     name, old, new = pair
-    old_json, new_json = _manifest(files["old"]), _manifest(files["new"])
-    if old_json is None or new_json is None:
-        return None
+    for side, label in (("old", "이전 버전"), ("new", "새 버전")):
+        if any(entry.rpartition(":")[0].casefold() == "package.json" for entry in lost[side]):
+            return (f"{UNDETERMINED}: {label}의 package.json이 하나로 정해지지 않음"
+                    "(크기 제한, 링크, 대소문자만 다른 이름 등)")  # fmt: skip
+        if manifests[side] is None:
+            return f"{UNDETERMINED}: {label}의 package.json을 엄격한 UTF-8 JSON 객체로 읽을 수 없음"
+    old_json, new_json = manifests["old"], manifests["new"]
     wrong = [
         label
         for label, value, wanted in (
@@ -150,48 +190,30 @@ def _identity_problem(files: dict, pair: tuple[str, str, str]) -> str | None:
     return f"{UNDETERMINED}: 비교한 package.json의 {', '.join(wrong)}이(가) 이 변경과 다름"
 
 
-def _hooks(files: dict) -> list[str]:
-    scripts = (_manifest(files) or {}).get("scripts")
+def _node_files(manifest: dict) -> set[str]:
+    """NODE_FILE paths of a manifest's install hooks, as the pinned scanner finds them."""
+    scripts = manifest.get("scripts")
     if not isinstance(scripts, dict):
-        return []
-    return [v for k, v in scripts.items() if k in INSTALL_HOOKS and isinstance(v, str)]
+        return set()
+    return {path for key, script in scripts.items()
+            if key in INSTALL_HOOKS and isinstance(script, str)
+            for path in NODE_FILE.findall(script)}  # fmt: skip
 
 
-def _unchanged(old_root: Path, new_root: Path, lost: dict) -> set[str]:
-    """Paths the scanner skipped for size in both versions whose bytes are the same in both."""
-
-    def paths(side: str) -> set[str]:
-        return {e.rpartition(":")[0] for e in lost[side] if e.endswith(":size_limit")}
-
-    same = set()
-    for path in paths("old") & paths("new"):
-        old, new = old_root / path, new_root / path
-        try:
-            if old.stat().st_size == new.stat().st_size and _sha256(old) == _sha256(new):
-                same.add(path)
-        except OSError:
-            pass  # unreadable now: it stays missing
-    return same
-
-
-def _sha256(path: Path) -> str:
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def _counts(rule_id: str, entry: str, hooks: str, same: set[str]) -> bool:
-    """Whether a missing entry ("PATH:KIND") could change rule_id's result."""
+def _counts(rule_id: str, entry: str, refs: set[str], ruleset: str) -> bool:
+    """Whether a missing entry ("PATH:KIND") could change rule_id's result. READS holds for its
+    own ruleset only. A missing package.json never gets here (_identity_problem)."""
     path, _, kind = entry.rpartition(":")
-    if path == "package.json" or rule_id not in READS:
+    if ruleset != RULESET or rule_id not in READS:
         return True
-    reads, same_is_moot = READS[rule_id]
+    if kind == "absent":
+        return rule_id == "R_secret_send"  # only it follows an install hook to the file
+    reads = READS[rule_id]
     if reads is None:
         return False  # it reads package.json only
     if kind not in ("size_limit", "read_error"):
         return True  # a link or another entry that is no plain file may stand for any path
-    if same_is_moot and path in same:
-        return False
-    return reads(path, hooks)
+    return reads(path, refs)
 
 
 def _missing_text(entries: list[str]) -> str:
@@ -203,11 +225,13 @@ def _missing_text(entries: list[str]) -> str:
     return ", ".join(shown) + (f" 외 {more}개" if more > 0 else "")
 
 
-def convert(finding: dict, ruleset: str, lost: dict, hooks: str, same: set[str]) -> dict:
-    """One scanner finding as a contract check, with the missing inputs that could change it."""
+def convert(finding: dict, ruleset: str, lost: dict, refs: set[str]) -> dict:
+    """One scanner finding as a contract check, with the missing inputs that could change it.
+    refs: the NODE_FILE paths of both versions."""
     rule_id, status, reason = finding["rule_id"], finding["status"], finding["reason"]
-    old = [e for e in lost["old"] if _counts(rule_id, e, hooks, same)]
-    new = [e for e in lost["new"] if _counts(rule_id, e, hooks, same)]
+    old = [e for e in lost["old"] if _counts(rule_id, e, refs, ruleset)]
+    new = [e for e in lost["new"] if _counts(rule_id, e, refs, ruleset)]
+    respelled = any(e.rpartition(":")[2] in AMBIGUOUS for e in new)
     where = "; ".join(
         f"{label}: {_missing_text(entries)}"
         for label, entries in (("이전 버전", old), ("새 버전", new))
@@ -222,6 +246,12 @@ def convert(finding: dict, ruleset: str, lost: dict, hooks: str, same: set[str])
             rule_id, ruleset,
             f"{UNDETERMINED}: 이전 버전에서 이 규칙이 읽는 파일이 빠져 새로 생긴 것인지 확정할 수 "
             f"없음 ({where}). 스캐너의 적중 근거: {reason}",
+        )  # fmt: skip
+    if status == "hit" and respelled:
+        return _failed(
+            rule_id, ruleset,
+            f"{UNDETERMINED}: 새 버전의 이름이 두 가지로 쓰여 적중한 경로를 확정할 수 없음 "
+            f"({where}). 스캐너의 적중 근거: {reason}",
         )  # fmt: skip
     if status == "no_hit" and (old or new):
         return _failed(
@@ -253,48 +283,70 @@ def _cut(text: str) -> str:
     return text if len(text) <= MAX_TEXT else text[:MAX_TEXT] + "..."
 
 
+def _package_path(path: object) -> bool:
+    """A package-relative POSIX file: text of 1 to MAX_PATH characters without an absolute,
+    drive, backslash or .. part."""
+    if not isinstance(path, str) or not 0 < len(path) <= MAX_PATH or "\\" in path or ":" in path:
+        return False
+    return not path.startswith("/") and ".." not in PurePosixPath(path).parts
+
+
 def _locations(paths, lines) -> list[dict]:
-    """Package-relative POSIX files only (no absolute, drive, backslash or .. part), each with
-    its line if the scanner found one (it gives 0 for none), at most MAX_LOCATIONS."""
+    """_package_path files only, each with its line if the scanner found one (it gives 0 for
+    none), at most MAX_LOCATIONS."""
     found = []
     for index, path in enumerate(paths):
-        parts = PurePosixPath(path).parts
-        if not path or "\\" in path or ":" in path or path.startswith("/") or ".." in parts:
+        if not _package_path(path):
             continue
         line = lines[index] if index < len(lines) else 0
         found.append({"file": path, "line": line if line > 0 else None})
     return found[:MAX_LOCATIONS]
 
 
+CHECK_FIELDS = {"rule_id", "rule_version", "status", "evidence", "locations", "detail"}
+
+
+def _text(value: object) -> bool:
+    return isinstance(value, str) and 0 < len(value) <= MAX_TEXT + 3  # _cut's longest
+
+
+def _made(check: object, ruleset: str) -> bool:
+    """Whether check is one convert() or _failed() can make for ruleset: its fields, and for its
+    status the evidence, locations and detail that go with it (a hit: one evidence line and
+    _locations' files and lines; not_hit: nothing; failed: an undetermined detail only)."""
+    if not isinstance(check, dict) or set(check) != CHECK_FIELDS:
+        return False
+    rule_id, status = check["rule_id"], check["status"]
+    if not isinstance(rule_id, str) or not rule_id or check["rule_version"] != ruleset:
+        return False
+    evidence, locations, detail = check["evidence"], check["locations"], check["detail"]
+    if status == "hit":
+        return (
+            isinstance(evidence, list) and len(evidence) == 1 and _text(evidence[0])
+            and detail is None and isinstance(locations, list)
+            and len(locations) <= MAX_LOCATIONS
+            and all(isinstance(x, dict) and set(x) == {"file", "line"}
+                    and _package_path(x["file"])
+                    and (x["line"] is None or (type(x["line"]) is int and x["line"] > 0))
+                    for x in locations)
+        )  # fmt: skip
+    if status == "not_hit":
+        return evidence == [] and locations == [] and detail is None
+    if status == "failed":
+        undetermined = _text(detail) and detail.startswith(f"{UNDETERMINED}: ")
+        return evidence == [] and locations == [] and undetermined
+    return False
+
+
 def checked(value: object, ruleset: str) -> list[dict] | None:
     """value if it is the checks scan() makes for ruleset (from a child or a cache entry), else
-    None: never an empty or partial list that would read as not_hit."""
-    if not isinstance(value, list) or not value:
+    None: never an empty or partial list that would read as not_hit, and never an exception,
+    whatever JSON value it is. Each check is validated before any is compared with another."""
+    if not isinstance(value, list) or not value or not all(_made(c, ruleset) for c in value):
         return None
-    fields = {"rule_id", "rule_version", "status", "evidence", "locations", "detail"}
-    ids = [c.get("rule_id") if isinstance(c, dict) else None for c in value]
+    ids = [check["rule_id"] for check in value]  # all text now
     if len(set(ids)) != len(ids) or (ruleset == RULESET and set(ids) != set(READS)):
         return None
-    for check in value:
-        if (
-            set(check) != fields
-            or not isinstance(check["rule_id"], str)
-            or check["rule_version"] != ruleset
-            or check["status"] not in ("hit", "not_hit", "failed")
-            or not isinstance(check["evidence"], list)
-            or not all(isinstance(e, str) for e in check["evidence"])
-            or not isinstance(check["locations"], list)
-            or not all(
-                isinstance(x, dict)
-                and set(x) == {"file", "line"}
-                and isinstance(x["file"], str)
-                and (x["line"] is None or type(x["line"]) is int)
-                for x in check["locations"]
-            )
-            or not (check["detail"] is None or isinstance(check["detail"], str))
-            or (check["status"] == "failed") != isinstance(check["detail"], str)
-        ):
-            return None
     return value
 
 

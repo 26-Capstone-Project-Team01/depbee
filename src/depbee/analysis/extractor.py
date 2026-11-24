@@ -168,13 +168,14 @@ class _RegistrySource:
     loader's public build_snapshot, which fetches nothing without include_source), and the source
     tree from depbee's checked download (analysis.registry), unpacked under work. depbee-analyzer's
     build_row uses only get_snapshot of the sources it is given. unpacked maps each version whose
-    source it unpacked to (package root, the members unpack left out), for the rule scan."""
+    source it unpacked to (package root, the members unpack left out, the files the archive names
+    in the root), for the rule scan."""
 
     def __init__(self, packument: dict, build_snapshot: Callable, work: Path) -> None:
         self._packument = packument
         self._build_snapshot = build_snapshot
         self._work = work
-        self.unpacked: dict[str, tuple[Path, list[str]]] = {}
+        self.unpacked: dict[str, tuple[Path, list[str], list[str]]] = {}
 
     def get_snapshot(self, package: str, version: str, *, include_source: bool = False):
         snapshot = self._build_snapshot(self._packument, package, version)
@@ -183,8 +184,9 @@ class _RegistrySource:
         data = registry.tarball(package, version, self._packument["versions"][version]["dist"])
         target = Path(tempfile.mkdtemp(prefix="version_", dir=self._work))
         omitted: list[str] = []
-        source = registry.unpack(data, target, f"{package}@{version} tarball", omitted)
-        self.unpacked[version] = (source, omitted)
+        written: list[str] = []
+        source = registry.unpack(data, target, f"{package}@{version} tarball", omitted, written)
+        self.unpacked[version] = (source, omitted, written)
         return dataclasses.replace(snapshot, source_dir=source)
 
 
@@ -271,13 +273,14 @@ def _scan_rules(pair: tuple[str, str, str], source: _RegistrySource, local) -> d
     another message can hold local paths."""
     name, old, new = pair
     try:
-        old_root, old_missing = source.unpacked[old]
+        old_root, old_missing, old_names = source.unpacked[old]
         if local is None:
-            new_root, new_missing = source.unpacked[new]
-        else:
+            new_root, new_missing, new_names = source.unpacked[new]
+        else:  # no archive names to compare with
             new_root = local.get_snapshot(name, new, include_source=True).source_dir
-            new_missing = []
-        return rules.scan(old_root, new_root, {"old": old_missing, "new": new_missing}, pair)
+            new_missing, new_names = [], None
+        missing = {"old": old_missing, "new": new_missing}
+        return rules.scan(old_root, new_root, missing, pair, {"old": old_names, "new": new_names})
     except GuardError as exc:
         return {"error": f"규칙 스캔 오류: {exc}"}
     except Exception as exc:  # any other failure of the scan: the features of the change stand

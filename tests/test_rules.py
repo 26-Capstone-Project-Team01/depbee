@@ -36,6 +36,7 @@ STRENGTH = {"R_download_exec": "review", "R_secret_send": "high_evidence",
             "R_remote_admin_auth_override": "review", "R_diff_obfuscation": "review"}  # fmt: skip
 # Benign counterexamples: nothing here is run, and the URL is in a reserved test domain.
 DATA_ARGUMENT = "curl -o logo.svg https://example.invalid/logo.svg && node verify.js logo.svg"
+VERIFY = b"module.exports = (file) => file.endsWith('.svg');\n"  # the checker DATA_ARGUMENT names
 COMMENT = b"// Docs only: we never call eval( or atob( on user input.\nexports.ok = 1;\n"
 
 
@@ -44,9 +45,9 @@ def finding(rule_id, status="no_hit", paths=(), lines=(), reason="synthetic reas
             "reason": reason, "paths": paths, "lines": lines}  # fmt: skip
 
 
-def convert(rule_id, status="no_hit", old=(), new=(), hooks="", same=(), **found):
+def convert(rule_id, status="no_hit", old=(), new=(), refs=(), ruleset=rules.RULESET, **found):
     lost = {"old": list(old), "new": list(new)}
-    return rules.convert(finding(rule_id, status, **found), rules.RULESET, lost, hooks, set(same))
+    return rules.convert(finding(rule_id, status, **found), ruleset, lost, set(refs))
 
 
 class ConversionTests(unittest.TestCase):
@@ -96,14 +97,13 @@ class ConversionTests(unittest.TestCase):
                                 "R_diff_obfuscation": "failed"})  # fmt: skip
         detail = convert("R_diff_obfuscation", new=[big_js])["detail"]
         self.assertIn("새 버전: dist/bundle.js(크기 제한)", detail)
-        # A file left the same in both versions cannot make the obfuscation rule hit ...
-        same = convert("R_diff_obfuscation", old=[big_js], new=[big_js], same=["dist/bundle.js"])
-        self.assertEqual(same["status"], "not_hit")
-        # ... but an install hook may newly run it, so the credential rule still cannot tell.
-        hooks = "node dist/bundle.js"
-        sent = convert("R_secret_send", old=[big_js], new=[big_js], same=["dist/bundle.js"],
-                       hooks=hooks)  # fmt: skip
-        self.assertEqual(sent["status"], "failed")
+        # Skipped in both versions, it is not known to be the same: still undetermined.
+        both = convert("R_diff_obfuscation", old=[big_js], new=[big_js])
+        self.assertEqual(both["status"], "failed")
+        # The credential rule reads only the files an install hook names.
+        sent = {refs: convert("R_secret_send", new=[big_js], refs=refs)["status"]
+                for refs in ((), ("dist/bundle.js",))}  # fmt: skip
+        self.assertEqual(sent, {(): "not_hit", ("dist/bundle.js",): "failed"})
         self.assertEqual(convert("R_ci_secret_send", new=[".github/workflows/x.yml:read_error"])
                          ["status"], "failed")  # fmt: skip
         self.assertEqual(convert("R_remote_admin_auth_override", old=["src/index.js:size_limit"])
@@ -117,9 +117,59 @@ class ConversionTests(unittest.TestCase):
                 package_only = {"R_download_exec", "R_install_root_wipe"}
                 self.assertEqual(statuses, {r: "not_hit" if r in package_only else "failed"
                                             for r in RULE_IDS})  # fmt: skip
-        # A missing package.json holds even the rules that read nothing else.
-        self.assertEqual(convert("R_download_exec", new=["package.json:size_limit"])["status"],
-                         "failed")  # fmt: skip
+
+    def test_a_file_an_install_hook_names_but_the_package_lacks(self):
+        # Only R_secret_send follows a hook to its file; the others never read it.
+        absent = "setup.js:absent"
+        statuses = {r: convert(r, new=[absent], refs=["setup.js"])["status"] for r in RULE_IDS}
+        self.assertEqual(statuses, {**dict.fromkeys(RULE_IDS, "not_hit"),
+                                    "R_secret_send": "failed"})  # fmt: skip
+        self.assertIn(
+            "setup.js(설치 훅이 가리키지만 패키지에 없음)",
+            convert("R_secret_send", new=[absent], refs=["setup.js"])["detail"],
+        )
+        # Missing from the earlier version: a hit may not be new.
+        held = convert("R_secret_send", "hit", old=[absent], refs=["setup.js"],
+                       paths=("package.json",), lines=(3,))  # fmt: skip
+        self.assertEqual(held["status"], "failed")
+        self.assertIn("새로 생긴 것인지 확정할 수 없음", held["detail"])
+        # Missing from the new version only: what was found there still stands.
+        kept = convert("R_secret_send", "hit", new=[absent], refs=["setup.js"],
+                       paths=("package.json",), lines=(3,))  # fmt: skip
+        self.assertEqual(kept["status"], "hit")
+        # A file the hooks do not name is not read by the rule.
+        self.assertEqual(convert("R_secret_send", new=["other.js:size_limit"],
+                                 refs=["setup.js"])["status"], "not_hit")  # fmt: skip
+
+    def test_the_hook_files_are_found_as_the_pinned_scanner_finds_them(self):
+        manifest = {"scripts": {
+            "postinstall": "node ./scripts/a.js && NODE_ENV=x node lib/B.CJS --flag; nodex c.js",
+            "install": "node d.mjs", "preinstall": ["node e.js"], "test": "node f.js",
+        }}  # fmt: skip
+        self.assertEqual(rules._node_files(manifest), {"scripts/a.js", "lib/B.CJS", "d.mjs"})
+        self.assertEqual(rules._node_files({"scripts": "node a.js"}), set())
+
+    def test_the_two_manifests_must_be_the_compared_pair_read_strictly(self):
+        pair = ("example", "1.0.1", "1.1.0")
+        good = {"old": {"name": "example", "version": "1.0.1"},
+                "new": {"name": "example", "version": "1.1.0"}}  # fmt: skip
+        none = {"old": [], "new": []}
+        self.assertIsNone(rules._identity_problem(good, none, pair))
+        for label, manifests, lost in (
+            ("unreadable", {**good, "old": None}, none),
+            ("another name", {**good, "new": {"name": "other", "version": "1.1.0"}}, none),
+            ("a name of another type", {"old": {**good["old"], "name": ["example"]},
+                                        "new": {**good["new"], "name": ["example"]}}, none),
+            ("case duplicate", good, {"old": ["PACKAGE.JSON:case"], "new": []}),
+            ("over the size limit", good, {"old": [], "new": ["package.json:size_limit"]}),
+        ):  # fmt: skip
+            with self.subTest(label):
+                problem = rules._identity_problem(manifests, lost, pair)
+                self.assertTrue(problem.startswith(f"{rules.UNDETERMINED}: "), problem)
+        files = {"package.json": b'{"name": "example", "name": "example", "version": "1.0.1"}'}
+        self.assertIsNone(rules._manifest(files))  # a duplicate key: another reader may differ
+        self.assertIsNone(rules._manifest({"package.json": b'{"name": "ex\xffample"}'}))
+        self.assertIsNone(rules._manifest({"package.json": b"[]"}))
 
     def test_a_hit_against_an_incomplete_earlier_version_is_held(self):
         hit = {"paths": ("lib/util.js",), "lines": (1,)}
@@ -138,8 +188,38 @@ class ConversionTests(unittest.TestCase):
 
     def test_rules_this_table_does_not_know_count_every_missing_file(self):
         lost = {"old": [], "new": ["x.wasm:size_limit"]}
-        check = rules.convert(finding("R_new_rule"), "9.9.9", lost, "", set())
+        check = rules.convert(finding("R_new_rule"), "9.9.9", lost, set())
         self.assertEqual((check["status"], check["rule_version"]), ("failed", "9.9.9"))
+        # The pinned rule names under another ruleset version: READS may not describe them.
+        statuses = {r: convert(r, new=["x.wasm:size_limit"], ruleset="9.9.9")["status"]
+                    for r in RULE_IDS}  # fmt: skip
+        self.assertEqual(statuses, dict.fromkeys(RULE_IDS, "failed"))
+
+    def test_a_name_spelled_two_ways_holds_a_hit_in_either_version(self):
+        hit = {"paths": ("lib/util.js",), "lines": (1,)}
+        for kind in ("case", "alias"):
+            with self.subTest(kind):
+                held = convert("R_diff_obfuscation", "hit", new=[f"Lib/readme.txt:{kind}"], **hit)
+                self.assertEqual(held["status"], "failed")
+                self.assertIn("이름이 두 가지로 쓰여", held["detail"])
+                # A rule that reads package.json only is not affected.
+                self.assertEqual(
+                    convert(
+                        "R_download_exec",
+                        "hit",
+                        new=[f"Lib/x:{kind}"],
+                        paths=("package.json",),
+                        lines=(5,),
+                    )["status"],
+                    "hit",
+                )
+
+    def test_location_files_are_bounded_in_length(self):
+        long = "a/" * 127 + "b.js"  # 258 characters
+        check = convert("R_diff_obfuscation", "hit", paths=(long, "ok.js"), lines=(1, 2))
+        self.assertEqual(check["locations"], [{"file": "ok.js", "line": 2}])
+        self.assertFalse(rules._package_path("x" * (rules.MAX_PATH + 1)))
+        self.assertTrue(rules._package_path("x" * rules.MAX_PATH))
 
     def test_missing_files_are_named_briefly(self):
         entries = [f"lib/f{i}.js:size_limit" for i in range(5)]
@@ -147,6 +227,29 @@ class ConversionTests(unittest.TestCase):
         self.assertIn(
             "lib/f0.js(크기 제한), lib/f1.js(크기 제한), lib/f2.js(크기 제한) 외 2개", detail
         )
+
+
+class UnpackNamesTests(Fixture):
+    """analysis.registry.unpack reports names spelled in two cases and the files it wrote."""
+
+    def test_names_and_folders_spelled_in_two_cases(self):
+        from depbee.analysis import registry
+
+        data = linked_tgz(("package/package.json", b"{}"), ("package/Src/readme.txt", b"a"),
+                          ("package/src/index.js", b"b"), ("package/A.js", b"c"),
+                          ("package/a.js", b"d"), ("package/A.js", b"e"),
+                          ("other/x.js", b"f"))  # fmt: skip
+        omitted, written = [], []
+        target = self.root / "unpacked"
+        target.mkdir()
+        root = registry.unpack(data, target, "x tarball", omitted, written)
+        self.assertEqual(root.name, "package")
+        # Each later spelling of a folder or file name, on every platform; an exact repeat is
+        # the same file (the later one is written, as npm does).
+        self.assertEqual(sorted(omitted), ["a.js:case", "other/x.js:outside_root",
+                                           "src/index.js:case"])  # fmt: skip
+        self.assertEqual(sorted(written), ["A.js", "Src/readme.txt", "a.js", "package.json",
+                                           "src/index.js"])  # fmt: skip
 
 
 class CheckedTests(unittest.TestCase):
@@ -173,9 +276,70 @@ class CheckedTests(unittest.TestCase):
             "bad location": [{**full[0], "locations": [{"file": "a", "line": "1"}]}] + full[1:],
             "evidence not text": [{**full[0], "evidence": [1]}] + full[1:],
         }
+        hit = convert("R_download_exec", "hit", paths=("package.json",), lines=(5,))
+        failed = convert("R_download_exec", "unknown")  # in full[0]'s place, as hit is
+        # JSON values a damaged cache entry or child result can hold, each in one rule's place:
+        # none may raise (an unhashable rule_id did) or pass.
+        for label, check in {
+            "rule_id an array": {**full[0], "rule_id": ["R_download_exec"]},
+            "rule_id an object": {**full[0], "rule_id": {"R_download_exec": 1}},
+            "rule_id empty": {**full[0], "rule_id": ""},
+            "check a string": "R_download_exec",
+            "check an array": ["R_download_exec"],
+            "check null": None,
+            "status an array": {**full[0], "status": ["not_hit"]},
+            "version an array": {**full[0], "rule_version": [rules.RULESET]},
+            "fields an array": dict.fromkeys(["rule_id"], ["x"]),
+            "not_hit with evidence": {**full[0], "evidence": ["x"]},
+            "not_hit with a location": {**full[0], "locations": hit["locations"]},
+            "hit with a detail": {**hit, "detail": "x"},
+            "hit without evidence": {**hit, "evidence": []},
+            "hit with two evidence lines": {**hit, "evidence": ["a", "b"]},
+            "hit with overlong evidence": {**hit, "evidence": ["x" * (rules.MAX_TEXT + 4)]},
+            "hit at an absolute path": {**hit, "locations": [{"file": "/etc/passwd", "line": 1}]},
+            "hit at a drive path": {**hit, "locations": [{"file": "C:/x.js", "line": 1}]},
+            "hit at a backslash path": {**hit, "locations": [{"file": "a\\b.js", "line": 1}]},
+            "hit above the root": {**hit, "locations": [{"file": "../x.js", "line": 1}]},
+            "hit at no path": {**hit, "locations": [{"file": "", "line": 1}]},
+            "hit at a path that is no text": {**hit, "locations": [{"file": ["a"], "line": 1}]},
+            "hit at line 0": {**hit, "locations": [{"file": "a.js", "line": 0}]},
+            "hit at a negative line": {**hit, "locations": [{"file": "a.js", "line": -3}]},
+            "hit at line true": {**hit, "locations": [{"file": "a.js", "line": True}]},
+            "hit with a location list too long": {
+                **hit, "locations": [{"file": "a.js", "line": 1}] * (rules.MAX_LOCATIONS + 1)},
+            "hit with a location that is no object": {**hit, "locations": ["a.js:1"]},
+            "failed with evidence": {**failed, "evidence": ["x"]},
+            "failed with a location": {**failed, "locations": hit["locations"]},
+            "failed that is not undetermined": {**failed, "detail": "timeout"},
+            "failed with an overlong detail": {**failed,
+                                               "detail": failed["detail"] + "x" * rules.MAX_TEXT},
+        }.items():  # fmt: skip
+            cases[label] = [check] + full[1:]
         for label, value in cases.items():
             with self.subTest(label):
                 self.assertIsNone(rules.checked(value, rules.RULESET))
+
+    def test_every_check_a_scan_makes_passes(self):
+        made = {
+            "R_download_exec": convert("R_download_exec", "hit", paths=("package.json",),
+                                       lines=(0,)),  # a hit whose line was not found
+            "R_secret_send": convert("R_secret_send", "unknown", reason="r" * 1000),
+            "R_ci_secret_send": convert("R_ci_secret_send", new=["x.yml:symlink"]),
+            "R_install_root_wipe": convert("R_install_root_wipe"),
+            "R_remote_admin_auth_override": convert(
+                "R_remote_admin_auth_override", "hit", paths=tuple(f"f{i}.js" for i in range(30)),
+                lines=tuple(range(1, 31)), reason="x" * 1000),
+            "R_diff_obfuscation": convert("R_diff_obfuscation", "hit", old=["a.js:size_limit"],
+                                          paths=("a.js",), lines=(1,)),
+        }  # fmt: skip
+        self.assertEqual([c["status"] for c in made.values()],
+                         ["hit", "failed", "failed", "not_hit", "hit", "failed"])  # fmt: skip
+        value = list(made.values())
+        self.assertIs(rules.checked(value, rules.RULESET), value)
+        # Another ruleset: the same shapes, any rule ids, each once.
+        other = [{**c, "rule_version": "9.9.9", "rule_id": f"R{i}"} for i, c in enumerate(value)]
+        self.assertIs(rules.checked(other, "9.9.9"), other)
+        self.assertIsNone(rules.checked(other + [other[0]], "9.9.9"))
 
     def test_results_answer_only_for_their_own_pair(self):
         found = rules.Results(rules.RULESET)
@@ -360,8 +524,8 @@ class PinnedRulesTests(Fixture):
     def test_review_hits_are_shown_and_never_change_the_verdict(self):
         scripts = {"postinstall": DATA_ARGUMENT}
         self.publish({"package.json": manifest("1.0.1"), "lib/util.js": b"exports.ok = 1;\n"},
-                     {"package.json": manifest("1.1.0", scripts=scripts), "lib/util.js": COMMENT},
-                     scripts)  # fmt: skip
+                     {"package.json": manifest("1.1.0", scripts=scripts), "lib/util.js": COMMENT,
+                      "verify.js": VERIFY}, scripts)  # fmt: skip
         for score, status, agreement, code in ((0.1, "not_flagged", "rule_only", 0),
                                                (0.9, "flagged", "both_hit", 1)):  # fmt: skip
             with self.subTest(score=score):
@@ -388,11 +552,21 @@ class PinnedRulesTests(Fixture):
             {"package.json": manifest("1.0.1"), "engine.wasm": engine},
             {"package.json": manifest("1.1.0"), "engine.wasm": engine + b"\1"},
         )
-        with mock.patch("depbee_analyzer.rules.diff_scan.MAX_FILE", 1024):
+        opened, real_open = [], Path.open
+
+        def spy(path, *args, **kwargs):
+            opened.append(Path(path).name)
+            return real_open(path, *args, **kwargs)
+
+        with (mock.patch("depbee_analyzer.rules.diff_scan.MAX_FILE", 1024),
+              mock.patch.object(Path, "open", spy)):  # fmt: skip
             report = self.scan()
         row = report["results"][0]
         self.assertEqual(self.statuses(row), dict.fromkeys(RULE_IDS, "not_hit"))
         self.assertEqual((row["status"], report["exit_code"]), ("not_flagged", 0))
+        # The scanner skipped it for its size and nothing read it after that.
+        self.assertIn("package.json", opened)
+        self.assertNotIn("engine.wasm", opened)
 
     def test_a_code_file_over_the_limit_is_undetermined_and_holds_the_item(self):
         bundle = b"//" + b"x" * 2048 + b"\n"
@@ -407,7 +581,8 @@ class PinnedRulesTests(Fixture):
         detail = {c["rule_id"]: c["detail"] for c in row["rules"]["checks"]}["R_diff_obfuscation"]
         self.assertTrue(detail.startswith(f"{rules.UNDETERMINED}: 이 규칙이 읽는 파일이 빠져"))
         self.assertIn("새 버전: lib/bundle.js(크기 제한)", detail)
-        self.assertNotIn("same.js", detail)  # skipped in both and the same: proven harmless
+        # Skipped in both versions it is not read again, so it is not known to be the same.
+        self.assertIn("이전 버전: same.js(크기 제한)", detail)
         self.assertEqual((row["rules"]["status"], row["rules"]["reason"], row["rules"]["detail"]),
                          ("failed", "detector_failed", None))  # fmt: skip
         # D-7 holds the item; the ML path's score and status stay.
@@ -486,7 +661,7 @@ class PinnedRulesTests(Fixture):
         scripts = {"postinstall": DATA_ARGUMENT}
         self.publish(
             {"package.json": manifest("1.0.1")},
-            {"package.json": manifest("1.1.0", scripts=scripts)},
+            {"package.json": manifest("1.1.0", scripts=scripts), "verify.js": VERIFY},
             scripts,
         )
         tarballs = {tarball_url("example", v) for v in ("1.0.1", "1.1.0")}
@@ -505,16 +680,29 @@ class PinnedRulesTests(Fixture):
         self.assertEqual((warm_row["cache_hit"], fetched), (True, set()))
         self.assertEqual(same(warm_row), same(cold_row))  # rules, features, score, evidence
         self.assertEqual(self.statuses(warm_row)["R_download_exec"], "hit")
-        # An entry whose rule checks are damaged is a miss, scanned and stored again.
+        # An entry whose rule checks alone are damaged is a miss: the second run scans again and
+        # stores the entry anew, and the third uses it. The features in it stay as they were.
         [entry] = cache_dir.glob("*.json")
         stored = json.loads(entry.read_bytes())
-        for damaged in ([], stored["rules"][:5], None):
-            with self.subTest(damaged=damaged):
+        array_id, absolute = copy.deepcopy(stored["rules"]), copy.deepcopy(stored["rules"])
+        array_id[0]["rule_id"] = [array_id[0]["rule_id"]]  # JSON array: was a TypeError
+        hit = next(c for c in absolute if c["status"] == "hit")
+        hit["locations"] = [{"file": "/etc/passwd", "line": 1}]  # no scan writes such a file
+        for label, damaged in (
+            ("empty", []), ("five rules", stored["rules"][:5]), ("null", None),
+            ("rule_id an array", array_id), ("a check that is text", ["R_download_exec"]
+                                             + stored["rules"][1:]),
+            ("an absolute location", absolute), ("an object", {"checks": stored["rules"]}),
+        ):  # fmt: skip
+            with self.subTest(label):
                 entry.write_text(json.dumps({**stored, "rules": damaged}), encoding="utf-8")
                 _, row, fetched = run()
                 self.assertEqual((row["cache_hit"], fetched, same(row)),
                                  (False, tarballs, same(cold_row)))  # fmt: skip
-                self.assertEqual(json.loads(entry.read_bytes())["rules"], stored["rules"])
+                self.assertEqual(json.loads(entry.read_bytes()), stored)
+                _, row, fetched = run()
+                self.assertEqual((row["cache_hit"], fetched, same(row)),
+                                 (True, set(), same(cold_row)))  # fmt: skip
         # A scan error or an unreadable file is not stored: the next run scans again.
         entry.unlink()
         read_root = importlib.import_module("depbee_analyzer.rules.diff_scan").read_root
@@ -535,6 +723,105 @@ class PinnedRulesTests(Fixture):
         _, row, fetched = run()
         self.assertEqual((row["cache_hit"], self.statuses(row)), (False, self.statuses(cold_row)))
         self.assertEqual(len(list(cache_dir.glob("*.json"))), 1)
+
+    def test_a_malformed_child_result_keeps_the_features_and_the_score(self):
+        cache_dir = self.root / "cache"
+        verified = {"commit": "c" * 40, "url": "https://example.test/x", "files_sha256": "f" * 64,
+                    "python": "3.13.5"}  # fmt: skip
+        with mock.patch("depbee.analysis.extractor._installed_identity", return_value=verified):
+            good = self.scan(no_cache=False, cache_dir=self.root / "good")["results"][0]
+        checks = good["rules"]["checks"]
+        for label, found in (
+            ("rule_id an array", {"checks": [{**checks[0], "rule_id": ["R_download_exec"]}]
+                                  + checks[1:], "cacheable": True}),
+            ("checks text", {"checks": "not_hit", "cacheable": True}),
+            ("error a number", {"error": 5}),
+            ("an array", [checks]),
+            ("null", None),
+            ("cacheable text", {"checks": checks, "cacheable": "yes"}),
+        ):  # fmt: skip
+            with (self.subTest(label),
+                  mock.patch("depbee.analysis.extractor._installed_identity",
+                             return_value=verified),
+                  mock.patch("depbee.analysis.extractor._scan_rules", return_value=found)):  # fmt: skip
+                report = self.scan(no_cache=False, cache_dir=cache_dir)
+                row = report["results"][0]
+                if label == "cacheable text":  # valid checks, only not known to be cacheable
+                    self.assertEqual((row["rules"], list(cache_dir.glob("*.json"))),
+                                     (good["rules"], []))  # fmt: skip
+                    continue
+                self.assertEqual(row["rules"], {
+                    "status": "failed", "reason": "detector_failed", "checks": [],
+                    "detail": "규칙 스캔 결과가 없거나 형식이 맞지 않음"})  # fmt: skip
+                self.assertEqual((row["status"], row["reason"], row["score"], row["features"],
+                                  report["exit_code"]),
+                                 ("incomplete", "detection_failed", 0.1, good["features"], 2))  # fmt: skip
+                self.assertEqual(list(cache_dir.glob("*.json")), [])
+
+    def test_a_case_duplicate_of_the_earlier_manifest_holds_every_rule(self):
+        # The download hit reads package.json only, but which earlier package.json is the one
+        # read is not certain (one file where case is ignored), so no rule result is final.
+        scripts = {"postinstall": DATA_ARGUMENT}
+        self.publish({"package.json": manifest("1.0.1"),
+                      "PACKAGE.JSON": manifest("1.0.1", scripts=scripts)},
+                     {"package.json": manifest("1.1.0", scripts=scripts), "verify.js": VERIFY},
+                     scripts)  # fmt: skip
+        row = self.scan()["results"][0]
+        self.assertEqual(self.statuses(row), dict.fromkeys(RULE_IDS, "failed"))
+        self.assertIn("package.json이 하나로 정해지지 않음", row["rules"]["checks"][0]["detail"])
+        self.assertEqual((row["status"], row["score"]), ("incomplete", 0.1))
+
+    def test_manifests_that_only_a_lenient_reader_accepts_hold_every_rule(self):
+        # The scanner decodes package.json leniently (invalid UTF-8 replaced, the last of two
+        # keys), so a pair it calls one package need not be the compared one.
+        for label, old, new in (
+            ("invalid UTF-8 in the name",
+             b'{"name": "ex\xffample", "version": "1.0.1"}',
+             b'{"name": "ex\xffample", "version": "1.1.0"}'),
+            ("a duplicate key",
+             b'{"name": "other", "name": "example", "version": "1.0.1"}',
+             b'{"name": "other", "name": "example", "version": "1.1.0"}'),
+        ):  # fmt: skip
+            with self.subTest(label):
+                self.publish({"package.json": old}, {"package.json": new})
+                row = self.scan()["results"][0]
+                self.assertEqual(self.statuses(row), dict.fromkeys(RULE_IDS, "failed"))
+                self.assertIn("엄격한 UTF-8 JSON 객체로 읽을 수 없음",
+                              row["rules"]["checks"][0]["detail"])  # fmt: skip
+
+    def test_a_file_an_install_hook_names_but_the_package_lacks_holds_that_rule(self):
+        scripts = {"postinstall": "node scripts/setup.js"}
+        self.publish(
+            {"package.json": manifest("1.0.1")},
+            {"package.json": manifest("1.1.0", scripts=scripts)},
+            scripts,
+        )
+        row = self.scan()["results"][0]
+        self.assertEqual(self.statuses(row), {**dict.fromkeys(RULE_IDS, "not_hit"),
+                                              "R_secret_send": "failed"})  # fmt: skip
+        detail = {c["rule_id"]: c["detail"] for c in row["rules"]["checks"]}["R_secret_send"]
+        self.assertIn("새 버전: scripts/setup.js(설치 훅이 가리키지만 패키지에 없음)", detail)
+        # With the file there, nothing is missing.
+        self.publish({"package.json": manifest("1.0.1")},
+                     {"package.json": manifest("1.1.0", scripts=scripts),
+                      "scripts/setup.js": b"console.log('ok');\n"}, scripts)  # fmt: skip
+        self.assertEqual(self.statuses(self.scan()["results"][0]),
+                         dict.fromkeys(RULE_IDS, "not_hit"))  # fmt: skip
+
+    def test_a_folder_spelled_in_two_cases_holds_the_rules_that_read_paths(self):
+        # Where case is ignored (Windows) Src/ and src/ are one folder, so src/index.js is read
+        # as Src/index.js; the same names count on every platform.
+        scripts = {"postinstall": DATA_ARGUMENT}
+        self.publish({"package.json": manifest("1.0.1"), "lib/util.js": b"exports.ok = 1;\n"},
+                     {"package.json": manifest("1.1.0", scripts=scripts), "verify.js": VERIFY,
+                      "lib/util.js": COMMENT, "LIB/readme.txt": b"notes\n"}, scripts)  # fmt: skip
+        row = self.scan()["results"][0]
+        self.assertEqual(self.statuses(row), {**dict.fromkeys(RULE_IDS, "failed"),
+                                              "R_download_exec": "hit",
+                                              "R_install_root_wipe": "not_hit"})  # fmt: skip
+        detail = {c["rule_id"]: c["detail"] for c in row["rules"]["checks"]}["R_diff_obfuscation"]
+        self.assertIn("LIB/readme.txt(대소문자만 다른 이름)", detail)
+        self.assertIn("이름이 두 가지로 쓰여 적중한 경로를 확정할 수 없음", detail)
 
     def test_a_new_dependency_without_an_earlier_version_is_not_scanned(self):
         self.old["packages"].pop("node_modules/example")
