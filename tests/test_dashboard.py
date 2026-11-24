@@ -457,8 +457,10 @@ class ConsoleTests(DashboardFixture):
             self.assertIn('<p class="error">프로젝트 폴더를 찾을 수 없습니다.', html)
             self.assertIn(f'<a href="{S}/?manage=1">프로젝트 관리</a>에서 새로 등록하세요.', html)
             self.assertIn(f'<a href="{S}/projects/{project}/history">기록</a>에 그대로', html)
-            for form in ("/previews", "/scans", "<button"):
+            for form in ("/previews", "/scans"):
                 self.assertNotIn(form, html)
+            # No button but the rail's theme one.
+            self.assertEqual(html.count("<button"), html.count('<button type="submit" name="theme"'))
         self.assertIn(f'<a href="{S}/runs/{run}">#{run}</a>', html)  # the history view
         self.assertIn("찾을 수 없음. 폴더를 원래 위치로", self.page("/?manage=1"))
 
@@ -1713,7 +1715,8 @@ class CheckReturnTests(ScreenFixture):
         template = mock.Mock(**{"render.return_value": "<html></html>"})
         with mock.patch.object(self.app.ENV, "get_template", return_value=template):
             self.assertEqual(self.get(url).status_code, 200, url)
-        return template.render.call_args.kwargs
+        # The theme form's way back is the address itself, whatever the address holds.
+        return {k: v for k, v in template.render.call_args.kwargs.items() if k != "theme_back"}
 
     def inspector(self, url):
         """The inspector of the page at an address, as it is shown: the candidate that is open."""

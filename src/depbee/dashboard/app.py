@@ -30,6 +30,7 @@ import hashlib
 import hmac
 import importlib.resources
 import os
+import re
 import secrets
 import socket
 import stat
@@ -85,7 +86,7 @@ from ..cli import (
 from ..contracts import MAX_JSON_BYTES, GuardError, read_json
 from ..inputs.npm import MAX_NAME_LENGTH, PACKAGE_NAME
 from ..inputs.npm_cli import DEPENDENCY_FIELDS, UPDATE_NAME
-from . import mounted, picker
+from . import mounted, picker, theme
 
 HOST = "127.0.0.1"
 MAX_BODY = 16 * 1024  # bytes of a request body (Starlette answers 413 above it)
@@ -173,6 +174,20 @@ SECURITY_HEADERS = [
     (b"cache-control", b"no-store"),
 ]
 KIND_LABELS = {"scan": "검사(scan)", "update_preview": "업데이트 미리보기"}
+# The rail's theme button (theme.py): each theme as the button names it now, and as the words
+# that say what the next press does.
+THEME_WORDS = {
+    "system": ("시스템 설정", "시스템 설정 따르기"),
+    "light": ("밝게", "밝게 바꾸기"),
+    "dark": ("어둡게", "어둡게 바꾸기"),
+}
+THEME_FAILED_TITLE = "화면 테마를 저장하지 못했습니다"
+THEME_FAILED = "설정 폴더에 쓸 수 없어 지금 화면 테마를 그대로 둡니다."
+# The pages of the console a GET opens (under the session): where the theme form may go back to.
+PAGES = re.compile(
+    r"/(?:|model|projects/mounted|projects/\d+(?:/updates|/history)?|runs/\d+|previews/[\w-]+)"
+)
+MAX_BACK = 2048  # characters of the address the theme form goes back to
 MODEL_LIMITS = (
     "학습 데이터 버전과 공격 유형별 탐지율은 저장된 보고서에 출처가 없어 보이지 않습니다."
 )
@@ -376,12 +391,20 @@ def build_app(
         the open tab (the template gets its tab); section: the view the page belongs to
         (packages, updates, history; manage and model for the two pages outside a project).
         Every template also gets contained: this dashboard is a container's (.mounted), where
-        a page says what choosing a folder and installing do there, not on a desktop."""
+        a page says what choosing a folder and installing do there, not on a desktop. And the
+        theme the user chose (theme.py) with the rail's button for the next one, whose form goes
+        back to this page: only a page a GET opened has that button, as an answer to a POST has
+        no address to come back to (theme_back None)."""
         tabs = _tabs(project) if tabs is None else tabs
+        chosen = theme.load()
+        query = request.url.query
+        back = base + request.url.path + (f"?{query}" if query else "")
         html = ENV.get_template(name).render(
             safety_note=SAFETY_NOTE, base=base, session=session, tabs=tabs, section=section,
             contained=mounted.root() is not None,
-            project=next((tab for tab in tabs if tab["current"]), None), **context,
+            project=next((tab for tab in tabs if tab["current"]), None),
+            theme=chosen, theme_next=theme.next_of(chosen), theme_words=THEME_WORDS,
+            theme_back=back if request.method == "GET" else None, **context,
         )  # fmt: skip
         # _finalize has escaped lone surrogates; backslashreplace keeps any left from a 500.
         body = html.encode("utf-8", "backslashreplace")
@@ -775,6 +798,23 @@ def build_app(
         return page(request, "model.html", section="model", models=_models(),
                     limits=MODEL_LIMITS)  # fmt: skip
 
+    async def choose_theme(request: Request) -> Response:
+        """The rail's theme form (theme.py): save the theme chosen and go back to the page the
+        form was on (_way_back). A theme that cannot be saved leaves the one there was, and the
+        page says so. Nothing else waits for this: it runs while a check runs."""
+        form = await read_form(request)
+        if isinstance(form, Response):
+            return form
+        given, back = form.get("theme", []), form.get("back", [])
+        if len(given) != 1 or given[0] not in theme.THEMES or len(back) > 1:
+            return _text(400, "화면 테마를 확인하세요.")
+        try:
+            theme.save(given[0])
+        except (OSError, GuardError, RuntimeError):
+            return page(request, "error.html", 503, title=THEME_FAILED_TITLE,
+                        message=THEME_FAILED, note="")  # fmt: skip
+        return RedirectResponse(_way_back(base, back[0] if back else ""), 303)
+
     def asset(name: str, media_type: str):
         """The handler of one file of static/ (STYLES, SCRIPT): the file is the route's own."""
 
@@ -806,6 +846,7 @@ def build_app(
             Route("/previews/{preview_id}/apply", apply, methods=["POST"]),
             Route("/runs/{run_id:int}", run),
             Route("/model", model),
+            Route("/theme", choose_theme, methods=["POST"]),
             *(Route(f"/static/{name}", asset(name, "text/css; charset=utf-8")) for name in STYLES),
             Route(f"/static/{SCRIPT}", asset(SCRIPT, "text/javascript; charset=utf-8")),
             Route("/static/icon.svg", icon),
@@ -878,6 +919,18 @@ def _registration_problem(text: str) -> str | None:
     except (OSError, ValueError):
         return "unreadable"
     return None
+
+
+def _way_back(base: str, given: str) -> str:
+    """The address the theme form goes back to: given, when it is a page of this console that a
+    GET opens (PAGES under base, with the query it had), else the console's first page. Never
+    another site, another session, a form's own address or a file."""
+    home = f"{base}/"
+    if len(given) > MAX_BACK or not given.isprintable() or "\\" in given or "#" in given:
+        return home
+    if not given.startswith(home):
+        return home
+    return given if PAGES.fullmatch(given[len(base) :].partition("?")[0]) else home
 
 
 def _project(project_id: int) -> dict | None:

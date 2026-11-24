@@ -244,6 +244,10 @@ body.start { display: grid; grid-template-columns: minmax(0, 1fr); place-items: 
 .comb span:nth-child(2) { left: .93rem; background: var(--rail-ink); }
 .comb span:nth-child(2)::after { content: ""; position: absolute; inset: 1.5px; background: var(--rail-bg); clip-path: var(--hex); }
 .comb span:nth-child(3) { top: .78rem; left: .465rem; background: var(--rail-ink); }
+/* The theme button: quiet on the rail, a target a finger can hit. */
+.theme { margin: 0; }
+.theme button { min-height: 2.75rem; padding: .3rem .7rem; border-color: var(--rail-line); background: transparent; color: var(--rail-ink); font-size: .8125rem; font-weight: 600; }
+.theme button:hover { border-color: var(--rail-muted); background: var(--rail-current); }
 .tabs { flex: 1 1 9rem; min-width: 0; }
 .tabs ul { display: flex; gap: .25rem; max-width: none; margin: 0; padding: 0; list-style: none; }
 .tabs li { display: none; min-width: 0; }
@@ -558,6 +562,8 @@ meter::-moz-meter-bar { background: var(--ink); }
   body { display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); grid-template-rows: 1fr auto; }
   .masthead { position: sticky; top: 0; grid-row: 1 / span 2; flex-flow: column nowrap; align-items: stretch; gap: 0; height: 100vh; padding: 1.1rem .75rem 1rem; overflow-y: auto; border-right: 1px solid var(--rail-line); border-bottom: 0; }
   .brand, .aux { flex: none; }
+  .theme { margin: 0 .35rem 1rem; }
+  .theme button { width: 100%; justify-content: flex-start; }
   .brand { flex-wrap: wrap; gap: .1rem .6rem; padding: 0 .35rem 1.1rem; }
   .wordmark { font-size: 1.375rem; }
   .brand-note { display: block; flex-basis: 100%; color: var(--rail-muted); font-size: .8125rem; }
