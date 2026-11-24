@@ -288,8 +288,10 @@ body.start { display: grid; grid-template-columns: minmax(0, 1fr); place-items: 
 .tabs li { display: none; min-width: 0; }
 .tabs li.here { display: block; }
 /* A project on one line: its mark, its name cut short with an ellipsis, and on the right the
-   risk and hold counts of its newest run, in the rail's verdict colours. */
-.tab { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0 .5rem; min-height: 2.75rem; padding: .3rem .7rem; }
+   risk and hold counts of its newest run, in the rail's verdict colours. The tab holds its
+   hidden state words (position: relative), so that they stay inside the bar that scrolls
+   sideways and never widen the page. */
+.tab { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0 .5rem; min-height: 2.75rem; padding: .3rem .7rem; }
 .tab-name { overflow: hidden; font-size: .9375rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .tab-count { display: flex; gap: .4rem; font-size: .8125rem; font-weight: 700; white-space: nowrap; }
 .tab-count .n-risk { color: var(--rail-risk); }
