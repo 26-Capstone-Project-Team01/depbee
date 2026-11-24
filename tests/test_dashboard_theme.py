@@ -140,10 +140,31 @@ class FocusAndPickTests(unittest.TestCase):
         self.assertRegex(css, r"(?m)^\.field input \{[^}]*min-width: 0;")
         self.assertRegex(css, r"(?m)^\.actions form \{ min-width: 0; \}")
 
-    def test_a_picked_filter_has_an_ink_border(self):
+    def test_the_packages_table_and_the_inspector_keep_to_their_own(self):
         css = strip_comments((STATIC / "style.css").read_text("utf-8"))
-        rule = re.search(r"^\.toggle\[aria-current\] \{([^}]*)\}", css, re.M)
-        self.assertIn("border-color: var(--ink)", rule.group(1))
+        # A long version breaks inside its cell rather than push a narrow page sideways.
+        rule = re.search(r"^\.packages td:nth-child\(2\) \{([^}]*)\}", css, re.M)
+        self.assertTrue(rule is None or "nowrap" not in rule.group(1))
+        # The inspector's tiles are its own: the updates list has its own detectors list.
+        self.assertNotRegex(css, r"(?m)^\.detectors")
+        self.assertRegex(css, r"(?m)^\.inspector \.detectors \{")
+        # The row's mark sits at the row's end, whatever the decision's words; a click on it
+        # reaches the row's pick under it, and a narrow row keeps room for it.
+        rule = re.search(r"(?m)^\.packages \.chev \{([^}]*)\}", css)
+        self.assertIn("position: absolute", rule.group(1))
+        self.assertIn("pointer-events: none", rule.group(1))
+        self.assertRegex(css, r"(?m)^  \.packages tbody tr:not\(\.inspect\) \{ padding-right: 2rem; \}")
+        # A score is read digit by digit in the tile too.
+        self.assertRegex(css, r"(?m)^\.inspector \.detectors \.score \{[^}]*font-family: var\(--mono\)")
+
+    def test_a_picked_list_tab_has_an_ink_underline(self):
+        css = strip_comments((STATIC / "style.css").read_text("utf-8"))
+        # The open tab, a link or (with no rows) words.
+        rule = re.search(r"^\.filter-tabs > \[aria-current\] \{([^}]*)\}", css, re.M)
+        self.assertIn("border-bottom-color: var(--ink)", rule.group(1))
+        # A pointer over the open tab leaves its underline: only the other tabs' hover greys it.
+        self.assertNotRegex(css, r"(?m)^\.filter-tabs a:hover")
+        self.assertRegex(css, r"(?m)^\.filter-tabs a:not\(\[aria-current\]\):hover \{")
 
 
 @unittest.skipUnless(WEB, NO_WEB)

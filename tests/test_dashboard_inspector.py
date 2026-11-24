@@ -121,7 +121,9 @@ class InspectorTests(test_dashboard.DashboardFixture):
 
     def test_an_item_that_is_not_one_key_of_a_shown_row_changes_nothing(self):
         key = self.keys["inner"]  # a row that both views show and neither opens first
-        wide = key.translate(str.maketrans("0123456789", "０１２３４５６７８９"))  # int() reads these
+        wide = key.translate(
+            str.maketrans("0123456789", "０１２３４５６７８９")
+        )  # int() reads these
         items = [
             "", "x", str(self.checked), f"{self.checked}.", ".2", f"{key}.0", f"{key}x", f" {key}",
             f"{key} ", f"+{key}", f"0{key}", f"{self.checked}.02", f"{self.checked}.-2",
@@ -144,7 +146,9 @@ class InspectorTests(test_dashboard.DashboardFixture):
         for name in ("package.json", "package-lock.json"):
             (twin / name).write_bytes((self.project / name).read_bytes())
         twin_id = history.register_project(twin)
-        foreign = self.check(project=twin, targets=None)  # the same files and rows, not this project
+        foreign = self.check(
+            project=twin, targets=None
+        )  # the same files and rows, not this project
         stale = self.check(targets=None, package_lock_sha256="4" * 64)  # this project, other files
         unused = [mock.patch.object(*target) for target in (
             (service, "preview_files"), (service, "scan_project"), (service, "apply_preview"),
@@ -191,47 +195,75 @@ class InspectorTests(test_dashboard.DashboardFixture):
             self.assertEqual([row[key] for key in CHECKED_WITH],
                              ["unit-test", 0.5, KnownList.list_as_of])  # fmt: skip
 
-    def test_the_candidates_only_filter_and_the_search_narrow_the_list_together(self):
+    def test_the_tabs_and_the_search_narrow_the_list_together(self):
         # A later check of other alone found nothing: other is installed and has no candidate.
         self.check({**self.report, "results": []}, targets=["other"], changed_count=0)
-        for query, expected in (
-            ("", ["example", "inner", "other"]),
-            ("only=1", ["example", "inner"]),
-            ("only=1&q=IN", ["inner"]),
-            ("q=IN&only=1", ["inner"]),  # in either order
-            ("only=1&scope=direct", ["example"]),
-            ("only=1&scope=nested&q=inner", ["inner"]),
-            ("only=1&q=other", []),  # found by the search, but it has no candidate
-            ("q=other", ["other"]),
+        for query, expected, show in (
+            ("", ["example", "inner", "other"], "all"),
+            ("show=candidates", ["example", "inner"], "candidates"),
+            ("show=candidates&q=IN", ["inner"], "candidates"),
+            ("q=IN&show=candidates", ["inner"], "candidates"),  # in either order
+            ("show=candidates&scope=direct", ["example"], "candidates"),
+            ("show=candidates&scope=nested&q=inner", ["inner"], "candidates"),
+            ("show=candidates&q=other", ["other"], "all"),  # the search leaves no candidate
+            ("show=none", ["other"], "none"),
+            ("q=other", ["other"], "all"),
         ):
             with self.subTest(query=query):
                 context = self.context(f"{self.packages}?{query}")
                 self.assertEqual([row["name"] for row in context["rows"]], expected)
-                # The count is of the whole list, and the search is kept as it was given.
-                self.assertEqual((context["candidate_count"], context["only"]),
-                                 (2, "only=1" in query))  # fmt: skip
+                self.assertEqual(context["show"], show)
+                # The tabs count what the search and the kind leave: their parts make the whole.
+                counts = context["counts"]
+                self.assertEqual(counts["candidates"] + counts["unchecked"] + counts["none"],
+                                 counts["all"])  # fmt: skip
                 self.assertEqual(context["query"], "IN" if "q=IN" in query else
                                  "inner" if "q=inner" in query else
                                  "other" if "q=other" in query else "")  # fmt: skip
-        # The view opens one of the rows the filter leaves.
-        row = self.selected(f"{self.packages}?only=1&item={self.keys['inner']}")
+        self.assertEqual(self.context(self.packages)["counts"],
+                         {"all": 3, "candidates": 2, "unchecked": 0, "none": 1})  # fmt: skip
+        # The view opens one of the rows the tab leaves.
+        row = self.selected(f"{self.packages}?show=candidates&item={self.keys['inner']}")
         self.assertEqual(row["package"], "inner")
-        self.assertIsNone(self.selected(f"{self.packages}?only=1&q=other&item={self.keys['inner']}"))
-        for query in ("only=0", "only=", "only=true", "only=1&only=1", "only=1&only=0"):
+        self.assertIsNone(self.selected(f"{self.packages}?show=none&item={self.keys['inner']}"))
+        for query in ("show=", "show=yes", "show=none&show=none", "show=candidates&show=none"):
             self.assertEqual(self.get(f"{self.packages}?{query}").status_code, 400, query)
+        for query in ("only=0", "only=", "only=true", "only=1&only=1"):  # the old filter: no more
+            self.assertEqual(self.get(f"{self.packages}?{query}").status_code, 200, query)
 
-    def test_a_filter_with_no_candidate_to_show_is_off(self):
+    def test_a_tab_keeps_the_open_candidate_and_an_empty_tab_is_no_link(self):
+        inner = self.keys["inner"]
+        html = self.page(f"{self.packages}?item={inner}")
+        tabs = html.split('<nav class="filter-tabs"', 1)[1].split("</nav>", 1)[0]
+        self.assertIn(
+            f'href="{test_dashboard.S}/projects/{self.project_id}?show=candidates&amp;item={inner}"',
+            tabs,
+        )
+        self.assertIn(f'<input type="hidden" name="item" value="{inner}">', html)
+        self.assertEqual(
+            self.selected(f"{self.packages}?show=candidates&item={inner}")["package"], "inner"
+        )
+        # A search that leaves nothing: every tab is words, the open one marked.
+        tabs = self.page(f"{self.packages}?q=missing").split('<nav class="filter-tabs"', 1)[1]
+        tabs = tabs.split("</nav>", 1)[0]
+        self.assertNotIn("<a ", tabs)
+        self.assertIn(
+            '<span class="filter-off" aria-current="true">전체 <span class="filter-count">0</span></span>',
+            tabs,
+        )
+
+    def test_a_tab_with_nothing_to_show_lists_everything(self):
         # No current check: nothing is known, and an address kept from before lists everything.
         self.head.write_bytes(self.head.read_bytes() + b"\n")
-        context = self.context(f"{self.packages}?only=1")
-        self.assertEqual((context["only"], context["candidate_count"], context["state"]["checks"],
-                          len(context["rows"])), (False, 0, [], 3))  # fmt: skip
+        context = self.context(f"{self.packages}?show=candidates")
+        self.assertEqual((context["show"], context["counts"]["candidates"], context["state"]["checks"],
+                          len(context["rows"])), ("all", 0, [], 3))  # fmt: skip
         # A check of everything that found nothing: 0 is known, and the list is still whole.
         run = self.check({**self.report, "results": []}, targets=None, changed_count=0)
-        context = self.context(f"{self.packages}?only=1")
-        self.assertEqual((context["only"], context["candidate_count"], len(context["rows"]),
+        context = self.context(f"{self.packages}?show=candidates")
+        self.assertEqual((context["show"], context["counts"]["candidates"], len(context["rows"]),
                           [check["id"] for check in context["state"]["checks"]]),
-                         (False, 0, 3, [run]))  # fmt: skip
+                         ("all", 0, 3, [run]))  # fmt: skip
 
     def scanned(self, *signal, **detectors):
         """A report of example 1.1.0 to 1.2.0 as setUp's are: scanned while the lockfile is the
@@ -274,7 +306,9 @@ class InspectorTests(test_dashboard.DashboardFixture):
              "보류(통과가 아님), 이유: 연결된 탐지기 실패; 기지 악성 목록 미확인"),
         ):  # fmt: skip
             with self.subTest(causes=causes):
-                self.assertEqual(self.decided(report), ("hold", "확인 필요", f"{confirm}: {causes}."))
+                self.assertEqual(
+                    self.decided(report), ("hold", "확인 필요", f"{confirm}: {causes}.")
+                )
         # An entry that is removed installs nothing; a match would still refuse it.
         gone = self.scanned(0.1, known_malicious=clean)
         gone["results"][0].update(status="removed", after_version=None, score=None,
@@ -322,43 +356,80 @@ class InspectorTests(test_dashboard.DashboardFixture):
         self.assertEqual((row["known"]["cell"], row["known"]["status"].split(" ")[0]),
                          ("hold", "실패"))  # fmt: skip
 
-    def test_the_inspector_says_the_decision_first_and_then_each_detector_alone(self):
+    def test_the_inspector_says_the_decision_then_the_three_detectors_then_the_evidence(self):
         tiny = 3.950535635136895e-07  # a real low score: its stored digits stay on the page
         report = self.rows(self.scanned(tiny, known_malicious=KnownList((ADVISORY,))), "other")
         run = self.check(report, targets=["other"])
         for view in (self.packages, self.updates):
             html = self.page(f"{view}?item={run}.0")
             panel = html.split('<aside class="inspector"', 1)[1].split("</aside>", 1)[0]
-            marks = ['<p class="decision risk"><span class="cell risk" aria-hidden="true"></span>'
+            # What a narrow screen never folds: the decision card, then one line per detector
+            # and what must not be misread; the evidence comes after.
+            top, body = panel.split('<div class="inspect-body">', 1)
+            marks = ['<div class="ruling risk">',
+                     '<p class="decision"><span class="cell risk" aria-hidden="true"></span>'
                      "반영 거부</p>", f'<p class="why">{self.app.REFUSED_WHY}</p>',
-                     # What must not be misread, right under the decision, never folded.
+                     '<dl class="detectors">',
+                     '<dt>기지 악성 색인</dt><dd><span class="cell risk" aria-hidden="true"></span>'
+                     "<b>일치</b>",
+                     '<dt>정적 규칙</dt><dd><span class="cell none" aria-hidden="true"></span>'
+                     "<b>미실행 (탐지기 연결 안 됨)</b>",
+                     '<dt>ML 점수</dt><dd><b class="score">&lt;0.001 (기준 미만)</b>',
+                     '<rect class="fill" width="0" height="10"/>',
+                     '<line class="tick" x1="50" x2="50" y1="0" y2="10"/>',
                      "정적 규칙: 실행하지 않은 것은 통과가 아닙니다.",
-                     '<h3 id="known-title">기지 악성 색인</h3>', "<b>일치</b>",
-                     "EXAMPLE-ADVISORY-0001 (버전 목록에 있음, 영향 버전 1.1.0)",
-                     '<h3 id="rules-title">정적 규칙</h3>', "<b>미실행 (탐지기 연결 안 됨)</b>",
-                     '<h3 id="score-title">ML 모델</h3>',
+                     "이 화면에서는 반영하지 않습니다."]  # fmt: skip
+            places = [top.find(mark) for mark in marks]
+            self.assertNotIn(-1, places, view)
+            self.assertEqual(places, sorted(places), view)  # in this order
+            # The evidence keeps all it said before, each detector on its own.
+            marks = ['<h3 id="known-title">기지 악성 색인</h3>',
+                     "EXAMPLE-ADVISORY-0001 (버전 목록에 있음, 영향 버전 1.1.0)", "목록 기준 시점: ",
+                     '<h3 id="rules-title">정적 규칙</h3>', '<h3 id="score-title">ML 모델</h3>',
                      "<dt>ML 위험 점수</dt><dd>&lt;0.001 (기준 미만)</dd>",
                      f"<dt>점수 원값</dt><dd>{tiny!r}</dd>", "<dt>판정 기준 점수</dt><dd>0.5</dd>",
                      "<dt>모델</dt><dd>unit-test</dd>", "synthetic evidence",
                      '<h3 id="basis-title">저장된 보고서</h3>',
-                     f'<a href="{test_dashboard.S}/runs/{run}">#{run}</a>']  # fmt: skip
-            places = [panel.find(mark) for mark in marks]
+                     f'<a href="{test_dashboard.S}/runs/{run}">#{run}</a>',
+                     "보고서에서 전체 근거 보기"]  # fmt: skip
+            places = [body.find(mark) for mark in marks]
             self.assertNotIn(-1, places, view)
-            self.assertEqual(places, sorted(places), view)  # in this order
+            self.assertEqual(places, sorted(places), view)
+            # The status is said once, in the summary.
+            self.assertNotIn("<b>일치</b>", body)
             # The versions are the stored strings, each in full.
-            self.assertIn("<dt>사용 버전</dt><dd>1.0.0</dd>", panel)
-            self.assertIn("<dt>후보 버전</dt><dd>1.1.0</dd>", panel)
-            self.assertIn("이 화면에서는 반영하지 않습니다.", panel)
+            self.assertIn("<dt>사용 버전</dt><dd>1.0.0</dd>", top)
+            self.assertIn("<dt>후보 버전</dt><dd>1.1.0</dd>", top)
             self.assertNotIn("<form", panel if view == self.updates else "")
         # The list says the same decision in the candidate's own cell.
         cell = self.page(self.packages).split(f"item={run}.0#candidate-evidence", 1)[1]
         self.assertIn('<span class="verdict risk"><span class="cell risk" aria-hidden="true">'
                       "</span>반영 거부</span>", cell.split("</a>", 1)[0])  # fmt: skip
-        # A candidate without a score says so, and that it is no 0.
+        # A candidate without a score says so in place of the gauge, and that it is no 0.
         unscored = self.rows(self.scanned(analyzer=False, known_malicious=KnownList()), "other")
         run = self.check(unscored, targets=["other"])
         panel = self.page(f"{self.updates}?item={run}.0").split('<aside class="inspector"', 1)[1]
-        self.assertIn("<dt>ML 위험 점수</dt><dd>없음(미실행)</dd>", panel)
-        self.assertIn("점수가 없는 것은 0점이 아닙니다.", panel)
+        top, body = panel.split('<div class="inspect-body">', 1)
+        self.assertIn("<dt>ML 점수</dt><dd><b>점수 없음</b>", top)
+        self.assertIn("점수가 없는 것은 0점이 아닙니다.", top)
+        self.assertNotIn('class="gauge"', panel)
+        self.assertIn("<dt>ML 위험 점수</dt><dd>없음(미실행)</dd>", body)
         self.assertNotIn("점수 원값", panel)
-        self.assertIn('<p class="decision hold">', panel)
+        self.assertIn('<div class="ruling hold">', panel)
+        # A score over the threshold fills its gauge in the risk colour.
+        over = self.rows(self.scanned(0.87, known_malicious=KnownList()), "other")
+        run = self.check(over, targets=["other"])
+        panel = self.page(f"{self.updates}?item={run}.0").split('<aside class="inspector"', 1)[1]
+        self.assertIn('<rect class="fill over" width="87" height="10"/>', panel)
+        self.assertIn('<div class="ruling hold">', panel)
+
+    def test_a_gauge_is_drawn_only_for_a_score_from_0_to_1(self):
+        gauge = self.app._gauge
+        self.assertEqual(gauge(0.012, 0.5), {"width": 1.2, "tick": 50, "over": False})
+        self.assertEqual(gauge(0.87, 0.5), {"width": 87, "tick": 50, "over": True})
+        self.assertEqual(gauge(0.5, 0.5), {"width": 50, "tick": 50, "over": True})
+        self.assertEqual(gauge(0, None), {"width": 0, "tick": None, "over": False})
+        self.assertEqual(gauge(1, 1.5), {"width": 100, "tick": None, "over": False})
+        for score in (None, -0.1, 1.01, float("nan"), float("inf"), True, "0.5"):
+            self.assertIsNone(gauge(score, 0.5), score)
+        self.assertEqual(gauge(0.3, True), {"width": 30, "tick": None, "over": False})

@@ -1,8 +1,8 @@
 {# The inspector of a project's packages and updates views: the candidate the view opens (selected,
    one of the listed rows) without leaving the list. First whether it could be applied and why,
-   in one line (app._decision); then the known malicious index, the static rules and the ML
-   model, each on its own (app._signal); then the extracted facts and what the stored report
-   says. It is written right after that row, whose cell holds the id the row's link names, so one
+   in one line (app._decision), on the decision's own wash; then one tile per detector, the
+   known malicious index, the static rules (app._signal) and the ML score with its gauge
+   (app._gauge); then the evidence of each, the extracted facts and what the stored report says. It is written right after that row, whose cell holds the id the row's link names, so one
    address opens it under the row on a narrow screen and brings the row beside it on a wide one.
    With no candidate to open it says what would be here. Needs base, session, url, pick (the
    address of a pick up to the item's value), section, project, state, previews and, on the
@@ -19,24 +19,30 @@
 <div><dt>후보 버전</dt><dd>{% if picked.after is none %}<span class="quiet">삭제</span>{% else %}{{ picked.after }}{% endif %}</dd></div>
 {% if picked.compared is not none %}<div><dt>비교 버전</dt><dd>{{ picked.compared }}</dd></div>{% endif %}
 </dl>
-<div class="ruling">
-<p class="decision {{ picked.decision.cell }}"><span class="cell {{ picked.decision.cell }}" aria-hidden="true"></span>{{ picked.decision.label }}</p>
+<div class="ruling {{ picked.decision.cell }}">
+<p class="decision"><span class="cell {{ picked.decision.cell }}" aria-hidden="true"></span>{{ picked.decision.label }}</p>
 <p class="why">{{ picked.decision.why }}</p>
 </div>
+{# Each detector's result in a tile of its own. A mark stands only beside a result that is not a
+   plain "found nothing": a match, a failure, or a detector that did not run. The gauge is the
+   score from 0 to 1 with a tick at the threshold; the words beside it say the same. #}
+<dl class="detectors">
+<div><dt>기지 악성 색인</dt><dd>{% if picked.known.cell %}<span class="cell {{ picked.known.cell }}" aria-hidden="true"></span>{% endif %}<b>{{ picked.known.status }}</b></dd></div>
+<div><dt>정적 규칙</dt><dd>{% if picked.rules.cell %}<span class="cell {{ picked.rules.cell }}" aria-hidden="true"></span>{% endif %}<b>{{ picked.rules.status }}</b></dd></div>
+<div><dt>ML 점수</dt><dd>{% if picked.score_raw is none and picked.status == "removed" %}<b>해당 없음(삭제)</b>{% elif picked.score_raw is none %}<b>점수 없음</b>{% else %}<b class="score">{{ picked.score }}</b>{% endif %}{% set gauge = picked.gauge %}{% if gauge %}<svg class="gauge" viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true"><rect class="track" width="100" height="10"/><rect class="fill{% if gauge.over %} over{% endif %}" width="{{ gauge.width }}" height="10"/>{% if gauge.tick is not none %}<line class="tick" x1="{{ gauge.tick }}" x2="{{ gauge.tick }}" y1="0" y2="10"/>{% endif %}</svg>{% endif %}</dd></div>
+</dl>
 {# What must not be misread stays here, in view while the evidence under it is folded. #}
 {% if picked.rules.cell == "none" %}<p class="note">정적 규칙: 실행하지 않은 것은 통과가 아닙니다.</p>{% endif %}
-{% if picked.score_raw is none and picked.status != "removed" %}<p class="note">ML 위험 점수: 점수가 없는 것은 0점이 아닙니다.</p>{% endif %}
+{% if picked.score_raw is none and picked.status != "removed" %}<p class="note">ML 점수: 점수가 없는 것은 0점이 아닙니다.</p>{% endif %}
 <p class="note">이 화면에서는 반영하지 않습니다. <button type="button" class="help" popovertarget="help-apply" aria-label="반영은 어디서 하나요"><span aria-hidden="true">?</span></button></p>
 <div class="help-pop" id="help-apply" popover><p>반영 여부는 이 후보 하나를 본 결과이고, 실제 반영은 미리보기에서 그 확인의 전체 결과로 정합니다. 미리보기는 대시보드를 끄면 사라집니다.</p></div>
 {# One address, three uses: it opens the evidence under the row, folds it, or shows the row. #}
 <p class="inspect-nav"><a class="when-closed" href="{{ pick }}{{ key }}#candidate-evidence">검사 근거 펼치기<span class="visually-hidden"> {{ picked.package }}</span></a><a class="when-open" href="{{ pick }}{{ key }}#picked">검사 근거 접기</a><a class="when-wide" href="{{ pick }}{{ key }}#picked">목록에서 이 행 보기</a></p>
 </div>
 <div class="inspect-body">
-{# Each detector says its own result. A mark stands only beside a result that is not a plain
-   "found nothing": a match, a failure, or a detector that did not run. #}
+{# The evidence of each detector, whose result its tile says. #}
 <section class="signal" aria-labelledby="known-title">
 <h3 id="known-title">기지 악성 색인</h3>
-<p class="finding">{% if picked.known.cell %}<span class="cell {{ picked.known.cell }}" aria-hidden="true"></span>{% endif %}<b>{{ picked.known.status }}</b></p>
 {% if picked.known.lines %}
 <ul>
 {% for line in picked.known.lines %}<li>{{ line }}</li>
@@ -47,7 +53,7 @@
 </section>
 <section class="signal" aria-labelledby="rules-title">
 <h3 id="rules-title">정적 규칙</h3>
-<p class="finding">{% if picked.rules.cell %}<span class="cell {{ picked.rules.cell }}" aria-hidden="true"></span>{% endif %}<b>{{ picked.rules.status }}</b></p>
+{% if not picked.rules.lines and not picked.rules.note %}<p class="quiet">요약 외에 적힌 내용이 없습니다.</p>{% endif %}
 {% if picked.rules.lines %}
 <ul>
 {% for line in picked.rules.lines %}<li>{{ line }}</li>

@@ -218,8 +218,8 @@ input[aria-invalid=true] { border: 2px solid var(--risk); }
 .empty::after { top: calc(1rem + 2px); left: calc(1rem + 2px); width: calc(1.1rem - 4px); height: calc(1.27rem - 4px); background: var(--sheet); }
 
 button, input, select { color: inherit; font: inherit; }
-button, .action, .toggle { display: inline-flex; align-items: center; justify-content: center; gap: .45rem; min-height: 2.75rem; padding: .4rem .9rem; border: 1px solid var(--line-2); border-radius: 6px; background: var(--sheet); color: var(--ink); font-weight: 700; text-decoration: none; white-space: nowrap; cursor: pointer; }
-button:hover, .action:hover, .toggle:hover { border-color: var(--ink); background: var(--head); }
+button, .action { display: inline-flex; align-items: center; justify-content: center; gap: .45rem; min-height: 2.75rem; padding: .4rem .9rem; border: 1px solid var(--line-2); border-radius: 6px; background: var(--sheet); color: var(--ink); font-weight: 700; text-decoration: none; white-space: nowrap; cursor: pointer; }
+button:hover, .action:hover { border-color: var(--ink); background: var(--head); }
 button.primary, .gate form > button { border-color: var(--honey); background: var(--honey); color: var(--on-honey); }
 button.primary:hover, .gate form > button:hover { border-color: var(--honey-strong); background: var(--honey-strong); }
 /* A request is running (app.js): the button that sent it says so, and every button that would
@@ -353,8 +353,20 @@ footer .note { max-width: none; }
 .filters label { display: block; color: var(--muted); font-size: .8125rem; }
 .filters .grow { flex: 1 1 10rem; }
 /* The filter is a link that looks like the switch it is: on, it is honey under an ink border. */
-.toggle[aria-current] { padding-inline: calc(.9rem - 1px); border-width: 2px; border-color: var(--ink); background: var(--honey-wash); box-shadow: inset 0 -3px 0 var(--honey); }
-.toggle.off { border-color: var(--line-2); background: transparent; color: var(--muted); font-weight: 600; cursor: default; }
+/* The list's tabs (show): smaller than the project's, with an ink underline, as honey is what
+   is picked. Each says how many rows of the search it holds; an empty one is words. */
+.filter-tabs { display: flex; flex-wrap: wrap; gap: 0 1rem; margin-top: .75rem; border-bottom: 1px solid var(--line); }
+.filter-tabs a, .filter-tabs .filter-off { display: inline-flex; align-items: center; gap: .35rem; min-height: 2.75rem; margin-bottom: -1px; padding: .2rem .1rem; border-bottom: 2px solid transparent; font-size: .9375rem; font-weight: 600; text-decoration: none; }
+.filter-tabs a:not([aria-current]):hover { border-bottom-color: var(--line-2); }
+.filter-tabs > [aria-current] { border-bottom-color: var(--ink); font-weight: 800; }
+.filter-tabs .filter-off { color: var(--muted); }
+.filter-count { font: 700 .8125rem/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--muted); }
+.filter-tabs > [aria-current] .filter-count { color: var(--ink); }
+/* The search: a magnifier drawn in the field's left padding; the labels are for a screen reader. */
+.search-box { position: relative; }
+.search-box input { padding-left: 2.1rem; }
+.search-box::before { content: ""; position: absolute; top: 50%; left: .75rem; width: .7rem; height: .7rem; margin-top: -.45rem; border: 2px solid var(--muted); border-radius: 50%; pointer-events: none; }
+.search-box::after { content: ""; position: absolute; top: 50%; left: 1.35rem; width: .4rem; height: 2px; margin-top: .25rem; background: var(--muted); transform: rotate(45deg); pointer-events: none; }
 .state { max-width: none; margin: .75rem 0 0; padding: .55rem .8rem; border-left: 3px solid var(--ink); background: var(--head); font-size: .9375rem; }
 .state:focus-visible { outline-offset: 3px; }
 .filter-summary { font-size: .875rem; }
@@ -373,7 +385,7 @@ td ul { padding-left: 1.1rem; }
 .count { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .count .cell { margin-right: .35rem; vertical-align: -.1em; }
 .applies td:nth-child(-n+3) { white-space: nowrap; }
-.applies td:nth-child(6), .packages tbody th, .packages td:nth-child(-n+3), .candidates tbody th, .candidates td:nth-child(2), .move { font-family: var(--mono); font-size: .875rem; }
+.applies td:nth-child(6), .packages tbody th, .packages td:nth-child(2), .candidates tbody th, .candidates td:nth-child(2), .move { font-family: var(--mono); font-size: .875rem; }
 meter { width: 7rem; height: .6rem; margin-right: .4rem; vertical-align: middle; }
 meter::-webkit-meter-bar { height: .6rem; border: 0; border-radius: 0; background: var(--head); }
 meter::-webkit-meter-optimum-value { background: var(--ink); }
@@ -383,11 +395,22 @@ meter::-moz-meter-bar { background: var(--ink); }
    candidate itself is the link that picks it; the picked one is honey with an ink border. */
 .packages thead th { position: sticky; top: 0; z-index: 1; background: var(--sheet); box-shadow: inset 0 -1px 0 var(--line-2); }
 .packages th, .packages td { vertical-align: middle; }
-.packages td:nth-child(3) { color: var(--muted); }
+/* The name, its kind as a small tag beside it, and its location (and the name it is declared
+   under) on lines of their own under it, never squeezed into a narrow column. */
+.packages tbody th { font-weight: 700; }
+.row-tags { margin-left: .4rem; padding: 0 .35rem; border: 1px solid var(--line-2); border-radius: 4px; color: var(--muted); font: 600 .8125rem/1.4 var(--sans); white-space: nowrap; }
+.packages tbody th .where { margin-top: .1rem; font-size: .8125rem; font-weight: 400; }
+/* The candidate is the row's one link; a pointer anywhere on the row reaches it. */
+.packages tbody tr:not(.inspect) { position: relative; }
+.packages .pick::after { content: ""; position: absolute; inset: 0; }
+/* The row's mark at the row's end, whatever the decision's words; a match of the known
+   malicious list under the decision. */
+.packages .chev { position: absolute; top: 50%; right: .8rem; color: var(--muted); font-weight: 700; transform: translateY(-50%); pointer-events: none; }
+.packages tr:not(.inspect) > td:last-child { padding-right: 2rem; }
 .packages tr:not(.inspect) > td:last-child > * { margin: .15rem .5rem .15rem 0; vertical-align: middle; }
 .packages tr:not(.inspect) button { min-height: 2.25rem; padding: .2rem .7rem; font-size: .875rem; }
 .packages tr:not(.inspect) > td:last-child > a:not(.pick), .candidates tr:not(.inspect) > td:last-child > a:not(.pick) { display: inline-flex; align-items: center; min-height: 2.25rem; }
-.packages strong.known { white-space: nowrap; }
+.packages strong.known { display: block; width: fit-content; white-space: nowrap; }
 .move { font-weight: 700; }
 .pick { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .15rem .45rem; min-height: 2.25rem; padding: .15rem .55rem; border: 1px solid var(--line-2); border-radius: 3px; background: var(--sheet); font-size: .875rem; font-weight: 700; text-decoration: none; }
 .pick:hover { border-color: var(--ink); }
@@ -413,7 +436,7 @@ meter::-moz-meter-bar { background: var(--ink); }
 .candidates .quiet { font-family: var(--sans); font-weight: 400; }
 .candidates tr:not(.inspect) > td:last-child { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem 1rem; }
 .candidates tr:has(.pick[aria-current]) { border-color: var(--ink); background: var(--honey-wash); box-shadow: inset 4px 0 0 var(--honey); --ground: var(--honey-wash); }
-.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8125rem; list-style: none; }
+ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8125rem; list-style: none; }
 
 /* The inspector. It is written right after the row it is about, in a cell of its own: under
    that row and folded until the address names it (narrow), a panel beside the list (wide).
@@ -430,13 +453,27 @@ meter::-moz-meter-bar { background: var(--ink); }
 .hop { display: flex; flex-wrap: wrap; gap: .4rem 1.5rem; margin: .6rem 0 0; }
 .hop dt { font-size: .8125rem; }
 .hop dd { font: 700 1rem/1.4 var(--mono); }
-.ruling { margin-top: .9rem; padding-top: .8rem; border-top: 2px solid var(--ink); }
-.decision { display: flex; align-items: center; gap: .5rem; margin: 0; color: var(--tone); font-size: 1.375rem; font-weight: 800; line-height: 1.3; letter-spacing: -.02em; --tone: var(--muted); }
-.decision.risk { --tone: var(--risk); }
-.decision.hold { --tone: var(--hold); }
-.decision.pass { --tone: var(--pass); }
+/* The decision card: the decision's own wash, its words and the reason under them. */
+.ruling { margin-top: .9rem; padding: .7rem .9rem .75rem; border-left: 4px solid var(--tone); border-radius: 6px; background: var(--ground); --ground: var(--head); --tone: var(--muted); }
+.ruling.risk { --ground: var(--risk-wash); --tone: var(--risk); }
+.ruling.hold { --ground: var(--hold-wash); --tone: var(--hold); }
+.ruling.pass { --ground: var(--pass-wash); --tone: var(--pass); }
+.decision { display: flex; align-items: center; gap: .5rem; margin: 0; color: var(--tone); font-size: 1.375rem; font-weight: 800; line-height: 1.3; letter-spacing: -.02em; }
 .decision .cell { width: 1.25rem; height: 1.44rem; }
 .why { margin: .3rem 0 0; }
+/* One tile per detector, side by side; the ML tile's gauge is the score from 0 to 1 with a
+   tick at the threshold, filled in the risk colour at or over it. */
+.inspector .detectors { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .4rem; max-width: none; margin: .6rem 0 .2rem; }
+.inspector .detectors div { display: flex; flex-direction: column; gap: .2rem; min-width: 0; padding: .45rem .55rem; border: 1px solid var(--line); border-radius: 6px; }
+.inspector .detectors dt { color: var(--muted); font-size: .75rem; font-weight: 600; }
+.inspector .detectors dd { margin: 0; font-size: .875rem; line-height: 1.35; }
+.inspector .detectors dd .cell { margin-right: .3rem; vertical-align: -.2em; }
+.inspector .detectors .score { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.gauge { display: block; width: 100%; height: .5rem; margin-top: .15rem; overflow: visible; }
+.gauge .track { fill: var(--line); }
+.gauge .fill { fill: var(--muted); }
+.gauge .fill.over { fill: var(--risk); }
+.gauge .tick { stroke: var(--ink); stroke-width: 2px; vector-effect: non-scaling-stroke; }
 .inspect-nav { margin: .35rem 0 0; }
 .inspect-nav a { display: inline-flex; align-items: center; min-height: 2.75rem; font-weight: 700; }
 .signal { margin-top: .9rem; padding-top: .7rem; border-top: 1px solid var(--line); }
@@ -444,7 +481,6 @@ meter::-moz-meter-bar { background: var(--ink); }
 .signal h3 { color: var(--muted); font-size: .875rem; font-weight: 600; }
 .signal h4 { color: var(--muted); font-size: .8125rem; }
 .signal ul { margin: .2rem 0; padding-left: 1.1rem; }
-.finding { display: flex; align-items: center; gap: .4rem; margin: 0; }
 .signal .note { margin: .25rem 0 0; }
 .pairs, .result dl { display: grid; grid-template-columns: minmax(6rem, max-content) minmax(0, 1fr); gap: .25rem .9rem; margin: 0; }
 /* A score is read digit by digit: the short form and the stored value are both set in mono. */
@@ -541,14 +577,13 @@ meter::-moz-meter-bar { background: var(--ink); }
   .scroll .stack { min-width: 0; }
   .score-history tr { grid-template-columns: minmax(0, 1fr); }
   .packages tbody th { grid-area: 1 / 1; }
+  .packages tbody tr:not(.inspect) { padding-right: 2rem; }
   /* The picked row is a block here: its honey edge runs down the whole of it. */
   .packages tbody tr:has(.pick[aria-current]) { box-shadow: inset 4px 0 0 var(--honey); }
   .packages tbody tr:has(.pick[aria-current]) > th { box-shadow: none; }
-  .packages td:nth-child(4) { grid-area: 1 / 2; text-align: right; }
   .packages td:nth-child(2) { grid-area: 2 / 1 / 3 / 3; }
-  .packages td:nth-child(2)::before { content: "사용 버전 "; color: var(--muted); font-family: var(--sans); }
-  .packages td:nth-child(3) { grid-area: 3 / 1 / 4 / 3; }
-  .packages tr:not(.inspect) > td:last-child { grid-area: 4 / 1 / 5 / 3; padding-top: .3rem; }
+  .packages td:nth-child(2)::before { content: "버전 "; color: var(--muted); font-family: var(--sans); }
+  .packages tr:not(.inspect) > td:last-child { grid-area: 3 / 1 / 4 / 3; padding-top: .3rem; }
   .packages tr:not(.inspect) button, .pick, .stack tr:not(.inspect) > td:last-child > a:not(.pick) { min-height: 2.75rem; }
   .add .primary { max-width: none; }
   .pairs, .result dl { grid-template-columns: minmax(0, 1fr); gap: 0; }
@@ -580,11 +615,7 @@ meter::-moz-meter-bar { background: var(--ink); }
   .aux a { padding-inline: .7rem; font-size: .875rem; }
   /* A version and a kind stay whole: their columns keep the width of what they hold. */
   /* A name is not squeezed to a few letters, and a candidate with its mark is one line. */
-  .packages th:first-child { width: 20%; }
-  .packages th:last-child { width: 14rem; }
-  .packages th:nth-child(2) { width: 6.5rem; }
-  .packages td:nth-child(4) { white-space: nowrap; }
-  .packages td:nth-child(4) .where { white-space: normal; }
+  .packages th:last-child { width: 16rem; }
   .candidates tr:not(.inspect) { grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr) minmax(0, 1fr); grid-template-areas: "name move ruling" "facts facts score" "links links links"; }
   .candidates tbody th { grid-area: name; }
   .candidates td:nth-child(2) { grid-area: move; }

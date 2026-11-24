@@ -111,6 +111,9 @@ TAB_STATES = {
 # whose result is not one a report has (drawn as none), then what was never checked, then what
 # passed. The first three are what the rail counts as needing a look.
 RAIL_ORDER = ("gone", "risk", "hold", "unknown", "none", "pass")
+# The packages view's tabs (show): every entry, those with a current candidate, those no current
+# check covers, and those a check covered that have no candidate (_kind).
+SHOWS = ("all", "candidates", "unchecked", "none")
 # The overview's state of a project (_portfolio), in the order its chart lists them, what needs
 # a look first: the hexagon mark, the words, and whether the chart lists the state while no
 # project is in it. The first three are the stored status of the project's newest run.
@@ -565,7 +568,8 @@ def build_app(
     def project(request: Request) -> Response:
         """The packages view: what package-lock.json installs, and for each entry the candidate
         a current update check found for it, that it found none, or that nothing was checked.
-        The search, the kind and the candidates-only filter narrow the list together (_filters).
+        The search, the kind and the tab (show) narrow the list together (_filters); each tab
+        counts the rows the search and the kind leave, and a tab with none lists them all.
         selected: the candidate opened beside the list, one of the rows the filters leave: the
         one the address names (_selected), which after a check is the first one that check
         returned (_landing); returned: what the check that sent the browser here found
@@ -577,23 +581,24 @@ def build_app(
         filters = _filters(params)
         if filters is None:
             return _text(400, "패키지 이름이나 의존성 종류를 확인하세요.")
-        query, scope, only = filters
+        query, scope, show = filters
         dependencies, problem = _dependencies(found["path"])
         direct_count = sum(row["direct"] for row in dependencies)
         state = _update_state(found)
         candidates = {row["location"]: row for row in state["rows"]}
-        # Counted over the whole list, whatever the search leaves of it. Without a candidate
-        # the filter is off: an address kept from before never empties the list.
-        candidate_count = sum(row["location"] in candidates for row in dependencies)
-        only = only and candidate_count > 0
-        rows = [
+        listed = [
             {**row, "candidate": candidates.get(row["location"]),
              "checked": state["full"] is not None or row["location"] in state["covered"],
              "declared": ", ".join(DECLARED_LABELS[field] for field in row["declared"]),
              "declared_as": _declared_as(row)}
             for row in _listed(dependencies, query, scope)
-            if not only or row["location"] in candidates
         ]  # fmt: skip
+        kinds = [_kind(row) for row in listed]
+        counts = {key: len(kinds) if key == "all" else kinds.count(key) for key in SHOWS}
+        # A tab with nothing in it lists everything: an address kept from before, or a search
+        # that leaves none of that tab, never empties the list.
+        show = show if counts[show] else "all"
+        rows = [row for row, kind in zip(listed, kinds, strict=True) if show in ("all", kind)]
         head = _head(found, dependencies, problem, state)
         targets = _preview_targets(found["path"]) if any(row["direct"] for row in rows) else set()
         shown = [row["candidate"] for row in rows if row["candidate"] is not None]
@@ -601,7 +606,7 @@ def build_app(
         returned = _returned(params, state, shown, selected)
         return page(request, "project.html", project=found, section="packages", rows=rows,
                     direct_count=direct_count, nested_count=len(dependencies) - direct_count,
-                    query=query, scope=scope, only=only, candidate_count=candidate_count,
+                    query=query, scope=scope, show=show, counts=counts,
                     targets=targets, max_query=MAX_NAME_LENGTH, problem=problem, state=state,
                     returned=returned, selected=selected, previews=held(found, state),
                     head=head)  # fmt: skip
@@ -1253,23 +1258,33 @@ def _selected(params, shown: list[dict]) -> dict | None:
     return next((row for row in shown if f"{row['run_id']}.{row['position']}" == given[0]), first)
 
 
-def _filters(params) -> tuple[str, str, bool] | None:
+def _filters(params) -> tuple[str, str, str] | None:
     """What narrows the packages view's list, from its query: (the name searched for, the kind
-    of dependency, whether only the entries with a candidate are listed). The three apply
-    together. None for a query the view refuses: a value given twice, a name that is too long
-    or not printable, a kind that is not one of the three, or an only that is not 1."""
+    of dependency, the tab: one of SHOWS). The three apply together. None for a query the view
+    refuses: a value given twice, a name that is too long or not printable, a kind that is not
+    one of the three, or a tab that is not one of SHOWS. The candidates-only filter of before
+    (only) is no query of the view any more and changes nothing."""
     query, scope = params.get("q", "").strip(), params.get("scope", "all")
-    only = params.getlist("only")
+    show = params.getlist("show")
     if (
         len(params.getlist("q")) > 1
         or len(params.getlist("scope")) > 1
         or len(query) > MAX_NAME_LENGTH
         or not query.isprintable()
         or scope not in ("all", "direct", "nested")
-        or only not in ([], ["1"])
+        or len(show) > 1
+        or (show and show[0] not in SHOWS)
     ):
         return None
-    return query, scope, bool(only)
+    return query, scope, show[0] if show else "all"
+
+
+def _kind(row: dict) -> str:
+    """The tab (SHOWS) of a packages row: it has a current candidate, a current check covered it
+    and found none, or no current check covered it."""
+    if row["candidate"] is not None:
+        return "candidates"
+    return "none" if row["checked"] else "unchecked"
 
 
 def _listed(dependencies: list[dict], query: str, scope: str) -> list[dict]:
@@ -1297,14 +1312,14 @@ def _back(form: dict) -> list[tuple[str, str]] | None:
     if given is None:
         return None
     params = QueryParams(given[0] if len(given) == 1 else "")
-    query, scope, only = _filters(params) or ("", "all", False)
+    query, scope, show = _filters(params) or ("", "all", "all")
     pairs = []
     if query:
         pairs.append(("q", query))
     if scope != "all":
         pairs.append(("scope", scope))
-    if only:
-        pairs.append(("only", "1"))
+    if show != "all":
+        pairs.append(("show", show))
     items = params.getlist("item")
     if len(items) == 1 and len(items[0]) <= MAX_ITEM:
         pairs.append(("item", items[0]))
@@ -1322,7 +1337,12 @@ def _landing(project: dict, back: list[tuple[str, str]], run_id: int) -> str:
     the item and the address goes to #check-status, the line that says what the check found,
     never to #picked: that is then the candidate of an older check. The browser follows the
     fragment itself, so the place is the same with the script and without it, and the address
-    still names what is open once the run is taken off it."""
+    still names what is open once the run is taken off it.
+
+    The candidate is looked for under the search and the kind alone, whatever the tab, and when
+    there is one the tab is dropped: a check sent from the tab of unchecked rows has just made
+    them checked. When there is none the tab stays (the view lists everything when that tab is
+    left empty)."""
     kept = dict(back)
     dependencies, _ = _dependencies(project["path"])
     returned = {
@@ -1331,6 +1351,7 @@ def _landing(project: dict, back: list[tuple[str, str]], run_id: int) -> str:
     listed = _listed(dependencies, kept.get("q", ""), kept.get("scope", "all"))
     first = next((returned[row["location"]] for row in listed if row["location"] in returned), None)
     if first is not None:
+        kept.pop("show", None)
         kept["item"] = f"{first['run_id']}.{first['position']}"
     kept["checked"] = run_id
     return urlencode(kept) + ("#check-status" if first is None else "#picked")
@@ -1586,6 +1607,25 @@ def _signal(row: dict, key: str, labels: dict, report: dict) -> dict:
     }
 
 
+def _gauge(score: object, threshold: object) -> dict | None:
+    """The ML tile's gauge in the inspector, drawn from 0 to 100: the score's bar (width), the
+    threshold's place (tick, None for one that is not a number from 0 to 1) and whether the score
+    is at or over it (over). None for a score that is not a number from 0 to 1: the tile then
+    shows the score's words alone."""
+
+    def place(value: object) -> float | int | None:
+        if isinstance(value, bool) or not isinstance(value, int | float) or not 0 <= value <= 1:
+            return None
+        spot = round(value * 100, 2)
+        return int(spot) if spot == int(spot) else spot
+
+    width = place(score)
+    if width is None:
+        return None
+    tick = place(threshold)
+    return {"width": width, "tick": tick, "over": tick is not None and score >= threshold}
+
+
 def _result(row: dict, report: dict) -> dict:
     """One result as the text output shows it; the facts and the model's explanation apart.
     score_raw: the stored score as the report's JSON writes it, None without one. decision:
@@ -1607,6 +1647,7 @@ def _result(row: dict, report: dict) -> dict:
         "npm": npm_link(row["package"]),
         "score": _ml_score(row, _text_label, report),
         "score_raw": None if row.get("score") is None else repr(row["score"]),
+        "gauge": _gauge(row.get("score"), report.get("threshold")),
         "compared": row.get("compared_version"),
         "reason": _text_label(REASON_LABELS, row["reason"]) if row.get("reason") else None,
         "alternative": None if alternative is None else (alternative[0], alternative[1]),
