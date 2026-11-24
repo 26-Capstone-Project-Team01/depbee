@@ -330,7 +330,10 @@ class OverviewTests(test_dashboard.DashboardFixture):
         # Each project is the way into itself, with its folder beside its name.
         for project_id, name in enumerate(("project", "fresh", "moved", "gone"), 1):
             self.assertIn(f'<a class="ov-name" href="{S}/projects/{project_id}">{name}</a>', html)
-        self.assertIn(f'<span class="ov-path">{self.project.resolve()}</span>', html)
+        full = str(self.project.resolve())
+        self.assertIn(
+            f'<span class="ov-path" title="{full}">{self.app._short_path(full)}</span>', html
+        )
         inspected, attempted = cells("project")
         self.assertRegex(inspected, rf"^최근 검사 위험 검사\(scan\), 위험 1건, 보류 0건 "
                                     rf"2026-11-21 00:\d\d UTC project 최근 검사 보고서 #{scan}$")  # fmt: skip

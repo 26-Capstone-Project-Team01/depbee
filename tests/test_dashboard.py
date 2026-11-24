@@ -60,6 +60,12 @@ class Elements(HTMLParser):
         self.found.append((tag, dict(attrs)))
 
 
+def project_head(html):
+    """(name, the path as shown, the whole path) of a project view's head."""
+    found = re.search(r'<h1>([^<]*)</h1>\n<p class="path" title="([^"]*)">([^<]*)</p>', html)
+    return found.group(1), found.group(3), found.group(2)
+
+
 def assert_one_script(case, html):
     """A page of the dashboard runs the one script file and nothing else: no second script
     element, none that a package string wrote, and no handler in an attribute."""
@@ -366,7 +372,10 @@ class ConsoleTests(DashboardFixture):
         self.assertLess(html.index('<nav class="aux" aria-label="관리와 정보">'),
                         html.index('<nav class="tabs" aria-label="프로젝트">'))  # fmt: skip
         self.assertIn('<p class="rail-title">프로젝트 5개 · 조치 필요 3</p>', html)
-        order = [int(i) for i in re.findall(rf'<a class="tab" href="{re.escape(S)}/projects/(\d+)"', html)]
+        order = [
+            int(i)
+            for i in re.findall(rf'<a class="tab" href="{re.escape(S)}/projects/(\d+)"', html)
+        ]
         self.assertEqual(order, [gone, flagged, held, fresh, passed])
         # Each line: the full path on hover, and the risk and hold counts of the newest run.
         self.assertIn(f'href="{S}/projects/{flagged}" title="{self.project.resolve()}"', html)
@@ -474,13 +483,35 @@ class ConsoleTests(DashboardFixture):
         self.assertEqual([self.tab(html, project)[2] for project in ids], names)
         for project, name, path in zip(ids, names, paths, strict=True):
             html = self.page(f"/projects/{project}")
-            self.assertIn(f'<h1>{name}</h1>\n<p class="path">{path.resolve()}</p>', html)
+            full = str(path.resolve())
+            self.assertEqual(project_head(html), (name, self.app._short_path(full), full))
             self.assertIn(f"<title>{name} 패키지 - depbee</title>", html)
         self.assertEqual(self.app._names([]), [])
         self.assertEqual(self.app._names([str(self.root)]), [self.root.name])
         # The whole path at most: one folder inside another one of the same name.
         outer, inner = str(Path("app")), str(Path("app", "app"))
         self.assertEqual(self.app._names([outer, inner]), [outer, inner])
+
+    def test_a_path_is_cut_to_its_last_three_folders(self):
+        short = self.app._short_path
+        self.assertEqual(short(r"C:\Users\dev\work\clients\acme\repos\storefront-web"),
+                         "…\\acme\\repos\\storefront-web")  # fmt: skip
+        self.assertEqual(short("/projects/web/app/x/y"), "…/app/x/y")
+        self.assertEqual(short("\\\\server\\share\\a\\b\\c\\d"), "…\\b\\c\\d")
+        for whole in (r"C:\a\b", r"C:\a\b\c", "D:\\", "/", "/projects/app-a", "/a/b/c", "relative"):
+            self.assertEqual(short(whole), whole)
+        # Shown cut, whole on hover; project management keeps the whole path.
+        folder = self.folder("one", "two", "three", "four")
+        project = history.register_project(folder)
+        full = str(folder.resolve())
+        self.assertEqual(project_head(self.page(f"/projects/{project}")),
+                         ("four", short(full), full))  # fmt: skip
+        self.assertTrue(
+            short(full).startswith("…")
+            and short(full).endswith("two" + os.sep + "three" + os.sep + "four")
+        )
+        self.assertIn(f'<span class="ov-path" title="{full}">{short(full)}</span>', self.page("/"))
+        self.assertIn(f'<p class="path">{full}</p>', self.page("/?manage=1"))
 
     def test_each_view_of_a_project_names_it_and_links_the_others(self):
         project = history.register_project(self.project)
@@ -489,7 +520,7 @@ class ConsoleTests(DashboardFixture):
         for view, label in views.items():
             html = self.page(f"/projects/{project}{view}")
             self.assertIn(f"<title>project {label} - depbee</title>", html)
-            self.assertIn(f'<h1>project</h1>\n<p class="path">{path}</p>', html)
+            self.assertEqual(project_head(html), ("project", self.app._short_path(path), path))
             self.assertIn('<nav class="views" aria-label="project 화면">', html)
             for other, text in views.items():
                 current = ' aria-current="page"' if other == view else ""

@@ -22,7 +22,7 @@ from pathlib import Path
 from unittest import mock
 from urllib.parse import quote
 
-from test_dashboard import BASE, PORT, SESSION, DashboardFixture, S, ScreenFixture
+from test_dashboard import BASE, PORT, SESSION, DashboardFixture, S, ScreenFixture, project_head
 from test_workflow import LINKS, reported
 
 from depbee import history, service
@@ -318,7 +318,9 @@ class PickerTests(ContainerFixture):
         # A desktop keeps its own words and is told nothing of a container.
         del os.environ[VARIABLE]
         desktop = self.page("/")
-        self.assertIn(button.format("폴더 선택 창을 확인하세요…") + "프로젝트 추가</button>", desktop)
+        self.assertIn(
+            button.format("폴더 선택 창을 확인하세요…") + "프로젝트 추가</button>", desktop
+        )
         self.assertIn(hint + "이 PC에서 고릅니다.</p>", desktop)
         for words in ("컨테이너", "연결한 폴더"):
             self.assertNotIn(words, desktop)
@@ -334,7 +336,9 @@ class PickerTests(ContainerFixture):
         self.assertIn('id="pick-hint">컨테이너에 연결한 폴더의 목록을 엽니다.', page)
         self.assertIn('id="path-hint">컨테이너 안의 경로를 적습니다.', page)
         # While its request runs the button names that list too, not a dialog to look for.
-        self.assertIn('data-busy-label="연결한 폴더 목록을 여는 중…">프로젝트 폴더 선택</button>', page)
+        self.assertIn(
+            'data-busy-label="연결한 폴더 목록을 여는 중…">프로젝트 폴더 선택</button>', page
+        )
         # The button and the typed path are still described by one hint each.
         self.assertEqual((page.count('id="pick-hint"'), page.count('id="path-hint"')), (1, 1))
         for words in desktop_only:
@@ -351,7 +355,9 @@ class PickerTests(ContainerFixture):
         published = ("이 화면은 docker run의 -p로 컨테이너의 포트를 호스트의 127.0.0.1에만 "
                      "게시했을 때 이 PC에서만 열립니다.")  # fmt: skip
         local = "이 화면은 이 PC의 127.0.0.1에서만 열립니다."
-        remount = "대시보드 컨테이너를 종료한 뒤 이 폴더를 같은 별칭으로(위의 컨테이너 경로) 다시 연결해"
+        remount = (
+            "대시보드 컨테이너를 종료한 뒤 이 폴더를 같은 별칭으로(위의 컨테이너 경로) 다시 연결해"
+        )
         restore = "폴더를 원래 위치로 되돌리"
         project = self.add("app-a")
         self.assertEqual(self.register(str(project)).status_code, 303)
@@ -436,7 +442,9 @@ class PickerTests(ContainerFixture):
         self.assertIn("<title>프로젝트 현황판 - depbee</title>", overview)
         for number, name in enumerate(("app-a", "app-b"), 1):
             self.assertIn(f'<a class="ov-name" href="{S}/projects/{number}">{name}</a>', overview)
-        self.assertIn(f'<p class="path">{paths[0]}</p>', self.page("/projects/1"))
+        self.assertEqual(
+            project_head(self.page("/projects/1"))[1:], (self.app._short_path(paths[0]), paths[0])
+        )
         self.assertEqual(self.register(paths[0]).headers["location"], S + "/projects/1")
         self.assertEqual(self.choose.call_count, 0)
 

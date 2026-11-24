@@ -38,7 +38,7 @@ import sys
 import threading
 from collections import Counter, OrderedDict
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import parse_qs, quote, unquote, urlencode
 
 import jinja2
@@ -323,6 +323,7 @@ ENV.filters["when"] = _when
 # A stored threshold in full, and a stored score worded against one, as the text output has them.
 ENV.filters["plain"] = plain_number
 ENV.filters["score"] = score_text
+ENV.filters["short"] = lambda path: _short_path(path)  # defined below; looked up at render
 
 
 def _text(status: int, text: str) -> Response:
@@ -953,6 +954,20 @@ def _way_back(base: str, given: str) -> str:
 
 def _project(project_id: int) -> dict | None:
     return next((p for p in history.list_projects() if p["id"] == project_id), None)
+
+
+def _short_path(path: str) -> str:
+    """A registered path as the overview and a project's head show it: "…", its separator and
+    its last three folders, or the path itself when it has no more than three below its drive
+    or root. The separator is the path's own (a Windows path, a container's POSIX one); the
+    whole path is on hover (title) and on project management."""
+    windows = "\\" in path or re.match(r"[A-Za-z]:", path) is not None
+    pure = PureWindowsPath(path) if windows else PurePosixPath(path)
+    parts = pure.parts[1:] if pure.anchor else pure.parts
+    if len(parts) <= 3:
+        return path
+    separator = "\\" if windows else "/"
+    return "…" + separator + separator.join(parts[-3:])
 
 
 def _names(paths: list[str]) -> list[str]:

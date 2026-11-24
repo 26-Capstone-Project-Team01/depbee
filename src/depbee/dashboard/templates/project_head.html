@@ -5,7 +5,7 @@
 {% set url = base ~ "/projects/" ~ project.id %}
 <header class="project-head">
 <h1>{{ project.name }}</h1>
-<p class="path">{{ project.path }}</p>
+<p class="path" title="{{ project.path }}">{{ project.path|short }}</p>
 {% if not project.found %}
 <p class="error">프로젝트 폴더를 찾을 수 없습니다. {% if contained %}대시보드 컨테이너를 종료한 뒤 이 폴더를 같은 별칭으로(위의 컨테이너 경로) 다시 연결해 시작하면 다시 읽습니다.{% else %}폴더를 원래 위치로 되돌리면 다시 읽습니다. 옮긴 폴더는 <a href="{{ base }}/?manage=1">프로젝트 관리</a>에서 새로 등록하세요.{% endif %} 지난 실행과 반영 기록은 <a href="{{ url }}/history">기록</a>에 그대로 있습니다.</p>
 {% endif %}
