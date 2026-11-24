@@ -397,7 +397,8 @@ jobs:
               results = re.findall(r'<section class="result ([^"]*)"', page)
               assert results == ["not_flagged"], results
               assert page.count('<div class="scored">') == 1
-              for shown in ("lodash@4.17.21", MODEL):
+              # The card's title: the package, then the version it moves to.
+              for shown in ('<span class="ident">lodash</span>', " 4.17.21</span></h3>", MODEL):
                   assert shown in page, shown
               return run.removeprefix(base)
 
@@ -441,7 +442,8 @@ jobs:
               assert base != first  # each container prints an address of its own
               (link,) = links()
               status, _, page = call("GET", base + run)  # the first container's run
-              assert status == 200 and "lodash@4.17.21" in page, status
+              assert status == 200 and '<span class="ident">lodash</span>' in page, status
+              assert " 4.17.21</span></h3>" in page
               again = usable(link)
               # The same folder is still that project: registering it again adds no second one.
               assert register(first=False) == link
