@@ -135,6 +135,14 @@ DECISIONS = {
     "confirm": ("hold", "확인 필요"),
     "free": ("pass", "반영 가능"),
 }
+# The updates view's groups of candidates (_grouped), what needs a look first: by whether each
+# could be applied (DECISIONS), and a removal that could be apart, after them.
+GROUPS = (
+    ("refused", "반영 거부"),
+    ("confirm", "확인 필요"),
+    ("free", "반영 가능"),
+    ("removed", "삭제"),
+)
 REFUSED_WHY = (
     "기지 악성 색인과 일치한 버전입니다. 낮은 ML 위험 점수는 이 거부를 취소하지 않으며, 확인으로도 "
     "반영할 수 없습니다."
@@ -612,9 +620,9 @@ def build_app(
                     head=head)  # fmt: skip
 
     def updates(request: Request) -> Response:
-        """The updates view: the current candidates with their evidence, the previews this
-        process still holds (held) and the buttons that check. selected: the candidate opened
-        beside the list."""
+        """The updates view: the named check, the previews this process still holds (held) and
+        the current candidates in groups (_grouped). selected: the candidate opened beside the
+        list, the first one shown when the address names none."""
         found = _project(request.path_params["project_id"])
         if found is None:
             return _text(404, "등록된 프로젝트가 아닙니다.")
@@ -627,10 +635,12 @@ def build_app(
             else None
         )
         head = _head(found, *_dependencies(found["path"]), state)
+        groups = _grouped(state["rows"])
+        shown = [row for group in groups for row in group["rows"]]
         return page(request, "updates.html", project=found, section="updates", state=state,
-                    head=head,
+                    head=head, groups=groups,
                     previews=held(found, state), applied_at=applied_at, max_targets=MAX_TARGETS,
-                    selected=_selected(request.query_params, state["rows"]))  # fmt: skip
+                    selected=_selected(request.query_params, shown))  # fmt: skip
 
     def project_history(request: Request) -> Response:
         """The history view: the project's applies and runs, each run linked to its report."""
@@ -1256,6 +1266,24 @@ def _selected(params, shown: list[dict]) -> dict | None:
     if len(given) != 1:
         return first
     return next((row for row in shown if f"{row['run_id']}.{row['position']}" == given[0]), first)
+
+
+def _grouped(rows: list[dict]) -> list[dict]:
+    """The updates view's candidates (_update_state rows) in groups, GROUPS' order, the empty ones
+    left out: {key, cell (None for removals), label, rows (in the given order)}. A removal that
+    could be applied is a group of its own; one that is refused or to confirm stays in that
+    group, as what it needs is not told by its being a removal."""
+
+    def key(row: dict) -> str:
+        decided = row["decision"]["key"]
+        return "removed" if decided == "free" and row["status"] == "removed" else decided
+
+    return [
+        {"key": name, "cell": DECISIONS[name][0] if name in DECISIONS else None, "label": label,
+         "rows": [row for row in rows if key(row) == name]}
+        for name, label in GROUPS
+        if any(key(row) == name for row in rows)
+    ]  # fmt: skip
 
 
 def _filters(params) -> tuple[str, str, str] | None:

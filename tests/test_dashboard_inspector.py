@@ -8,6 +8,7 @@ list and predictor, in each test run's folder; no server, npm or registry.
 """
 
 import json
+import re
 import socket
 import subprocess
 from unittest import mock
@@ -230,6 +231,60 @@ class InspectorTests(test_dashboard.DashboardFixture):
             self.assertEqual(self.get(f"{self.packages}?{query}").status_code, 400, query)
         for query in ("only=0", "only=", "only=true", "only=1&only=1"):  # the old filter: no more
             self.assertEqual(self.get(f"{self.packages}?{query}").status_code, 200, query)
+
+    def test_the_updates_view_groups_its_candidates_by_whether_they_could_be_applied(self):
+        def first(report, name):
+            return self.rows(report, name)["results"][0]
+
+        free = first(self.scanned(0.1, known_malicious=KnownList()), "inner")
+        held = first(self.scanned(analyzer=False, known_malicious=KnownList()), "example")
+        refused = first(self.scanned(0.012, known_malicious=KnownList((ADVISORY,))), "other")
+        removed = {**free, "package": "new", "location": ROWS["new"][0], "before_version": "3.0.0",
+                   "after_version": None, "status": "removed", "score": None}  # fmt: skip
+        report = self.scanned(0.1, known_malicious=KnownList())
+        run = self.check({**report, "results": [free, held, removed, refused]}, targets=None)
+        html = self.page(self.updates)
+        # What needs a look first; each group says how many it holds; in a group, report order.
+        groups = re.findall(r'<h3 class="group-title" id="group-(\w+)">(?:<span class="cell (\w+)" '
+                            r'aria-hidden="true"></span>)?([^<]+) <span class="group-count">(\d+)개'
+                            r"</span></h3>", html)  # fmt: skip
+        self.assertEqual(groups, [("refused", "risk", "반영 거부", "1"), ("confirm", "hold", "확인 필요", "1"),
+                                  ("free", "pass", "반영 가능", "1"), ("removed", "", "삭제", "1")])  # fmt: skip
+        listed = re.findall(r'<tr><th scope="row">([^<]*)<span class="where">', html)
+        self.assertEqual(listed, ["other", "example", "inner", "new"])
+        # The view opens the first candidate it shows: the riskiest.
+        self.assertEqual(self.selected(self.updates)["package"], "other")
+        # A row: the stored verdict and its reason on one line, the score, the way to its
+        # evidence. The detectors and the facts are the inspector's.
+        row = html.split('<th scope="row">example<span', 1)[1].split("</tr>", 1)[0]
+        self.assertIn('<span class="verdict hold"><span class="cell hold" aria-hidden="true"></span>'
+                      "보류</span>", row)  # fmt: skip
+        self.assertIn('<p class="row-why">분석 결과 없음</p>', row)
+        self.assertIn(
+            f'href="{test_dashboard.S}{self.updates}?item={run}.1#candidate-evidence">근거 열기',
+            row,
+        )
+        outside = html.split('<aside class="inspector"', 1)[0]
+        for absent in ('class="detectors"', "synthetic evidence", f"/runs/{run}#r"):
+            self.assertNotIn(absent, outside)
+        # The named check is one line above, folded until it is opened.
+        self.assertRegex(html, r'(?s)<div class="action-line">\s*<details class="named">\s*'
+                               r"<summary>지정한 패키지 확인</summary>.*?"
+                               rf'<form method="post" action="{test_dashboard.S}{self.packages}/previews"')  # fmt: skip
+        self.assertIn('name="packages" type="text"', html)
+
+    def test_grouped_puts_what_needs_a_look_first(self):
+        def row(key, status="flagged", n=0):
+            return {"decision": {"key": key}, "status": status, "n": n}
+
+        rows = [row("free", n=1), row("confirm", n=2), row("free", "removed", 3),
+                row("refused", n=4), row("refused", "removed", 5), row("free", "passed", 6)]  # fmt: skip
+        self.assertEqual(
+            [(g["key"], g["cell"], g["label"], [r["n"] for r in g["rows"]]) for g in self.app._grouped(rows)],
+            [("refused", "risk", "반영 거부", [4, 5]), ("confirm", "hold", "확인 필요", [2]),
+             ("free", "pass", "반영 가능", [1, 6]), ("removed", None, "삭제", [3])],
+        )  # fmt: skip
+        self.assertEqual(self.app._grouped([]), [])
 
     def test_a_tab_keeps_the_open_candidate_and_an_empty_tab_is_no_link(self):
         inner = self.keys["inner"]

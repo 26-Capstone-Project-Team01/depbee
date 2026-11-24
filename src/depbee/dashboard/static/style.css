@@ -498,12 +498,17 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 .legend dd { font-size: .875rem; }
 
 /* The updates view: what can be run, the previews still open, then the candidates. */
-.jobs { display: grid; gap: .75rem; }
-.jobs > section { min-width: 0; }
-.jobs section, .held { margin-top: 0; padding: .9rem 1.1rem 1rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow); }
-.jobs h2 { font-size: 1rem; }
-.jobs p { margin-top: 0; font-size: .875rem; }
-.held { margin-top: .75rem; }
+/* The updates view's action line: the named check folded until opened, and its help. */
+.action-line { display: flex; flex-wrap: wrap; align-items: flex-start; gap: .5rem .75rem; margin: 0 0 .75rem; }
+.named { flex: 1 1 20rem; min-width: 0; max-width: 46rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); }
+.named > summary { display: flex; align-items: center; min-height: 2.75rem; padding: .3rem .9rem; font-weight: 700; cursor: pointer; }
+.named[open] > summary { border-bottom: 1px solid var(--line); }
+.named form { min-width: 0; padding: .8rem .9rem 1rem; }
+.held { margin-top: 0; padding: .9rem 1.1rem 1rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow); }
+/* A group of candidates: its mark, its name and how many it holds. */
+.group-title { display: flex; align-items: center; gap: .45rem; margin: 1.1rem 0 .45rem; font-size: 1rem; }
+.group-count { color: var(--muted); font: 700 .875rem/1 var(--mono); }
+.row-why { margin: .25rem 0 0; color: var(--muted); font-size: .875rem; }
 .actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .75rem 1.5rem; }
 .actions form { min-width: 0; }
 .actions form:last-child { flex: 1 1 16rem; }
@@ -616,12 +621,11 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
   /* A version and a kind stay whole: their columns keep the width of what they hold. */
   /* A name is not squeezed to a few letters, and a candidate with its mark is one line. */
   .packages th:last-child { width: 16rem; }
-  .candidates tr:not(.inspect) { grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr) minmax(0, 1fr); grid-template-areas: "name move ruling" "facts facts score" "links links links"; }
+  .candidates tr:not(.inspect) { grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr) minmax(0, 1fr); grid-template-areas: "name move ruling" "name score links"; }
   .candidates tbody th { grid-area: name; }
   .candidates td:nth-child(2) { grid-area: move; }
   .candidates td:nth-child(3) { grid-area: ruling; }
   .candidates td:nth-child(4) { grid-area: score; }
-  .candidates td:nth-child(5) { grid-area: facts; }
   .candidates tr:not(.inspect) > td:last-child { grid-area: links; }
 }
 /* Medium: every project fits the bar as one row of its own under the menu, which scrolls
@@ -642,7 +646,6 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
   html { scroll-padding-block: 1.5rem; }
 }
 @media (min-width: 60rem) {
-  .jobs { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); }
   .desk { grid-template-columns: minmax(0, 22rem) minmax(0, 1fr); }
   .desk.first { grid-template-columns: minmax(0, 26rem); }
   .evidence { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }

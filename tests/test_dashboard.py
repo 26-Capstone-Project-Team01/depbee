@@ -880,10 +880,9 @@ class CandidateTests(DashboardFixture):
             '<td>1.1.0 <span aria-hidden="true">→</span><span class="visually-hidden">에서</span>'
             " 1.2.0</td>",
             "<td>0.900 (기준 이상)</td>",
-            "<li>synthetic evidence</li>",
-            f'<a href="{S}/runs/{run}#r0">실행 #{run}<span class="visually-hidden">의 example '
-            "근거 전체</span></a>",
-            '<a href="https://www.npmjs.com/package/example" rel="noreferrer noopener">',
+            "<li>synthetic evidence</li>",  # in the inspector, open on the first candidate
+            f'href="{S}/runs/{run}#r0">보고서에서 전체 근거 보기',
+            'href="https://www.npmjs.com/package/example" rel="noreferrer noopener">',
             "릴리스 노트와 변경 내역 원문은 depbee가 수집하지 않으므로",
         ):  # fmt: skip
             self.assertIn(text, updates)
@@ -1007,7 +1006,7 @@ class CandidateTests(DashboardFixture):
         self.assertIn('<td><span class="quiet">새로 추가</span> <span aria-hidden="true">→</span>'
                       '<span class="visually-hidden">에서</span> 3.0.0</td>', updates)  # fmt: skip
         self.assertIn('에서</span> <span class="quiet">삭제</span></td>', updates)
-        self.assertIn(f'href="{S}/runs/{run}#r1"', updates)
+        self.assertIn(f'/updates?item={run}.1#candidate-evidence"', updates)
         self.assertIn("바뀐 의존성 2개: 위험 1, 통과 0, 보류 0, 삭제 1.", updates)
         # A later check of other alone would not remove it: that row goes, the added entry of
         # the check of everything stays.
@@ -1142,7 +1141,7 @@ class CandidateTests(DashboardFixture):
         updates = self.page(self.updates)
         self.assertIn("바뀐 의존성 2개: 위험 2, 통과 0, 보류 0.", updates)
         for position in (0, 1):
-            self.assertIn(f'href="{S}/runs/{first}#r{position}"', updates)
+            self.assertIn(f'/updates?item={first}.{position}#candidate-evidence"', updates)
         # A later check of the package named with the escape text alone: only that location
         # takes the new run's row.
         second = self.check({**self.report, "results": [row(text, "\\udc80x", "8.0.0", "8.2.0")]},
@@ -1152,9 +1151,9 @@ class CandidateTests(DashboardFixture):
         self.assertIn("후보 버전 8.2.0,", of_text)
         self.assertIn(f'?item={second}.0#candidate-evidence"', of_text)
         updates = self.page(self.updates)
-        self.assertIn(f'href="{S}/runs/{first}#r0"', updates)
-        self.assertIn(f'href="{S}/runs/{second}#r0"', updates)
-        self.assertNotIn(f'href="{S}/runs/{first}#r1"', updates)
+        self.assertIn(f'/updates?item={first}.0#candidate-evidence"', updates)
+        self.assertIn(f'/updates?item={second}.0#candidate-evidence"', updates)
+        self.assertNotIn(f'/updates?item={first}.1#candidate-evidence"', updates)
         # A later check of the package named with the lone surrogate alone finds nothing: only
         # that location loses its candidate.
         self.check(self.nothing(), targets=["\udc80x"], changed_count=0)
