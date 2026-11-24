@@ -10,10 +10,10 @@ import dataclasses
 import hashlib
 import importlib.metadata
 import json
-import ntpath
 import os
 import platform
 import shlex
+import subprocess
 import sys
 import tempfile
 import time
@@ -106,14 +106,12 @@ def _with_this_python(requirement: str) -> str:
     a quoted path and a single quote inside one is doubled: PowerShell 5.1 and 7 read U+2018 to
     U+201B (the curly ones, as in a user name O'Brien typed with U+2019) as single quotes too.
     But & reads a path with [, ] or a backtick as a wildcard pattern (5.1 always, 7 when the file
-    is missing) and can run another environment's python.exe. For such a path the command finds
-    the file by name in the folder opened with -LiteralPath, goes back and calls what it found,
-    so pip still runs where the user is (a relative requirement like .[extract] keeps its
-    meaning). -ErrorAction Stop keeps a missing folder from finding the python.exe of the folder
-    the user is in; Get-Command's own -ErrorAction Continue keeps a user's Stop preference from
-    skipping Pop-Location. A file name with [, ] or a backtick is a pattern to every PowerShell
-    lookup, escaped or not one way in 5.1 and the other in 7, so that one (never a real
-    interpreter's) is given to Command Prompt, which takes a quoted path as it is.
+    is missing) and can run another environment's python.exe; so do Get-Command and
+    Start-Process, escaped or not. Such a path goes as it is to Windows' process API
+    (ProcessStartInfo without the shell), started in the user's folder so that a relative
+    requirement like .[extract] keeps its meaning. A script block keeps its variables local; its
+    own Stop preference makes a failed start end the line too (otherwise only that statement
+    failed and the line ended with $? true), as a nonzero exit does, without ending PowerShell.
     Elsewhere the POSIX shells' quoting."""
     python = sys.executable or "python"
     if os.name == "nt":
@@ -121,18 +119,16 @@ def _with_this_python(requirement: str) -> str:
         def quote(text: str) -> str:
             return "'" + text.translate({ord(q): q * 2 for q in "'\u2018\u2019\u201a\u201b"}) + "'"
 
-        install = f"-m pip install {quote(requirement)}"
-        pattern = set("[]`")
-        folder, name = ntpath.split(python)
-        if pattern.isdisjoint(python):
-            return f", in PowerShell: & {quote(python)} {install}"
-        if pattern.isdisjoint(name):
-            found = quote(".\\" + name)
-            return (
-                f", in PowerShell: & $(Push-Location -LiteralPath {quote(folder)} -ErrorAction Stop; "
-                f"Get-Command {found} -ErrorAction Continue; Pop-Location) {install}"
-            )
-        return f', in Command Prompt (cmd): "{python}" -m pip install "{requirement}"'
+        if set("[]`").isdisjoint(python):
+            return f", in PowerShell: & {quote(python)} -m pip install {quote(requirement)}"
+        arguments = subprocess.list2cmdline(["-m", "pip", "install", requirement])
+        return (
+            ", in PowerShell: & { $ErrorActionPreference = 'Stop'; "
+            "$p = [Diagnostics.Process]::Start([Diagnostics.ProcessStartInfo]@{"
+            f"FileName = {quote(python)}; Arguments = {quote(arguments)}; UseShellExecute = $false; "
+            "WorkingDirectory = $PWD.ProviderPath}); $p.WaitForExit(); "
+            'if ($p.ExitCode) { throw "pip exited with code $($p.ExitCode)" } }'
+        )
     return f": {shlex.quote(python)} -m pip install {shlex.quote(requirement)}"
 
 
