@@ -481,6 +481,7 @@ depbee --help
 `extract`는 팀의 공개 저장소 depbee-analyzer를 고정된 커밋으로 설치합니다. pip이 Git으로 받으므로 Git이 필요하고 로그인이나 토큰은 필요 없습니다.
 depbee-analyzer를 함께 개발할 때는 그 저장소를 받아 `pip install -e ../depbee-analyzer`로 대신 설치합니다.
 ML 추론(LightGBM)은 기본 설치에 들어 있고 `ml`은 이전 명령과의 호환용으로 남긴 이름입니다. 추출이 필요 없는 입력·계약 작업만 한다면 `extract`를 빼고 설치할 수 있습니다.
+분석기 없이 설치한 depbee에서 `check`나 `scan --extract`처럼 추출이 필요한 명령을 실행하면 오류(종료 코드 2)로 끝나고, 그 오류에 이 depbee가 고정한 분석기 커밋을 설치하는 pip 명령이 적혀 있습니다. 어느 폴더에서 실행해도 되는 명령입니다. 분석기를 뺀 Docker 이미지(`core`)에서는 같은 오류가 [기본 이미지를 빌드](docker.md#이미지-빌드)하라고 안내합니다.
 
 ### Git 주소로 설치
 

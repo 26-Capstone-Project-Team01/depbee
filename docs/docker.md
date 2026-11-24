@@ -32,7 +32,7 @@ docker build --target core -t depbee:core .
 | 기본 | `docker build -t depbee:local .` | 이 문서의 모든 기능 |
 | `core` | `docker build --target core -t depbee:core .` | `plan`, `--extract` 없는 `scan`(기지 악성 대조), 대시보드의 등록과 조회 |
 
-`core` 이미지에서 `check`, `scan --extract`, MCP의 두 도구, 대시보드의 **검사만**과 **업데이트 확인**은 분석기를 설치하라는 오류로 끝납니다. CLI의 종료 코드는 2입니다. 이 문서의 나머지 예시는 기본 이미지 `depbee:local`을 씁니다.
+`core` 이미지에서 `check`, `scan --extract`, MCP의 두 도구, 대시보드의 **검사만**과 **업데이트 확인**은 이 이미지에 분석기가 없으니 기본 이미지를 빌드하라는 오류로 끝납니다. CLI의 종료 코드는 2입니다. 이미지에는 pip과 depbee 소스가 없어 분석기를 따로 설치할 수 없으므로, depbee 저장소에서 `docker build -t depbee:local .`로 기본 이미지를 빌드해 씁니다. 이 문서의 나머지 예시는 기본 이미지 `depbee:local`을 씁니다.
 
 ### 빌드한 이미지 옮기기
 

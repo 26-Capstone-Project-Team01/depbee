@@ -507,4 +507,7 @@ jobs:
           run depbee:ci-core check lodash@4.17.21 2> core-check.json || status=$?
           cat core-check.json
           test "$status" -eq 2
-          grep -qF '[extract]' core-check.json  # the extra that brings the analyzer
+          # What it tells the user to do must work for this image, which has no pip and no
+          # source tree to install the analyzer from: build the default image.
+          grep -qF 'docker build -t depbee:local .' core-check.json
+          fails grep -qF 'pip install' core-check.json

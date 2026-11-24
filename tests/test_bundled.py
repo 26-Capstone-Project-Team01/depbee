@@ -9,6 +9,7 @@ No network; nothing is downloaded.
 """
 
 import hashlib
+import importlib.metadata
 import json
 import os
 import re
@@ -411,17 +412,40 @@ class ResolverTests(NativeAssets):
 
     def test_without_the_extract_extra_trusted_features_are_scored_and_extraction_says_how(self):
         """The base install: no depbee-analyzer. A trusted analysis file is still scored with
-        the shipped model and compared with the shipped index."""
+        the shipped model and compared with the shipped index, and an extraction ends with
+        advice that works where that depbee runs."""
         self.ship()
         missing = dict.fromkeys(
             ("depbee_analyzer", "depbee_analyzer.core", "depbee_analyzer.core.errors"))
+        pin = ("depbee-analyzer @ git+https://github.com/26-Capstone-Project-Team01/"
+               "depbee-analyzer@" + "a" * 40)  # fmt: skip
+
+        def advice(requires):
+            """The error of scan --extract for a depbee whose metadata requires this."""
+            with mock.patch("importlib.metadata.requires", **requires):
+                code, out, err = run_cli("scan", str(self.project), "--base-lock",
+                                         str(self.base), "--extract", "--format", "json")  # fmt: skip
+            self.assertEqual((code, out), (2, ""))
+            return json.loads(err)["error"]
+
+        installed = {"return_value": ["numpy>=1.26", f'{pin}; extra == "extract"']}
         with mock.patch.dict(sys.modules, missing):
             self.assertEqual(self.used(), ("synthetic-test-only", self.index_sha))
-            code, out, err = run_cli("scan", str(self.project), "--base-lock", str(self.base),
-                                     "--extract", "--format", "json")  # fmt: skip
-        self.assertEqual((code, out), (2, ""))
-        self.assertEqual(json.loads(err)["error"],
-                         'Install analyzer dependencies: python -m pip install -e ".[extract]"')  # fmt: skip
+            # An installed depbee names the public commit it pins: a command for any folder,
+            # where the old ".[extract]" meant whatever project the user stood in.
+            self.assertTrue(advice(installed).startswith(
+                "depbee-analyzer is missing. Install the commit that this depbee pins: "
+                f'python -m pip install "{pin}" ('))  # fmt: skip
+            # depbee's image has no pip and no source tree: the default image, not an install.
+            with mock.patch.dict(os.environ, {"DEPBEE_CONTAINER_PROJECTS": "/projects"}):
+                in_image = advice(installed)
+            self.assertIn("built with --target core", in_image)
+            self.assertIn("docker build -t depbee:local .", in_image)
+            self.assertNotIn("pip", in_image)
+            # Run from a source tree, depbee has no metadata to name a commit from.
+            unknown = {"side_effect": importlib.metadata.PackageNotFoundError("depbee")}
+            self.assertIn('In a depbee checkout: python -m pip install ".[extract]"',
+                          advice(unknown))  # fmt: skip
 
 
 if __name__ == "__main__":

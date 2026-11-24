@@ -10,6 +10,7 @@ import dataclasses
 import hashlib
 import importlib.metadata
 import json
+import os
 import platform
 import tempfile
 import time
@@ -93,6 +94,33 @@ def _installed_identity() -> dict | None:
     }
 
 
+def _how_to_get_the_analyzer() -> str:
+    """What a user without depbee-analyzer can do, said for the depbee at hand.
+
+    In depbee's image (the variable its Dockerfile sets, as dashboard.mounted reads it) nothing
+    can be installed: there is no pip and no source tree, so the answer is the default image.
+    An installed depbee names the public commit its own metadata pins, a command that works in
+    any folder. Only depbee run from a source tree, which has no metadata, is sent to the extra.
+    """
+    if os.environ.get("DEPBEE_CONTAINER_PROJECTS"):
+        return (
+            "This image has no depbee-analyzer: it was built with --target core. Build the "
+            "default image in a depbee checkout instead: docker build -t depbee:local ."
+        )
+    try:
+        pins = importlib.metadata.requires("depbee") or []
+    except importlib.metadata.PackageNotFoundError:
+        pins = []
+    for pin in pins:
+        if pin.startswith("depbee-analyzer @"):
+            pin = pin.split(";")[0].strip()
+            return (
+                "depbee-analyzer is missing. Install the commit that this depbee pins: "
+                f'python -m pip install "{pin}"'
+            )
+    return 'depbee-analyzer is missing. In a depbee checkout: python -m pip install ".[extract]"'
+
+
 class _RegistrySource:
     """depbee-analyzer SnapshotSource for registry versions, used instead of its
     RegistrySnapshotSource: the snapshot comes from the packument depbee checked (the pinned
@@ -131,9 +159,7 @@ class FeatureExtractorBackend:
             from depbee_analyzer.core.pipeline import build_row, resolve_extractors
             from depbee_analyzer.core.sources import LocalArchiveSnapshotSource
         except ImportError as exc:
-            raise GuardError(
-                'Install analyzer dependencies: python -m pip install -e ".[extract]"'
-            ) from exc
+            raise GuardError(f"{_how_to_get_the_analyzer()} ({exc})") from exc
         self.errors = (
             FeatureExtractorError,
             registry.RegistryError,
