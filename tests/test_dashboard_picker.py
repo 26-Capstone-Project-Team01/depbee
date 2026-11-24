@@ -18,7 +18,15 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from test_dashboard import BASE, PORT, SESSION, DashboardFixture, S, assert_one_script
+from test_dashboard import (
+    BASE,
+    PORT,
+    SESSION,
+    DashboardFixture,
+    S,
+    assert_one_script,
+    project_head,
+)
 from test_workflow import Fixture
 
 from depbee import history
@@ -120,8 +128,8 @@ class PickRouteTests(DashboardFixture):
         overview = self.page("/")
         self.assertIn("<title>프로젝트 현황판 - depbee</title>", overview)
         self.assertIn(f'<a class="ov-name" href="{S}/projects/1">project</a>', overview)
-        self.assertIn(f'<h1>project</h1>\n<p class="path">{self.project.resolve()}</p>',
-                      self.page("/projects/1"))  # fmt: skip
+        self.assertEqual(project_head(self.page("/projects/1"))[::2],
+                         ("project", str(self.project.resolve())))  # fmt: skip
         # The same folder again opens the first registration, as the typed path does.
         self.choose.return_value = ("chosen", str(self.project) + os.sep)
         self.assertEqual(self.pick().headers["location"], S + "/projects/1")
@@ -139,7 +147,9 @@ class PickRouteTests(DashboardFixture):
     def test_closing_the_dialog_registers_and_writes_nothing(self):
         before = self.files()
         response = self.pick()
-        self.assertEqual((response.status_code, response.headers["location"]), (303, S + "/?manage=1"))
+        self.assertEqual(
+            (response.status_code, response.headers["location"]), (303, S + "/?manage=1")
+        )
         self.assert_nothing_registered(before)
         # With nothing registered that address is the start page again: the button, no message.
         html = self.page("/?manage=1")
@@ -312,7 +322,7 @@ class PickedFolderTests(DashboardFixture):
         (project,) = history.list_projects()
         self.assertEqual(project["path"], str(folder.resolve()))
         html = self.page("/projects/1")
-        self.assertIn(f'<h1>한글 프로젝트</h1>\n<p class="path">{folder.resolve()}</p>', html)
+        self.assertEqual(project_head(html)[::2], ("한글 프로젝트", str(folder.resolve())))
         self.assertIn('<th scope="row">example</th>', html)  # its lockfile is read in place
 
     def test_a_child_that_answers_nothing_registers_and_writes_nothing(self):

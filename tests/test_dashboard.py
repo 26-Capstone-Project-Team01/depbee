@@ -15,6 +15,7 @@ import re
 import sqlite3
 import sys
 import unittest
+from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from unittest import mock
@@ -58,6 +59,43 @@ class Elements(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         self.found.append((tag, dict(attrs)))
+
+
+class Head(HTMLParser):
+    """A project view's head (header.project-head), parsed: the name (h1), the path as shown and
+    the whole path (its title), with character references decoded."""
+
+    def __init__(self, html):
+        super().__init__()
+        self.depth, self.into, self.name, self.shown, self.whole = 0, None, "", "", None
+        self.feed(html)
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "header" and attrs.get("class") == "project-head":
+            self.depth = 1
+        elif self.depth:
+            self.depth += tag == "header"
+            if tag == "h1":
+                self.into = "name"
+            elif tag == "p" and attrs.get("class") == "path":
+                self.into, self.whole = "shown", attrs.get("title")
+
+    def handle_endtag(self, tag):
+        if self.depth and tag == "header":
+            self.depth -= 1
+        if tag in ("h1", "p"):
+            self.into = None
+
+    def handle_data(self, data):
+        if self.depth and self.into:
+            setattr(self, self.into, getattr(self, self.into) + data)
+
+
+def project_head(html):
+    """(name, the path as shown, the whole path) of a project view's head."""
+    head = Head(html)
+    return head.name, head.shown, head.whole
 
 
 def assert_one_script(case, html):
@@ -339,15 +377,107 @@ class ConsoleTests(DashboardFixture):
         return path
 
     def tab(self, html, project_id):
-        """(the rest of the link's opening tag, cell, name, state) of a project's tab."""
+        """(the rest of the link's opening tag after its title, cell, name, state) of a
+        project's tab. The state is said for a screen reader; the counts follow it."""
         found = re.search(
-            rf'<a class="tab" href="{re.escape(S)}/projects/{project_id}"([^>]*)>'
+            rf'<a class="tab" href="{re.escape(S)}/projects/{project_id}" title="[^"]*"([^>]*)>'
             r'<span class="cell (\w+)" aria-hidden="true"></span>'
-            r'<span class="tab-name">([^<]*)</span> <span class="tab-state">([^<]*)</span></a>',
+            r'<span class="tab-name">([^<]*)</span>'
+            r'<span class="visually-hidden">, ([^<]*)</span>',
             html,
         )
         self.assertIsNotNone(found, project_id)
         return found.groups()
+
+    def test_the_rail_lists_its_menu_first_and_the_projects_that_need_a_look_first(self):
+        passed = history.register_project(self.folder("passed"))
+        flagged = history.register_project(self.project)
+        fresh = history.register_project(self.folder("fresh"))
+        held = history.register_project(self.folder("held"))
+        gone = history.register_project(self.folder("gone"))
+        history.record("scan", self.root / "passed", self.scan_with(0.1))
+        history.record("scan", self.project, self.scan_with(0.9))
+        history.record("scan", self.root / "held", self.scan_with(analyzer=False))
+        history.record("scan", self.root / "gone", self.scan_with(0.9))  # hidden by the folder
+        (self.root / "gone" / "package-lock.json").unlink()
+        (self.root / "gone").rmdir()
+        html = self.page("/model")
+        self.assertLess(html.index('<nav class="aux" aria-label="관리와 정보">'),
+                        html.index('<nav class="tabs" aria-label="프로젝트">'))  # fmt: skip
+        self.assertIn('<p class="rail-title">프로젝트 5개 · 조치 필요 3</p>', html)
+        order = [
+            int(i)
+            for i in re.findall(rf'<a class="tab" href="{re.escape(S)}/projects/(\d+)"', html)
+        ]
+        self.assertEqual(order, [gone, flagged, held, fresh, passed])
+        # Each line: the full path on hover, and the risk and hold counts of the newest run.
+        self.assertIn(f'href="{S}/projects/{flagged}" title="{self.project.resolve()}"', html)
+        counts = dict(re.findall(r'/projects/(\d+)" title="[^"]*"[^>]*><span class="cell \w+" '
+                                 r'aria-hidden="true"></span><span class="tab-name">[^<]*</span>'
+                                 r'<span class="visually-hidden">[^<]*</span>'
+                                 r'<span class="tab-count">((?:<span class="n-\w+"[^>]*>[^<]*</span> ?)*)'
+                                 r"</span></a>", html))  # fmt: skip
+        # Each state in words beside its mark, where its counts do not say it already (for a
+        # screen reader the hidden state says it, so these words are not said twice); a folder
+        # that is gone keeps what its last run found.
+        word = '<span class="n-{}" aria-hidden="true">{}</span>'
+        self.assertEqual(counts, {str(flagged): '<span class="n-risk">위험 1</span>',
+                                  str(held): '<span class="n-hold">보류 1</span>',
+                                  str(passed): word.format("pass", "통과"),
+                                  str(fresh): word.format("none", "미검사"),
+                                  str(gone): word.format("gone", "폴더 없음")
+                                  + ' <span class="n-risk">위험 1</span>'})  # fmt: skip
+
+    def test_the_bar_keeps_each_name_in_view(self):
+        css = (Path(self.app.__file__).parent / "static" / "style.css").read_text("utf-8")
+        # The project row is never narrower than one whole project with its ring: below 46rem
+        # the open one has its name, between 46rem and 80rem the row scrolls.
+        self.assertRegex(css, r"(?m)^\.tabs \{ flex: 1 1 15rem;")
+        # Without the script (app.js brings a focused project into the row) the row wraps.
+        found = re.search(r"@media \(scripting: none\) and \(min-width: 46rem\) and "
+                          r"\(max-width: 79\.99rem\) \{\n  \.tabs ul \{([^}]*)\}", css)  # fmt: skip
+        self.assertIn("flex-wrap: wrap", found.group(1))
+        # Between 46rem and 80rem the projects take a line of their own under the menu: a
+        # focused project with long counts fits the row whole, and a wrapped list leaves the
+        # menu at the top. Without the script the page leaves room for a focused ring too.
+        medium = re.search(r"@media \(min-width: 46rem\) and \(max-width: 79\.99rem\) \{\n(.*?)\n\}", css, re.S)
+        self.assertIn("  .tabs { flex-basis: 100%; }", medium.group(1))
+        self.assertRegex(css, r"@media \(scripting: none\) and \(min-width: 46rem\) and "
+                              r"\(max-width: 79\.99rem\) \{\n  \.tabs ul \{[^}]*\}\n  html \{ scroll-padding-block: 1\.5rem; \}")  # fmt: skip
+        # A project that takes the focus is scrolled to with room for its ring, in the bar, in
+        # the wide rail and on the page.
+        self.assertRegex(css, r"(?m)^\.tab \{[^}]*scroll-margin: \.5rem;")
+        # The lines wrap their counts under the name rather than cut the name to a letter.
+        self.assertRegex(css, r"(?m)^\.tab-name \{ flex: 1 1 5rem;")
+        # The views' links wrap rather than push a narrow page sideways.
+        self.assertRegex(css, r"(?m)^\.views \{ display: flex; flex-wrap: wrap;")
+
+    def test_the_rail_says_0_when_nothing_needs_a_look(self):
+        history.register_project(self.project)
+        history.record("scan", self.project, self.scan_with(0.1))
+        self.assertIn('<p class="rail-title">프로젝트 1개 · 조치 필요 0</p>', self.page("/model"))
+
+    def test_a_run_whose_result_is_unknown_comes_before_no_run(self):
+        from test_history import sql
+
+        fresh = history.register_project(self.folder("fresh"))
+        odd = history.register_project(self.project)
+        history.record("scan", self.project, self.scan_with(0.1))
+        for status in (None, "odd"):
+            with self.subTest(status=status):
+                sql(self.db, "UPDATE runs SET status = ?", status)
+                html = self.page("/model")
+                order = re.findall(rf'<a class="tab" href="{re.escape(S)}/projects/(\d+)"', html)
+                self.assertEqual(order, [str(odd), str(fresh)])
+                self.assertEqual(self.tab(html, odd)[1:], ("none", "project", "최근 실행 알 수 없음"))
+                self.assertEqual(self.tab(html, fresh)[1:], ("none", "fresh", "실행 기록 없음"))
+                # The same mark, told apart in view by a word.
+                line = html.split(f'href="{S}/projects/{odd}"', 1)[1].split("</a>", 1)[0]
+                self.assertIn('<span class="tab-count"><span class="n-unknown" aria-hidden="true">'
+                              "알 수 없음</span></span>", line)  # fmt: skip
+                line = html.split(f'href="{S}/projects/{fresh}"', 1)[1].split("</a>", 1)[0]
+                self.assertIn('<span class="tab-count"><span class="n-none" aria-hidden="true">'
+                              "미검사</span></span>", line)  # fmt: skip
 
     def test_without_a_project_the_first_page_is_one_button_that_adds_it(self):
         for url in ("/", "/?manage=1"):  # nothing to manage yet: the same page
@@ -439,13 +569,77 @@ class ConsoleTests(DashboardFixture):
         self.assertEqual([self.tab(html, project)[2] for project in ids], names)
         for project, name, path in zip(ids, names, paths, strict=True):
             html = self.page(f"/projects/{project}")
-            self.assertIn(f'<h1>{name}</h1>\n<p class="path">{path.resolve()}</p>', html)
+            full = str(path.resolve())
+            self.assertEqual(project_head(html), (name, self.app._short_path(full), full))
             self.assertIn(f"<title>{name} 패키지 - depbee</title>", html)
         self.assertEqual(self.app._names([]), [])
         self.assertEqual(self.app._names([str(self.root)]), [self.root.name])
         # The whole path at most: one folder inside another one of the same name.
         outer, inner = str(Path("app")), str(Path("app", "app"))
         self.assertEqual(self.app._names([outer, inner]), [outer, inner])
+
+    def test_each_view_heads_with_the_two_actions_and_how_many_each_view_holds(self):
+        project = history.register_project(self.project)
+        history.record("scan", self.project, self.scan_with(0.9))
+        entries = len(self.app._dependencies(str(self.project.resolve()))[0])
+        self.assertGreater(entries, 0)
+        for view in ("", "/updates", "/history"):
+            html = self.page(f"/projects/{project}{view}")
+            head = html[
+                html.index('<header class="project-head">') : html.index(
+                    "</header>", html.index('<header class="project-head">')
+                )
+            ]
+            self.assertIn(
+                '<span class="verdict risk"><span class="cell risk" aria-hidden="true"></span>최근 실행 위험</span>',
+                head,
+            )
+            check = re.search(
+                rf'<form method="post" action="{S}/projects/{project}/previews" id="preview-project">(.*?)</form>',
+                head,
+                re.S,
+            )
+            self.assertIsNotNone(check, view)
+            self.assertIn('name="packages" value="">업데이트 후보 확인</button>', check[1])
+            # Only a check sent from the packages view comes back to its list (app._back).
+            self.assertEqual('name="back"' in check[1], view == "", view)
+            self.assertIn(f'<form method="post" action="{S}/projects/{project}/scans">', head)
+            self.assertIn('data-busy-label="검사 중…">검사만</button>', head)
+            for label, count in (("패키지", entries), ("업데이트", 0), ("기록", 1)):
+                self.assertIn(f'{label}<span class="view-count">{count}</span></a>', head, view)
+            # The packages view holds no second check button of its own.
+            self.assertEqual(html.count('id="preview-project"'), 1, view)
+        # A folder that is gone: no action, and no count of packages it cannot read.
+        self.head.unlink()
+        self.project.rmdir()
+        html = self.page(f"/projects/{project}")
+        self.assertNotIn("/previews", html)
+        self.assertIn("패키지</a>", html)
+
+    def test_a_path_is_cut_to_its_last_three_folders(self):
+        short = self.app._short_path
+        self.assertEqual(short(r"C:\Users\dev\work\clients\acme\repos\storefront-web"),
+                         "…\\acme\\repos\\storefront-web")  # fmt: skip
+        self.assertEqual(short("/projects/web/app/x/y"), "…/app/x/y")
+        self.assertEqual(short("\\\\server\\share\\a\\b\\c\\d"), "…\\b\\c\\d")
+        # A POSIX folder may have a backslash in its name; a Windows path written with "/"
+        # keeps it.
+        self.assertEqual(short("/projects/group/my\\team/repo"), "…/group/my\\team/repo")
+        self.assertEqual(short("C:/work/client/app/src"), "…/client/app/src")
+        for whole in (r"C:\a\b", r"C:\a\b\c", "D:\\", "/", "/projects/app-a", "/a/b/c", "relative"):
+            self.assertEqual(short(whole), whole)
+        # Shown cut, whole on hover; project management keeps the whole path.
+        folder = self.folder("one", "two", "three", "four")
+        project = history.register_project(folder)
+        full = str(folder.resolve())
+        self.assertEqual(project_head(self.page(f"/projects/{project}")),
+                         ("four", short(full), full))  # fmt: skip
+        self.assertTrue(
+            short(full).startswith("…")
+            and short(full).endswith("two" + os.sep + "three" + os.sep + "four")
+        )
+        self.assertIn(f'<span class="ov-path" title="{full}">{short(full)}</span>', self.page("/"))
+        self.assertIn(f'<p class="path">{full}</p>', self.page("/?manage=1"))
 
     def test_each_view_of_a_project_names_it_and_links_the_others(self):
         project = history.register_project(self.project)
@@ -454,11 +648,14 @@ class ConsoleTests(DashboardFixture):
         for view, label in views.items():
             html = self.page(f"/projects/{project}{view}")
             self.assertIn(f"<title>project {label} - depbee</title>", html)
-            self.assertIn(f'<h1>project</h1>\n<p class="path">{path}</p>', html)
+            self.assertEqual(project_head(html), ("project", self.app._short_path(path), path))
             self.assertIn('<nav class="views" aria-label="project 화면">', html)
             for other, text in views.items():
                 current = ' aria-current="page"' if other == view else ""
-                self.assertIn(f'<a href="{S}/projects/{project}{other}"{current}>{text}</a>', html)
+                self.assertIn(
+                    f'<a href="{S}/projects/{project}{other}"{current}>{text}<span class="view-count',
+                    html,
+                )
             if view:  # the views take GET only
                 response = self.client.post(f"{S}/projects/{project}{view}",
                                             data={"session": SESSION}, headers={"origin": BASE})  # fmt: skip
@@ -480,9 +677,10 @@ class ConsoleTests(DashboardFixture):
             self.assertIn(f'<a href="{S}/projects/{project}/history">기록</a>에 그대로', html)
             for form in ("/previews", "/scans"):
                 self.assertNotIn(form, html)
-            # No button but the rail's theme one.
+            # No button but the rail's theme one and the question marks of the explanations.
             self.assertEqual(
-                html.count("<button"), html.count('<button type="submit" name="theme"')
+                html.count("<button"),
+                html.count('<button type="submit" name="theme"') + html.count('class="help"'),
             )
         self.assertIn(f'<a href="{S}/runs/{run}">#{run}</a>', html)  # the history view
         self.assertIn("찾을 수 없음. 폴더를 원래 위치로", self.page("/?manage=1"))
@@ -526,6 +724,79 @@ class CandidateTests(DashboardFixture):
 
     def nothing(self):
         return {**self.report, "results": []}
+
+    def test_explanations_wait_behind_a_question_mark_and_safety_sentences_stay_in_view(self):
+        unchecked = self.page(self.packages)
+        self.check()  # a current candidate: the inspector beside the list
+        pages = {"unchecked": unchecked, "packages": self.page(self.packages),
+                 "updates": self.page(self.updates), "history": self.page(f"{self.packages}/history")}  # fmt: skip
+        session = "주소에 이번 실행의 세션 값이 들어 있으니 다른 사람에게 보이지 않게 합니다."
+        always = (SAFETY_NOTE, session)
+        shown = {
+            "unchecked": always + ("미확인은 확인된 후보 0개와 다릅니다",),
+            "packages": always + ("이 화면에서는 반영하지 않습니다.",),
+            "updates": always, "history": always,
+        }  # fmt: skip
+        for name, html in pages.items():
+            popovers = re.findall(
+                r'<div class="help-pop" id="([\w-]+)" popover>(.*?)</div>', html, re.S
+            )
+            self.assertTrue(popovers, name)
+            ids = re.findall(r'\sid="([^"]+)"', html)
+            self.assertEqual(len(ids), len(set(ids)), name)
+            targets = re.findall(r'<button type="button" class="help" popovertarget="([\w-]+)" '
+                                 r'aria-label="[^"]+">', html)  # fmt: skip
+            self.assertEqual(sorted(targets), sorted(pop for pop, _ in popovers), name)
+            self.assertEqual(html.count("popovertarget="), len(targets), name)
+            outside = re.sub(
+                r'<div class="help-pop" id="[\w-]+" popover>.*?</div>', "", html, flags=re.S
+            )
+            # Below 64rem the picked candidate's evidence is folded until it is opened.
+            outside = re.sub(r'(<aside class="inspector" [^>]*>.*?)<div class="inspect-body">.*?</aside>',
+                             r"\1</aside>", outside, flags=re.S)  # fmt: skip
+            visible = " ".join(unescape(re.sub(r"<[^>]+>", " ", outside)).split())
+            for sentence in shown[name]:
+                self.assertIn(" ".join(sentence.split()), visible, name)
+            # Every safety sentence a page holds at all is in view, never behind a question mark.
+            for sentence in ("실행하지 않은 것은 통과가 아닙니다.", "점수가 없는 것은 0점이 아닙니다.",
+                             "이 화면에서는 반영하지 않습니다.", "미확인은 확인된 후보 0개와 다릅니다"):  # fmt: skip
+                if sentence in unescape(html):
+                    self.assertIn(sentence, visible, name)
+        self.assertIn("실행하지 않은 것은 통과가 아닙니다.", unescape(pages["packages"]))
+        # The stylesheet never hides a popover itself: a browser without them shows it in place.
+        css = (Path(self.app.__file__).parent / "static" / "style.css").read_text("utf-8")
+        self.assertEqual(re.findall(r"\[popover\](?!:popover-open)[^{,]*[{,]", css), [])
+        # A question mark takes its whole 44px: nothing next to it lies over its lower part.
+        rule = re.search(r"^\.help \{([^}]*)\}", css, re.M).group(1)
+        self.assertNotRegex(rule, r"margin[^;]*-")
+        # The footer's sentence is as wide as the footer.
+        self.assertRegex(css, r"(?m)^footer \.note \{[^}]*max-width: none")
+
+    def test_how_long_a_check_takes_is_behind_a_question_mark(self):
+        unchecked = self.page(self.packages)
+        self.assertIn("미확인은 확인된 후보 0개와 다릅니다.", unchecked)
+        self.assertRegex(unchecked, r'(?s)<div class="help-pop" id="[\w-]+" popover>'
+                                    r"(?:(?!</div>).)*확인은 몇 초에서 수십 초 걸립니다")  # fmt: skip
+        # The buttons each page names are the ones its head has.
+        self.assertNotIn("전체 업데이트 확인", self.page(f"{self.packages}/history"))
+
+    def test_a_gone_folder_without_a_run_names_no_button(self):
+        moved = self.project.with_name(self.project.name + "-moved")
+        self.project.rename(moved)
+        try:
+            history_html = self.page(f"{self.packages}/history")
+        finally:
+            moved.rename(self.project)
+        self.assertIn("기록된 실행이 없습니다.", history_html)
+        self.assertNotIn('위의 "업데이트 후보 확인"', history_html)
+        self.assertNotIn("미리보기에서 반영하면", history_html)
+        self.assertIn("기록된 반영이 없습니다.", history_html)
+        self.assertNotIn('id="preview-project"', history_html)
+
+    def test_the_updates_tab_counts_the_current_candidates_and_stands_out(self):
+        self.check()
+        for view in (self.packages, self.updates, f"{self.packages}/history"):
+            self.assertIn('업데이트<span class="view-count hot">1</span></a>', self.page(view))
 
     def cells(self, html=None):
         """{location: the candidate cell} of the packages table."""
@@ -1313,7 +1584,10 @@ class EscapeTests(DashboardFixture):
         self.assertNotIn("<img", html)
         self.assertNotIn("onmouseover='x", html)
         self.assertNotRegex(html, r'href="(?!/|#main"|https://www\.npmjs\.com/package/)')
-        self.assertNotIn('javascript:alert(1)"', html)
+        # A hostile string is text wherever it lands (a title, an aria-label), never an address.
+        held = [(tag, name) for tag, attrs in Elements(html).found for name, value in attrs.items()
+                if name in ("href", "src", "action", "formaction") and "javascript:" in value]  # fmt: skip
+        self.assertEqual(held, [])
         for character in "\u202e\u200c\x1b\r":
             self.assertNotIn(character, html)
         self.assertTrue(all(c.isprintable() or c in "\n" for c in html))
@@ -1510,7 +1784,10 @@ class UpdateCheckTests(ScreenFixture):
         self.assertIn("<li>대상: example, other, third</li>", html)
         self.assertIn(f'<a href="{S}/runs/{run["id"]}">실행 #{run["id"]}</a>', html)
         self.assertIn("검사 결과: ", html)  # the report, rendered as on the run page
-        self.assertIn("대시보드 프로세스 메모리에만 있습니다", html)
+        self.assertIn("반영은 한 미리보기에 한 번만 시도할 수 있습니다.", html)
+        # How long the preview is kept is behind a question mark.
+        self.assertRegex(html, r'<div class="help-pop" id="[\w-]+" popover><p>[^<]*'
+                               r"대시보드 프로세스 메모리에만 있습니다")  # fmt: skip
         self.assertNotIn(self.app.PREVIEW_NOT_RECORDED, html)
         self.preview_id()
         self.assertEqual(self.previewed[1][1], [])  # an empty field previews everything

@@ -445,6 +445,12 @@ def _run(row: sqlite3.Row) -> dict:
     return run
 
 
+def count_runs(project_id: int) -> int:
+    """How many runs a project has stored, without reading them (the dashboard's history tab)."""
+    rows = _read("SELECT COUNT(*) FROM runs WHERE project_id = ?", (project_id,))
+    return rows[0][0] if rows else 0
+
+
 def list_runs(project_id: int, limit: int | None = None, kind: str | None = None) -> list[dict]:
     """A project's runs, newest first, without the stored documents; kind: only its scans or
     only its update previews (KINDS).

@@ -11,7 +11,7 @@
 <p class="note">실행 번호를 누르면 그 실행의 보고서가 열립니다.</p>
 {% include "counts.html" %}
 {% else %}
-<p class="empty">기록된 실행이 없습니다. <a href="{{ url }}/updates">업데이트</a>의 "전체 업데이트 확인"이나 "검사만"을 실행하거나, 이 폴더에서 CLI로 depbee scan이나 depbee update를 실행하면 기록됩니다.</p>
+<p class="empty">기록된 실행이 없습니다.{% if project.found %} 위의 "업데이트 후보 확인"이나 "검사만"을 실행하거나, 이 폴더에서 CLI로 depbee scan이나 depbee update를 실행하면 기록됩니다.{% endif %}</p>
 {% endif %}
 </section>
 <section aria-labelledby="applies-title">
@@ -38,7 +38,7 @@
 </div>
 <p class="note">백업 위치는 반영 전에 원본 두 파일을 둔 폴더입니다. depbee는 자동으로 되돌리지 않습니다.</p>
 {% else %}
-<p class="empty">기록된 반영이 없습니다. <a href="{{ url }}/updates">업데이트</a>에서 후보를 확인하고 미리보기에서 반영하면 여기에 남습니다. CLI의 depbee update --apply도 같은 곳에 기록됩니다.</p>
+<p class="empty">기록된 반영이 없습니다.{% if project.found %} <a href="{{ url }}/updates">업데이트</a>에서 후보를 확인하고 미리보기에서 반영하면 여기에 남습니다. CLI의 depbee update --apply도 같은 곳에 기록됩니다.{% endif %}</p>
 {% endif %}
 </section>
 {% endblock %}

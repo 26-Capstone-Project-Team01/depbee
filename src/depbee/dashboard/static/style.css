@@ -24,6 +24,7 @@
   --line-2: #cbbd9a;
   --muted: #665e4f;
   --shadow: 0 1px 0 rgba(60, 45, 10, .07);
+  --shadow-pop: 0 10px 30px rgba(28, 25, 18, .2);
   /* Honey: the brand, the filled buttons, and the open project, view, filter and candidate.
      On honey the text is ink (on-honey). */
   --honey: #f0ae18;
@@ -79,6 +80,7 @@
     --line-2: #3b414c;
     --muted: #9ca3af;
     --shadow: none;
+    --shadow-pop: 0 10px 30px rgba(0, 0, 0, .55);
     --honey: #f5b82e;
     --honey-strong: #f7c552;
     --honey-wash: #2a2413;
@@ -116,6 +118,7 @@
   --line-2: #3b414c;
   --muted: #9ca3af;
   --shadow: none;
+  --shadow-pop: 0 10px 30px rgba(0, 0, 0, .55);
   --honey: #f5b82e;
   --honey-strong: #f7c552;
   --honey-wash: #2a2413;
@@ -262,18 +265,41 @@ body.start { display: grid; grid-template-columns: minmax(0, 1fr); place-items: 
 .comb span:nth-child(2) { left: .93rem; background: var(--rail-ink); }
 .comb span:nth-child(2)::after { content: ""; position: absolute; inset: 1.5px; background: var(--rail-bg); clip-path: var(--hex); }
 .comb span:nth-child(3) { top: .78rem; left: .465rem; background: var(--rail-ink); }
+/* A question mark that opens an explanation (popover, no script). The button is a target a
+   finger can hit around a small ring. A browser without popovers ignores the attribute and
+   shows the explanation in place, so nothing here hides a popover itself. */
+.help { display: inline-grid; place-items: center; width: 2.75rem; height: 2.75rem; min-height: 0; margin: 0; padding: 0; border: 0; background: none; color: var(--muted); vertical-align: middle; }
+.help:hover { border: 0; background: none; color: var(--ink); }
+.help span { display: grid; place-items: center; width: 1.375rem; height: 1.375rem; border: 1.5px solid currentColor; border-radius: 50%; font-size: .8125rem; font-weight: 800; line-height: 1; }
+.help-pop { max-width: min(30rem, calc(100vw - 2rem)); padding: .9rem 1.1rem; border: 1px solid var(--line-2); border-radius: 8px; background: var(--sheet); color: var(--ink); box-shadow: var(--shadow-pop); font-size: .9375rem; }
+.help-pop:popover-open { margin: auto; }
+.help-pop p { margin: 0; }
+.help-pop p + p { margin-top: .6rem; }
+.titled { display: flex; align-items: center; gap: .25rem; }
+.titled h2 { margin: 0; }
+
 /* The theme button: quiet on the rail, a target a finger can hit. */
 .theme { margin: 0; }
 .theme button { min-height: 2.75rem; padding: .3rem .7rem; border-color: var(--rail-line); background: transparent; color: var(--rail-ink); font-size: .8125rem; font-weight: 600; }
 .theme button:hover { border-color: var(--rail-muted); background: var(--rail-current); }
 .theme button[aria-disabled=true] { border-color: var(--rail-line); background: transparent; color: var(--rail-muted); }
-.tabs { flex: 1 1 9rem; min-width: 0; }
+.tabs { flex: 1 1 15rem; min-width: 0; }
 .tabs ul { display: flex; gap: .25rem; max-width: none; margin: 0; padding: 0; list-style: none; }
 .tabs li { display: none; min-width: 0; }
 .tabs li.here { display: block; }
-.tab { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 0 .5rem; min-height: 2.75rem; padding: .3rem .7rem; }
-.tab-name { overflow: hidden; font-size: .9375rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
-.tab-state { grid-column: 2; overflow: hidden; color: var(--rail-muted); font-size: .8125rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+/* A project on one line: its mark, its name cut short with an ellipsis, and on the right its
+   state in words and the risk and hold counts of its newest run, in the rail's verdict colours.
+   Short of room, the words go under the name rather than cut it to a letter. The tab holds its
+   hidden state words (position: relative), so that they stay inside the bar that scrolls
+   sideways and never widen the page. Scrolled to for the focus, it brings room for its ring. */
+.tab { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: .1rem .5rem; min-height: 2.75rem; padding: .3rem .7rem; scroll-margin: .5rem; }
+.tab .cell { flex: none; }
+.tab-name { flex: 1 1 5rem; min-width: 0; overflow: hidden; font-size: .9375rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.tab-count { display: flex; gap: .4rem; margin-left: auto; font-size: .8125rem; font-weight: 700; white-space: nowrap; }
+.tab-count .n-risk, .tab-count .n-gone { color: var(--rail-risk); }
+.tab-count .n-hold { color: var(--rail-hold); }
+.tab-count .n-pass { color: var(--rail-pass); }
+.tab-count .n-none, .tab-count .n-unknown { color: var(--rail-muted); font-weight: 600; }
 .tab:hover, .aux a:hover { background: var(--rail-current); --ground: var(--rail-current); }
 .tab, .aux a { border-radius: 6px; }
 .tab[aria-current], .aux a[aria-current] { background: var(--rail-current); box-shadow: inset 0 -3px 0 var(--honey); font-weight: 800; --ground: var(--rail-current); }
@@ -284,13 +310,25 @@ body.start { display: grid; grid-template-columns: minmax(0, 1fr); place-items: 
 main { max-width: 104rem; padding: 1rem .75rem 1.5rem; }
 footer { padding: .9rem .75rem 1.5rem; border-top: 1px solid var(--line); }
 footer p { margin: 0; }
+footer .note { max-width: none; }
 
 /* The head of a project's views, and the way back from a page under them. */
 .project-head { margin-bottom: 1rem; }
+/* One line: the name with its state and folder, and on the right the check and the scan. */
+.head-line { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: .75rem 1.5rem; }
+.head-name { min-width: 0; }
+.head-title { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .75rem; }
+.head-title h1 { margin: 0; }
+.head-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.head-actions form { margin: 0; }
+/* How many a view holds; the updates of a current check stand out in ink, not honey (honey is
+   what is picked). */
+.view-count { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.25rem; margin-left: .4rem; padding: 0 .4rem; border-radius: 999px; background: var(--head); color: var(--muted); font: 700 .8125rem/1 var(--mono); font-variant-numeric: tabular-nums; }
+.view-count.hot { background: var(--ink); color: var(--sheet); }
 .path, .where { color: var(--muted); font-family: var(--mono); font-size: .8125rem; overflow-wrap: anywhere; }
 .path { margin: 0; }
 .where { display: block; font-weight: 400; }
-.views { display: flex; gap: 1.5rem; margin-top: .9rem; border-bottom: 1px solid var(--line-2); }
+.views { display: flex; flex-wrap: wrap; gap: 0 1.5rem; margin-top: .9rem; border-bottom: 1px solid var(--line-2); }
 .views a { display: inline-flex; flex: 1; align-items: center; justify-content: center; min-height: 2.75rem; margin-bottom: -1px; padding: .4rem .25rem; border-bottom: 3px solid transparent; font-weight: 600; text-decoration: none; }
 .views a:hover { border-bottom-color: var(--line-2); }
 .views a[aria-current] { border-bottom-color: var(--honey); font-weight: 800; }
@@ -555,10 +593,22 @@ meter::-moz-meter-bar { background: var(--ink); }
   .candidates td:nth-child(5) { grid-area: facts; }
   .candidates tr:not(.inspect) > td:last-child { grid-area: links; }
 }
-/* Medium: every project fits the bar as one row that scrolls sideways within itself. */
+/* Medium: every project fits the bar as one row of its own under the menu, which scrolls
+   sideways within itself, and a focused project is brought wholly into it with its ring
+   (app.js). With JavaScript off the row wraps: a browser leaves a focused link whose edge shows
+   where it is, and the page leaves room for the ring of a link it scrolls to. */
 @media (min-width: 46rem) and (max-width: 79.99rem) {
-  .tabs ul { margin: -.3rem; padding: .3rem; overflow-x: auto; }
-  .tabs li { display: block; flex: none; max-width: 14rem; }
+  .tabs { flex-basis: 100%; }
+  .tabs ul { margin: -.375rem; padding: .375rem; overflow-x: auto; scroll-padding-inline: .5rem; }
+  /* A project is one line here, its name cut at 10rem: a line that may wrap is only as wide as
+     its widest part, which would put every count under its name. */
+  .tabs li { display: block; flex: none; }
+  .tab { flex-wrap: nowrap; }
+  .tab-name { max-width: 10rem; }
+}
+@media (scripting: none) and (min-width: 46rem) and (max-width: 79.99rem) {
+  .tabs ul { flex-wrap: wrap; overflow-x: visible; }
+  html { scroll-padding-block: 1.5rem; }
 }
 @media (min-width: 60rem) {
   .jobs { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); }
@@ -581,7 +631,7 @@ meter::-moz-meter-bar { background: var(--ink); }
 /* Widest: the bar becomes the rail, with every project listed under the brand. */
 @media (min-width: 80rem) {
   body { display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); grid-template-rows: 1fr auto; }
-  .masthead { position: sticky; top: 0; grid-row: 1 / span 2; flex-flow: column nowrap; align-items: stretch; gap: 0; height: 100vh; padding: 1.1rem .75rem 1rem; overflow-y: auto; border-right: 1px solid var(--rail-line); border-bottom: 0; }
+  .masthead { position: sticky; top: 0; grid-row: 1 / span 2; flex-flow: column nowrap; align-items: stretch; gap: 0; height: 100vh; padding: 1.1rem .75rem 1rem; overflow-y: auto; border-right: 1px solid var(--rail-line); border-bottom: 0; scroll-padding-block: 1rem; }
   .brand, .aux { flex: none; }
   .theme { margin: 0 .35rem 1rem; }
   .theme button { width: 100%; justify-content: flex-start; }
@@ -594,7 +644,7 @@ meter::-moz-meter-bar { background: var(--ink); }
   .tabs li { display: block; }
   .tab { padding: .45rem .6rem .5rem .8rem; }
   .tab[aria-current], .aux a[aria-current] { box-shadow: inset 4px 0 0 var(--honey); }
-  .aux { flex-direction: column; margin: .9rem 0 0; padding-top: .9rem; border-top: 1px solid var(--rail-line); }
+  .aux { flex-direction: column; margin: 0 0 .9rem; padding-bottom: .9rem; border-bottom: 1px solid var(--rail-line); }
   .aux a { padding-left: .8rem; }
   main, footer { grid-column: 2; }
 }

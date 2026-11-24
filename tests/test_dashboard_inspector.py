@@ -331,10 +331,12 @@ class InspectorTests(test_dashboard.DashboardFixture):
             panel = html.split('<aside class="inspector"', 1)[1].split("</aside>", 1)[0]
             marks = ['<p class="decision risk"><span class="cell risk" aria-hidden="true"></span>'
                      "반영 거부</p>", f'<p class="why">{self.app.REFUSED_WHY}</p>',
+                     # What must not be misread, right under the decision, never folded.
+                     "정적 규칙: 실행하지 않은 것은 통과가 아닙니다.",
                      '<h3 id="known-title">기지 악성 색인</h3>', "<b>일치</b>",
                      "EXAMPLE-ADVISORY-0001 (버전 목록에 있음, 영향 버전 1.1.0)",
                      '<h3 id="rules-title">정적 규칙</h3>', "<b>미실행 (탐지기 연결 안 됨)</b>",
-                     "실행하지 않은 것은 통과가 아닙니다.", '<h3 id="score-title">ML 모델</h3>',
+                     '<h3 id="score-title">ML 모델</h3>',
                      "<dt>ML 위험 점수</dt><dd>&lt;0.001 (기준 미만)</dd>",
                      f"<dt>점수 원값</dt><dd>{tiny!r}</dd>", "<dt>판정 기준 점수</dt><dd>0.5</dd>",
                      "<dt>모델</dt><dd>unit-test</dd>", "synthetic evidence",

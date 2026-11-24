@@ -38,7 +38,7 @@ import sys
 import threading
 from collections import Counter, OrderedDict
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import parse_qs, quote, unquote, urlencode
 
 import jinja2
@@ -107,6 +107,10 @@ TAB_STATES = {
     "incomplete": ("hold", "보류"),
     "passed": ("pass", "통과"),
 }
+# The rail's order of the projects by their state (_rail): what needs a look first, then a run
+# whose result is not one a report has (drawn as none), then what was never checked, then what
+# passed. The first three are what the rail counts as needing a look.
+RAIL_ORDER = ("gone", "risk", "hold", "unknown", "none", "pass")
 # The overview's state of a project (_portfolio), in the order its chart lists them, what needs
 # a look first: the hexagon mark, the words, and whether the chart lists the state while no
 # project is in it. The first three are the stored status of the project's newest run.
@@ -319,6 +323,7 @@ ENV.filters["when"] = _when
 # A stored threshold in full, and a stored score worded against one, as the text output has them.
 ENV.filters["plain"] = plain_number
 ENV.filters["score"] = score_text
+ENV.filters["short"] = lambda path: _short_path(path)  # defined below; looked up at render
 
 
 def _text(status: int, text: str) -> Response:
@@ -408,7 +413,8 @@ def build_app(
         html = ENV.get_template(name).render(
             safety_note=SAFETY_NOTE, base=base, session=session, tabs=tabs, section=section,
             contained=mounted.root() is not None,
-            project=next((tab for tab in tabs if tab["current"]), None),
+            project=next((tab for tab in tabs if tab["current"]), None), rail=_rail(tabs),
+            attention=sum(tab["cell"] in RAIL_ORDER[:3] for tab in tabs),
             theme=chosen, theme_next=theme.next_of(chosen), theme_words=THEME_WORDS,
             theme_back=back if request.method == "GET" else None, **context,
         )  # fmt: skip
@@ -588,6 +594,7 @@ def build_app(
             for row in _listed(dependencies, query, scope)
             if not only or row["location"] in candidates
         ]  # fmt: skip
+        head = _head(found, dependencies, problem, state)
         targets = _preview_targets(found["path"]) if any(row["direct"] for row in rows) else set()
         shown = [row["candidate"] for row in rows if row["candidate"] is not None]
         selected = _selected(params, shown)
@@ -596,7 +603,8 @@ def build_app(
                     direct_count=direct_count, nested_count=len(dependencies) - direct_count,
                     query=query, scope=scope, only=only, candidate_count=candidate_count,
                     targets=targets, max_query=MAX_NAME_LENGTH, problem=problem, state=state,
-                    returned=returned, selected=selected, previews=held(found, state))  # fmt: skip
+                    returned=returned, selected=selected, previews=held(found, state),
+                    head=head)  # fmt: skip
 
     def updates(request: Request) -> Response:
         """The updates view: the current candidates with their evidence, the previews this
@@ -613,7 +621,9 @@ def build_app(
             if applied and applied[0]["run_id"] == last["id"] and applied[0]["outcome"] == "applied"
             else None
         )
+        head = _head(found, *_dependencies(found["path"]), state)
         return page(request, "updates.html", project=found, section="updates", state=state,
+                    head=head,
                     previews=held(found, state), applied_at=applied_at, max_targets=MAX_TARGETS,
                     selected=_selected(request.query_params, state["rows"]))  # fmt: skip
 
@@ -624,7 +634,9 @@ def build_app(
             return _text(404, "등록된 프로젝트가 아닙니다.")
         runs = [_run_row(run) for run in history.list_runs(found["id"])]
         applies = [_apply_row(row) for row in history.list_applies(found["id"])]
+        head = _head(found, *_dependencies(found["path"]), _update_state(found), len(runs))
         return page(request, "history.html", project=found, section="history", runs=runs,
+                    head=head,
                     applies=applies, score_history=history.list_run_scores(found["id"]))  # fmt: skip
 
     def run(request: Request) -> Response:
@@ -950,6 +962,21 @@ def _project(project_id: int) -> dict | None:
     return next((p for p in history.list_projects() if p["id"] == project_id), None)
 
 
+def _short_path(path: str) -> str:
+    """A registered path as the overview and a project's head show it: "…", its separator and
+    its last three folders, or the path itself when it has no more than three below its drive
+    or root. A path is a Windows one by its drive or its UNC "\\\\", else a POSIX one (a
+    container's), where a backslash is part of a folder's name. The separator shown is the one
+    the path is written with; the whole path is on hover (title) and on project management."""
+    windows = re.match(r"[A-Za-z]:|\\\\", path) is not None
+    pure = PureWindowsPath(path) if windows else PurePosixPath(path)
+    parts = pure.parts[1:] if pure.anchor else pure.parts
+    if len(parts) <= 3:
+        return path
+    separator = "\\" if windows and "\\" in path else "/"
+    return "…" + separator + separator.join(parts[-3:])
+
+
 def _names(paths: list[str]) -> list[str]:
     """A tab name per registered path: the folder name, with as many parent folders in front as
     it takes to tell it from every other registered path, joined with "/" (a backslash is drawn
@@ -984,7 +1011,7 @@ def _tabs(current: dict | None, recent: int = 1) -> list[dict]:
             cell, state = "none", "실행 기록 없음"
         else:
             status = runs[0]["status"]
-            cell, short = TAB_STATES.get(status) or ("none", "-" if status is None else status)
+            cell, short = TAB_STATES.get(status) or ("none", "알 수 없음")
             state = f"최근 실행 {short}"
         tabs.append({
             **project, "name": name, "found": found, "cell": cell, "state": state,
@@ -992,6 +1019,29 @@ def _tabs(current: dict | None, recent: int = 1) -> list[dict]:
             "current": current is not None and project["id"] == current["id"],
         })  # fmt: skip
     return tabs
+
+
+def _head(found: dict, dependencies: list[dict], problem: str | None, state: dict,
+          runs: int | None = None) -> dict:  # fmt: skip
+    """How many each view of a project holds, for its head's links: packages, the lockfile's
+    entries (None when it cannot be read); updates, the current candidates (_update_state);
+    history, the stored runs (counted here unless given). full: whether a current check covers
+    everything, so the head's check button says it checks again."""
+    if runs is None:
+        runs = history.count_runs(found["id"])
+    return {"packages": None if problem else len(dependencies), "updates": len(state["rows"]),
+            "history": runs, "full": state["full"] is not None}  # fmt: skip
+
+
+def _rail(tabs: list[dict]) -> list[dict]:
+    """The tabs (_tabs) in the rail's order (RAIL_ORDER), each state in registration order. The
+    state is the tab's, a stored status (a none mark with a run is a result that is unknown):
+    the rail hashes no file, so "파일 바뀜" is the overview's alone."""
+
+    def state(tab: dict) -> str:
+        return "unknown" if tab["cell"] == "none" and tab["runs"] else tab["cell"]
+
+    return sorted(tabs, key=lambda tab: RAIL_ORDER.index(state(tab)))
 
 
 def _portfolio(tabs: list[dict]) -> list[dict]:
