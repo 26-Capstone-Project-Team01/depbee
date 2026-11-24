@@ -2,7 +2,8 @@
 {% block title %}프로젝트 현황판 - depbee{% endblock %}
 {% block main %}
 {# The overview (app._portfolio, app._chart): how many registered projects are in each state, one
-   hexagon a project, then one row per project with its newest run and its newest apply attempt.
+   hexagon a project, then one line per project: its newest run (state, risk and hold counts,
+   time) and its newest apply attempt and last successful apply.
    Stored records only, never a new verdict. A state is always said in words beside its mark
    (style.css .cell). The table's roles are spelled out because the stylesheet lays the rows out
    as blocks and grids, which would otherwise cost the table its meaning for assistive
@@ -22,45 +23,34 @@
 </ul>
 </section>
 <table class="ov-board" role="table" aria-labelledby="overview-title">
-{# Shown on a wide page only; elsewhere every cell carries its own label (ov-kind). #}
+{# The column heads on a wide page; elsewhere every value carries its column's name (ov-kind). #}
 <thead role="rowgroup">
-<tr class="ov-cols" role="row"><th role="columnheader" scope="col">프로젝트</th><th role="columnheader" scope="col">최근 검사</th><th role="columnheader" scope="col">최근 반영 시도</th></tr>
+<tr class="ov-cols" role="row"><th role="columnheader" scope="col">프로젝트</th><th role="columnheader" scope="col">최근 검사</th><th role="columnheader" scope="col">위험</th><th role="columnheader" scope="col">보류</th><th role="columnheader" scope="col">검사 시각</th><th role="columnheader" scope="col">최근 반영 시도</th><th role="columnheader" scope="col">마지막 성공 반영</th></tr>
 </thead>
 <tbody role="rowgroup">
 {% for row in portfolio %}
+{% set run = row.run %}
+{# Why the state is not the stored result, and that result: the chip's title, and the same
+   words for a screen reader. #}
+{% set why = {"gone": "폴더를 찾을 수 없습니다." ~ (" 지난 기록은 그대로 열립니다." if run else ""), "stale": "이 미리보기 뒤에 package.json이나 package-lock.json이 바뀌어 지금 파일의 결과가 아닙니다.", "none": "검사나 업데이트 확인 기록이 없습니다."}.get(row.state, "") %}
+{% set stored = (run.kind ~ (": " ~ run.status if row.state in ("stale", "gone", "unknown") else "")) if run else "" %}
+{% set about = (why ~ " " ~ stored)|trim %}
 <tr class="ov-row" role="row">
 <th class="ov-project" role="rowheader" scope="row">
 <a class="ov-name" href="{{ base }}/projects/{{ row.id }}">{{ row.name }}</a>
 <span class="ov-path" title="{{ row.path }}">{{ row.path|short }}</span>
 </th>
-<td class="ov-rec ov-{{ row.state }}" role="cell">
-<span class="ov-kind">최근 검사</span>
-<p class="ov-state"><span class="cell {{ row.cell }}" aria-hidden="true"></span><span>{{ row.label }}</span></p>
-{% if row.state == "gone" %}<p class="ov-detail">폴더를 찾을 수 없습니다.{% if row.run %} 지난 기록은 그대로 열립니다.{% endif %}</p>
-{% elif row.state == "stale" %}<p class="ov-detail">이 미리보기 뒤에 package.json이나 package-lock.json이 바뀌어 지금 파일의 결과가 아닙니다.</p>
-{% elif row.state == "none" %}<p class="ov-detail">검사나 업데이트 확인 기록이 없습니다.</p>
-{% endif %}
-{% if row.run %}
-{# The stored result is spelled out where the state above is not it. #}
-<p class="ov-detail">{{ row.run.kind }}{% if row.state in ("stale", "gone", "unknown") %}: {{ row.run.status }}{% endif %}, <span{% if row.run.counts.flagged %} class="ov-n-risk"{% endif %}>위험 {{ row.run.counts.flagged }}건</span>, <span{% if row.run.counts.incomplete %} class="ov-n-hold"{% endif %}>보류 {{ row.run.counts.incomplete }}건</span></p>
-<p class="ov-foot"><time datetime="{{ row.run.created_at }}">{{ row.run.created_at|when }}</time> <a href="{{ base }}/runs/{{ row.run.id }}"><span class="visually-hidden">{{ row.name }} 최근 검사 </span>보고서 #{{ row.run.id }}</a></p>
-{% endif %}
-</td>
+<td class="ov-rec" role="cell"><span class="ov-kind">최근 검사</span><span class="verdict {{ row.cell }}"{% if about %} title="{{ about }}"{% endif %}><span class="cell {{ row.cell }}" aria-hidden="true"></span>{{ row.label }}</span>{% if about %}<span class="visually-hidden">, {{ about }}</span>{% endif %}{% if run %} <a href="{{ base }}/runs/{{ run.id }}"><span class="visually-hidden">{{ row.name }} 최근 검사 </span>보고서 #{{ run.id }}</a>{% endif %}</td>
+<td class="ov-num" role="cell"><span class="ov-kind">위험</span>{% if run %}<span{% if run.counts.flagged %} class="ov-n-risk"{% endif %}>{{ run.counts.flagged }}</span>{% else %}-{% endif %}</td>
+<td class="ov-num" role="cell"><span class="ov-kind">보류</span>{% if run %}<span{% if run.counts.incomplete %} class="ov-n-hold"{% endif %}>{{ run.counts.incomplete }}</span>{% else %}-{% endif %}</td>
+<td class="ov-time" role="cell"><span class="ov-kind">검사 시각</span>{% if run %}<time datetime="{{ run.created_at }}">{{ run.created_at|when }}</time>{% else %}-{% endif %}</td>
 {# An apply is something that was tried, not a verdict: the newest attempt as it ended, with the
-   stored reason of one that changed nothing, and apart from it the last one that did. #}
-<td class="ov-rec{% if not row.attempt %} ov-none{% endif %}" role="cell">
-<span class="ov-kind">최근 반영 시도</span>
-{% if row.attempt %}
-<p class="ov-state ov-{{ row.attempt.cell }}"><span class="cell {{ row.attempt.cell }}" aria-hidden="true"></span><span>{{ row.attempt.outcome }}</span></p>
-<p class="ov-detail">{{ row.attempt.reason if row.attempt.reason is not none else "방식: " ~ row.attempt.mode }}</p>
-<p class="ov-foot"><time datetime="{{ row.attempt.created_at }}">{{ row.attempt.created_at|when }}</time> <a href="{{ base }}/runs/{{ row.attempt.run_id }}"><span class="visually-hidden">{{ row.name }} 최근 반영 시도 </span>보고서 #{{ row.attempt.run_id }}</a></p>
-{% if not row.attempt.applied %}
-<p class="ov-prev"><b>마지막으로 성공한 반영</b> {% if row.success %}<time datetime="{{ row.success.created_at }}">{{ row.success.created_at|when }}</time> <a href="{{ base }}/runs/{{ row.success.run_id }}"><span class="visually-hidden">{{ row.name }} 마지막으로 성공한 반영 </span>보고서 #{{ row.success.run_id }}</a>{% else %}없음{% endif %}</p>
-{% endif %}
-{% else %}
-<p class="ov-state"><span class="cell none" aria-hidden="true"></span><span>반영 시도 없음</span></p>
-{% endif %}
-</td>
+   stored reason of one that changed nothing, and apart from it the last one that did (the
+   newest attempt itself when it did). #}
+{% set attempt = row.attempt %}
+<td class="ov-apply" role="cell"><span class="ov-kind">최근 반영 시도</span>{% if attempt %}{% set said = (attempt.reason if attempt.reason is not none else "방식: " ~ attempt.mode) ~ ", " ~ attempt.created_at|when %}<span class="verdict {{ attempt.cell }}" title="{{ said }}"><span class="cell {{ attempt.cell }}" aria-hidden="true"></span>{{ attempt.outcome }}</span><span class="visually-hidden">, {{ said }}</span> <a href="{{ base }}/runs/{{ attempt.run_id }}"><span class="visually-hidden">{{ row.name }} 최근 반영 시도 </span>보고서 #{{ attempt.run_id }}</a>{% else %}<span class="quiet">없음</span>{% endif %}</td>
+{% set last = row.success or (attempt if attempt and attempt.applied else none) %}
+<td class="ov-apply" role="cell"><span class="ov-kind">마지막 성공 반영</span>{% if last %}<time datetime="{{ last.created_at }}">{{ last.created_at|when }}</time> <a href="{{ base }}/runs/{{ last.run_id }}"><span class="visually-hidden">{{ row.name }} 마지막 성공 반영 </span>보고서 #{{ last.run_id }}</a>{% else %}<span class="quiet">없음</span>{% endif %}</td>
 </tr>
 {% endfor %}
 </tbody>

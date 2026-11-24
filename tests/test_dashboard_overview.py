@@ -16,6 +16,7 @@ import itertools
 import re
 import shutil
 import sqlite3
+from pathlib import Path
 from unittest import mock
 
 import test_dashboard  # the modules: their test classes, imported by name, would run again here
@@ -320,42 +321,82 @@ class OverviewTests(test_dashboard.DashboardFixture):
         for absent in ("<svg", "<canvas", "<img", "<meter"):
             self.assertNotIn(absent, html)
 
+        # One line a project, seven columns.
+        self.assertEqual(re.findall(r'<th role="columnheader" scope="col">([^<]*)</th>', html),
+                         ["프로젝트", "최근 검사", "위험", "보류", "검사 시각", "최근 반영 시도",
+                          "마지막 성공 반영"])  # fmt: skip
+
         def cells(name):
-            """The two records of the project's row, as text without the markup."""
+            """The six cells of the project's row after its name, as text without the markup.
+            Each starts with its column's name, which a narrow page shows beside the value."""
             row = html.split(f">{name}</a>", 1)[1].split("</tr>", 1)[0]
             text = [re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", cell)).strip()
                     for cell in re.split(r"<td [^>]*>", row)[1:]]  # fmt: skip
             return [re.sub(r" ([,.])", r"\1", cell) for cell in text]
 
-        # Each project is the way into itself, with its folder beside its name.
+        # Each project is the way into itself, with its folder under its name.
         for project_id, name in enumerate(("project", "fresh", "moved", "gone"), 1):
             self.assertIn(f'<a class="ov-name" href="{S}/projects/{project_id}">{name}</a>', html)
         full = str(self.project.resolve())
         self.assertIn(
             f'<span class="ov-path" title="{full}">{self.app._short_path(full)}</span>', html
         )
-        inspected, attempted = cells("project")
-        self.assertRegex(inspected, rf"^최근 검사 위험 검사\(scan\), 위험 1건, 보류 0건 "
-                                    rf"2026-11-21 00:\d\d UTC project 최근 검사 보고서 #{scan}$")  # fmt: skip
-        self.assertEqual(attempted, "최근 반영 시도 반영 시도 없음")
-        self.assertEqual(cells("fresh"), ["최근 검사 미검사 검사나 업데이트 확인 기록이 없습니다.",
-                                          "최근 반영 시도 반영 시도 없음"])  # fmt: skip
-        # The stored result is spelled out where the state is not that result.
-        inspected, _ = cells("moved")
-        self.assertRegex(inspected, r"^최근 검사 파일 바뀜 이 미리보기 뒤에 package.json이나 "
-                                    r"package-lock.json이 바뀌어 지금 파일의 결과가 아닙니다. "
-                                    rf"업데이트 미리보기: 통과, 위험 0건, 보류 0건 .* 보고서 #{stale}$")  # fmt: skip
-        inspected, attempted = cells("gone")
-        self.assertRegex(inspected, r"^최근 검사 폴더 없음 폴더를 찾을 수 없습니다. 지난 기록은 "
-                                    r"그대로 열립니다. 업데이트 미리보기: 위험 판정 있음, 위험 1건, "
-                                    rf"보류 0건 .* 보고서 #{refused}$")  # fmt: skip
-        # The attempt that was refused, why, and apart from it the last one that succeeded.
-        self.assertRegex(attempted, r"^최근 반영 시도 반영하지 않음 기지 악성 기록 일치\(예외 없이 "
-                                    rf"거부\) .* gone 최근 반영 시도 보고서 #{refused} 마지막으로 "
-                                    rf"성공한 반영 .* gone 마지막으로 성공한 반영 보고서 #{done}$")  # fmt: skip
+        time = r"2026-11-21 00:\d\d UTC"
+        found = cells("project")
+        self.assertEqual(len(found), 6)
+        self.assertRegex(found[0], rf"^최근 검사 위험, 검사\(scan\) project 최근 검사 보고서 #{scan}$")
+        self.assertEqual(found[1:3], ["위험 1", "보류 0"])
+        self.assertRegex(found[3], rf"^검사 시각 {time}$")
+        self.assertEqual(found[4:], ["최근 반영 시도 없음", "마지막 성공 반영 없음"])
+        self.assertEqual(cells("fresh"), ["최근 검사 미검사, 검사나 업데이트 확인 기록이 없습니다.",
+                                          "위험 -", "보류 -", "검사 시각 -", "최근 반영 시도 없음",
+                                          "마지막 성공 반영 없음"])  # fmt: skip
+        # Why a state is not the stored result: in the chip's title and for a screen reader,
+        # with the stored result spelled out.
+        moved = "이 미리보기 뒤에 package.json이나 package-lock.json이 바뀌어 지금 파일의 결과가 아닙니다."
+        found = cells("moved")
+        self.assertRegex(found[0], rf"^최근 검사 파일 바뀜, {re.escape(moved)} 업데이트 미리보기: 통과 "
+                                   rf"moved 최근 검사 보고서 #{stale}$")  # fmt: skip
+        self.assertIn(f'<span class="verdict stale" title="{moved} 업데이트 미리보기: 통과">', html)
+        self.assertEqual(found[1:3], ["위험 0", "보류 0"])
+        gone = "폴더를 찾을 수 없습니다. 지난 기록은 그대로 열립니다. 업데이트 미리보기: 위험 판정 있음"
+        found = cells("gone")
+        self.assertRegex(found[0], rf"^최근 검사 폴더 없음, {re.escape(gone)} gone 최근 검사 보고서 #{refused}$")
+        self.assertIn(f'<span class="verdict gone" title="{gone}">', html)
+        self.assertEqual(found[1:3], ["위험 1", "보류 0"])
+        # The attempt that was refused, why (in its chip's title and for a screen reader), and
+        # apart from it the last one that succeeded.
+        why = "기지 악성 기록 일치(예외 없이 거부)"
+        self.assertRegex(found[4], rf"^최근 반영 시도 반영하지 않음, {re.escape(why)}, {time} "
+                                   rf"gone 최근 반영 시도 보고서 #{refused}$")  # fmt: skip
+        self.assertRegex(html, rf'<span class="verdict risk" title="{re.escape(why)}, {time}">')
+        self.assertRegex(found[5], rf"^마지막 성공 반영 {time} gone 마지막 성공 반영 보고서 #{done}$")
         for run in (scan, stale, refused, done):
             self.assertIn(f'href="{S}/runs/{run}"', html)
         self.assertIn(f'<a class="ov-add" href="{S}/?manage=1">프로젝트 추가</a>', html)
+
+    def test_the_last_success_is_the_newest_attempt_when_that_one_changed_the_files(self):
+        self.ticking()
+        history.register_project(self.project)
+        run = history.record("update_preview", self.project, self.scan_with(0.1), PREVIEW,
+                             apply=document())  # fmt: skip
+        row = self.page("/").split(">project</a>", 1)[1].split("</tr>", 1)[0]
+        attempt, last = re.split(r"<td [^>]*>", row)[-2:]
+        self.assertIn('<span class="verdict pass" title="방식: lockfile 반영, ', attempt)
+        self.assertIn(f'href="{S}/runs/{run}"', attempt)
+        self.assertIn(f'href="{S}/runs/{run}"', last)
+        self.assertNotIn("없음", last)
+
+    def test_a_narrow_overview_stacks_each_project_as_a_card(self):
+        css = (Path(self.app.__file__).parent / "static" / "overview.css").read_text("utf-8")
+        narrow, wide = css.split("@container overview (min-width: 56rem)", 1)
+        # Below it a project is a card whose values each carry their column's name.
+        self.assertIn(".overview .ov-board thead { display: none; }", narrow)
+        self.assertIn(".overview .ov-kind { display: block;", narrow)
+        # Above it, one line of seven columns, and the names are the heads.
+        self.assertRegex(wide, r"\.overview \.ov-cols, \.overview \.ov-row \{ display: grid; "
+                               r"grid-template-columns:(?: minmax\([^)]*\)){7}; \}")  # fmt: skip
+        self.assertIn(".overview .ov-kind { display: none; }", wide)
 
     def work(self):
         """(SQLite VM steps, context) of opening the overview once. The steps are counted on
