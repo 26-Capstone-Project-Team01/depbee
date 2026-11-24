@@ -3,6 +3,7 @@ and the dark theme, the contrast of every text and mark pair they make, and no c
 in a rule. Reads the shipped stylesheets as text; no server or browser.
 """
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -12,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from test_dashboard import BASE, SESSION, DashboardFixture, S
+from test_dashboard import BASE, NO_WEB, SESSION, WEB, DashboardFixture, S
 
 from depbee import history
 
@@ -116,6 +117,20 @@ class ThemeTokenTests(unittest.TestCase):
             self.assertEqual(literals, [], name)
 
 
+@unittest.skipUnless(WEB, NO_WEB)
+class FocusAndPickTests(unittest.TestCase):
+    def test_on_the_rail_the_ring_is_the_rails_own_light_ink(self):
+        css = strip_comments((STATIC / "style.css").read_text("utf-8"))
+        rule = re.search(r"^\.masthead :focus-visible \{([^}]*)\}", css, re.M)
+        self.assertIsNotNone(rule)
+        self.assertIn("outline-color: var(--rail-ink)", rule.group(1))
+
+    def test_a_picked_filter_has_an_ink_border(self):
+        css = strip_comments((STATIC / "style.css").read_text("utf-8"))
+        rule = re.search(r"^\.toggle\[aria-current\] \{([^}]*)\}", css, re.M)
+        self.assertIn("border-color: var(--ink)", rule.group(1))
+
+
 class MarkTests(unittest.TestCase):
     """A verdict's mark is a hexagon of its colour with a sign inside (style.css .cell)."""
 
@@ -136,21 +151,28 @@ class MarkTests(unittest.TestCase):
 
 
 def covered(path):
-    """The code points of coverage.txt: lines of U+XXXX or U+XXXX-U+YYYY."""
+    """The code points of coverage.txt: lines of U+XXXX or U+XXXX-U+YYYY after its first line,
+    which names the SHA-256 of the font it lists (checked by FontCoverageTests)."""
     points = set()
-    for line in path.read_text("utf-8").split():
+    for line in path.read_text("utf-8").splitlines()[1:]:
         first, _, last = line.partition("-")
         points.update(range(int(first[2:], 16), int((last or first)[2:], 16) + 1))
     return points
 
 
 class FontCoverageTests(unittest.TestCase):
+    def test_the_coverage_list_is_the_one_of_the_shipped_font(self):
+        first = (STATIC / "fonts" / "coverage.txt").read_text("utf-8").splitlines()[0]
+        digest = hashlib.sha256((STATIC / "fonts" / "NotoSansKR-depbee.woff2").read_bytes())
+        self.assertEqual(first, f"# NotoSansKR-depbee.woff2 sha256 {digest.hexdigest()}")
+
     def test_the_subset_covers_every_character_the_console_can_show(self):
         """A new message with a syllable the bundled subset lacks would be drawn in another font:
         rebuild the fonts (scripts/build_dashboard_fonts.py) when this fails."""
         points = covered(STATIC / "fonts" / "coverage.txt")
         package = STATIC.parent.parent
-        texts = [*STATIC.parent.glob("templates/*.html"), *package.rglob("*.py")]
+        texts = [*STATIC.parent.glob("templates/*.html"), *package.rglob("*.py"),
+                 *STATIC.glob("*.css"), *STATIC.glob("*.js")]  # fmt: skip
         missing = sorted(
             {c for path in texts for c in path.read_text("utf-8") if ord(c) > 0x7E}
             - {chr(p) for p in points}
@@ -185,10 +207,28 @@ class ThemeChoiceTests(unittest.TestCase):
         patched = mock.patch.dict(os.environ, {"DEPBEE_CONFIG_DIR": folder.name})
         patched.start()
         self.addCleanup(patched.stop)
-        self.file = Path(folder.name) / "dashboard.json"
+        self.file = Path(folder.name) / "dashboard-theme.json"
         from depbee.dashboard import theme
 
         self.theme = theme
+
+    def test_the_theme_never_touches_the_background_dashboards_files(self):
+        from depbee.dashboard import lifecycle
+
+        self.assertEqual(self.theme.FILE, "dashboard-theme.json")
+        self.assertNotIn(self.theme.FILE, (lifecycle.STATE, lifecycle.LOCK, lifecycle.LOG))
+        state = Path(self.file.parent, lifecycle.STATE)
+        state.write_text('{"url": "kept"}', "utf-8")
+        self.theme.save("dark")
+        self.assertEqual(state.read_text("utf-8"), '{"url": "kept"}')
+
+    def test_what_is_not_a_regular_file_is_the_system_theme_at_once(self):
+        self.file.mkdir()
+        self.assertEqual(self.theme.load(), "system")
+        self.file.rmdir()
+        if hasattr(os, "mkfifo"):  # a pipe nobody writes to must not make a page wait
+            os.mkfifo(self.file)
+            self.assertEqual(self.theme.load(), "system")
 
     def test_each_press_moves_to_the_next_theme(self):
         self.assertEqual(self.theme.THEMES, ("system", "light", "dark"))
@@ -221,7 +261,7 @@ class ThemeRouteTests(DashboardFixture):
                                 headers={"origin": origin}, follow_redirects=False)  # fmt: skip
 
     def stored(self):
-        path = Path(os.environ["DEPBEE_CONFIG_DIR"]) / "dashboard.json"
+        path = Path(os.environ["DEPBEE_CONFIG_DIR"]) / "dashboard-theme.json"
         return json.loads(path.read_text("utf-8"))["theme"] if path.exists() else None
 
     def form(self, html):
@@ -271,6 +311,20 @@ class ThemeRouteTests(DashboardFixture):
             )
         response = self.choose("light", f"{S}/projects/1/updates?item=3.2")
         self.assertEqual(response.headers["location"], f"{S}/projects/1/updates?item=3.2")
+
+    def test_the_way_back_drops_a_checks_one_time_return(self):
+        history.register_project(self.project)
+        html = self.page("/projects/1?q=ex&checked=3&item=3.0")
+        self.assertEqual(self.form(html)[0]["back"], f"{S}/projects/1?q=ex&amp;item=3.0")
+
+    def test_the_way_back_takes_ascii_digits_and_long_encoded_pages(self):
+        response = self.choose("light", f"{S}/projects/\uff11")
+        self.assertEqual(response.headers["location"], f"{S}/")
+        folder = "%ED%95%9C" * 220  # 220 Hangul syllables, percent-encoded
+        response = self.choose("light", f"{S}/projects/mounted?at={folder}")
+        self.assertEqual(response.headers["location"], f"{S}/projects/mounted?at={folder}")
+        response = self.choose("light", f"{S}/projects/mounted?at=" + "a" * 2100)
+        self.assertEqual(response.headers["location"], f"{S}/")
 
     def test_a_wrong_theme_or_session_changes_nothing(self):
         self.assertEqual(self.choose("blue", f"{S}/model").status_code, 400)

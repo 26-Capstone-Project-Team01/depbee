@@ -124,7 +124,11 @@ class PageTests(DashboardFixture):
                 for row in report["results"]:
                     self.assertIn(row["package"], text)
                 self.assertNotIn("확률", text)
-        projects, project, model = self.page("/?manage=1"), self.page("/projects/1"), self.page("/model")
+        projects, project, model = (
+            self.page("/?manage=1"),
+            self.page("/projects/1"),
+            self.page("/model"),
+        )
         for text in (projects, project, model):
             self.assertIn(SAFETY_NOTE.replace("'", "&#39;"), text)  # autoescaped
         self.assertIn(str(self.project.resolve()), projects)
@@ -276,8 +280,13 @@ class PageTests(DashboardFixture):
 
     def test_resources_have_no_external_urls(self):
         package_dir = Path(self.app.__file__).parent
+        static = package_dir / "static"
+        self.assertEqual(sorted(p.relative_to(static).as_posix() for p in static.rglob("*") if p.is_file()), [
+            "app.js", "fonts/JetBrainsMono-depbee.woff2", "fonts/NotoSansKR-depbee.woff2",
+            "fonts/OFL-JetBrainsMono.txt", "fonts/OFL-NotoSansKR.txt", "fonts/coverage.txt",
+            "overview.css", "style.css"])  # fmt: skip
         files = [*package_dir.glob("templates/*.html"),
-                 *(p for p in package_dir.glob("static/*") if p.is_file())]  # fmt: skip
+                 *(p for p in static.glob("*") if p.is_file())]  # fmt: skip
         self.assertEqual(sorted(p.name for p in files), [
             "app.js", "applied.html", "apply_lines.html", "base.html", "counts.html",
             "error.html", "history.html", "inspector.html", "model.html", "mounted.html",
@@ -343,7 +352,7 @@ class ConsoleTests(DashboardFixture):
         for url in ("/", "/?manage=1"):  # nothing to manage yet: the same page
             html = self.page(url)
             elements = Elements(html).found
-            body = elements[[tag for tag, _ in elements].index("body"):]
+            body = elements[[tag for tag, _ in elements].index("body") :]
             # One form with one button, and nothing of the console around it: no bar, no
             # heading, no count, no chart, no footer, no link.
             self.assertEqual([tag for tag, _ in body],
@@ -471,7 +480,9 @@ class ConsoleTests(DashboardFixture):
             for form in ("/previews", "/scans"):
                 self.assertNotIn(form, html)
             # No button but the rail's theme one.
-            self.assertEqual(html.count("<button"), html.count('<button type="submit" name="theme"'))
+            self.assertEqual(
+                html.count("<button"), html.count('<button type="submit" name="theme"')
+            )
         self.assertIn(f'<a href="{S}/runs/{run}">#{run}</a>', html)  # the history view
         self.assertIn("찾을 수 없음. 폴더를 원래 위치로", self.page("/?manage=1"))
 

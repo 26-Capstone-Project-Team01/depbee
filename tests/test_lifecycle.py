@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
@@ -440,6 +441,42 @@ class ProcessTests(Folder):
             return connection.getresponse().status
         finally:
             connection.close()
+
+    def page(self, url):
+        port, path = URL.fullmatch(url)[1], url.split("/", 3)[3]
+        connection = http.client.HTTPConnection("127.0.0.1", int(port), timeout=10)
+        try:
+            connection.request("GET", "/" + path)
+            return connection.getresponse().read().decode("utf-8")
+        finally:
+            connection.close()
+
+    def choose_theme(self, url, value):
+        """The rail's theme form of the background dashboard, sent as a browser sends it."""
+        port, path = URL.fullmatch(url)[1], "/" + url.split("/", 3)[3]
+        body = urllib.parse.urlencode({"session": url.split("/")[4], "theme": value, "back": path})
+        headers = {"Origin": f"http://127.0.0.1:{port}",
+                   "Content-Type": "application/x-www-form-urlencoded"}  # fmt: skip
+        connection = http.client.HTTPConnection("127.0.0.1", int(port), timeout=10)
+        try:
+            connection.request("POST", path + "theme", body, headers)
+            return connection.getresponse().status
+        finally:
+            connection.close()
+
+    def test_a_theme_chosen_in_the_background_keeps_status_and_stop_and_outlives_it(self):
+        from depbee.dashboard import theme
+
+        theme.save("light")
+        code, (url, _), _ = self.depbee("--background")
+        self.assertIn('<html lang="ko" data-theme="light">', self.page(url))
+        self.assertEqual(self.choose_theme(url, "dark"), 303)
+        code, lines, _ = self.depbee("--status")
+        self.assertEqual((code, lines[0]), (0, url))
+        self.assertEqual(self.depbee("--stop"), (0, [cli.BACKGROUND_STOPPED], ""))
+        code, (url, _), _ = self.depbee("--background")
+        self.assertIn('<html lang="ko" data-theme="dark">', self.page(url))
+        self.assertEqual(self.depbee("--stop"), (0, [cli.BACKGROUND_STOPPED], ""))
 
     def test_start_status_duplicate_start_stop_and_stop_again(self):
         self.assertEqual(self.depbee("--status"), (0, [cli.BACKGROUND_NONE], ""))

@@ -70,8 +70,11 @@ def ks_x_1001() -> set[int]:
 
 
 def own_text() -> set[int]:
-    """Every character of the dashboard's templates and of depbee's sources above ASCII."""
-    paths = [*(PACKAGE / "dashboard" / "templates").glob("*.html"), *PACKAGE.rglob("*.py")]
+    """Every character above ASCII of the dashboard's templates, stylesheets and script (a
+    stylesheet writes words too, content: "...") and of depbee's sources."""
+    static = PACKAGE / "dashboard" / "static"
+    paths = [*(PACKAGE / "dashboard" / "templates").glob("*.html"), *PACKAGE.rglob("*.py"),
+             *static.glob("*.css"), *static.glob("*.js")]  # fmt: skip
     return {ord(c) for path in paths for c in path.read_text("utf-8") if ord(c) > 0x7E}
 
 
@@ -125,16 +128,20 @@ def main() -> None:
     text = signs | ks_x_1001() | own_text()
     OUT.mkdir(parents=True, exist_ok=True)
     noto, kept = build(data["NotoSansKR[wght].ttf"], OUT / "NotoSansKR-depbee.woff2", text)
-    mono, _ = build(data["JetBrainsMono[wght].ttf"], OUT / "JetBrainsMono-depbee.woff2", signs)
+    mono, in_mono = build(
+        data["JetBrainsMono[wght].ttf"], OUT / "JetBrainsMono-depbee.woff2", signs
+    )
     for name in ("OFL-NotoSansKR.txt", "OFL-JetBrainsMono.txt"):
         (OUT / name).write_bytes(data[name])
-    lines = ranges(kept)
+    # The first line ties the list to the font it was read from (tests check the SHA-256).
+    digest = hashlib.sha256((OUT / "NotoSansKR-depbee.woff2").read_bytes()).hexdigest()
+    lines = [f"# NotoSansKR-depbee.woff2 sha256 {digest}", *ranges(kept)]
     (OUT / "coverage.txt").write_text("".join(f"{line}\n" for line in lines), "utf-8", newline="\n")
     print(f"NotoSansKR-depbee.woff2 {noto} bytes, {len(kept)} code points")
     lacking = sorted(own_text() - kept)
     if lacking:
         print("not in Noto Sans KR:", " ".join(f"U+{p:04X} {chr(p)}" for p in lacking))
-    print(f"JetBrainsMono-depbee.woff2 {mono} bytes, {len(signs)} code points")
+    print(f"JetBrainsMono-depbee.woff2 {mono} bytes, {len(in_mono)} code points")
 
 
 if __name__ == "__main__":

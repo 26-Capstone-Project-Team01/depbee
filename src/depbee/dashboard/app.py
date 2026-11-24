@@ -39,7 +39,7 @@ import threading
 from collections import Counter, OrderedDict
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlencode
+from urllib.parse import parse_qs, quote, unquote, urlencode
 
 import jinja2
 import uvicorn
@@ -189,9 +189,9 @@ THEME_FAILED_TITLE = "화면 테마를 저장하지 못했습니다"
 THEME_FAILED = "설정 폴더에 쓸 수 없어 지금 화면 테마를 그대로 둡니다."
 # The pages of the console a GET opens (under the session): where the theme form may go back to.
 PAGES = re.compile(
-    r"/(?:|model|projects/mounted|projects/\d+(?:/updates|/history)?|runs/\d+|previews/[\w-]+)"
+    r"/(?:|model|projects/mounted|projects/[0-9]+(?:/updates|/history)?|runs/[0-9]+|previews/[A-Za-z0-9_-]+)"
 )
-MAX_BACK = 2048  # characters of the address the theme form goes back to
+MAX_BACK = 2048  # characters of the address the theme form goes back to, decoded
 MODEL_LIMITS = (
     "학습 데이터 버전과 공격 유형별 탐지율은 저장된 보고서에 출처가 없어 보이지 않습니다."
 )
@@ -401,7 +401,9 @@ def build_app(
         no address to come back to (theme_back None)."""
         tabs = _tabs(project) if tabs is None else tabs
         chosen = theme.load()
-        query = request.url.query
+        # The way back keeps the page's query but a check's one-time return (checked): coming
+        # back must not land on that check and move the focus again.
+        query = urlencode([(k, v) for k, v in request.query_params.multi_items() if k != "checked"])
         back = base + request.url.path + (f"?{query}" if query else "")
         html = ENV.get_template(name).render(
             safety_note=SAFETY_NOTE, base=base, session=session, tabs=tabs, section=section,
@@ -813,7 +815,7 @@ def build_app(
         if len(given) != 1 or given[0] not in theme.THEMES or len(back) > 1:
             return _text(400, "화면 테마를 확인하세요.")
         try:
-            theme.save(given[0])
+            await run_in_threadpool(theme.save, given[0])
         except (OSError, GuardError, RuntimeError):
             return page(request, "error.html", 503, title=THEME_FAILED_TITLE,
                         message=THEME_FAILED, note="")  # fmt: skip
@@ -937,7 +939,7 @@ def _way_back(base: str, given: str) -> str:
     GET opens (PAGES under base, with the query it had), else the console's first page. Never
     another site, another session, a form's own address or a file."""
     home = f"{base}/"
-    if len(given) > MAX_BACK or not given.isprintable() or "\\" in given or "#" in given:
+    if len(unquote(given)) > MAX_BACK or not given.isprintable() or "\\" in given or "#" in given:
         return home
     if not given.startswith(home):
         return home
