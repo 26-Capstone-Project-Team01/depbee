@@ -608,7 +608,7 @@ meter::-moz-meter-bar { background: var(--ink); }
 }
 @media (scripting: none) and (min-width: 46rem) and (max-width: 79.99rem) {
   .tabs ul { flex-wrap: wrap; overflow-x: visible; }
-  html { scroll-padding-block: 1rem; }
+  html { scroll-padding-block: 1.5rem; }
 }
 @media (min-width: 60rem) {
   .jobs { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); }
