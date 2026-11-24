@@ -323,7 +323,7 @@ class PickedFolderTests(DashboardFixture):
         self.assertEqual(project["path"], str(folder.resolve()))
         html = self.page("/projects/1")
         self.assertEqual(project_head(html)[::2], ("한글 프로젝트", str(folder.resolve())))
-        self.assertIn('<th scope="row">example</th>', html)  # its lockfile is read in place
+        self.assertIn('<th scope="row">example<span class="row-tags">', html)  # read in place
 
     def test_a_child_that_answers_nothing_registers_and_writes_nothing(self):
         (self.root / "no-lockfile").mkdir()

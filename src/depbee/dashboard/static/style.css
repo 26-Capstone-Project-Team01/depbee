@@ -382,7 +382,7 @@ td ul { padding-left: 1.1rem; }
 .count { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .count .cell { margin-right: .35rem; vertical-align: -.1em; }
 .applies td:nth-child(-n+3) { white-space: nowrap; }
-.applies td:nth-child(6), .packages tbody th, .packages td:nth-child(-n+3), .candidates tbody th, .candidates td:nth-child(2), .move { font-family: var(--mono); font-size: .875rem; }
+.applies td:nth-child(6), .packages tbody th, .packages td:nth-child(2), .candidates tbody th, .candidates td:nth-child(2), .move { font-family: var(--mono); font-size: .875rem; }
 meter { width: 7rem; height: .6rem; margin-right: .4rem; vertical-align: middle; }
 meter::-webkit-meter-bar { height: .6rem; border: 0; border-radius: 0; background: var(--head); }
 meter::-webkit-meter-optimum-value { background: var(--ink); }
@@ -392,7 +392,16 @@ meter::-moz-meter-bar { background: var(--ink); }
    candidate itself is the link that picks it; the picked one is honey with an ink border. */
 .packages thead th { position: sticky; top: 0; z-index: 1; background: var(--sheet); box-shadow: inset 0 -1px 0 var(--line-2); }
 .packages th, .packages td { vertical-align: middle; }
-.packages td:nth-child(3) { color: var(--muted); }
+/* The name, its kind as a small tag beside it, and its location (and the name it is declared
+   under) on lines of their own under it, never squeezed into a narrow column. */
+.packages tbody th { font-weight: 700; }
+.row-tags { margin-left: .4rem; padding: 0 .35rem; border: 1px solid var(--line-2); border-radius: 4px; color: var(--muted); font: 600 .8125rem/1.4 var(--sans); white-space: nowrap; }
+.packages tbody th .where { margin-top: .1rem; font-size: .8125rem; font-weight: 400; }
+.packages td:nth-child(2) { white-space: nowrap; }
+/* The candidate is the row's one link; a pointer anywhere on the row reaches it. */
+.packages tbody tr:not(.inspect) { position: relative; }
+.packages .pick::after { content: ""; position: absolute; inset: 0; }
+.chev { margin-left: auto; color: var(--muted); font-weight: 700; }
 .packages tr:not(.inspect) > td:last-child > * { margin: .15rem .5rem .15rem 0; vertical-align: middle; }
 .packages tr:not(.inspect) button { min-height: 2.25rem; padding: .2rem .7rem; font-size: .875rem; }
 .packages tr:not(.inspect) > td:last-child > a:not(.pick), .candidates tr:not(.inspect) > td:last-child > a:not(.pick) { display: inline-flex; align-items: center; min-height: 2.25rem; }
@@ -553,11 +562,9 @@ meter::-moz-meter-bar { background: var(--ink); }
   /* The picked row is a block here: its honey edge runs down the whole of it. */
   .packages tbody tr:has(.pick[aria-current]) { box-shadow: inset 4px 0 0 var(--honey); }
   .packages tbody tr:has(.pick[aria-current]) > th { box-shadow: none; }
-  .packages td:nth-child(4) { grid-area: 1 / 2; text-align: right; }
   .packages td:nth-child(2) { grid-area: 2 / 1 / 3 / 3; }
-  .packages td:nth-child(2)::before { content: "사용 버전 "; color: var(--muted); font-family: var(--sans); }
-  .packages td:nth-child(3) { grid-area: 3 / 1 / 4 / 3; }
-  .packages tr:not(.inspect) > td:last-child { grid-area: 4 / 1 / 5 / 3; padding-top: .3rem; }
+  .packages td:nth-child(2)::before { content: "버전 "; color: var(--muted); font-family: var(--sans); }
+  .packages tr:not(.inspect) > td:last-child { grid-area: 3 / 1 / 4 / 3; padding-top: .3rem; }
   .packages tr:not(.inspect) button, .pick, .stack tr:not(.inspect) > td:last-child > a:not(.pick) { min-height: 2.75rem; }
   .add .primary { max-width: none; }
   .pairs, .result dl { grid-template-columns: minmax(0, 1fr); gap: 0; }
@@ -589,11 +596,7 @@ meter::-moz-meter-bar { background: var(--ink); }
   .aux a { padding-inline: .7rem; font-size: .875rem; }
   /* A version and a kind stay whole: their columns keep the width of what they hold. */
   /* A name is not squeezed to a few letters, and a candidate with its mark is one line. */
-  .packages th:first-child { width: 20%; }
-  .packages th:last-child { width: 14rem; }
-  .packages th:nth-child(2) { width: 6.5rem; }
-  .packages td:nth-child(4) { white-space: nowrap; }
-  .packages td:nth-child(4) .where { white-space: normal; }
+  .packages th:last-child { width: 16rem; }
   .candidates tr:not(.inspect) { grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr) minmax(0, 1fr); grid-template-areas: "name move ruling" "facts facts score" "links links links"; }
   .candidates tbody th { grid-area: name; }
   .candidates td:nth-child(2) { grid-area: move; }

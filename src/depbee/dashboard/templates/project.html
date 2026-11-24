@@ -74,18 +74,20 @@
 {% endif %}
 {% if rows %}
 <table class="stack packages" aria-label="설치된 패키지">
-<thead><tr><th scope="col">패키지</th><th scope="col">사용 버전</th><th scope="col">설치 위치</th><th scope="col">종류</th><th scope="col">업데이트 후보</th></tr></thead>
+{# A row: the name with its kind beside it and its location under it, the version (and the
+   candidate's after an arrow), then whether the candidate could be applied. The candidate is
+   the one link of the row that picks it; a pointer anywhere on the row reaches it (style.css),
+   and the report's own row is reached from the inspector. #}
+<thead><tr><th scope="col">패키지</th><th scope="col">버전</th><th scope="col">반영 여부</th></tr></thead>
 <tbody>
 {% for row in rows %}
-<tr><th scope="row">{{ row.name if row.name is not none else "이름 없음" }}</th><td>{{ row.version if row.version is not none else "-" }}</td><td>{{ row.location }}</td>
-<td>{% if row.direct %}<strong>직접</strong> {{ row.declared }}{% if row.declared_as is not none %}<span class="where">선언 이름 {{ row.declared_as }}</span>{% endif %}{% else %}중첩{% endif %}</td>
-<td>{% set candidate = row.candidate %}
+{% set candidate = row.candidate %}
 {% set open = candidate and picked is not none and candidate is sameas(picked) and not shown.inspector %}
-{% if candidate %}
-<a class="pick"{% if open %} id="picked" aria-current="true"{% endif %} href="{{ pick }}{{ candidate.run_id }}.{{ candidate.position }}#candidate-evidence"><span class="move"><span class="visually-hidden">후보 </span><span aria-hidden="true">→</span> {{ candidate.after if candidate.after is not none else "삭제" }}</span>
-{% if candidate.status != "removed" %}<span class="verdict {{ candidate.decision.cell }}"><span class="cell {{ candidate.decision.cell }}" aria-hidden="true"></span>{{ candidate.decision.label }}</span>{% endif %}<span class="visually-hidden"> 검사 근거 열기</span></a>
-{% if candidate.known_hit %}<strong class="known">기지 악성 기록 일치</strong>{% endif %}
-<a href="{{ base }}/runs/{{ candidate.run_id }}#r{{ candidate.position }}">근거<span class="visually-hidden"> {{ candidate.package }}</span></a>
+{% set after = (candidate.after if candidate.after is not none else "삭제") if candidate else none %}
+<tr><th scope="row">{{ row.name if row.name is not none else "이름 없음" }}<span class="row-tags"> {% if row.direct %}직접{% if row.declared %} {{ row.declared }}{% endif %}{% else %}중첩{% endif %}</span>{% if row.declared_as is not none %}<span class="where">선언 이름 {{ row.declared_as }}</span>{% endif %}<span class="where">{{ row.location }}</span></th><td>{{ row.version if row.version is not none else "-" }}{% if candidate %}<span aria-hidden="true"> → </span><span class="visually-hidden">에서 </span>{{ after }}{% endif %}</td>
+<td>{% if candidate %}
+<a class="pick"{% if open %} id="picked" aria-current="true"{% endif %} href="{{ pick }}{{ candidate.run_id }}.{{ candidate.position }}#candidate-evidence">{% if candidate.status != "removed" %}<span class="verdict {{ candidate.decision.cell }}"><span class="cell {{ candidate.decision.cell }}" aria-hidden="true"></span>{{ candidate.decision.label }}</span>{% else %}<span class="move">삭제</span>{% endif %}<span class="visually-hidden">후보 버전 {{ after }}</span><span class="visually-hidden"> 검사 근거 열기</span></a>
+{% if candidate.known_hit %}<strong class="known">기지 악성 기록 일치</strong>{% endif %}<span class="chev" aria-hidden="true">›</span>
 {% elif row.checked %}<span class="quiet">후보 없음</span>
 {% elif row.direct and row.name in targets and row.location == "node_modules/" ~ row.name %}
 <button type="submit" data-busy-label="후보 확인 중…" form="preview-project" name="packages" value="{{ row.name }}" aria-label="{{ row.name }} 업데이트 후보 확인">후보 확인</button>
@@ -94,7 +96,7 @@
 </tr>
 {% if open %}
 {% set shown.inspector = true %}
-<tr class="inspect"><td colspan="5" id="candidate-evidence" tabindex="-1">
+<tr class="inspect"><td colspan="3" id="candidate-evidence" tabindex="-1">
 {% include "inspector.html" %}
 </td></tr>
 {% endif %}

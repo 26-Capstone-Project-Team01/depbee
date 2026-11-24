@@ -61,6 +61,22 @@ class Elements(HTMLParser):
         self.found.append((tag, dict(attrs)))
 
 
+# A row of the packages table: the name, then its kind (and the name it is declared under) and
+# its location under it, the version (with the candidate's after an arrow), and the cell that
+# says what a check found for it. The row's own elements carry no attribute.
+PACKAGE_ROW = re.compile(
+    r'<tr><th scope="row">([^<]*)<span class="row-tags"> ([^<]*)</span>'
+    r'(?:<span class="where">선언 이름 ([^<]*)</span>)?<span class="where">([^<]*)</span></th>'
+    r"<td>(.*?)</td>\n<td>(.*?)</td>\n</tr>",
+    re.S,
+)
+
+
+def package_rows(html):
+    """(name, kind, declared as, location, version cell, candidate cell) of each packages row."""
+    return [(*row[:5], row[5].strip()) for row in PACKAGE_ROW.findall(html)]
+
+
 class Head(HTMLParser):
     """A project view's head (header.project-head), parsed: the name (h1), the path as shown and
     the whole path (its title), with character references decoded."""
@@ -239,8 +255,8 @@ class PageTests(DashboardFixture):
         history.register_project(self.project)
         text = self.page("/projects/1")
         self.assertIn("직접 1개, 중첩 1개.", text)
-        self.assertIn('<th scope="row">inner</th><td>2.0.0</td>'
-                      "<td>node_modules/example/node_modules/inner</td>", text)  # fmt: skip
+        self.assertIn(("inner", "중첩", "", "node_modules/example/node_modules/inner", "2.0.0"),
+                      [row[:5] for row in package_rows(text)])  # fmt: skip
         for url in ("/projects/2", "/projects/2/updates", "/projects/2/history", "/runs/1",
                     f"/runs/{2**70}", f"/projects/{2**70}/history"):  # fmt: skip
             self.assertEqual(self.get(url).status_code, 404, url)
@@ -261,9 +277,9 @@ class PageTests(DashboardFixture):
         self.assertIn(f'action="{S}/projects/1/previews"', form[0])
         self.assertIn(f'<input type="hidden" name="session" value="{SESSION}">', form[1])
         self.assertIn(f'<a href="{S}/projects/1">필터 초기화</a>', html)
-        self.assertNotIn('<th scope="row">inner</th>', html)
+        self.assertNotIn('<th scope="row">inner<span class="row-tags">', html)
         nested = self.page("/projects/1?scope=nested")
-        self.assertIn('<th scope="row">inner</th>', nested)
+        self.assertIn('<th scope="row">inner<span class="row-tags">', nested)
         self.assertNotIn('form="preview-project" name="packages"', nested)
         self.assertNotIn('form="preview-project" name="packages"', self.page("/projects/1?q=peer"))
         self.assertIn("조건에 맞는 패키지가 없습니다", self.page("/projects/1?q=missing"))
@@ -283,25 +299,24 @@ class PageTests(DashboardFixture):
         self.save_locks()
         history.register_project(self.project)
         html = self.page("/projects/1")
-        # The location cell and the kind cell after it.
-        kinds = dict(re.findall(r"<td>([^<]*)</td>\n<td>(.*?)</td>\n<td>", html))
+        # Each row's kind beside its name, with the name it is declared under.
+        kinds = {location: (kind, alias) for _, kind, alias, location, _, _ in package_rows(html)}
         self.assertEqual(kinds, {
-            "node_modules/example": "<strong>직접</strong> 일반",
+            "node_modules/example": ("직접 일반", ""),
             # Declared under another name than the package's own; the spec is not read.
-            "node_modules/alias": '<strong>직접</strong> 일반<span class="where">선언 이름 alias'
-                                  "</span>",
-            "node_modules/both": "<strong>직접</strong> 개발, 피어",  # declared twice
-            "node_modules/opt": "<strong>직접</strong> 선택",
-            "node_modules/peer": "<strong>직접</strong> 피어",
-            "node_modules/example/node_modules/both": "중첩",  # another copy of a declared name
-            "node_modules/hoisted": "중첩",  # at the top, but no root declaration
+            "node_modules/alias": ("직접 일반", "alias"),
+            "node_modules/both": ("직접 개발, 피어", ""),  # declared twice
+            "node_modules/opt": ("직접 선택", ""),
+            "node_modules/peer": ("직접 피어", ""),
+            "node_modules/example/node_modules/both": ("중첩", ""),  # another copy of a name
+            "node_modules/hoisted": ("중첩", ""),  # at the top, but no root declaration
         })  # fmt: skip
-        self.assertIn('<th scope="row">real-name</th><td>5.0.0</td><td>node_modules/alias</td>',
-                      html)  # fmt: skip
+        self.assertIn(("real-name", "직접 일반", "alias", "node_modules/alias", "5.0.0"),
+                      [row[:5] for row in package_rows(html)])  # fmt: skip
         self.assertIn("dependencies·devDependencies·optionalDependencies·peerDependencies", html)
         self.assertNotIn("npm:real-name@5", html)
         nested = self.page("/projects/1?scope=nested")
-        self.assertEqual(set(re.findall(r"<td>[^<]*</td>\n<td>(.*?)</td>\n<td>", nested)), {"중첩"})
+        self.assertEqual({row[1] for row in package_rows(nested)}, {"중첩"})
 
     def test_missing_dependency_name_keeps_project_accessible(self):
         history.register_project(self.project)
@@ -309,7 +324,7 @@ class PageTests(DashboardFixture):
         self.new["packages"][entry] = {**package(), "name": None}
         self.save_locks()
         html = self.page("/projects/1")
-        self.assertIn('<th scope="row">이름 없음</th>', html)
+        self.assertIn('<th scope="row">이름 없음<span class="row-tags">', html)
         self.assertIn(entry, html)
         self.assertNotIn(entry, self.page("/projects/1?q=example"))
         self.assertNotIn('name="packages" value="None"', html)
@@ -783,10 +798,9 @@ class CandidateTests(DashboardFixture):
     def cells(self, html=None):
         """{location: the candidate cell} of the packages table."""
         html = self.page(self.packages) if html is None else html
-        rows = re.findall(r'<tr><th scope="row">[^<]*</th><td>[^<]*</td><td>([^<]*)</td>\n'
-                          r"<td>.*?</td>\n<td>(.*?)</td>\n</tr>", html, re.S)  # fmt: skip
+        rows = package_rows(html)
         self.assertEqual(len(rows), 3, html)
-        return {location: cell.strip() for location, cell in rows}
+        return {row[3]: row[5] for row in rows}
 
     def assert_unchecked(self, cells):
         for name in ("example", "other"):
@@ -823,14 +837,14 @@ class CandidateTests(DashboardFixture):
         self.assertIn("업데이트 후보 1개를 확인했습니다.", html)
         cells = self.cells(html)
         candidate = cells["node_modules/example"]
-        self.assertIn('<span class="visually-hidden">후보 </span><span aria-hidden="true">→</span>'
-                      " 1.2.0</span>", candidate)  # fmt: skip
+        self.assertIn('<span class="visually-hidden">후보 버전 1.2.0</span>', candidate)
         # Whether the candidate could be applied, as the update gate decides it: an ML hit that
         # no known malicious list was checked against needs the user's confirmation.
         self.assertIn('<span class="verdict hold"><span class="cell hold" aria-hidden="true">'
                       "</span>확인 필요</span>", candidate)  # fmt: skip
-        self.assertIn(f'<a href="{S}/runs/{run}#r0">근거<span class="visually-hidden"> example'
-                      "</span></a>", candidate)  # fmt: skip
+        self.assertIn(f'?item={run}.0#candidate-evidence"', candidate)
+        # The report's own row is reached from the inspector, not from each row of the list.
+        self.assertNotIn(f'href="{S}/runs/{run}#r0"', html.split('<aside class="inspector"')[0])
         for location in ("node_modules/other", "node_modules/example/node_modules/inner"):
             self.assertEqual(cells[location], '<span class="quiet">후보 없음</span>')
         self.assertNotIn("후보 확인</button>", html)
@@ -961,7 +975,8 @@ class CandidateTests(DashboardFixture):
                    "score": None}  # fmt: skip
         run = self.check({**self.report, "results": [added, removed]}, targets=None)
         cells = self.cells()
-        self.assertIn('<span aria-hidden="true">→</span> 삭제</span>', cells["node_modules/other"])
+        self.assertIn('<span class="move">삭제</span><span class="visually-hidden">후보 버전 삭제</span>',
+                      cells["node_modules/other"])  # fmt: skip
         self.assertNotIn("verdict", cells["node_modules/other"])
         updates = self.page(self.updates)
         self.assertIn('<td><span class="quiet">새로 추가</span> <span aria-hidden="true">→</span>'
@@ -988,7 +1003,7 @@ class CandidateTests(DashboardFixture):
         self.assertIn("업데이트 후보 1개를 확인했습니다.", html)
         cells = self.cells(html)
         self.assertIn(" 1.2.0</span>", cells["node_modules/example"])
-        self.assertIn(f'<a href="{S}/runs/{everything}#r0">근거', cells["node_modules/example"])
+        self.assertIn(f'?item={everything}.0#candidate-evidence"', cells["node_modules/example"])
         for location in ("node_modules/other", "node_modules/example/node_modules/inner"):
             self.assertEqual(cells[location], '<span class="quiet">후보 없음</span>')
         updates = self.page(self.updates)
@@ -1049,7 +1064,7 @@ class CandidateTests(DashboardFixture):
         theirs = self.check(self.nothing(), project=twin, targets=None, changed_count=0)
         self.assertIn("확인했고 바뀌는 항목이 없었습니다.", self.page(f"/projects/{twin_id}"))
         self.assertNotIn(f"/runs/{mine}", self.page(f"/projects/{twin_id}/updates"))
-        self.assertIn(f'<a href="{S}/runs/{mine}#r0">근거', self.cells()["node_modules/example"])
+        self.assertIn(f'?item={mine}.0#candidate-evidence"', self.cells()["node_modules/example"])
         self.assertNotIn(f"/runs/{theirs}", self.page(self.updates))
 
     def test_a_location_the_history_stores_as_escaped_text_is_the_same_location(self):
@@ -1060,15 +1075,13 @@ class CandidateTests(DashboardFixture):
         self.write(self.head, self.old)
 
         def cell():
-            rows = re.findall(r'<tr><th scope="row">[^<]*</th><td>[^<]*</td><td>([^<]*)</td>\n'
-                              r"<td>.*?</td>\n<td>(.*?)</td>\n</tr>", self.page(self.packages),
-                              re.S)  # fmt: skip
+            rows = package_rows(self.page(self.packages))
             self.assertEqual(len(rows), 4)
-            return dict(rows)["node_modules/\\udc80x"].strip()
+            return {row[3]: row[5] for row in rows}["node_modules/\\udc80x"]
 
         row = {**self.report["results"][0], "location": odd, "package": "\udc80x"}
         run = self.check({**self.report, "results": [row]}, targets=None)
-        self.assertIn(f'<a href="{S}/runs/{run}#r0">근거', cell())
+        self.assertIn(f'?item={run}.0#candidate-evidence"', cell())
         # Later that package alone is checked and would not change: its candidate goes.
         self.check(self.nothing(), targets=["\udc80x"], changed_count=0)
         self.assertEqual(cell(), '<span class="quiet">후보 없음</span>')
@@ -1084,10 +1097,8 @@ class CandidateTests(DashboardFixture):
         def cells():
             """The candidate cells of the two rows (told apart by the installed version: their
             location is shown with the same characters)."""
-            rows = re.findall(r'<tr><th scope="row">[^<]*</th><td>([^<]*)</td><td>([^<]*)</td>\n'
-                              r"<td>.*?</td>\n<td>(.*?)</td>\n</tr>", self.page(self.packages),
-                              re.S)  # fmt: skip
-            shown = {version: cell.strip() for version, location, cell in rows
+            rows = package_rows(self.page(self.packages))
+            shown = {version.split("<")[0]: cell for _, _, _, location, version, cell in rows
                      if location == "node_modules/\\udc80x"}  # fmt: skip
             self.assertEqual(sorted(shown), ["7.0.0", "8.0.0"])
             return shown["7.0.0"], shown["8.0.0"]
@@ -1100,9 +1111,9 @@ class CandidateTests(DashboardFixture):
         first = self.check({**self.report, "results": both}, targets=None)
         of_lone, of_text = cells()
         self.assertIn(" 7.1.0</span>", of_lone)
-        self.assertIn(f'<a href="{S}/runs/{first}#r0">근거', of_lone)
+        self.assertIn(f'?item={first}.0#candidate-evidence"', of_lone)
         self.assertIn(" 8.1.0</span>", of_text)
-        self.assertIn(f'<a href="{S}/runs/{first}#r1">근거', of_text)
+        self.assertIn(f'?item={first}.1#candidate-evidence"', of_text)
         updates = self.page(self.updates)
         self.assertIn("바뀐 의존성 2개: 위험 2, 통과 0, 보류 0.", updates)
         for position in (0, 1):
@@ -1112,9 +1123,9 @@ class CandidateTests(DashboardFixture):
         second = self.check({**self.report, "results": [row(text, "\\udc80x", "8.0.0", "8.2.0")]},
                             targets=["\\udc80x"])  # fmt: skip
         of_lone, of_text = cells()
-        self.assertIn(f'<a href="{S}/runs/{first}#r0">근거', of_lone)
+        self.assertIn(f'?item={first}.0#candidate-evidence"', of_lone)
         self.assertIn(" 8.2.0</span>", of_text)
-        self.assertIn(f'<a href="{S}/runs/{second}#r0">근거', of_text)
+        self.assertIn(f'?item={second}.0#candidate-evidence"', of_text)
         updates = self.page(self.updates)
         self.assertIn(f'href="{S}/runs/{first}#r0"', updates)
         self.assertIn(f'href="{S}/runs/{second}#r0"', updates)
@@ -1124,7 +1135,7 @@ class CandidateTests(DashboardFixture):
         self.check(self.nothing(), targets=["\udc80x"], changed_count=0)
         of_lone, of_text = cells()
         self.assertEqual(of_lone, '<span class="quiet">후보 없음</span>')
-        self.assertIn(f'<a href="{S}/runs/{second}#r0">근거', of_text)
+        self.assertIn(f'?item={second}.0#candidate-evidence"', of_text)
 
     def test_a_look_reads_only_the_reports_whose_candidates_it_shows(self):
         self.check(targets=None)
@@ -1163,7 +1174,7 @@ class CandidateTests(DashboardFixture):
         url = f"{S}{self.packages}"
 
         def listed(html):
-            return re.findall(r'<tr><th scope="row">([^<]*)</th>', html)
+            return [row[0] for row in package_rows(html)]
 
         def tabs(html):
             nav = re.search(r'<nav class="filter-tabs" aria-label="패키지 목록 거르기">(.*?)</nav>',
@@ -1235,7 +1246,7 @@ class CandidateTests(DashboardFixture):
                 for html in (packages, updates):
                     EscapeTests.check(self, html)
                 shown = escape(_clean(text))
-                self.assertIn(f"</span> {shown}</span>", packages)  # the candidate version
+                self.assertIn(f"후보 버전 {shown}</span>", packages)  # the candidate version
                 self.assertIn(f'<th scope="row">{shown}<span class="where">', updates)
                 self.assertIn(f"<li>{shown}</li>", updates)
                 self.assertIn(f", {shown})", updates)  # the check's target
@@ -1549,8 +1560,10 @@ class EscapeTests(DashboardFixture):
         for name, location in shown:
             with self.subTest(name=name):
                 # Present, as _clean then HTML escaping made it: the row was really rendered.
-                self.assertIn(f'<th scope="row">{escape(_clean(name))}</th>', html)
-                self.assertIn(f"<td>{escape(_clean(location))}</td>", html)
+                self.assertIn(
+                    f'<th scope="row">{escape(_clean(name))}<span class="row-tags">', html
+                )
+                self.assertIn(f'<span class="where">{escape(_clean(location))}</span></th>', html)
         self.check(html)
 
     def test_report_and_path_strings_stay_inert(self):
@@ -2139,7 +2152,9 @@ class CheckReturnTests(ScreenFixture):
         html = self.page(url)
         self.assertIn(f"실행 #{fourth}에서 확인했고 바뀌는 항목이 없었습니다. 확인된 후보 "
                       "0개입니다.", html)  # fmt: skip
-        self.assertIn('<span class="filter-off">후보 <span class="filter-count">0</span></span>', html)
+        self.assertIn(
+            '<span class="filter-off">후보 <span class="filter-count">0</span></span>', html
+        )
 
     def test_a_check_with_nothing_to_open_goes_to_its_line_not_to_the_candidate_left_open(self):
         """The browser follows the fragment of the address a check comes back to, with the
