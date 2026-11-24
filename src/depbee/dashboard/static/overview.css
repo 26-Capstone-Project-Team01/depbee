@@ -33,7 +33,6 @@
 .overview .ov-marks { flex-basis: 100%; }
 .overview .ov-marks { display: flex; flex-wrap: wrap; gap: .2rem; min-height: 1.6rem; }
 .overview .ov-marks .cell { width: 1.375rem; height: 1.5875rem; }
-.overview .ov-marks .cell::after { inset: 3px; }
 /* No project in this state: the place of its cells stays, as a thin rule. */
 .overview .ov-marks:empty { align-self: end; min-height: 0; margin-top: 1.5rem; border-bottom: 2px solid var(--line); }
 .overview .ov-label { font-size: .9375rem; font-weight: 700; }

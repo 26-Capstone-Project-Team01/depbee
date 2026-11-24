@@ -116,6 +116,25 @@ class ThemeTokenTests(unittest.TestCase):
             self.assertEqual(literals, [], name)
 
 
+class MarkTests(unittest.TestCase):
+    """A verdict's mark is a hexagon of its colour with a sign inside (style.css .cell)."""
+
+    def test_every_kind_has_a_sign_of_its_own(self):
+        from depbee.dashboard import app
+
+        kinds = {"none"} | set(app.CELLS.values()) | set(app.APPLY_CELLS.values())
+        kinds |= {cell for cell, _, _ in app.STATES.values()}
+        kinds |= {cell for cell, _ in app.DECISIONS.values()}
+        self.assertEqual(kinds, {"risk", "hold", "pass", "none", "fail", "stale", "gone"})
+        css = strip_comments((STATIC / "style.css").read_text("utf-8"))
+        signs = {}
+        for kind in kinds:
+            rule = re.search(rf"^\.cell\.{kind}::after \{{([^}}]*)\}}", css, re.M)
+            self.assertIsNotNone(rule, kind)
+            signs[kind] = re.search(r"clip-path: (polygon\([^)]*\))", rule.group(1)).group(1)
+        self.assertEqual(len(set(signs.values())), len(kinds), signs)
+
+
 class ThemeChoiceTests(unittest.TestCase):
     """The theme chosen on the rail, as saved in the user's settings folder (theme.py)."""
 

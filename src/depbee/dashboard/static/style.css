@@ -59,7 +59,6 @@
   --inspect: clamp(20rem, 28vw, 27rem);
   /* What a status cell is drawn on and with; a sheet sets its own. */
   --ground: var(--surface);
-  --dim: var(--muted);
 }
 /* The dark theme: the system's when nothing is chosen, or the one chosen on the rail. The two
    blocks hold the same values, so that a choice wins over the system both ways. */
@@ -160,23 +159,32 @@ summary { width: fit-content; padding-block: .55rem; font-weight: 700; cursor: p
 .note, .quiet, .unknown, .tally { color: var(--muted); }
 .note, .tally { font-size: .875rem; }
 
-/* Status cells. One hexagon: solid is a risk or a refusal, half filled a hold, a dot a pass,
-   hollow nothing known yet, struck through a folder that is gone or an apply that failed,
-   barred files that are no longer the ones that were checked. */
-.cell { position: relative; display: inline-block; flex: none; width: .8125rem; height: .9375rem; background: var(--stroke); clip-path: var(--hex); --stroke: var(--dim); }
-.cell::after { content: ""; position: absolute; inset: 2px; background: var(--ground); clip-path: var(--hex); }
-.cell.risk { --stroke: var(--risk); }
-.cell.risk::after { background: var(--risk); }
-.cell.hold { --stroke: var(--hold); }
-.cell.hold::after { background: linear-gradient(to top, var(--hold) 50%, var(--ground) 50%); }
-.cell.pass { --stroke: var(--pass); }
-.cell.pass::after { background: radial-gradient(circle, var(--pass) 0 30%, var(--ground) 34%); }
-.cell.gone { --stroke: var(--risk); }
-.cell.gone::after { background: linear-gradient(135deg, var(--ground) 40%, var(--risk) 40% 60%, var(--ground) 60%); }
-.cell.fail { --stroke: var(--fail); }
-.cell.fail::after { background: linear-gradient(135deg, var(--ground) 40%, var(--fail) 40% 60%, var(--ground) 60%); }
-.cell.stale { --stroke: var(--fail); }
-.cell.stale::after { background: repeating-linear-gradient(90deg, var(--fail) 0 12%, var(--ground) 12% 36%); }
+/* Verdict marks. A hexagon of the verdict's colour (--mark) with a sign inside it in --glyph, so
+   that a mark is read by its sign as well as by its colour: x a risk or a refusal, ! a hold, a
+   tick a pass, ? nothing known yet, a bar an apply that failed, two bars files that are no longer
+   the ones that were checked, a stroke a folder that is gone. The words are always beside it. */
+.cell { position: relative; display: inline-block; flex: none; width: .875rem; height: 1rem; background: var(--mark); clip-path: var(--hex); --mark: var(--muted); }
+.cell::after { content: ""; position: absolute; inset: 26% 22%; background: var(--glyph); }
+.cell.risk { --mark: var(--risk); }
+.cell.risk::after { clip-path: polygon(18% 0, 50% 32%, 82% 0, 100% 18%, 68% 50%, 100% 82%, 82% 100%, 50% 68%, 18% 100%, 0 82%, 32% 50%, 0 18%); }
+.cell.hold { --mark: var(--hold); }
+.cell.hold::after { clip-path: polygon(37% 0, 63% 0, 63% 62%, 37% 62%, 37% 78%, 63% 78%, 63% 100%, 37% 100%); }
+.cell.pass { --mark: var(--pass); }
+.cell.pass::after { clip-path: polygon(0 55%, 18% 37%, 38% 57%, 82% 10%, 100% 28%, 38% 92%); }
+.cell.none::after { clip-path: polygon(15% 0, 85% 0, 85% 50%, 62% 50%, 62% 68%, 38% 68%, 38% 80%, 62% 80%, 62% 100%, 38% 100%, 38% 34%, 65% 34%, 65% 20%, 35% 20%, 35% 32%, 15% 32%); }
+.cell.fail { --mark: var(--fail); }
+.cell.fail::after { clip-path: polygon(0 38%, 100% 38%, 100% 62%, 0 62%); }
+.cell.stale { --mark: var(--fail); }
+.cell.stale::after { clip-path: polygon(0 16%, 100% 16%, 100% 40%, 0 40%, 0 60%, 100% 60%, 100% 84%, 0 84%); }
+.cell.gone { --mark: var(--risk); }
+.cell.gone::after { clip-path: polygon(70% 0, 100% 0, 30% 100%, 0 100%); }
+/* On the rail the marks take the rail's own, brighter verdict colours. */
+.masthead { --glyph: var(--rail-glyph); }
+.masthead .cell { --mark: var(--rail-none); }
+.masthead .cell.risk, .masthead .cell.gone { --mark: var(--rail-risk); }
+.masthead .cell.hold { --mark: var(--rail-hold); }
+.masthead .cell.pass { --mark: var(--rail-pass); }
+.masthead .cell.fail, .masthead .cell.stale { --mark: var(--rail-fail); }
 .verdict, .unknown { display: inline-flex; align-items: center; gap: .35rem; font-size: .875rem; white-space: nowrap; }
 .verdict { padding: .1rem .5rem .1rem .4rem; border-radius: 3px; background: var(--ground); color: var(--tone); font-weight: 700; --ground: var(--head); --tone: var(--muted); }
 .verdict.risk { --ground: var(--risk-wash); --tone: var(--risk); }
@@ -337,8 +345,8 @@ meter::-moz-meter-bar { background: var(--ink); }
 .pick:hover { border-color: var(--ink); }
 .pick[aria-current] { padding: calc(.15rem - 1px) calc(.55rem - 1px); border: 2px solid var(--ink); background: var(--honey); color: var(--on-honey); }
 /* On honey a verdict keeps its shape and its words, in ink. */
-.pick[aria-current] .verdict { background: none; --ground: var(--honey); --tone: var(--ink); }
-.pick[aria-current] .cell { --stroke: var(--ink); --risk: var(--ink); --hold: var(--ink); --pass: var(--ink); }
+.pick[aria-current] .verdict { background: none; --ground: var(--honey); --tone: var(--on-honey); }
+.pick[aria-current] .cell { --mark: var(--on-honey); --glyph: var(--honey); }
 /* The row itself is painted, so that it is one piece where its cells stand apart (narrow). */
 .packages tbody tr:not(.inspect):hover { background: var(--hover); }
 .packages tbody tr:has(.pick[aria-current]) { background: var(--honey-wash); }
@@ -380,7 +388,6 @@ meter::-moz-meter-bar { background: var(--ink); }
 .decision.hold { --tone: var(--hold); }
 .decision.pass { --tone: var(--pass); }
 .decision .cell { width: 1.25rem; height: 1.44rem; }
-.decision .cell::after { inset: 3px; }
 .why { margin: .3rem 0 0; }
 .inspect-nav { margin: .35rem 0 0; }
 .inspect-nav a { display: inline-flex; align-items: center; min-height: 2.75rem; font-weight: 700; }
