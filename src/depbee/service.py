@@ -850,9 +850,9 @@ def install_checked(
 
 def _entry_problem(lock_bytes: bytes) -> str | None:
     """Which lock entry has no package name and version a registry install could use (a null or
-    malformed name; a version that is not canonical SemVer without +build, as depbee check takes
-    it: 01.2.3 is refused), if any: such an entry stops the call before any download, of the
-    other entries too."""
+    malformed name; a version depbee check would not take: 01.2.3 is not SemVer, 1.2.3+build is
+    valid SemVer that this guard does not support), if any: such an entry stops the call before
+    any download, of the other entries too."""
     lock, _ = parse_json(lock_bytes, "package-lock.json")  # read_project() checked its shape
     for location, entry in lock["packages"].items():
         if not location:

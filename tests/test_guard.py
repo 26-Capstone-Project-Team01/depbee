@@ -579,6 +579,32 @@ class SettingsTests(Fixture):
                 self.assertEqual(json.loads(self.settings.read_text("utf-8")), {})
         self.run.assert_not_called()
 
+    @unittest.skipIf(os.name == "nt", "on Windows a backslash separates path parts")
+    def test_a_backslash_and_dots_inside_a_posix_folder_name_are_only_a_name(self):
+        for name in ("dir\\..", "dir\\.", "..\\dir"):  # one folder name each on POSIX
+            with self.subTest(name=name):
+                venv = self.root / name / "venv" / "bin"
+                venv.mkdir(parents=True)
+                python = str(venv / "python")  # stand-in for this depbee's Python
+                self.write(self.settings, SETTINGS)
+                with mock.patch.object(sys, "executable", python):
+                    self.assertEqual(self.cli("enable", str(self.settings))[0], 0)
+                    first = self.settings.read_bytes()
+                    groups = json.loads(first)["hooks"]["PreToolUse"]
+                    self.assertEqual(
+                        [h for g in groups for h in g["hooks"]].count(guard.handler(python)), 1
+                    )
+                    code, out, _ = self.cli("enable", str(self.settings))
+                    self.assertEqual((code, self.settings.read_bytes()), (0, first))
+                    self.assertIn("바꿀 것이 없습니다", out)
+                    code, out, _ = self.cli("status", str(self.settings))
+                    self.assertEqual(code, 0, out)
+                    self.assertEqual(self.cli("disable", str(self.settings))[0], 0)
+                self.assertEqual(json.loads(self.settings.read_text("utf-8")), SETTINGS)
+                # A real .. part next to such a name is still not taken for this Python.
+                self.assertFalse(guard._same_path(f"{venv}/../bin/python", python))
+        self.run.assert_not_called()
+
     def test_the_same_shape_with_another_command_is_kept_and_reported(self):
         # Another install's Python, or a program of the user's with the same arguments: not
         # surely this guard's, so enable and disable keep it and say so.

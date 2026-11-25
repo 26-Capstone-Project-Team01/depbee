@@ -573,13 +573,13 @@ def _same_path(command: str, python: str) -> bool:
     """command is written as python's own path: an absolute path without . or .. parts and the
     same text (on Windows up to letter case and slash direction, as Windows reads a path). A
     path that only leads to it, through .., a link or another spelling, is not taken for it: on
-    POSIX a .. after a symlink leaves the link's target, so it may be another program."""
-    parts = re.split(r"[\\/]", command)
-    if not os.path.isabs(command) or "." in parts or ".." in parts:
+    POSIX a .. after a symlink leaves the link's target, so it may be another program. Parts are
+    split at this platform's own separator: on POSIX a backslash is part of a name."""
+    if not os.path.isabs(command):
         return False
-    if os.name == "nt":
-        return os.path.normcase(command) == os.path.normcase(python)
-    return command == python
+    if os.name == "nt":  # normcase turns / into \, so os.sep then splits at both
+        command, python = os.path.normcase(command), os.path.normcase(python)
+    return not {".", ".."} & set(command.split(os.sep)) and command == python
 
 
 def settings_file(path: Path) -> Path:
