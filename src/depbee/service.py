@@ -55,6 +55,9 @@ GUARD_CHANGED = (
     "package-lock.json or Git HEAD changed while depbee checked the project; nothing was "
     "installed. Run depbee guard ci again"
 )
+GUARD_MISMATCH = (
+    "The check's report does not match the planned lockfile changes; nothing was installed"
+)
 # The environment variable of each asset folder (_sources), by its settings key, model first.
 ASSET_VARIABLES = {
     "model_dir": "DEPBEE_MODEL_DIR", "known_malicious_dir": "DEPBEE_KNOWN_MALICIOUS_DIR",
@@ -733,12 +736,17 @@ def install_checked(
     not waited for), a project that read_project() refuses, a project .npmrc, a node_modules that
     is not the project's own folder, a lock entry without a valid integrity, and more than
     GUARD_MAX_PACKAGES changes to analyze. The scan must have read the plan's bytes and base
-    (same request_id as the plan made with the hashed files), else GuardError. apply_preview()
-    with mode install and no confirmation then installs only if no item is refused or needs a
-    confirmation (no change at all is "unchanged": nothing is installed), after it compares the
-    two files once more; right before npm ci starts, the files, the .npmrc and the plan are
-    compared again (ready). Nothing in the project is written. A process that writes the files
-    after that last comparison is not stopped; npm ci's own check afterwards reports it.
+    (same request_id as the plan made with the hashed files), and its report must have exactly
+    the plan's changes (_guard_rows), else GuardError. Without an added or updated change npm
+    is never started: no change is "unchanged", removals only are "refused" (removal_only). An
+    install needs every added or updated change analyzed with a complete pass (_complete_pass)
+    and exit code 0; an item that is no pass while the gate would let it through is a
+    GuardError. apply_preview() with mode install and no confirmation then refuses any item
+    the gate lists, compares the two files once more and, right before npm ci starts, the
+    files, the .npmrc and the plan again (ready). Nothing in the project is written. A process
+    that writes the files after that last comparison is not stopped; npm ci's own check
+    afterwards reports it. apply_preview() itself, as the dashboard and update --apply use
+    it, is unchanged.
     """
     project = Path(os.path.abspath(project))
     with _install_lock(project):
@@ -772,6 +780,16 @@ def install_checked(
         report = scan_project(project, extract=True, progress=limit)
         if report["request_id"] != plan["request_id"]:
             raise GuardError(GUARD_CHANGED)
+        installs = _guard_rows(plan, report)
+        if not installs:  # nothing analyzed to install: no change, or removals only
+            if plan["changes"]:
+                return {"report": report, "apply": _not_applied("refused", "removal_only")}
+            return {"report": report, "apply": _not_applied("unchanged", None)}
+        passed = [change["analyzable"] and _complete_pass(row) for change, row in installs]
+        if all(passed) and report["exit_code"] != 0:
+            raise GuardError(GUARD_MISMATCH)
+        if not all(passed) and update_gate(report) == ([], []):
+            raise GuardError(GUARD_MISMATCH)  # not a pass, yet the gate would let it through
 
         def ready() -> None:
             current_package, current_lock, _ = npm_cli.read_project(project)
@@ -792,6 +810,51 @@ def install_checked(
             mode="install", ready=ready,
         )  # fmt: skip
     return {"report": report, "apply": apply}
+
+
+def _guard_rows(plan: dict, report: dict) -> list[tuple[dict, dict]]:
+    """(change, report row) of each added or updated change of the plan, in plan order.
+    GuardError unless the report has exactly one row per planned change, with the change's
+    location, versions and removal: a report that does not describe the plan installs nothing."""
+    rows = {}
+    for row in report["results"]:
+        if not isinstance(row, dict) or row.get("change_id") in rows:
+            raise GuardError(GUARD_MISMATCH)
+        rows[row.get("change_id")] = row
+    if rows.keys() != {change["change_id"] for change in plan["changes"]}:
+        raise GuardError(GUARD_MISMATCH)
+    pairs = []
+    for change in plan["changes"]:
+        row = rows[change["change_id"]]
+        expected = (change["location"], (change["before"] or {}).get("version"),
+                    (change["after"] or {}).get("version"), change["kind"] == "removed")  # fmt: skip
+        found = (row.get("location"), row.get("before_version"), row.get("after_version"),
+                 row.get("status") == "removed")  # fmt: skip
+        if found != expected:
+            raise GuardError(GUARD_MISMATCH)
+        if change["kind"] != "removed":
+            pairs.append((change, row))
+    return pairs
+
+
+def _complete_pass(row: dict) -> bool:
+    """An analyzed item that every connected check passed: not flagged with an ML risk score,
+    the ML path below the threshold and the known malicious list checked without a match."""
+    return (
+        row.get("status") == "not_flagged"
+        and isinstance(row.get("score"), int | float)
+        and (row.get("ml") or {}).get("status") == "not_hit"
+        and (row.get("known_malicious") or {}).get("status") == "not_hit"
+    )
+
+
+def _not_applied(outcome: str, reason: str | None) -> dict:
+    """An apply document (apply_preview()'s fields) of an install that never reached npm."""
+    return {
+        "mode": "install", "outcome": outcome, "reason": reason, "error": None, "blocked": [],
+        "confirmation_required": [], "confirmed": False, "files": [], "backup": None,
+        "npm_version": None, "npm_ci_exit_code": None, "notices": [UNCHANGED_NOTICE],
+    }  # fmt: skip
 
 
 @contextlib.contextmanager

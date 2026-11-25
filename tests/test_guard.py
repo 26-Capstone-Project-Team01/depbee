@@ -4,15 +4,18 @@ mocked, and no test runs npm, Node.js or Claude Code.
 """
 
 import contextlib
+import hashlib
 import io
 import json
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
 from unittest import mock
 
 from test_apply import PASS, ApplyFixture
+from test_update import sri
 from test_workflow import Fixture
 
 from depbee import guard, service
@@ -346,20 +349,32 @@ class ProcessTests(Fixture):
         self.assertEqual(json.loads(done.stdout)["hookSpecificOutput"]["permissionDecision"],
                          "deny")  # fmt: skip
 
-    def test_self_test_runs_the_handler(self):
-        entry = {"command": sys.executable, "args": HOOK[1:], "timeout": 60}
-        self.assertIsNone(guard.self_test(entry, self.root))
-        broken = {**entry, "args": ["-c", "import sys; sys.exit(1)"]}
-        self.assertIn("exit 1", guard.self_test(broken, self.root))
-        silent = {**entry, "args": ["-c", "pass"]}  # never denies
-        self.assertIn("decision None", guard.self_test(silent, self.root))
-        missing = {**entry, "command": str(self.root / "missing" / "python.exe")}
-        self.assertIn("could not be run", guard.self_test(missing, self.root))
-        for edited in ({**entry, "command": None}, {**entry, "args": [1]},
-                       {**entry, "timeout": "30"}):  # fmt: skip
-            self.assertIn("not of the type", guard.self_test(edited, self.root))
-        without_timeout = {key: value for key, value in entry.items() if key != "timeout"}
-        self.assertIsNone(guard.self_test(without_timeout, self.root))  # Claude's default
+    def test_answers_of_a_real_hook_process(self):
+        self.assertIsNone(guard._answers(HOOK, 60, self.root))
+        broken = [sys.executable, "-c", "import sys; sys.exit(1)"]
+        self.assertIn("exit 1", guard._answers(broken, 60, self.root))
+        silent = [sys.executable, "-c", "pass"]  # never denies
+        self.assertIn("decision None", guard._answers(silent, 60, self.root))
+        missing = [str(self.root / "missing" / "python.exe"), "-I"]
+        self.assertIn("could not be run", guard._answers(missing, 60, self.root))
+
+    def test_the_self_test_runs_only_its_own_handler_in_an_empty_folder(self):
+        seen = []
+
+        def answer(argv, input, capture_output, timeout, cwd):
+            seen.append((argv, timeout, sorted(Path(cwd).iterdir()), Path(cwd)))
+            command = json.loads(input)["tool_input"]["command"]
+            denied = {"hookSpecificOutput": {"permissionDecision": "deny"}}
+            out = b"" if command.startswith("npm view") else json.dumps(denied).encode()
+            return subprocess.CompletedProcess(argv, 0, out, b"")
+
+        python = str(self.root / "venv" / "python.exe")  # never started: run() is replaced
+        with mock.patch("depbee.guard.subprocess.run", side_effect=answer):
+            self.assertIsNone(guard.self_test(python))
+        self.assertEqual(len(seen), len(guard.SELF_TEST))
+        for argv, timeout, inside, cwd in seen:
+            self.assertEqual((argv, timeout, inside), ([python, *guard.HOOK_ARGS], 30, []))
+            self.assertFalse(cwd.exists())  # a new folder, removed afterwards
 
 
 ORCA = {"matcher": "", "hooks": [{"type": "command",
@@ -378,9 +393,14 @@ class SettingsTests(Fixture):
         super().setUp()
         self.settings = self.root / ".claude" / "settings.local.json"
         self.settings.parent.mkdir()
-        self.self_test = mock.patch("depbee.guard.self_test", return_value=None)
-        self.self_test.start()
-        self.addCleanup(self.self_test.stop)
+        self.self_test = self.patch("depbee.guard.self_test", return_value=None)
+        # Nothing in these tests may start a process: a settings file's command never runs.
+        self.run = self.patch("depbee.guard.subprocess.run")
+
+    def patch(self, target, **kwargs):
+        patcher = mock.patch(target, **kwargs)
+        self.addCleanup(patcher.stop)
+        return patcher.start()
 
     def cli(self, *args):
         out, err = io.StringIO(), io.StringIO()
@@ -395,7 +415,11 @@ class SettingsTests(Fixture):
         return guard.handler(os.path.abspath(sys.executable))
 
     def backups(self):
-        return sorted(self.settings.parent.glob("*.depbee-backup-*"))
+        """Backups in the user's depbee folder (DEPBEE_CONFIG_DIR of the fixture); nothing but
+        the settings file itself may be next to it."""
+        self.assertEqual([p.name for p in self.settings.parent.iterdir()],
+                         [self.settings.name] * self.settings.exists())  # fmt: skip
+        return sorted((self.root / "user" / "guard-backups").glob(f"*/{self.settings.name}"))
 
     def leftovers(self):
         return sorted(self.settings.parent.glob(".*.depbee"))
@@ -495,20 +519,147 @@ class SettingsTests(Fixture):
         self.assertEqual((code, self.settings.read_bytes(), self.backups()), (2, original, []))
         self.assertIn("nothing was written", err)
 
-    def test_status(self):
+    def test_status_self_tests_its_own_handler_only(self):
         self.assertEqual(self.cli("status", str(self.settings))[0], 2)  # no file, no hook
         self.cli("enable", str(self.settings))
+        self.self_test.reset_mock()
         code, out, _ = self.cli("status", str(self.settings))
         self.assertEqual(code, 0, out)
         self.assertIn("자가 시험 통과", out)
-        with mock.patch("depbee.guard.self_test", return_value="exit 1"):
-            self.assertEqual(self.cli("status", str(self.settings))[0], 2)
-        saved = json.loads(self.settings.read_text("utf-8"))
-        saved["hooks"]["PreToolUse"][0]["hooks"][0]["onFailure"] = "continue"
-        self.write(self.settings, saved)
-        code, out, _ = self.cli("status", str(self.settings))
+        self.self_test.assert_called_once_with(os.path.abspath(sys.executable))
+        self.self_test.return_value = "exit 1"
+        self.assertEqual(self.cli("status", str(self.settings))[0], 2)
+        self.run.assert_not_called()
+
+    def test_status_runs_nothing_a_settings_file_names(self):
+        # Harmless stand-ins: none of these is ever started, whatever it names.
+        other = str(self.root / "other" / "python.exe")
+        ours = self.ours()
+        handlers = {
+            "another Python": {**ours, "command": other},
+            "an extra argument": {**ours, "args": [*guard.HOOK_ARGS, "--extra"]},
+            "another timeout": {**ours, "timeout": 600},
+            "an if filter": {**ours, "if": "Bash(npm *)"},
+            "a shell field": {**ours, "shell": "powershell"},
+            "async": {**ours, "async": True},
+            "onFailure continue": {**ours, "onFailure": "continue"},
+            "args as a string": {**ours, "args": "-I -m depbee.guard hook"},
+            "args of another type": {**ours, "args": [1, "-m", "depbee.guard", "hook"]},
+            "no command": {k: v for k, v in ours.items() if k != "command"},
+            "shell form": {"type": "command", "command": f"{other} -I -m depbee.guard hook"},
+        }  # fmt: skip
+        cases = {name: {"hooks": {"PreToolUse": [{"matcher": "Bash|PowerShell", "hooks": [h]}]}}
+                 for name, h in handlers.items()}  # fmt: skip
+        cases["another matcher"] = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [ours]}]}}
+        cases["a group condition"] = {"hooks": {"PreToolUse": [
+            {"matcher": "Bash|PowerShell", "hooks": [ours], "extra": True}]}}  # fmt: skip
+        cases["disableAllHooks"] = {"disableAllHooks": True, "hooks": {"PreToolUse": [
+            {"matcher": "Bash|PowerShell", "hooks": [ours]}]}}  # fmt: skip
+        for case, settings in cases.items():
+            with self.subTest(case):
+                self.write(self.settings, settings)
+                code, out, _ = self.cli("status", str(self.settings))
+                self.assertEqual(code, 2, out)
+                self.assertIn("확인 필요", out)
+                self.assertIn("실행하지 않았습니다", out)
+                self.self_test.assert_not_called()
+                self.run.assert_not_called()
+
+    def test_handlers_that_are_not_exactly_ours_are_kept(self):
+        mine = {**self.ours(), "timeout": 60}  # a user's own edit of the guard
+        near = {**self.ours(), "args": ["-X", "utf8", *guard.HOOK_ARGS]}
+        group = {"matcher": "Bash|PowerShell", "hooks": [self.ours(), mine], "note": "mine"}
+        odd = ["text", 1, None, {"hooks": "not a list"}, {"matcher": "Bash"}]
+        self.write(self.settings, {"hooks": {"PreToolUse": [ORCA, group, {"hooks": [near]}, *odd]}})
+        code, out, _ = self.cli("enable", str(self.settings))
+        self.assertEqual(code, 0, out)
+        self.assertIn("주의", out)  # the edited copies are reported, not touched
+        groups = json.loads(self.settings.read_text("utf-8"))["hooks"]["PreToolUse"]
+        kept = [ORCA, {**group, "hooks": [mine]}, {"hooks": [near]}, *odd]
+        self.assertEqual(groups, [*kept, {"matcher": "Bash|PowerShell", "hooks": [self.ours()]}])
+        self.assertEqual(self.cli("disable", str(self.settings))[0], 0)
+        self.assertEqual(json.loads(self.settings.read_text("utf-8"))["hooks"]["PreToolUse"], kept)
+        # A group of the guard alone that carries a field of its own keeps that field.
+        own = {"matcher": "Bash|PowerShell", "hooks": [self.ours()], "note": "mine"}
+        self.write(self.settings, {"hooks": {"PreToolUse": [own]}})
+        self.cli("disable", str(self.settings))
+        self.assertEqual(json.loads(self.settings.read_text("utf-8")),
+                         {"hooks": {"PreToolUse": [{**own, "hooks": []}]}})  # fmt: skip
+        self.run.assert_not_called()
+
+    def test_the_backup_is_the_users_alone_and_records_its_source(self):
+        self.write(self.settings, SETTINGS)
+        if os.name != "nt":
+            os.chmod(self.settings, 0o640)
+        original = self.settings.read_bytes()
+        code, out, _ = self.cli("enable", str(self.settings))
+        self.assertEqual(code, 0, out)
+        (backup,) = self.backups()
+        self.assertEqual(backup.read_bytes(), original)
+        about = json.loads((backup.parent / "backup.json").read_text("utf-8"))
+        self.assertEqual((Path(about["settings"]), about["sha256"]),
+                         (self.settings.resolve(), hashlib.sha256(original).hexdigest()))  # fmt: skip
+        self.assertIn(str(backup), out)
+        if os.name != "nt":  # Windows: the folder's access list (config.make_dir)
+            self.assertEqual(stat.S_IMODE(os.stat(backup).st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(os.stat(backup.parent).st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(os.stat(self.settings).st_mode), 0o640)
+
+    def test_a_link_is_followed_and_kept(self):
+        real = self.root / "dotfiles" / "settings.json"
+        real.parent.mkdir()
+        self.write(real, SETTINGS)
+        try:
+            self.settings.symlink_to(real)
+        except OSError as exc:  # this Windows account may not create symlinks
+            self.skipTest(f"no symlink: {exc}")
+        code, out, _ = self.cli("enable", str(self.settings))
+        self.assertEqual(code, 0, out)
+        self.assertTrue(self.settings.is_symlink())
+        self.assertEqual(len(json.loads(real.read_text("utf-8"))["hooks"]["PreToolUse"]), 2)
+        self.assertIn("링크", out)
+        self.settings.unlink()
+        self.settings.symlink_to(self.root / "missing.json")
+        code, _, err = self.cli("enable", str(self.settings))
         self.assertEqual(code, 2)
-        self.assertIn("onFailure", out)
+        self.assertIn("target does not exist", err)
+        self.assertFalse((self.root / "missing.json").exists())
+
+    def test_a_hard_linked_file_is_refused(self):
+        self.write(self.settings, SETTINGS)
+        original = self.settings.read_bytes()
+        os.link(self.settings, self.root / "other-name.json")
+        code, _, err = self.cli("enable", str(self.settings))
+        self.assertEqual((code, self.settings.read_bytes()), (2, original))
+        self.assertIn("hard link", err)
+
+    def test_each_windows_retry_compares_the_file_again(self):
+        self.write(self.settings, SETTINGS)
+        theirs = json.dumps({**SETTINGS, "model": "theirs"}).encode()
+
+        def busy_then_changed(source, target):
+            self.settings.write_bytes(theirs)  # written while the file was open elsewhere
+            raise PermissionError("in use")
+
+        with mock.patch("depbee.guard.os.replace", side_effect=busy_then_changed):
+            code, _, err = self.cli("enable", str(self.settings))
+        self.assertEqual((code, self.settings.read_bytes(), self.leftovers()), (2, theirs, []))
+        self.assertIn("changed while depbee edited it", err)
+        self.write(self.settings, SETTINGS)
+        replace = os.replace
+        calls = iter([PermissionError("in use")])
+
+        def busy_once(source, target):
+            error = next(calls, None)
+            if error:
+                raise error
+            replace(source, target)
+
+        with mock.patch("depbee.guard.os.replace", side_effect=busy_once):
+            self.assertEqual(self.cli("enable", str(self.settings))[0], 0)
+        self.assertEqual(
+            len(json.loads(self.settings.read_text("utf-8"))["hooks"]["PreToolUse"]), 2
+        )
 
 
 class InstallCheckedTests(ApplyFixture):
@@ -556,6 +707,92 @@ class InstallCheckedTests(ApplyFixture):
         self.assertEqual((result["report"]["results"], result["apply"]["outcome"]),
                          ([], "unchanged"))  # fmt: skip
         self.assert_not_installed()
+
+    def mutate(self, change):
+        """Let change(report) edit the scan's report before install_checked() reads it."""
+        real = service.scan_project
+
+        def scan(*args, **kwargs):
+            report = real(*args, **kwargs)
+            change(report)
+            return report
+
+        self.patch("depbee.service.scan_project", side_effect=scan)
+
+    def verdict(self, rows=None, exit_code=None, during=None):
+        """ApplyFixture.verdict(), plus the ML risk score a real not_flagged row always has
+        (the fixture runs without a model, so its rows have none)."""
+        super().verdict(rows, exit_code, during)
+
+        def scored(report):
+            for row in report["results"]:
+                if row["status"] == "not_flagged" and row.get("score") is None:
+                    row["score"] = 0.1
+
+        self.mutate(scored)
+
+    def test_removals_only_never_reach_npm(self):
+        (self.upd / "package-lock.json").write_text(
+            '{"lockfileVersion": 3, "packages": {}}', "utf-8"
+        )
+        self.original["package-lock.json"] = (self.upd / "package-lock.json").read_bytes()
+        spy = self.patch("depbee.service.apply_preview", wraps=service.apply_preview)
+        result = install_checked(self.upd)
+        self.assertEqual([row["status"] for row in result["report"]["results"]], ["removed"])
+        self.assertEqual((result["apply"]["outcome"], result["apply"]["reason"]),
+                         ("refused", "removal_only"))  # fmt: skip
+        spy.assert_not_called()
+        self.assert_not_installed()
+        self.assertEqual(self.calls, [])  # not even npm --version
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main(["guard", "ci", str(self.upd)]), 2)
+        self.assertIn("삭제만 있어", out.getvalue())
+
+    def test_a_removal_beside_a_passing_update_is_installed(self):
+        self.old["packages"]["node_modules/other"] = {
+            "version": "1.0.0", "resolved": "https://registry.npmjs.org/other/-/other-1.0.0.tgz",
+            "integrity": sri("1.0.0"),
+        }  # fmt: skip
+        self.save_locks()  # base.json now also has other, which the new lockfile removes
+        self.verdict([PASS], 0)  # the first row (node_modules/example); the removal stays
+        result = install_checked(self.upd)
+        self.assertEqual(sorted(row["status"] for row in result["report"]["results"]),
+                         ["not_flagged", "removed"])  # fmt: skip
+        self.assertEqual(result["apply"]["outcome"], "applied")
+        self.assertEqual(len(self.ci_calls), 1)
+
+    def test_a_report_that_does_not_describe_the_plan_installs_nothing(self):
+        def extra(report):
+            report["results"].append({**report["results"][0], "change_id": "0" * 64})
+
+        changes = {
+            "a row missing": lambda report: report["results"].clear(),
+            "a row twice": lambda report: report["results"].append(report["results"][0]),
+            "an extra row": extra,
+            "another location": lambda report: report["results"][0].update(location="x"),
+            "another version": lambda report: report["results"][0].update(after_version="9.9.9"),
+            "an update marked removed": lambda report: report["results"][0].update(
+                status="removed"),
+            "a pass with exit code 2": lambda report: report.update(exit_code=2),
+            "a pass without a score": lambda report: report["results"][0].update(score=None),
+        }  # fmt: skip
+        self.verdict([PASS], 0)
+        checked = service.scan_project  # the fixture's scan with its passing verdict
+
+        for case, change in changes.items():
+
+            def scan(*args, change=change, **kwargs):
+                report = checked(*args, **kwargs)
+                change(report)
+                return report
+
+            with self.subTest(case), mock.patch("depbee.service.scan_project", side_effect=scan):
+                with self.assertRaises(GuardError) as caught:
+                    install_checked(self.upd)
+                self.assertEqual(str(caught.exception), service.GUARD_MISMATCH)
+                self.assertEqual(self.ci_calls, [])
+        self.assertEqual(install_checked(self.upd)["apply"]["outcome"], "applied")  # control
 
     def test_risk_hold_and_unchecked_items_are_not_installed(self):
         rows = {

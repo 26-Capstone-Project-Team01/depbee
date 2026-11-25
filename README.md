@@ -101,7 +101,7 @@ PowerShell과 Bash의 등록 명령, Codex 설정, 직접 준비한 모델·색�
 
 ### Claude Code 설치 가드 (선택)
 
-Claude Code의 `PreToolUse` 훅이 검사 없는 npm 설치·업데이트(`npm install`, `npm ci`, `npx` 등)를 실행 전에 거부하고 다음 명령을 안내합니다. lockfile만 바꾸는 준비(`--package-lock-only --ignore-scripts`)와 조회 명령은 그대로 두고, 설치는 `depbee guard ci`가 같은 lockfile을 Git HEAD 기준으로 다시 검사해 모든 항목이 통과할 때만 `npm ci --ignore-scripts`로 실행합니다. 훅은 허가를 내지 않으므로 셸 권한이 넓어지지 않습니다. Claude Code 2.1.295 이상이 필요합니다.
+Claude Code의 `PreToolUse` 훅이 검사 없는 npm 설치·업데이트(`npm install`, `npm ci`, `npx` 등)를 실행 전에 거부하고 다음 명령을 안내합니다. lockfile만 바꾸는 준비(`--package-lock-only --ignore-scripts`)와 조회 명령은 그대로 두고, 설치는 `depbee guard ci`가 같은 lockfile을 Git HEAD 기준으로 다시 검사해, 실제로 분석한 추가·업데이트가 하나 이상 있고 모든 항목이 통과할 때만 `npm ci --ignore-scripts`로 실행합니다(변경 0건이나 삭제만 있으면 설치하지 않음). 훅은 허가를 내지 않으므로 셸 권한이 넓어지지 않습니다. Claude Code 2.1.295 이상이 필요합니다.
 
 ```powershell
 depbee guard enable .claude\settings.local.json    # 이 프로젝트에서 켜기(다른 설정과 훅은 그대로, 바꾸기 전 백업)

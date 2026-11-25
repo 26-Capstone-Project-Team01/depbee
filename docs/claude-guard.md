@@ -55,7 +55,9 @@ depbee guard status .claude/settings.local.json
 depbee guard disable .claude/settings.local.json
 ```
 
-`enable`은 쓰기 전에 넣을 명령을 Claude Code와 같은 방식(셸 없이 명령과 인자를 직접 실행, 이벤트 JSON을 stdin으로 전달)으로 세 번 실행해, 검사 없는 설치는 거부하고 조회 명령은 그대로 두는지 확인합니다. 통과해야만 파일을 씁니다. 파일이 없으면 만들고, 있으면 다른 설정과 다른 훅(Orca 훅 포함)을 그대로 둔 채 아래 그룹 하나만 `hooks.PreToolUse` 끝에 더합니다. 이전 depbee 가드 항목이 있으면(예: 다른 경로의 설치본) 그것을 빼고 새 항목으로 바꿉니다. 바꾸기 전 파일은 같은 폴더에 `<파일 이름>.depbee-backup-<시각>-<난수>`로 남깁니다. 엄격한 JSON 객체가 아니거나 `hooks`·`hooks.PreToolUse`의 형식이 다르면 아무것도 바꾸지 않습니다. 새 내용은 같은 폴더의 임시 파일에 쓴 뒤 교체하므로 중간에 실패해도 원래 파일이 남습니다. 교체 직전에 파일을 다시 읽어, 그 사이 Claude Code·Orca·편집기가 파일을 바꿨으면 교체하지 않고 오류로 끝납니다. 그 확인과 교체 사이의 아주 짧은 순간에 다른 프로그램이 쓴 내용은 알아채지 못합니다. JSON은 두 칸 들여쓰기로 다시 쓰므로 원래 파일의 공백 배치는 달라질 수 있습니다.
+`enable`은 쓰기 전에 넣을 명령을 Claude Code와 같은 방식(셸 없이 명령과 인자를 직접 실행, 이벤트 JSON을 stdin으로 전달)으로 새 빈 임시 폴더에서 세 번 실행해, 검사 없는 설치는 거부하고 조회 명령은 그대로 두는지 확인합니다. 실행하는 것은 지금 실행한 depbee의 Python으로 만든 아래 항목뿐이고 설정 파일에 적힌 명령은 실행하지 않습니다. 통과해야만 파일을 씁니다. 파일이 없으면 만들고, 있으면 다른 설정과 다른 훅(Orca 훅 포함)을 그대로 둔 채 아래 그룹 하나만 `hooks.PreToolUse` 끝에 더합니다. 이전 depbee 가드 항목이 아래와 Python 경로만 다른 그대로의 형태면(예: 다른 경로의 설치본) 그것을 빼고 새 항목으로 바꿉니다. 필드를 더하거나 값을 바꾼 항목은 사용자의 것으로 보고 건드리지 않으며 "주의"로 알립니다. 엄격한 JSON 객체가 아니거나 `hooks`·`hooks.PreToolUse`의 형식이 다르면 아무것도 바꾸지 않고, 읽지 못하는 형태의 그룹은 그대로 둡니다.
+
+바꾸기 전 파일은 프로젝트가 아니라 사용자 설정 폴더(`~/.config/depbee`, 또는 `DEPBEE_CONFIG_DIR`)의 `guard-backups/<UTC 시각>-<난수>/`에 원래 이름으로 남기고, 같은 폴더의 `backup.json`에 원래 경로와 SHA-256을 적습니다. 출력에 백업 위치와 되돌리는 방법이 나옵니다. 폴더는 depbee가 처음 만들 때 사용자 전용이고(POSIX 0700, Windows는 Python 3.12.4 이상에서 소유자·SYSTEM·Administrators만 접근) 백업 파일은 0600이라 원래 파일보다 넓게 읽히지 않으며, 프로젝트의 Git에 들어가지 않습니다. 이미 있던 사용자 설정 폴더를 다른 계정이 열 수 있으면 터미널에 경고가 나옵니다. 새 내용은 같은 폴더의 임시 파일에 쓴 뒤 교체하므로 중간에 실패해도 원래 파일이 남고, 교체한 파일은 원래 파일의 권한 비트를 그대로 가집니다. 교체를 시도할 때마다 직전에 파일을 다시 읽어(Windows에서 다른 프로세스가 파일을 잠깐 열고 있으면 다시 시도), 그 사이 Claude Code·Orca·편집기가 파일을 바꿨으면 교체하지 않고 오류로 끝납니다. 그 확인과 교체 사이의 아주 짧은 순간에 다른 프로그램이 쓴 내용은 알아채지 못합니다. 설정 파일이 심볼릭 링크이거나 링크·junction이 든 경로면 링크가 가리키는 실제 파일을 고치고 링크는 그대로 둡니다(대상이 없는 링크는 거부). 하드 링크가 둘 이상인 파일은 교체하면 다른 이름이 옛 내용으로 남으므로 거부합니다. JSON은 두 칸 들여쓰기로 다시 쓰므로 원래 파일의 공백 배치는 달라질 수 있습니다.
 
 ```json
 {
@@ -80,7 +82,7 @@ depbee guard disable .claude/settings.local.json
 
 `command`와 `args`를 나눈 형식(exec form)은 셸을 거치지 않으므로 경로의 공백·한글·따옴표를 따로 인용하지 않아도 됩니다. `-I`는 `PYTHONPATH`, 사용자 site 폴더, 현재 폴더를 import 경로에서 빼서 프로젝트에 놓인 다른 `depbee` 폴더가 대신 실행되지 않게 합니다. `matcher`가 `Bash|PowerShell`이므로 Git Bash가 없어 PowerShell 도구만 있는 Windows에서도 동작합니다.
 
-`status`는 훅 항목, `matcher`·`onFailure` 값, 같은 자가 시험 결과를 보여 주고 모두 맞을 때만 종료 코드 0입니다. `disable`은 depbee 가드 항목만 지우고, 그 때문에 빈 그룹이 생기면 그 그룹도 지웁니다. Claude Code는 설정 파일 변경을 다시 읽으므로 실행 중인 세션에도 반영되며 `/hooks`에서 확인할 수 있습니다. 대화형 세션에서는 신뢰하기로 한 폴더에서만 훅이 실행됩니다. 켠 뒤 Claude Code에 "npm install lodash를 실행해 줘"라고 하면 거부 메시지가 나오는지로 동작을 확인합니다.
+`status`는 설정 파일을 먼저 읽기만 해서 확인합니다. 가드 항목이 위 형태 그대로이고, 그 Python이 지금 실행한 depbee의 것이며, 그룹 조건이 `matcher` `Bash|PowerShell` 하나뿐이고, `disableAllHooks`가 true가 아니어야 합니다. `depbee.guard`를 가리키지만 다른 Python, 추가 인자, 다른 `timeout`·`onFailure`, `if`·`shell`·`async` 같은 필드, 셸 문자열 형식처럼 다른 항목이 있으면 그 내용을 보여 주고 아무것도 실행하지 않은 채 종료 코드 2로 끝나며 `depbee guard enable`로 다시 켜라고 안내합니다. 모두 맞으면 `enable`과 같은 자가 시험을 지금 depbee의 항목으로 실행하고, 통과할 때만 종료 코드 0입니다. 다른 설정 파일(사용자·관리 설정)의 `disableAllHooks`는 보지 않으므로 Claude Code의 `/hooks`로도 확인합니다. `disable`은 위 형태 그대로인 depbee 가드 항목만 지우고, 그 때문에 비는 그룹이 `matcher`와 `hooks`만 가진 그룹이면 그 그룹도 지웁니다. 다른 필드가 있는 그룹은 빈 `hooks`로 남깁니다. Claude Code는 설정 파일 변경을 다시 읽으므로 실행 중인 세션에도 반영되며 `/hooks`에서 확인할 수 있습니다. 대화형 세션에서는 신뢰하기로 한 폴더에서만 훅이 실행됩니다. 켠 뒤 Claude Code에 "npm install lodash를 실행해 줘"라고 하면 거부 메시지가 나오는지로 동작을 확인합니다.
 
 에이전트가 `depbee guard enable`·`disable`을 실행하면 훅이 거부합니다. 가드를 켜고 끄는 일은 사용자가 Claude Code 밖의 터미널에서 합니다.
 
@@ -131,7 +133,7 @@ MCP의 `scan_lockfile` 결과는 에이전트가 읽는 보고서입니다. 그 
 2. 검사 전에 거부합니다: `depbee update`가 지원하지 않는 프로젝트(workspaces, `npm-shrinkwrap.json`, registry 밖 의존성 등), 프로젝트 `.npmrc`, 프로젝트 자신의 폴더가 아닌 `node_modules`, 유효한 integrity가 없는 lockfile 항목.
 3. `package.json`·`package-lock.json`을 읽어 해시를 남기고, Git HEAD와 비교한 변경 목록을 만듭니다. 분석할 변경이 20개를 넘으면 내려받기 전에 멈춥니다(MCP와 같은 상한).
 4. `depbee scan --extract`와 같은 검사를 합니다. 검사가 읽은 lockfile과 HEAD가 3단계와 다르면(요청 ID 비교) 설치하지 않습니다.
-5. `depbee update --apply install`과 같은 반영 게이트를 확인 없이 적용합니다. 기지 악성 일치는 거부, ML 기준 이상·보류·기지 악성 미확인도 거부이며, 경고를 확인하고 진행하는 옵션은 없습니다. 바뀐 항목이 없으면 설치하지 않습니다. 삭제만 있는 변경은 설치합니다(남는 의존성은 HEAD의 것).
+5. 보고서가 3단계의 변경 목록과 정확히 맞는지(항목마다 행 하나, 같은 위치·버전·삭제 여부) 확인하고, 맞지 않으면 오류로 멈춥니다. 바뀐 항목이 없거나 삭제만 있으면 depbee가 검사한 설치 항목이 없으므로 npm을 실행하지 않습니다. 설치하려면 추가·업데이트가 하나 이상 있고 그 모두가 실제로 분석돼 ML 위험 점수가 있고, ML 기준 미만이며 기지 악성 목록과 대조해 일치가 없어야 합니다(보고서 종료 코드 0). 그다음 `depbee update --apply install`과 같은 반영 게이트를 확인 없이 적용합니다. 기지 악성 일치는 거부, ML 기준 이상·보류·기지 악성 미확인도 거부이며, 경고를 확인하고 진행하는 옵션은 없습니다. 이 조건은 `depbee guard ci`에만 적용되고, 대시보드와 `depbee update --apply`의 반영 규칙은 그대로입니다.
 6. 두 파일을 다시 읽어 해시를 비교하고, npm 버전을 확인한 뒤 `npm ci`를 시작하기 바로 전에 두 파일, `.npmrc`, Git HEAD 기준 변경 목록을 한 번 더 비교합니다. 하나라도 다르면 `npm ci`를 시작하지 않습니다.
 7. `npm ci --ignore-scripts`는 `depbee update --apply install`과 같은 고정 옵션으로 실행합니다(설치 스크립트 미실행, Git 실행 파일과 전역 설정을 없는 경로로 고정, `npm_config_*`·`NODE_OPTIONS` 환경 변수 제거, 시간·출력 상한). 끝난 뒤 두 파일이 그대로인지 확인합니다.
 
@@ -143,7 +145,7 @@ depbee는 프로젝트 파일을 쓰지 않습니다. 반영 경로를 그대로
 
 - 검사 없는 설치 명령, `check_package` 한 건의 결과(그 패키지의 의존성을 검사하지 않음)
 - MCP `scan_lockfile`의 어떤 결과, 프로젝트 안의 보고서 JSON, 에이전트나 모델이 적은 문장
-- 변경 0건, 위험(1), 보류(2), 도구 오류, 기지 악성 미확인
+- 변경 0건, 삭제만 있는 변경, 위험(1), 보류(2), 도구 오류, 기지 악성 미확인, 변경 목록과 맞지 않는 보고서
 - 검사 뒤 바뀐 파일의 예전 결과, 다른 프로젝트나 다른 기준의 결과
 - 특징 캐시, 대시보드 이력 같은 저장된 데이터
 
@@ -169,7 +171,7 @@ depbee는 프로젝트 파일을 쓰지 않습니다. 반영 경로를 그대로
 모든 셸 명령이 막혔다면(예: depbee 가상환경을 지우거나 옮김) Claude Code 안의 셸 도구로는 고칠 수 없습니다. Claude Code 밖의 터미널에서 다음 중 하나를 합니다.
 
 1. `depbee guard status <설정 파일>`로 원인을 보고 `depbee guard disable <설정 파일>`로 끕니다. depbee를 다른 경로에 다시 설치했다면 그 설치본으로 `depbee guard enable <설정 파일>`을 실행하면 이전 항목이 바뀝니다.
-2. depbee를 실행할 수 없으면 설정 파일에서 `"args": ["-I", "-m", "depbee.guard", "hook"]`가 든 그룹을 지우거나, `enable`이 남긴 백업 파일로 되돌립니다.
+2. depbee를 실행할 수 없으면 설정 파일에서 `"args": ["-I", "-m", "depbee.guard", "hook"]`가 든 그룹을 지우거나, `enable`이 사용자 설정 폴더의 `guard-backups/`에 남긴 백업 파일(같은 폴더의 `backup.json`에 원래 경로)을 원래 경로에 복사합니다.
 3. 그 세션에서만 끄려면 `claude --safe-mode`(훅을 포함한 사용자 지정 설정 전체 끔)나 `claude --settings '{"disableAllHooks": true}'`(Orca 훅을 포함한 모든 훅 끔)로 시작합니다.
 
 ## Docker로 실행한 MCP와 함께 쓸 때

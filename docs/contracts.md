@@ -270,7 +270,9 @@ feature를 추출한 보고서(`scan --extract`, `check`)에만 소요 시간과
 
 - 옵션: 모델·색인·캐시·기준 옵션이 없다. 모델과 색인은 다른 명령과 같은 출처 순서, 기준은 Git HEAD, 캐시는 기본 폴더다.
 - 검사 전 거부(error JSON, 종료 코드 2): 같은 프로젝트(실제 경로, Windows는 대소문자 무시)의 `install_checked`가 실행 중(이력 파일 옆 `locks/install-<해시>.lock`의 운영체제 잠금, 기다리지 않음), `npm_cli.read_project` 실패, 프로젝트 `.npmrc`, 프로젝트 자신의 폴더가 아닌 `node_modules`, 유효한 integrity 없는 항목, 분석 대상 변경이 20개(`GUARD_MAX_PACKAGES`, MCP와 같음) 초과, Git 기준 읽기 실패, 검사가 읽은 요청(`request_id`)이 해시한 파일로 만든 계획과 다름.
-- 게이트: 5.1절 `update_gate`를 확인 없이 적용한다. `blocked`나 `confirmation_required`가 하나라도 있으면 `refused`다. `results`가 비면 `unchanged`이고 설치하지 않는다.
+- 보고서와 계획의 대조(`_guard_rows`): `report.results`가 계획의 변경마다 정확히 한 행이고(빠지거나 더해지거나 겹친 행 없음) 같은 `location`, `before_version`, `after_version`, 삭제 여부(`status`가 `removed`인지와 계획의 `kind`)를 가져야 한다. 아니면 error JSON(종료 코드 2)이다.
+- 설치할 항목: 계획에 추가·업데이트가 없으면 `npm`을 실행하지 않는다. 변경이 없으면 `outcome` `unchanged`, 삭제만 있으면 `refused`·`reason` `removal_only`다(이 둘의 `apply`는 `apply_preview`를 거치지 않고 같은 필드로 만든다). 설치하려면 모든 추가·업데이트가 분석 대상(`analyzable`)이고 그 행이 완전한 통과여야 한다(`_complete_pass`: `status` `not_flagged`, 숫자 `score`, `ml.status` `not_hit`, `known_malicious.status` `not_hit`). 모두 통과인데 보고서 `exit_code`가 0이 아니거나, 통과가 아닌 행이 있는데 `update_gate`가 아무것도 들지 않으면 error JSON이다.
+- 게이트: 그다음 5.1절 `update_gate`를 확인 없이 적용한다. `blocked`나 `confirmation_required`가 하나라도 있으면 `refused`다. 이 조건들은 `install_checked`에만 있고 `apply_preview`의 5.1절 계약(대시보드, `update --apply`)은 바꾸지 않았다.
 - `npm ci` 직전 재확인: `apply_preview(..., ready=...)`가 `npm_cli.clean_install(..., ready)`에 넘긴 함수가 npm 버전 확인 뒤, `npm ci` 시작 바로 전에 두 파일의 SHA-256, `.npmrc` 없음, Git HEAD 기준 계획의 `request_id`를 다시 비교한다. 다르면 `npm ci`를 시작하지 않고 `failed`(`install_failed`)다. 그 뒤 다른 프로세스가 파일을 쓰는 것은 막지 않는다.
 - 종료 코드: `applied`면 0, 그 밖에는 5.1절 규칙의 값이되 0이면 2다(`unchanged`도 2).
 - 이력: 기록하지 않는다. 설치 전 두 파일의 백업은 5.1절과 같이 `backups/`에 남는다.

@@ -136,7 +136,13 @@ GUARD_REASON_LABELS = {
     **APPLY_REASON_LABELS,
     "confirmation_required": "확인이 필요한 항목이 있어 설치하지 않음(가드는 확인 없이 통과한 결과만 설치)",
     "project_changed": "검사 뒤 package.json 또는 package-lock.json이 바뀜",
+    "removal_only": "삭제만 있어 검사한 설치 항목이 없음",
 }
+GUARD_REMOVAL = (
+    "Git HEAD와 비교해 삭제만 있어 depbee가 검사한 설치 항목이 없으므로 설치하지 않았습니다. 남은 "
+    "의존성을 그대로 설치할지는 사용자가 정하고, 정하면 사용자가 터미널에서 직접 "
+    "npm ci --ignore-scripts를 실행합니다."
+)
 GUARD_OUTCOME_LABELS = {
     "applied": "설치함",
     "unchanged": "검사한 변경 없음(설치하지 않음)",
@@ -162,17 +168,25 @@ GUARD_CI_FAILED = (
     "실행합니다."
 )
 GUARD_ABSENT = "  depbee 설치 가드 훅이 없습니다. depbee guard enable SETTINGS로 추가합니다."
+GUARD_NOT_RUN = (
+    "  설정 파일의 명령은 실행하지 않았습니다. 이 depbee로 다시 켜려면 depbee guard enable SETTINGS를 "
+    "실행하고, 위 항목은 직접 확인해 고치거나 지웁니다."
+)
 GUARD_SELF_TEST_PASSED = (
     "  자가 시험 통과: 검사 없는 npm 설치를 거부하고 조회 명령은 그대로 둡니다."
 )
 GUARD_SELF_TEST_FAILED = "  자가 시험 실패: {problem}"
-GUARD_SAME = "바꿀 것이 없습니다: {path}"
+GUARD_LINK = "  (링크 {named}이(가) 가리키는 파일입니다. 링크는 그대로 둡니다.)"
+GUARD_SAME = "바꿀 것이 없습니다."
 GUARD_ENABLED = (
-    "depbee 설치 가드 훅을 추가했습니다: {path}\n"
-    "다른 설정과 훅은 그대로입니다. Claude Code는 설정 파일 변경을 다시 읽으며, /hooks에서 확인할 수 "
-    "있습니다. Claude Code 2.1.295 이상이 필요합니다(onFailure)."
+    "depbee 설치 가드 훅을 추가했습니다. 다른 설정과 훅은 그대로입니다. Claude Code는 설정 파일 변경을 "
+    "다시 읽으며, /hooks에서 확인할 수 있습니다. Claude Code 2.1.295 이상이 필요합니다(onFailure)."
 )
-GUARD_DISABLED = "depbee 설치 가드 훅을 제거했습니다: {path}\n다른 설정과 훅은 그대로입니다."
+GUARD_DISABLED = "depbee 설치 가드 훅을 제거했습니다. 다른 설정과 훅은 그대로입니다."
+GUARD_BACKUP = (
+    "이전 파일은 사용자 전용 폴더에 백업했습니다: {backup}\n"
+    "되돌리려면 그 파일을 {path}에 복사합니다."
+)
 # No path or package text: the report above is already printed and unchanged.
 HISTORY_FAILED = (
     "depbee: 이 검사 결과를 로컬 이력에 기록하지 못했습니다. 출력과 종료 코드는 그대로입니다."
@@ -417,9 +431,10 @@ def _parser() -> argparse.ArgumentParser:
     actions = guard.add_subparsers(dest="guard_command", required=True)
     ci = actions.add_parser(
         "ci",
-        help="Check the project's package-lock.json change from Git HEAD now and, only if every "
-        "item passes, install those same bytes with npm ci --ignore-scripts (needs Node.js with "
-        "npm and .[extract]). No model, index, cache or base option",
+        help="Check the project's package-lock.json change from Git HEAD now and, only if at "
+        "least one added or updated package was analyzed and every item passes, install those "
+        "same bytes with npm ci --ignore-scripts; no change or removals only install nothing "
+        "(needs Node.js with npm and .[extract]). No model, index, cache or base option",
     )
     ci.add_argument("project", nargs="?", type=Path, default=Path("."), help="Project directory")
     ci.add_argument("--format", choices=("text", "json"), default="text")
@@ -1267,6 +1282,8 @@ def _guard_ci(args: argparse.Namespace) -> int:
             print(GUARD_INSTALLED)
         elif apply["outcome"] == "unchanged":
             print(GUARD_NOTHING)
+        elif apply["reason"] == "removal_only":
+            print(GUARD_REMOVAL)
         else:
             print(GUARD_STOPPED if apply["npm_ci_exit_code"] is None else GUARD_CI_FAILED)
     return 0 if apply["outcome"] == "applied" else _apply_exit(report, apply) or 2
@@ -1276,44 +1293,46 @@ def _guard_settings(args: argparse.Namespace) -> int:
     """depbee guard enable, status and disable on the one settings file given."""
     from . import guard
 
-    path = Path(os.path.abspath(args.settings))
+    named = Path(os.path.abspath(args.settings))
+    path = guard.settings_file(named)
     settings, original = guard.read_settings(path)
-    found = guard.installed_handlers(settings)
+    # The only Python a self-test runs: this depbee's own, never a command the file names.
+    python = os.path.abspath(sys.executable)
+    print(f"설정 파일: {_clean(path)}")
+    if path != named:
+        print(GUARD_LINK.format(named=_clean(named)))
     if args.guard_command == "status":
-        print(f"설정 파일: {_clean(path)}")
-        if not found:
-            print(GUARD_ABSENT)
+        found, wrong = guard.problems(settings, python)
+        for problem in wrong:
+            print(f"  확인 필요: {_clean(problem)}")
+        if wrong or not found:
+            print(GUARD_NOT_RUN if wrong else GUARD_ABSENT)
             return 2
-        problems = []
-        for entry in found:
-            print(f"  훅: {_clean(entry.get('command'))} {_clean(' '.join(entry['args']))} "
-                  f"(matcher {_clean(entry.get('matcher'))}, onFailure "
-                  f"{_clean(entry.get('onFailure'))})")  # fmt: skip
-            if entry.get("matcher") != guard.MATCHER or entry.get("onFailure") != "block":
-                problems.append("matcher나 onFailure가 depbee guard enable이 쓰는 값과 다릅니다")
-            problems.append(guard.self_test(entry, path.parent))
-        problems = [problem for problem in problems if problem]
-        print(GUARD_SELF_TEST_FAILED.format(problem=_clean(problems[0])) if problems
+        print(f"  훅: {_clean(python)} {' '.join(guard.HOOK_ARGS)} (matcher {guard.MATCHER}, "
+              "onFailure block)")  # fmt: skip
+        problem = guard.self_test(python)
+        print(GUARD_SELF_TEST_FAILED.format(problem=_clean(problem)) if problem
               else GUARD_SELF_TEST_PASSED)  # fmt: skip
-        return 2 if problems else 0
+        return 2 if problem else 0
     if args.guard_command == "enable":
-        entry = guard.handler(os.path.abspath(sys.executable))
-        problem = guard.self_test(entry, path.parent if path.parent.is_dir() else Path.cwd())
+        problem = guard.self_test(python)
         if problem:
             raise GuardError(
                 f"The hook did not answer its self-test, nothing was written: {problem}"
             )
-        updated = guard.with_guard(settings, entry["command"])
+        updated = guard.with_guard(settings, python)
     else:
         updated, _ = guard.without_guard(settings)
     if updated == settings:
-        print(GUARD_SAME.format(path=_clean(path)))
-        return 0
-    backup = guard.write_settings(path, updated, original)
-    print((GUARD_ENABLED if args.guard_command == "enable" else GUARD_DISABLED).format(
-        path=_clean(path)))  # fmt: skip
-    if backup is not None:
-        print(f"이전 파일 백업: {_clean(backup)}")
+        print(GUARD_SAME)
+    else:
+        saved = guard.write_settings(path, updated, original)
+        print(GUARD_ENABLED if args.guard_command == "enable" else GUARD_DISABLED)
+        if saved is not None:
+            print(GUARD_BACKUP.format(backup=_clean(saved), path=_clean(path)))
+            _warn_shared(saved.parent)
+    for problem in guard.problems(updated, python)[1]:  # what enable or disable left alone
+        print(f"  주의: {_clean(problem)}")
     return 0
 
 

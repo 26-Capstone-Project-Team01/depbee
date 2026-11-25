@@ -19,6 +19,7 @@ an alias or a package.json script that runs npm itself is not seen.
 """
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -32,6 +33,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from . import config
 from .config import REPLACE_TRIES
 from .contracts import GuardError, parse_json
 from .inputs.npm_cli import _FILE_SUFFIX, MAX_NAME_LENGTH, UPDATE_NAME, _registry_spec
@@ -517,8 +519,35 @@ def handler(python: str) -> dict:
 
 
 def _ours(entry: object) -> bool:
-    args = entry.get("args") if isinstance(entry, dict) else None
-    return isinstance(args, list) and args[-3:] == list(HOOK_ARGS[-3:])
+    """A handler exactly as handler() writes it, for whatever Python path: the only kind enable
+    replaces and disable removes. One with a field added, changed or of another type is the
+    user's and is left as it is."""
+    return (
+        isinstance(entry, dict)
+        and isinstance(entry.get("command"), str)
+        and set(entry) == set(handler(""))
+        and entry == handler(entry["command"])
+    )
+
+
+def _same_path(first: str, second: str) -> bool:
+    return os.path.normcase(os.path.normpath(first)) == os.path.normcase(os.path.normpath(second))
+
+
+def settings_file(path: Path) -> Path:
+    """The file a settings path really names. A link (a symlink, or a link or junction among its
+    folders) is followed, so the target is edited and the link stays a link. GuardError for a
+    link whose target does not exist and for a file with more than one hard link, whose other
+    names a replace would leave with the old text."""
+    named = Path(os.path.abspath(path))
+    real = Path(os.path.realpath(named))
+    if os.path.islink(named) and not os.path.lexists(real):
+        raise GuardError(f"{named} is a link whose target does not exist; nothing was written")
+    if os.path.lexists(real) and os.stat(real).st_nlink > 1:
+        raise GuardError(
+            f"{real} has more than one hard link, which replacing it would split; edit it yourself"
+        )
+    return real
 
 
 def read_settings(path: Path) -> tuple[dict, bytes | None]:
@@ -540,20 +569,36 @@ def read_settings(path: Path) -> tuple[dict, bytes | None]:
     return settings, raw
 
 
-def installed_handlers(settings: dict) -> list[dict]:
-    """This guard's handlers in the settings' PreToolUse groups, with their group's matcher."""
-    found = []
+def problems(settings: dict, python: str) -> tuple[int, list[str]]:
+    """(how many PreToolUse handlers would run this guard as enable writes it for python, what
+    else stands in the way) for status, from the settings alone: nothing in them is run. Any
+    handler that names depbee.guard and is not exactly that, in a group of that one matcher and
+    nothing else, is reported, and so is disableAllHooks."""
+    found, wrong = 0, []
+    if settings.get("disableAllHooks") is True:
+        wrong.append("disableAllHooks가 true라 이 파일의 훅이 실행되지 않습니다")
     for group in settings.get("hooks", {}).get("PreToolUse", []):
         inner = group.get("hooks") if isinstance(group, dict) else None
         for entry in inner if isinstance(inner, list) else []:
-            if _ours(entry):
-                found.append({**entry, "matcher": group.get("matcher")})
-    return found
+            if "depbee.guard" not in json.dumps(entry, ensure_ascii=False):
+                continue
+            if not _ours(entry):
+                shown = _shown(json.dumps(entry, ensure_ascii=False))
+                wrong.append(f"depbee guard enable이 쓰는 형태가 아닌 가드 항목: {shown}")
+            elif not _same_path(entry["command"], python):
+                wrong.append(f"지금 depbee의 Python이 아닌 경로: {_shown(entry['command'])}")
+            elif set(group) != {"matcher", "hooks"} or group["matcher"] != MATCHER:
+                wrong.append(f"가드 항목이 든 그룹의 조건이 matcher {MATCHER} 하나가 아님")
+            else:
+                found += 1
+    return found, wrong
 
 
 def without_guard(settings: dict) -> tuple[dict, int]:
-    """A copy of the settings without this guard's handlers, and how many were removed. A group
-    left with no handler is dropped, then an empty PreToolUse and an empty hooks."""
+    """A copy of the settings without this guard's handlers (_ours), and how many were removed.
+    Everything else stays as it is: another handler, a group of a shape this does not read, a
+    group's other fields. A group that held this guard's handlers alone, with only matcher and
+    hooks, is dropped, then an empty PreToolUse and an empty hooks."""
     hooks = dict(settings.get("hooks", {}))
     groups, removed = [], 0
     for group in hooks.get("PreToolUse", []):
@@ -563,8 +608,10 @@ def without_guard(settings: dict) -> tuple[dict, int]:
             continue
         kept = [entry for entry in inner if not _ours(entry)]
         removed += len(inner) - len(kept)
-        if kept or not inner:
-            groups.append(group if len(kept) == len(inner) else {**group, "hooks": kept})
+        if len(kept) == len(inner):
+            groups.append(group)
+        elif kept or not set(group) <= {"matcher", "hooks"}:
+            groups.append({**group, "hooks": kept})
     result = dict(settings)
     if groups:
         hooks["PreToolUse"] = groups
@@ -589,14 +636,16 @@ def with_guard(settings: dict, python: str) -> dict:
 
 
 def write_settings(path: Path, settings: dict, original: bytes | None) -> Path | None:
-    """Replace path with settings, as long as it still holds original (None: no file); return
-    the backup of original next to it (None if there was no file).
+    """Replace path, a real file (settings_file()), with settings as long as it still holds
+    original (None: no file); return the backup of original (backup(); None without a file).
 
-    The new text goes to a temporary file in the same folder, which takes the old file's mode,
-    and os.replace() swaps it in, so a reader sees the old file or the new one, never a part of
-    one. Right before the swap the file is read again: if another program (Claude Code, Orca, an
-    editor) wrote it meanwhile, nothing is replaced (GuardError) and its edit stays. Another
-    write in the instant between that read and the swap is not seen."""
+    The new text goes to a temporary file in the same folder, which takes the old file's mode
+    (a new file is the user's alone, 0600), and os.replace() swaps it in, so a reader sees the
+    old file or the new one, never a part of one. Right before every try of the swap (Windows
+    refuses it while another process has the file open, so it is tried again) the file is read
+    again: if another program (Claude Code, Orca, an editor) wrote it meanwhile, nothing is
+    replaced (GuardError) and its edit stays. A write in the instant between that read and the
+    swap is not seen."""
     text = json.dumps(settings, ensure_ascii=False, indent=2) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".depbee")
@@ -605,28 +654,50 @@ def write_settings(path: Path, settings: dict, original: bytes | None) -> Path |
             stream.write(text)
         if original is not None:
             shutil.copymode(path, temporary)
-        if read_settings(path)[1] != original:
-            raise GuardError(
-                f"{path} changed while depbee edited it; nothing was written. Run again"
-            )
-        backup = None
-        if original is not None:
-            stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-            backup = path.with_name(f"{path.name}.depbee-backup-{stamp}-{secrets.token_hex(3)}")
-            with backup.open("xb") as stream:
-                stream.write(original)
+        saved = None
         for attempt in range(REPLACE_TRIES):
+            if read_settings(path)[1] != original:
+                raise GuardError(
+                    f"{path} changed while depbee edited it; it was not replaced. Run again"
+                )
+            if saved is None and original is not None:
+                saved = backup(path, original)
             try:
                 os.replace(temporary, path)
-                break
+                return saved
             except PermissionError:  # Windows: another process has the file open for an instant
                 if attempt == REPLACE_TRIES - 1:
                     raise
                 time.sleep(0.05)
-        return backup
+        return saved  # not reached: the last failed try raised
     finally:
         with contextlib.suppress(OSError):  # gone once replaced
             os.unlink(temporary)
+
+
+def backup(path: Path, original: bytes) -> Path:
+    """original saved as <the user's depbee settings folder>/guard-backups/<UTC time>-<random>/
+    <file name>, with backup.json naming the file it came from: never next to the settings file,
+    where a project's Git could commit it. The folders are made for the user alone when missing
+    (config.make_dir) and both files are the user's alone (0600), so the copy is never open to
+    more people than the file was."""
+    try:
+        root = config.user_dir()
+        config.make_dir(root)
+        config.make_dir(root / "guard-backups")
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        folder = root / "guard-backups" / f"{stamp}-{secrets.token_hex(4)}"
+        folder.mkdir(mode=0o700)
+    except RuntimeError as exc:  # no home folder
+        raise GuardError(f"No folder for the backup ({exc}); nothing was replaced") from None
+    about = {"settings": str(path), "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+             "sha256": hashlib.sha256(original).hexdigest()}  # fmt: skip
+    files = {path.name: original, "backup.json": (json.dumps(about, indent=2) + "\n").encode()}
+    for name, data in files.items():
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        with os.fdopen(os.open(folder / name, flags, 0o600), "wb") as stream:
+            stream.write(data)
+    return folder / path.name
 
 
 SELF_TEST = (  # (tool, command, whether the hook must deny it)
@@ -636,13 +707,21 @@ SELF_TEST = (  # (tool, command, whether the hook must deny it)
 )
 
 
-def self_test(entry: dict, cwd: Path) -> str | None:
-    """Run the handler as Claude Code would (its command with its args, no shell, the event on
-    stdin) on SELF_TEST; None if every answer is right, else what went wrong."""
-    argv = [entry.get("command"), *(entry.get("args") or [])]
-    timeout = entry.get("timeout", HOOK_SECONDS)
-    if not all(isinstance(word, str) for word in argv) or not isinstance(timeout, int | float):
-        return "command, args or timeout is not of the type Claude Code reads"
+def self_test(python: str) -> str | None:
+    """Run this guard's handler for python, handler(python) and never a handler read from a
+    settings file, as Claude Code would (its command with its args, no shell, the event on
+    stdin), in a new empty folder, on SELF_TEST; None if every answer is right, else what went
+    wrong."""
+    entry = handler(python)
+    try:
+        with tempfile.TemporaryDirectory(prefix="depbee_guard_test_") as folder:
+            return _answers([entry["command"], *entry["args"]], entry["timeout"], Path(folder))
+    except OSError as exc:
+        return f"the self-test folder could not be used ({type(exc).__name__})"
+
+
+def _answers(argv: list[str], timeout: float, cwd: Path) -> str | None:
+    """None if the hook argv answers every SELF_TEST event as it should, else what went wrong."""
     for tool, command, denied in SELF_TEST:
         event = {"session_id": "depbee-self-test", "hook_event_name": "PreToolUse", "cwd": str(cwd),
                  "tool_name": tool, "tool_input": {"command": command}}  # fmt: skip
