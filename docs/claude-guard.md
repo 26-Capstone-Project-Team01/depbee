@@ -82,7 +82,7 @@ depbee guard disable .claude/settings.local.json
 
 `command`와 `args`를 나눈 형식(exec form)은 셸을 거치지 않으므로 경로의 공백·한글·따옴표를 따로 인용하지 않아도 됩니다. `-I`는 `PYTHONPATH`, 사용자 site 폴더, 현재 폴더를 import 경로에서 빼서 프로젝트에 놓인 다른 `depbee` 폴더가 대신 실행되지 않게 합니다. `matcher`가 `Bash|PowerShell`이므로 Git Bash가 없어 PowerShell 도구만 있는 Windows에서도 동작합니다.
 
-`status`는 설정 파일을 먼저 읽기만 해서 확인합니다. 가드 항목이 위 형태 그대로이고, 그 Python이 지금 실행한 depbee의 것이며, 그룹 조건이 `matcher` `Bash|PowerShell` 하나뿐이고, `disableAllHooks`가 true가 아니어야 합니다. `depbee.guard`를 가리키지만 다른 Python, 추가 인자, 다른 `timeout`·`onFailure`, `if`·`shell`·`async` 같은 필드, 셸 문자열 형식처럼 다른 항목이 있으면 그 내용을 보여 주고 아무것도 실행하지 않은 채 종료 코드 2로 끝나며 `depbee guard enable`로 다시 켜라고 안내합니다. 모두 맞으면 `enable`과 같은 자가 시험을 지금 depbee의 항목으로 실행하고, 통과할 때만 종료 코드 0입니다. 다른 설정 파일(사용자·관리 설정)의 `disableAllHooks`는 보지 않으므로 Claude Code의 `/hooks`로도 확인합니다. `disable`은 위 형태 그대로인 depbee 가드 항목만 지우고, 그 때문에 비는 그룹이 `matcher`와 `hooks`만 가진 그룹이면 그 그룹도 지웁니다. 다른 필드가 있는 그룹은 빈 `hooks`로 남깁니다. Claude Code는 설정 파일 변경을 다시 읽으므로 실행 중인 세션에도 반영되며 `/hooks`에서 확인할 수 있습니다. 대화형 세션에서는 신뢰하기로 한 폴더에서만 훅이 실행됩니다. 켠 뒤 Claude Code에 "npm install lodash를 실행해 줘"라고 하면 거부 메시지가 나오는지로 동작을 확인합니다.
+`status`는 설정 파일을 먼저 읽기만 해서 확인합니다. 가드 항목이 위 형태 그대로이고, 그 Python이 지금 실행한 depbee의 것이며, 그룹 조건이 `matcher` `Bash|PowerShell` 하나뿐이고, `disableAllHooks`가 true가 아니어야 합니다. `depbee.guard`를 가리키지만 다른 Python, 추가 인자, 다른 `timeout`·`onFailure`, `if`·`shell`·`async` 같은 필드, 셸 문자열 형식처럼 다른 항목이 있으면 그 내용을 보여 주고 아무것도 실행하지 않은 채 종료 코드 2로 끝납니다. `enable`은 지금 depbee의 항목만 쓰거나 바꾸고 이런 항목은 바꾸지도 지우지도 않으므로, 이 depbee로 다시 켜려면 `depbee guard enable`을 실행하고 보여 준 항목은 직접 확인해 고치거나 지우라고 안내합니다. 모두 맞으면 `enable`과 같은 자가 시험을 지금 depbee의 항목으로 실행하고, 통과할 때만 종료 코드 0입니다. 다른 설정 파일(사용자·관리 설정)의 `disableAllHooks`는 보지 않으므로 Claude Code의 `/hooks`로도 확인합니다. `disable`은 위 형태 그대로인 depbee 가드 항목만 지우고, 그 때문에 비는 그룹이 `matcher`와 `hooks`만 가진 그룹이면 그 그룹도 지웁니다. 다른 필드가 있는 그룹은 빈 `hooks`로 남깁니다. Claude Code는 설정 파일 변경을 다시 읽으므로 실행 중인 세션에도 반영되며 `/hooks`에서 확인할 수 있습니다. 대화형 세션에서는 신뢰하기로 한 폴더에서만 훅이 실행됩니다. 켠 뒤 Claude Code에 "npm install lodash를 실행해 줘"라고 하면 거부 메시지가 나오는지로 동작을 확인합니다.
 
 에이전트가 `depbee guard enable`·`disable`을 실행하면 훅이 거부합니다. 가드를 켜고 끄는 일은 사용자가 Claude Code 밖의 터미널에서 합니다.
 
@@ -171,8 +171,8 @@ depbee는 프로젝트 파일을 쓰지 않습니다. 반영 경로를 그대로
 
 모든 셸 명령이 막혔다면(예: depbee 가상환경을 지우거나 옮김) Claude Code 안의 셸 도구로는 고칠 수 없습니다. Claude Code 밖의 터미널에서 다음 중 하나를 합니다.
 
-1. `depbee guard status <설정 파일>`로 원인을 보고 `depbee guard disable <설정 파일>`로 끕니다. depbee를 다른 경로에 다시 설치했다면 그 설치본으로 `depbee guard enable <설정 파일>`을 실행하면 이전 항목이 바뀝니다.
-2. depbee를 실행할 수 없으면 설정 파일에서 `"args": ["-I", "-m", "depbee.guard", "hook"]`가 든 그룹을 지우거나, `enable`이 사용자 설정 폴더의 `guard-backups/<시각>-<난수>/original/`에 남긴 백업 파일(그 옆 `backup.json`에 원래 경로)을 원래 경로에 복사합니다.
+1. `depbee guard status <설정 파일>`로 원인을 보고 `depbee guard disable <설정 파일>`로 끕니다. `disable`은 그것을 실행한 depbee의 Python으로 쓴 항목만 지우므로, 항목을 쓴 이전 환경이 남아 있으면 그 환경의 depbee로 실행합니다. depbee를 다른 경로에 다시 설치했을 때 새 설치본의 `enable`은 이전 경로의 항목을 바꾸거나 지우지 않고 "주의"로 알린 채 새 항목을 더하므로, 이전 항목이 남아 있으면 그 Python이 없는 동안 셸 명령이 계속 막힙니다. 이전 환경이 있으면 먼저 그 환경에서 `disable`하고, 없으면 2번처럼 이전 항목만 직접 지운 뒤 새 설치본으로 `depbee guard enable <설정 파일>`과 `depbee guard status <설정 파일>`을 실행합니다.
+2. depbee를 실행할 수 없으면 Claude Code 밖의 편집기로 설정 파일을 열어 자신의 가드 항목만 지웁니다. 지울 항목은 `hooks.PreToolUse` 그룹의 `hooks` 목록에 든 항목 하나로, `command`가 예전 depbee의 Python 경로이고 나머지가 [위 형태](#켜기-확인-끄기) 그대로(`"type": "command"`, `"args": ["-I", "-m", "depbee.guard", "hook"]`, `"timeout": 30`, `"onFailure": "block"`, 다른 필드 없음)인지 전체를 대조합니다. `args`가 같아도 `command`가 다르거나 필드가 다른 항목은 다른 설치본이나 사용자 프로그램일 수 있으니 확인한 뒤에만 지웁니다. 같은 그룹의 다른 훅과 그룹의 다른 필드는 그대로 두며, 그 항목을 지워 `hooks`가 비고 그룹에 `matcher`와 `hooks`만 있을 때만 그룹째 지웁니다. 또는 `enable`이 사용자 설정 폴더의 `guard-backups/<시각>-<난수>/original/`에 남긴 백업 파일(그 옆 `backup.json`에 원래 경로)을 원래 경로에 복사합니다. 백업은 그 `enable` 직전의 파일 전체이므로, 그 뒤 설정 파일에 더하거나 바꾼 다른 설정(권한 규칙, 다른 훅, Orca가 바꾼 항목 등)이 있으면 복사하기 전에 지금 파일과 비교해 그 변경을 백업에 옮겨 합칩니다.
 3. 그 세션에서만 끄려면 `claude --safe-mode`(훅을 포함한 사용자 지정 설정 전체 끔)나 `claude --settings '{"disableAllHooks": true}'`(Orca 훅을 포함한 모든 훅 끔)로 시작합니다.
 
 ## Docker로 실행한 MCP와 함께 쓸 때
