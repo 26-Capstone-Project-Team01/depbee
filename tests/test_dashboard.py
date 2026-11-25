@@ -354,6 +354,27 @@ class PageTests(DashboardFixture):
                 ]
             )["inline"]
         )
+        # A value that a connecting line would cross is listed under the chart instead: the
+        # line from a long value's point rises through its digits to the next run's.
+        crossed = [
+            {**entries[0], "id": 2, "peak_score": 0.37},
+            {**entries[0], "id": 1, "peak_score": 3.950535635136895e-07, "threshold": 1e-07},
+        ]
+        self.assertFalse(chart(crossed)["inline"])
+        # A shallow line under the digits still meets the box a browser gives the text.
+        for shallow in (crossed, crossed[::-1]):
+            low = (
+                [{**shallow[0], "peak_score": 0.097}, shallow[1]]
+                if shallow[0]["id"] == 2
+                else [shallow[0], {**shallow[1], "peak_score": 0.097}]
+            )
+            self.assertFalse(chart(low)["inline"], low)
+        # A line that stays under the value leaves it over its point.
+        flat = [
+            {**entries[0], "id": 2, "peak_score": 0.87},
+            {**entries[0], "id": 1, "peak_score": 0.9},
+        ]
+        self.assertTrue(chart(flat)["inline"])
         # A value that would run over another run's point is listed under the chart instead.
         mixed = [{**entries[0], "id": n, "peak_score": 0.13} for n in range(10, 1, -1)]
         mixed.append(
@@ -379,6 +400,16 @@ class PageTests(DashboardFixture):
         self.assertTrue(all(0 <= left and right <= 440 for left, right in spans))
         self.assertTrue(all(b[0] - a[1] >= 6 for a, b in zip(spans, spans[1:], strict=False)))
         self.assertTrue(all(p["tick"] for p in chart(entries)["points"]))
+
+    def test_a_line_crosses_a_box_only_through_it(self):
+        crosses, box = self.app._crosses, (10, 10, 20, 20)
+        self.assertTrue(crosses((0, 0), (30, 30), box))  # through, corner to corner
+        self.assertTrue(crosses((12, 12), (18, 14), box))  # all inside
+        self.assertTrue(crosses((15, 0), (15, 30), box))  # straight down through it
+        self.assertFalse(crosses((0, 25), (30, 25), box))  # level, under it
+        self.assertFalse(crosses((0, 0), (30, 5), box))  # rising, above it
+        self.assertFalse(crosses((21, 0), (21, 30), box))  # beside it
+        self.assertFalse(crosses((0, 30), (9, 0), box))  # ends before it
 
     def test_the_history_view_draws_the_chart_above_the_table(self):
         history.register_project(self.project)
