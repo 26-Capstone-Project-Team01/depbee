@@ -1271,6 +1271,28 @@ def _selected(params, shown: list[dict]) -> dict | None:
     return next((row for row in shown if f"{row['run_id']}.{row['position']}" == given[0]), first)
 
 
+def _crosses(start: tuple, end: tuple, box: tuple) -> bool:
+    """Whether the straight line from start to end, (x, y) points, passes through box, (left,
+    top, right, bottom): the part of it inside each edge, clipped in turn (Liang and Barsky)."""
+    (x1, y1), (x2, y2) = start, end
+    left, top, right, bottom = box
+    dx, dy = x2 - x1, y2 - y1
+    low, high = 0.0, 1.0
+    for step, room in ((-dx, x1 - left), (dx, right - x1), (-dy, y1 - top), (dy, bottom - y1)):
+        if step == 0:
+            if room < 0:
+                return False
+            continue
+        cut = room / step
+        if step < 0:
+            low = max(low, cut)
+        else:
+            high = min(high, cut)
+        if low > high:
+            return False
+    return True
+
+
 def _score_chart(entries: list[dict]) -> dict | None:
     """The history view's chart of the peak ML score of each run (history.list_run_scores
     entries, newest first), drawn on a 440 by 160 box: runs from the oldest on the left (x 44 to
@@ -1338,8 +1360,19 @@ def _score_chart(entries: list[dict]) -> dict | None:
         else:
             point["anchor"], point["lx"] = "middle", point["x"]
             spans.append((point["x"] - width / 2, point["x"] + width / 2))
-    # A value clears every other run's point (4 units of radius and some room) too.
+    # A value clears every other run's point (4 units of radius and some room) and every
+    # stretch of the line too: its digits stand from 20 to 5 units above its point (baseline 9
+    # above it), and a line through them would read as struck out.
     xs = [point["x"] for point in points]
+    pieces = [
+        ((a["x"], a["y"]), (b["x"], b["y"]))
+        for a, b in zip(points, points[1:], strict=False)
+        if a["y"] is not None and b["y"] is not None
+    ]
+    boxes = [
+        (left - 1, point["y"] - 20, right + 1, point["y"] - 5)
+        for point, (left, right) in zip(labelled, spans, strict=True)
+    ]
     inline = (
         all(left >= 37 and right <= 443 for left, right in spans)
         and all(
@@ -1351,6 +1384,7 @@ def _score_chart(entries: list[dict]) -> dict | None:
             for x in xs
             if x != point["x"]
         )
+        and not any(_crosses(start, end, box) for start, end in pieces for box in boxes)
     )
     # The run numbers under the axis: every k-th where they would meet, the newest always; the
     # two ends lean inwards where centring would cross the box, and a shown number that would
