@@ -18,6 +18,7 @@ from .service import (
     active_assets,
     apply_update,
     check_package,
+    install_checked,
     plan_project,
     preview_update,
     scan_project,
@@ -130,6 +131,62 @@ CAUSE_LABELS = {
     "incomplete": "보류(통과가 아님)",
     "known_malicious_unchecked": "기지 악성 목록 미확인",
 }
+# depbee guard ci (service.install_checked) and its settings commands (depbee.guard).
+GUARD_REASON_LABELS = {
+    **APPLY_REASON_LABELS,
+    "confirmation_required": "확인이 필요한 항목이 있어 설치하지 않음(가드는 확인 없이 통과한 결과만 설치)",
+    "project_changed": "검사 뒤 package.json 또는 package-lock.json이 바뀜",
+    "removal_only": "삭제만 있어 검사한 설치 항목이 없음",
+}
+GUARD_REMOVAL = (
+    "Git HEAD와 비교해 삭제만 있어 depbee가 검사한 설치 항목이 없으므로 설치하지 않았습니다. 남은 "
+    "의존성을 그대로 설치할지는 사용자가 정하고, 정하면 사용자가 터미널에서 직접 "
+    "npm ci --ignore-scripts를 실행합니다."
+)
+GUARD_OUTCOME_LABELS = {
+    "applied": "설치함",
+    "unchanged": "검사한 변경 없음(설치하지 않음)",
+    "refused": "설치하지 않음",
+    "failed": "실패(설치하지 않았거나 끝내지 못함)",
+}
+GUARD_INSTALLED = (
+    "검사한 package-lock.json 그대로 설치했습니다. "
+    "통과는 모델과 목록의 판정일 뿐 안전 보증이 아닙니다."
+)
+GUARD_NOTHING = (
+    "Git HEAD와 비교해 바뀐 의존성이 없어 검사한 것이 없으므로 설치하지 않았습니다. 변경 0건은 통과가 "
+    "아닙니다. 커밋된 의존성을 그대로 설치할지는 사용자가 정하고, 정하면 사용자가 터미널에서 직접 "
+    "npm ci --ignore-scripts를 실행합니다."
+)
+GUARD_STOPPED = (
+    "설치하지 않았습니다. 판정과 이유를 사용자에게 보여 주고 결정을 기다리세요. 파일이 바뀌었으면 "
+    "변경을 확인한 뒤 depbee guard ci를 다시 실행합니다."
+)
+GUARD_CI_FAILED = (
+    "npm ci를 실행했지만 끝내지 못했거나 그 뒤 파일이 검사한 것과 달라졌습니다. node_modules는 중간 "
+    "상태일 수 있습니다. 판정과 오류를 사용자에게 보여 주고, 원인을 확인한 뒤 depbee guard ci를 다시 "
+    "실행합니다."
+)
+GUARD_ABSENT = "  depbee 설치 가드 훅이 없습니다. depbee guard enable SETTINGS로 추가합니다."
+GUARD_NOT_RUN = (
+    "  설정 파일의 명령은 실행하지 않았습니다. 이 depbee로 다시 켜려면 depbee guard enable SETTINGS를 "
+    "실행하고, 위 항목은 직접 확인해 고치거나 지웁니다."
+)
+GUARD_SELF_TEST_PASSED = (
+    "  자가 시험 통과: 검사 없는 npm 설치를 거부하고 조회 명령은 그대로 둡니다."
+)
+GUARD_SELF_TEST_FAILED = "  자가 시험 실패: {problem}"
+GUARD_LINK = "  (링크 {named}이(가) 가리키는 파일입니다. 링크는 그대로 둡니다.)"
+GUARD_SAME = "바꿀 것이 없습니다."
+GUARD_ENABLED = (
+    "depbee 설치 가드 훅을 추가했습니다. 다른 설정과 훅은 그대로입니다. Claude Code는 설정 파일 변경을 "
+    "다시 읽으며, /hooks에서 확인할 수 있습니다. Claude Code 2.1.295 이상이 필요합니다(onFailure)."
+)
+GUARD_DISABLED = "depbee 설치 가드 훅을 제거했습니다. 다른 설정과 훅은 그대로입니다."
+GUARD_BACKUP = (
+    "이전 파일은 사용자 전용 폴더에 백업했습니다: {backup}\n"
+    "되돌리려면 그 파일을 {path}에 복사합니다."
+)
 # No path or package text: the report above is already printed and unchanged.
 HISTORY_FAILED = (
     "depbee: 이 검사 결과를 로컬 이력에 기록하지 못했습니다. 출력과 종료 코드는 그대로입니다."
@@ -366,6 +423,32 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Remove the saved settings: back to the model and index shipped with depbee",
     )
+    guard = commands.add_parser(
+        "guard",
+        help="Claude Code install guard (docs/claude-guard.md): install a checked lockfile, or "
+        "add, check or remove the PreToolUse hook in one settings file",
+    )
+    actions = guard.add_subparsers(dest="guard_command", required=True)
+    ci = actions.add_parser(
+        "ci",
+        help="Check the project's package-lock.json change from Git HEAD now and, only if at "
+        "least one added or updated package was analyzed and every item passes, install those "
+        "same bytes with npm ci --ignore-scripts; no change or removals only install nothing "
+        "(needs Node.js with npm and .[extract]). No model, index, cache or base option",
+    )
+    ci.add_argument("project", nargs="?", type=Path, default=Path("."), help="Project directory")
+    ci.add_argument("--format", choices=("text", "json"), default="text")
+    for name, help_text in (
+        ("enable", "Add the guard's hook (this Python, exec form) to SETTINGS after a self-test; "
+                   "every other setting and hook stays"),
+        ("status", "Show the guard's hook in SETTINGS and self-test it; exit 0 only if it works"),
+        ("disable", "Remove the guard's hook from SETTINGS; every other setting and hook stays"),
+    ):  # fmt: skip
+        action = actions.add_parser(name, help=help_text)
+        action.add_argument(
+            "settings", type=Path, metavar="SETTINGS",
+            help="A Claude Code settings file, e.g. .claude/settings.local.json of a project",
+        )  # fmt: skip
     serve = commands.add_parser(
         "mcp",
         help="Serve the read-only check_package and scan_lockfile tools over MCP stdio "
@@ -1174,6 +1257,86 @@ def _dashboard(args: argparse.Namespace) -> int:
     return 2 if kind == "unresponsive" else 0
 
 
+def _guard_ci(args: argparse.Namespace) -> int:
+    """depbee guard ci (service.install_checked): 0 only when it installed."""
+    progress = _progress if args.format == "text" else None
+    if progress and hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(errors="backslashreplace")
+    result = install_checked(args.project, progress=progress)
+    report, apply = result["report"], result["apply"]
+    if args.format == "json":
+        print(json.dumps(result, ensure_ascii=True, indent=2, allow_nan=False))
+    else:
+        _print_text(report)
+        print()
+        print(f"depbee 검사 후 설치: {_text_label(GUARD_OUTCOME_LABELS, apply['outcome'])}")
+        shown = _apply_lines(
+            apply, _clean, _text_label, reasons=GUARD_REASON_LABELS, retry=None,
+            threshold=report.get("threshold"),
+        )  # fmt: skip
+        for line, subs in shown:
+            print(line)
+            for sub in subs:
+                print(f"  - {sub}")
+        if apply["outcome"] == "applied":
+            print(GUARD_INSTALLED)
+        elif apply["outcome"] == "unchanged":
+            print(GUARD_NOTHING)
+        elif apply["reason"] == "removal_only":
+            print(GUARD_REMOVAL)
+        else:
+            # A timeout ends npm ci without an exit code: whether it started is the guard's own.
+            print(GUARD_CI_FAILED if apply["npm_ci_started"] else GUARD_STOPPED)
+    return 0 if apply["outcome"] == "applied" else _apply_exit(report, apply) or 2
+
+
+def _guard_settings(args: argparse.Namespace) -> int:
+    """depbee guard enable, status and disable on the one settings file given."""
+    from . import guard
+
+    named = Path(os.path.abspath(args.settings))
+    path = guard.settings_file(named)
+    settings, original = guard.read_settings(path)
+    # The only Python a self-test runs: this depbee's own, never a command the file names.
+    python = os.path.abspath(sys.executable)
+    print(f"설정 파일: {_clean(path)}")
+    if path != named:
+        print(GUARD_LINK.format(named=_clean(named)))
+    if args.guard_command == "status":
+        found, wrong = guard.problems(settings, python)
+        for problem in wrong:
+            print(f"  확인 필요: {_clean(problem)}")
+        if wrong or not found:
+            print(GUARD_NOT_RUN if wrong else GUARD_ABSENT)
+            return 2
+        print(f"  훅: {_clean(python)} {' '.join(guard.HOOK_ARGS)} (matcher {guard.MATCHER}, "
+              "onFailure block)")  # fmt: skip
+        problem = guard.self_test(python)
+        print(GUARD_SELF_TEST_FAILED.format(problem=_clean(problem)) if problem
+              else GUARD_SELF_TEST_PASSED)  # fmt: skip
+        return 2 if problem else 0
+    if args.guard_command == "enable":
+        problem = guard.self_test(python)
+        if problem:
+            raise GuardError(
+                f"The hook did not answer its self-test, nothing was written: {problem}"
+            )
+        updated = guard.with_guard(settings, python)
+    else:
+        updated, _ = guard.without_guard(settings, python)
+    if updated == settings:
+        print(GUARD_SAME)
+    else:
+        saved = guard.write_settings(path, updated, original)
+        print(GUARD_ENABLED if args.guard_command == "enable" else GUARD_DISABLED)
+        if saved is not None:
+            print(GUARD_BACKUP.format(backup=_clean(saved), path=_clean(path)))
+            _warn_shared(saved.parent)
+    for problem in guard.problems(updated, python)[1]:  # what enable or disable left alone
+        print(f"  주의: {_clean(problem)}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
     # Korean help and screens must not fail on a stream whose encoding lacks a character.
@@ -1194,6 +1357,8 @@ def main(argv: list[str] | None = None) -> int:
             return _dashboard(args)
         if args.command == "setup":
             return _setup(args)
+        if args.command == "guard":
+            return _guard_ci(args) if args.guard_command == "ci" else _guard_settings(args)
         # Refuse a taken --output before any download or extraction; _emit's "x" mode still
         # guards against a file created meanwhile. Same error text as that open().
         if args.output is not None and args.output.exists():

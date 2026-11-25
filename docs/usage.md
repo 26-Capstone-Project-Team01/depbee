@@ -389,7 +389,7 @@ MCP는 에이전트가 도구를 부를 때만 효과가 있습니다. 프로젝
 - `--ignore-scripts` 없이 `npm install`을 실행하면 `--package-lock-only`여도 프로젝트의 `preinstall`·`postinstall`·`prepare` 등이 실행될 수 있습니다. 그래서 검사 전 준비에는 항상 `--ignore-scripts`를 붙입니다. `--package-lock-only`는 `node_modules`를 설치하지 않을 뿐, 새 직접 의존성은 기본 설정(`save`)대로 `package.json`에도 저장합니다.
 - `scan_lockfile`의 기준은 `base_lock`, `base_ref`, 둘 다 없으면 Git HEAD의 lockfile이고, `base_lock`과 `base_ref`는 함께 줄 수 없습니다. 변경을 커밋한 뒤 HEAD를 기준으로 검사하면 바뀐 항목이 0개라 종료 코드 0이 나오므로, 블록은 `report.results`에 바꾼 패키지가 들어 있는지도 확인하게 합니다. HEAD에 lockfile이 없으면 오류(종료 코드 2)이고, 이전 lockfile이 전혀 없는 새 프로젝트에는 비교할 기준이 없으므로 블록은 사용자에게 묻게 합니다.
 - `scan_lockfile`은 한 호출에 분석 대상 변경([연결 규약](contracts.md)의 `analyzable`이 true인 추가·업데이트) 20개까지 분석합니다. 삭제(`removed`)와 Git·파일·사설 registry 의존성처럼 분석 대상이 아닌 변경은 이 수에 들지 않고 보고서에는 그대로 들어갑니다. 분석 대상이 20개를 넘거나 입력이 잘못되면 보고서 없이 도구 오류(`error.exit_code` 2)를 돌려줍니다. 도구 오류는 판정이 아니므로 블록은 멈추게 합니다([MCP 진입점](#mcp-진입점-검사-전용)).
-- `npm ci`는 lockfile을 바꾸지 않고 그대로 설치하며, `package.json`과 lockfile이 맞지 않으면 lockfile을 고치지 않고 오류로 끝납니다. 그래서 검사한 것과 다른 버전이 들어오지 않습니다. `--ignore-scripts`는 depbee의 [반영 설치](#업데이트-반영-depbee-update---apply)와 같은 방식입니다.
+- `npm ci`는 lockfile을 바꾸지 않고 그대로 설치하며, `package.json`과 lockfile이 맞지 않으면 lockfile을 고치지 않고 오류로 끝납니다. 그래서 검사한 것과 다른 버전이 들어오지 않습니다. 블록은 설치를 `depbee guard ci`에 맡깁니다. MCP 결과는 나중에 npm이 읽을 바이트와 묶여 있지 않으므로, depbee가 설치할 바로 그 파일을 다시 검사해 통과할 때만 [반영 설치](#업데이트-반영-depbee-update---apply)와 같은 `npm ci --ignore-scripts`를 실행합니다([설치 가드](claude-guard.md#depbee-guard-ci)).
 - 이 블록은 에이전트가 따르기로 한 지침일 뿐 실행을 막지 않습니다. 실제로 막는 방법은 README의 [에이전트 지침](../README.md#에이전트-지침) 아래에 있습니다.
 
 ## 동작 방식
@@ -447,6 +447,7 @@ src/depbee/
   pipeline.py             # 입력→분석→추론 처리 조율
   service.py              # CLI·Actions·MCP·대시보드 공통 진입점(요청·분석기·모델 조립)
   mcp.py                  # 검사 전용 MCP 진입점(check_package, scan_lockfile)
+  guard.py                # Claude Code 설치 가드 훅(PreToolUse)과 그 설정 파일 편집(depbee guard)
   history.py              # 로컬 이력 저장소(SQLite): 프로젝트 등록, 보고서 기록·조회
   dashboard/              # 로컬 대시보드(depbee dashboard): app.py, templates/, static/
   dashboard/lifecycle.py  # 백그라운드 대시보드의 시작·상태·종료(잠금, 상태 파일, 제어 요청)

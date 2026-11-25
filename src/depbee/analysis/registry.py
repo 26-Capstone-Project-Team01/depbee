@@ -24,6 +24,7 @@ import http.client
 import io
 import json
 import os
+import re
 import tarfile
 import urllib.error
 import urllib.request
@@ -43,6 +44,10 @@ MAX_MEMBERS = 20_000
 SOCKET_TIMEOUT_SECONDS = 30  # per socket operation, as in depbee-analyzer
 _CHUNK = 1024 * 1024
 _ALGORITHMS = ("sha512", "sha384", "sha256", "sha1")  # strongest first, as ssri picks
+# One SRI token of a sha512 digest (64 bytes: 86 base64 characters and "=="), nothing else, and
+# the space around it that ssri trims (inputs.npm_cli.SRI_SEPARATORS).
+_SHA512 = re.compile(r"sha512-[A-Za-z0-9+/]{86}==")
+_SRI_SPACE = " \t\n\r"
 
 
 class RegistryError(GuardError):
@@ -164,10 +169,41 @@ def verify(data: bytes, dist: dict, what: str) -> None:
     raise RegistryError(f"{what} has no sha512, sha384, sha256 or sha1 digest to check")
 
 
+def tarball_url(name: str, version: str) -> str:
+    """The registry's own tarball URL of name@version, the only one tarball() downloads."""
+    return f"https://{HOST}/{name}/-/{name.rpartition('/')[2]}-{version}.tgz"
+
+
+def source_problem(entry: dict, dist: dict) -> str | None:
+    """Why npm ci could accept other bytes for this lockfile entry than tarball() checks with
+    dist, the version's dist of the packument being analyzed; None if it cannot.
+
+    npm ci fetches the entry's resolved and checks it with the strongest digest of its
+    integrity; tarball() fetches tarball_url() and checks it with dist (verify()). They are
+    bound only when the entry's resolved and dist.tarball are both tarball_url(), and the
+    entry's integrity and dist.integrity are the same single sha512 digest. Used by the strict
+    analysis of depbee guard ci (ExtractorAnalyzer strict_sources); a plain check accepts more.
+    """
+    if not (isinstance(entry.get("name"), str) and isinstance(entry.get("version"), str)):
+        return "lockfile entry has no package name and version"
+    url = tarball_url(entry["name"], entry["version"])
+    digest = (entry.get("integrity") or "").strip(_SRI_SPACE)
+    listed = dist.get("integrity")
+    if entry.get("resolved") != url:
+        return f"lockfile resolved is not {url}"
+    if dist.get("tarball") != url:
+        return "registry dist.tarball is not that URL"
+    if not _SHA512.fullmatch(digest):
+        return "lockfile integrity is not exactly one sha512 digest"
+    if not isinstance(listed, str) or listed.strip(_SRI_SPACE) != digest:
+        return "registry dist.integrity is not that one sha512 digest"
+    return None
+
+
 def tarball(name: str, version: str, dist: dict) -> bytes:
     """The checked tarball of name@version: registry URL and path, size, time, integrity."""
     what = f"{name}@{version} tarball"
-    expected = f"https://{HOST}/{name}/-/{name.rpartition('/')[2]}-{version}.tgz"
+    expected = tarball_url(name, version)
     if dist.get("tarball") != expected:
         raise RegistryError(f"{what} URL is not {expected}: {_shown(dist.get('tarball'))}")
     data = download(expected, MAX_TARBALL_BYTES)

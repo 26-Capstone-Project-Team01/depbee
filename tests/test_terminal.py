@@ -104,7 +104,7 @@ class StartScreenTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(out.startswith("usage: depbee "))
         self.assertIn("\n".join([f"depbee {__version__}", *terminal.TAGLINE]), out)
-        self.assertIn("{plan,scan,check,update,setup,mcp,dashboard}", out)
+        self.assertIn("{plan,scan,check,update,setup,guard,mcp,dashboard}", out)
         self.assertTrue(out.rstrip("\n").endswith("\n".join(terminal.GUIDE_END)))
         _, stamped, _ = run(["--help"], Terminal(), colors=False)
         self.assertIn("\n".join(terminal.STAMP[:1]), stamped)

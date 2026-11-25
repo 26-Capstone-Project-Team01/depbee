@@ -23,12 +23,15 @@ import os
 import re
 import shutil
 import stat
+from collections.abc import Callable
 from pathlib import Path
 
 from ..contracts import MAX_JSON_BYTES, GuardError, parse_json
-from .git import _run, is_link
+from .git import ChildNotStarted, _run, is_link
 
 TIMEOUT_SECONDS = 120
+# The start of the error when npm could not be started at all (_call): it never ran.
+NPM_NOT_STARTED = "Unable to run npm"
 # npm ci downloads and unpacks every tarball of the tree, not only metadata as the preview does:
 # minutes for a large project on a slow link. It is the ceiling of one MCP call too.
 CI_TIMEOUT_SECONDS = 600
@@ -313,8 +316,10 @@ def _call(
             argv, cwd, STDOUT_LIMIT, env,
             timeout=timeout, stderr_limit=stderr_limit, name="npm", tree=True,
         )  # fmt: skip
+    except ChildNotStarted as exc:  # stopped while still suspended: npm never ran
+        raise GuardError(f"{NPM_NOT_STARTED}: {exc}") from exc
     except OSError as exc:
-        raise GuardError(f"Unable to run npm: {exc.strerror or type(exc).__name__}") from exc
+        raise GuardError(f"{NPM_NOT_STARTED}: {exc.strerror or type(exc).__name__}") from exc
     return code, out
 
 
@@ -350,14 +355,18 @@ def update_lock(work: Path, names: list[str]) -> str:
     return version
 
 
-def clean_install(project: Path, scratch: Path) -> tuple[str, int]:
+def clean_install(
+    project: Path, scratch: Path, ready: Callable[[], None] | None = None
+) -> tuple[str, int]:
     """Run `npm ci --ignore-scripts` in project; return (npm version, npm ci exit code).
 
     project is the absolute project folder, checked by read_project() and without a project
     .npmrc (the caller refuses one). scratch is an absolute, new folder depbee made, which the
     caller has checked is outside the project: the missing Git program and global config file
     are named inside it. npm ci removes what node_modules holds before it installs, so that
-    folder is looked at once more here, where npm is started (check_install_dir).
+    folder is looked at once more here, where npm is started (check_install_dir). ready, if
+    given, runs after the npm version check, right before npm ci starts; it raises GuardError
+    to stop it.
     """
     npm, env = _npm(), _environment()
     no_git, no_global = scratch / "no-git" / "git", scratch / "no-globalconfig" / "npmrc"
@@ -371,6 +380,8 @@ def clean_install(project: Path, scratch: Path) -> tuple[str, int]:
         f"--globalconfig={no_global}",
     )  # fmt: skip
     version = _version(npm, pinned, project, env)
+    if ready is not None:
+        ready()
     code, _ = _call(
         [*npm, "ci", *CI_OPTIONS, *pinned], project, env, CI_TIMEOUT_SECONDS, CI_STDERR_LIMIT
     )
