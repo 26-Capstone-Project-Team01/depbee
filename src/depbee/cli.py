@@ -1323,7 +1323,7 @@ def _guard_settings(args: argparse.Namespace) -> int:
             )
         updated = guard.with_guard(settings, python)
     else:
-        updated, _ = guard.without_guard(settings)
+        updated, _ = guard.without_guard(settings, python)
     if updated == settings:
         print(GUARD_SAME)
     else:

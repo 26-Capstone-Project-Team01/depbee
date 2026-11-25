@@ -12,6 +12,7 @@ import os
 import stat
 import subprocess
 import sys
+import unittest
 from pathlib import Path
 from unittest import mock
 
@@ -456,7 +457,8 @@ class SettingsTests(Fixture):
         the settings file itself may be next to it."""
         self.assertEqual([p.name for p in self.settings.parent.iterdir()],
                          [self.settings.name] * self.settings.exists())  # fmt: skip
-        return sorted((self.root / "user" / "guard-backups").glob(f"*/{self.settings.name}"))
+        folder = self.root / "user" / "guard-backups"
+        return sorted(folder.glob(f"*/original/{self.settings.name}"))
 
     def leftovers(self):
         return sorted(self.settings.parent.glob(".*.depbee"))
@@ -490,21 +492,68 @@ class SettingsTests(Fixture):
         self.assertEqual((code, self.settings.read_bytes(), self.backups()), (0, first, []))
         self.assertIn("바꿀 것이 없습니다", out)
 
-    def test_enable_replaces_an_older_handler_and_disable_removes_only_ours(self):
-        old = {**self.ours(), "command": "C:\\old\\python.exe"}
-        mixed = {"matcher": "Bash", "hooks": [old, {"type": "command", "command": "other"}]}
-        self.write(self.settings, {"hooks": {"PreToolUse": [ORCA, mixed]}})
+    def test_the_same_shape_with_another_command_is_kept_and_reported(self):
+        # Another install's Python, or a program of the user's with the same arguments: not
+        # surely this guard's, so enable and disable keep it and say so.
+        for command in ("C:\\old\\python.exe", str(self.root / "tools" / "wrapper.exe")):
+            with self.subTest(command=command):
+                other = {**self.ours(), "command": command}
+                mixed = {"matcher": "Bash", "hooks": [other, {"type": "command", "command": "x"}]}
+                self.write(self.settings, {"hooks": {"PreToolUse": [ORCA, mixed]}})
+                code, out, _ = self.cli("enable", str(self.settings))
+                self.assertEqual(code, 0, out)
+                self.assertIn("자동으로 지우지 않음", out)
+                groups = json.loads(self.settings.read_text("utf-8"))["hooks"]["PreToolUse"]
+                self.assertEqual(groups, [ORCA, mixed, {"matcher": "Bash|PowerShell",
+                                                        "hooks": [self.ours()]}])  # fmt: skip
+                self.assertEqual(self.cli("status", str(self.settings))[0], 2)
+                code, out, _ = self.cli("disable", str(self.settings))
+                self.assertEqual(json.loads(self.settings.read_text("utf-8")),
+                                 {"hooks": {"PreToolUse": [ORCA, mixed]}})  # fmt: skip
+                self.assertIn("자동으로 지우지 않음", out)
+                before = self.settings.read_bytes()
+                code, out, _ = self.cli("disable", str(self.settings))
+                self.assertEqual((code, self.settings.read_bytes()), (0, before))
+                self.assertIn("바꿀 것이 없습니다", out)
+        self.run.assert_not_called()
+
+    def test_a_settings_file_named_like_the_backup_record_keeps_its_bytes(self):
+        self.settings = self.settings.with_name("backup.json")
+        self.write(self.settings, SETTINGS)
+        original = self.settings.read_bytes()
         self.assertEqual(self.cli("enable", str(self.settings))[0], 0)
-        groups = json.loads(self.settings.read_text("utf-8"))["hooks"]["PreToolUse"]
-        self.assertEqual(groups, [ORCA, {"matcher": "Bash", "hooks": [mixed["hooks"][1]]},
-                                  {"matcher": "Bash|PowerShell", "hooks": [self.ours()]}])  # fmt: skip
-        self.assertEqual(self.cli("disable", str(self.settings))[0], 0)
-        self.assertEqual(json.loads(self.settings.read_text("utf-8")),
-                         {"hooks": {"PreToolUse": [ORCA, groups[1]]}})  # fmt: skip
-        before = self.settings.read_bytes()
-        code, out, _ = self.cli("disable", str(self.settings))
-        self.assertEqual((code, self.settings.read_bytes()), (0, before))
-        self.assertIn("바꿀 것이 없습니다", out)
+        (copy_,) = self.backups()
+        self.assertEqual(copy_.read_bytes(), original)
+        about = json.loads((copy_.parent.parent / "backup.json").read_text("utf-8"))
+        self.assertEqual(about["sha256"], hashlib.sha256(original).hexdigest())
+
+    def test_own_access_rules_refuse_the_edit_before_anything_is_written(self):
+        self.write(self.settings, SETTINGS)
+        original = self.settings.read_bytes()
+        with mock.patch("depbee.guard.own_access_rules", return_value=True):
+            code, _, err = self.cli("enable", str(self.settings))
+        self.assertEqual((code, self.settings.read_bytes(), self.backups()), (2, original, []))
+        self.assertIn("access rules of its own", err)
+        self.assertEqual(self.leftovers(), [])
+        inherited = "D:AI(A;ID;FA;;;SY)(A;OICIID;FA;;;BA)(A;ID;0x1301bf;;;S-1-5-21-1-2-3-1001)"
+        self.assertFalse(guard.custom_access_list(inherited))
+        for sddl in ("D:PAI(A;ID;FA;;;SY)", "D:AI(A;;FA;;;SY)(A;ID;FA;;;BA)", "D:NO_ACCESS_CONTROL",
+                     "D:AI(XA;ID;FA;;;WD;(x))", "D:AI", ""):  # fmt: skip
+            with self.subTest(sddl=sddl):
+                self.assertTrue(guard.custom_access_list(sddl))
+
+    @unittest.skipUnless(os.name == "nt", "Windows access lists")
+    def test_a_real_explicit_windows_entry_is_detected(self):
+        self.write(self.settings, SETTINGS)
+        self.assertFalse(guard.own_access_rules(self.settings))  # inherited from the folder
+        user = os.environ["USERNAME"]
+        # check_call, not run: this class replaces subprocess.run for the code under test.
+        subprocess.check_call(["icacls", str(self.settings), "/grant", f"{user}:R"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # fmt: skip
+        self.assertTrue(guard.own_access_rules(self.settings))
+        original = self.settings.read_bytes()
+        code, _, _ = self.cli("enable", str(self.settings))
+        self.assertEqual((code, self.settings.read_bytes(), self.backups()), (2, original, []))
 
     def test_disable_drops_hooks_it_emptied(self):
         self.cli("enable", str(self.settings))
@@ -633,13 +682,15 @@ class SettingsTests(Fixture):
         self.assertEqual(code, 0, out)
         (backup,) = self.backups()
         self.assertEqual(backup.read_bytes(), original)
-        about = json.loads((backup.parent / "backup.json").read_text("utf-8"))
+        folder = backup.parent.parent  # <time>-<random>/original/<file name>
+        about = json.loads((folder / "backup.json").read_text("utf-8"))
         self.assertEqual((Path(about["settings"]), about["sha256"]),
                          (self.settings.resolve(), hashlib.sha256(original).hexdigest()))  # fmt: skip
         self.assertIn(str(backup), out)
         if os.name != "nt":  # Windows: the folder's access list (config.make_dir)
-            self.assertEqual(stat.S_IMODE(os.stat(backup).st_mode), 0o600)
-            self.assertEqual(stat.S_IMODE(os.stat(backup.parent).st_mode), 0o700)
+            for path, mode in ((backup, 0o600), (folder / "backup.json", 0o600),
+                               (backup.parent, 0o700), (folder, 0o700)):  # fmt: skip
+                self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), mode, path)
             self.assertEqual(stat.S_IMODE(os.stat(self.settings).st_mode), 0o640)
 
     def test_a_link_is_followed_and_kept(self):

@@ -533,16 +533,21 @@ def handler(python: str) -> dict:
     }  # fmt: skip
 
 
-def _ours(entry: object) -> bool:
-    """A handler exactly as handler() writes it, for whatever Python path: the only kind enable
-    replaces and disable removes. One with a field added, changed or of another type is the
-    user's and is left as it is."""
+def _shaped(entry: object) -> bool:
+    """A handler with exactly the fields and values handler() writes, whatever its command."""
     return (
         isinstance(entry, dict)
         and isinstance(entry.get("command"), str)
         and set(entry) == set(handler(""))
         and entry == handler(entry["command"])
     )
+
+
+def _ours(entry: object, python: str) -> bool:
+    """A handler exactly as handler(python) writes it: the only kind enable replaces and disable
+    removes. Another command with the same arguments and fields (another depbee install, or a
+    program of the user's) may not be this guard's to remove, so it stays and is reported."""
+    return _shaped(entry) and _same_path(entry["command"], python)
 
 
 def _same_path(first: str, second: str) -> bool:
@@ -597,11 +602,14 @@ def problems(settings: dict, python: str) -> tuple[int, list[str]]:
         for entry in inner if isinstance(inner, list) else []:
             if "depbee.guard" not in json.dumps(entry, ensure_ascii=False):
                 continue
-            if not _ours(entry):
+            if not _shaped(entry):
                 shown = _shown(json.dumps(entry, ensure_ascii=False))
                 wrong.append(f"depbee guard enable이 쓰는 형태가 아닌 가드 항목: {shown}")
-            elif not _same_path(entry["command"], python):
-                wrong.append(f"지금 depbee의 Python이 아닌 경로: {_shown(entry['command'])}")
+            elif not _ours(entry, python):
+                wrong.append(
+                    f"지금 depbee의 Python이 아닌 실행 파일을 쓰는 가드 형태 항목(자동으로 지우지 않음, "
+                    f"직접 확인): {_shown(entry['command'])}"
+                )
             elif set(group) != {"matcher", "hooks"} or group["matcher"] != MATCHER:
                 wrong.append(f"가드 항목이 든 그룹의 조건이 matcher {MATCHER} 하나가 아님")
             else:
@@ -609,8 +617,9 @@ def problems(settings: dict, python: str) -> tuple[int, list[str]]:
     return found, wrong
 
 
-def without_guard(settings: dict) -> tuple[dict, int]:
-    """A copy of the settings without this guard's handlers (_ours), and how many were removed.
+def without_guard(settings: dict, python: str) -> tuple[dict, int]:
+    """A copy of the settings without this guard's handlers for python (_ours), and how many
+    were removed.
     Everything else stays as it is: another handler, a group of a shape this does not read, a
     group's other fields. A group that held this guard's handlers alone, with only matcher and
     hooks, is dropped, then an empty PreToolUse and an empty hooks."""
@@ -621,7 +630,7 @@ def without_guard(settings: dict) -> tuple[dict, int]:
         if not isinstance(inner, list):
             groups.append(group)
             continue
-        kept = [entry for entry in inner if not _ours(entry)]
+        kept = [entry for entry in inner if not _ours(entry, python)]
         removed += len(inner) - len(kept)
         if len(kept) == len(inner):
             groups.append(group)
@@ -641,7 +650,7 @@ def without_guard(settings: dict) -> tuple[dict, int]:
 
 def with_guard(settings: dict, python: str) -> dict:
     """The settings with exactly one handler of this guard, for python, in its own group."""
-    result, _ = without_guard(settings)
+    result, _ = without_guard(settings, python)
     hooks = dict(result.get("hooks", {}))
     hooks["PreToolUse"] = [
         *hooks.get("PreToolUse", []),
@@ -662,6 +671,11 @@ def write_settings(path: Path, settings: dict, original: bytes | None) -> Path |
     replaced (GuardError) and its edit stays. A write in the instant between that read and the
     swap is not seen."""
     text = json.dumps(settings, ensure_ascii=False, indent=2) + "\n"
+    if original is not None and own_access_rules(path):
+        raise GuardError(
+            f"{path} has Windows access rules of its own, which replacing it would drop; "
+            "nothing was written. Edit the file yourself"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".depbee")
     try:
@@ -692,8 +706,9 @@ def write_settings(path: Path, settings: dict, original: bytes | None) -> Path |
 
 def backup(path: Path, original: bytes) -> Path:
     """original saved as <the user's depbee settings folder>/guard-backups/<UTC time>-<random>/
-    <file name>, with backup.json naming the file it came from: never next to the settings file,
-    where a project's Git could commit it. The folders are made for the user alone when missing
+    original/<file name>, with backup.json beside original/ naming the file it came from: never
+    next to the settings file, where a project's Git could commit it, and never under a name the
+    settings file could also have. The folders are made for the user alone when missing
     (config.make_dir) and both files are the user's alone (0600), so the copy is never open to
     more people than the file was."""
     try:
@@ -703,16 +718,46 @@ def backup(path: Path, original: bytes) -> Path:
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         folder = root / "guard-backups" / f"{stamp}-{secrets.token_hex(4)}"
         folder.mkdir(mode=0o700)
+        (folder / "original").mkdir(mode=0o700)
     except RuntimeError as exc:  # no home folder
         raise GuardError(f"No folder for the backup ({exc}); nothing was replaced") from None
     about = {"settings": str(path), "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
              "sha256": hashlib.sha256(original).hexdigest()}  # fmt: skip
-    files = {path.name: original, "backup.json": (json.dumps(about, indent=2) + "\n").encode()}
-    for name, data in files.items():
+    copy = folder / "original" / path.name
+    for target, data in ((copy, original), (folder / "backup.json",
+                                            (json.dumps(about, indent=2) + "\n").encode())):  # fmt: skip
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-        with os.fdopen(os.open(folder / name, flags, 0o600), "wb") as stream:
+        with os.fdopen(os.open(target, flags, 0o600), "wb") as stream:
             stream.write(data)
-    return folder / path.name
+    return copy
+
+
+def own_access_rules(path: Path) -> bool:
+    """On Windows, whether the file has access rules of its own, which a replace would drop: the
+    new file gets its folder's. True for a protected list (inheritance off) or any entry not
+    inherited (no ID flag), and for a list that cannot be read or parsed. False elsewhere."""
+    if os.name != "nt":
+        return False
+    try:
+        return custom_access_list(config._access_list(path))
+    except OSError:
+        return True
+
+
+def custom_access_list(sddl: str) -> bool:
+    """The DACL part of SDDL text is protected or holds an entry its folder did not give; also
+    True for text this does not read as a plain list of entries (null DACL, nested parts)."""
+    dacl = sddl.partition("D:")[2].partition("S:")[0]
+    flags, _, rest = dacl.partition("(")
+    entries = re.findall(r"\(([^()]*)\)", "(" + rest)
+    if "P" in flags or not entries or "".join(f"({e})" for e in entries) != "(" + rest:
+        return True
+
+    def inherited(entry: str) -> bool:
+        ace_flags = (entry.split(";") + [""])[1]  # type;flags;rights;...: two letters each
+        return "ID" in {ace_flags[i : i + 2] for i in range(0, len(ace_flags), 2)}
+
+    return not all(map(inherited, entries))
 
 
 SELF_TEST = (  # (tool, command, whether the hook must deny it)
