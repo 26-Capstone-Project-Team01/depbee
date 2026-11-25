@@ -361,8 +361,19 @@ class PageTests(DashboardFixture):
             {**entries[0], "id": 1, "peak_score": 3.950535635136895e-07, "threshold": 1e-07},
         ]
         self.assertFalse(chart(crossed)["inline"])
+        # A shallow line under the digits still meets the box a browser gives the text.
+        for shallow in (crossed, crossed[::-1]):
+            low = (
+                [{**shallow[0], "peak_score": 0.097}, shallow[1]]
+                if shallow[0]["id"] == 2
+                else [shallow[0], {**shallow[1], "peak_score": 0.097}]
+            )
+            self.assertFalse(chart(low)["inline"], low)
         # A line that stays under the value leaves it over its point.
-        flat = [{**entries[0], "id": 2, "peak_score": 0.87}, {**entries[0], "id": 1, "peak_score": 0.9}]
+        flat = [
+            {**entries[0], "id": 2, "peak_score": 0.87},
+            {**entries[0], "id": 1, "peak_score": 0.9},
+        ]
         self.assertTrue(chart(flat)["inline"])
         # A value that would run over another run's point is listed under the chart instead.
         mixed = [{**entries[0], "id": n, "peak_score": 0.13} for n in range(10, 1, -1)]

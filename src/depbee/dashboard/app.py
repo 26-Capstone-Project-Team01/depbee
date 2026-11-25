@@ -1361,8 +1361,9 @@ def _score_chart(entries: list[dict]) -> dict | None:
             point["anchor"], point["lx"] = "middle", point["x"]
             spans.append((point["x"] - width / 2, point["x"] + width / 2))
     # A value clears every other run's point (4 units of radius and some room) and every
-    # stretch of the line too: its digits stand from 20 to 5 units above its point (baseline 9
-    # above it), and a line through them would read as struck out.
+    # stretch of the line too: its text stands from 20 to 4 units above its point (baseline 9
+    # above it; a browser's box for the text reaches about 4 above), and a line through it would
+    # read as struck out.
     xs = [point["x"] for point in points]
     pieces = [
         ((a["x"], a["y"]), (b["x"], b["y"]))
@@ -1370,7 +1371,7 @@ def _score_chart(entries: list[dict]) -> dict | None:
         if a["y"] is not None and b["y"] is not None
     ]
     boxes = [
-        (left - 1, point["y"] - 20, right + 1, point["y"] - 5)
+        (left - 1, point["y"] - 20, right + 1, point["y"] - 4)
         for point, (left, right) in zip(labelled, spans, strict=True)
     ]
     inline = (
