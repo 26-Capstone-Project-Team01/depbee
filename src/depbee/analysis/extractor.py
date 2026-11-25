@@ -339,6 +339,10 @@ class ExtractorAnalyzer:
     ``rules`` is the RuleDetector for pipeline.scan() (analysis.rules.Results) over the rule
     results of the latest ``analyze()``, None for a backend without a ``ruleset_version``. They
     are kept per change_id with the compared pair, and only for a change analyzed completely.
+    ``strict_sources`` (depbee guard ci only) also fails a change unless the lockfile entry and
+    the dist of the packument this analysis fetched once and uses name the same tarball URL and
+    the same single sha512 digest (registry.source_problem): the dist a download is checked
+    against (registry.verify), and the one a cache hit was keyed by. Without it nothing changes.
     """
 
     def __init__(
@@ -350,8 +354,10 @@ class ExtractorAnalyzer:
         cache_dir: Path | None = None,
         cache_model=None,
         known_malicious=None,
+        strict_sources: bool = False,
     ) -> None:
         self.backend = backend or FeatureExtractorBackend()
+        self.strict_sources = strict_sources
         self.local_sources = dict(local_sources or {})
         self.progress = progress
         verified = isinstance(getattr(self.backend, "identity", None), dict) and isinstance(
@@ -460,6 +466,12 @@ class ExtractorAnalyzer:
             published = _integrity_tokens(_dist(packument, name, new).get("integrity"))
             if not published & _integrity_tokens(change["after"]["integrity"]):
                 raise GuardError("Lockfile integrity does not match the registry integrity")
+            if self.strict_sources:  # before the cache: a hit must meet it as a download does
+                problem = registry.source_problem(change["after"], _dist(packument, name, new))
+                if problem:
+                    raise GuardError(f"Strict sources: {problem}")
+        elif self.strict_sources:
+            raise GuardError("Strict sources: a local copy is not what npm ci would install")
         skipped: list[tuple[str, list[str]]] = []
 
         def known(version: str) -> bool:

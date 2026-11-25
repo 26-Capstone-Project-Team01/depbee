@@ -4,6 +4,7 @@ mocked, and no test runs npm, Node.js or Claude Code.
 """
 
 import contextlib
+import copy
 import hashlib
 import io
 import json
@@ -15,13 +16,30 @@ from pathlib import Path
 from unittest import mock
 
 from test_apply import PASS, ApplyFixture
+from test_cache import CacheFixture
+from test_extract import FakeBackend, PackagePredictor, packument, stand_in_backend
+from test_registry import serve_tarballs
 from test_update import sri
 from test_workflow import Fixture
 
 from depbee import cli, guard, service
+from depbee.analysis.extractor import ExtractorAnalyzer as RealExtractorAnalyzer
 from depbee.cli import main
 from depbee.contracts import GuardError
 from depbee.service import GUARD_CHANGED, install_checked
+
+
+class CleanIndex:
+    """A connected known malicious list that lists nothing (synthetic, for a complete pass)."""
+
+    source, list_as_of, list_sha256 = "synthetic", "2026-11-25T00:00:00Z", "0" * 64
+
+    def match(self, name, version):
+        return []
+
+    def baseline_records(self, name, version):
+        return []
+
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
 # The hook as Claude Code runs it (-I: no PYTHONPATH, user site or current folder), with this
@@ -692,22 +710,37 @@ class InstallCheckedTests(ApplyFixture):
         self.bases = None  # successive Git HEAD lockfiles, else base.json every time
         self.patch("depbee.inputs.npm.read_base_lock", side_effect=self.git_head)
         self.at_version = None  # runs when npm --version runs, right before npm ci
-        # The registry metadata the guard fetches again: by default the lockfile's own URL and
-        # digest (what the real registry gives for a well-formed lockfile); never the network.
-        self.served = {}  # name -> packument that replaces the default
-        self.registry = self.patch("depbee.analysis.registry.packument", side_effect=self.serve)
+        # The guard asks the registry nothing itself: only the analysis reads metadata, once.
+        self.refetch = self.patch(
+            "depbee.analysis.registry.packument", side_effect=AssertionError("registry asked")
+        )
 
-    def serve(self, name):
-        if name in self.served:
-            return self.served[name]
-        lock = json.loads((self.upd / "package-lock.json").read_bytes())
-        versions = {
-            entry["version"]: {"dist": {"tarball": entry["resolved"],
-                                        "integrity": entry["integrity"]}}
-            for location, entry in lock["packages"].items()
-            if location.rpartition("node_modules/")[2] == name
-        }  # fmt: skip
-        return {"versions": versions, "time": {}}
+    def real_analysis(self, *docs, features=None):
+        """The real ExtractorAnalyzer in its strict mode over a stand-in depbee-analyzer whose
+        metadata reads answer docs in turn (a later read would get the next), with a model
+        that scores the synthetic signal and a connected list that lists nothing."""
+        backend = FakeBackend(None, features=features or {"signal": 0.1})
+        answers = iter(docs)
+
+        def fetch(name):
+            backend.fetched.append(name)
+            return next(answers)
+
+        backend.fetch_packument = fetch
+        self.patch("depbee.analysis.extractor.ExtractorAnalyzer", new=RealExtractorAnalyzer)
+        self.patch("depbee.analysis.extractor.FeatureExtractorBackend", return_value=backend)
+        self.patch("depbee.service._assets",
+                   return_value=(PackagePredictor(), {"known_malicious": CleanIndex()}))  # fmt: skip
+        return backend
+
+    def doc(self, integrity=None, tarball=None):
+        """Registry metadata of example whose 1.1.0 dist is the lockfile's unless told."""
+        doc = packument({"1.0.0": "2026-01-01T00:00:00Z", "1.0.1": "2026-01-02T00:00:00Z",
+                         "1.1.0": "2026-01-03T00:00:00Z"})  # fmt: skip
+        dist = doc["versions"]["1.1.0"]["dist"]
+        dist["integrity"] = integrity or sri("1.1.0")  # the fixture lockfile's digest
+        dist["tarball"] = tarball or dist["tarball"]
+        return doc
 
     def git_head(self, project, ref, git_dir=None):
         self.assertEqual((Path(project), ref), (self.upd.absolute(), "HEAD"))
@@ -930,47 +963,97 @@ class InstallCheckedTests(ApplyFixture):
         lock["packages"]["node_modules/example"].update(fields)
         (self.upd / "package-lock.json").write_text(json.dumps(lock), "utf-8")
 
-    def test_npm_must_verify_what_was_analyzed_before_any_download(self):
-        digest = sri("1.1.0")
-        other = "https://registry.npmjs.org/other/-/other-1.1.0.tgz"
+    def test_the_check_runs_strict_and_a_plain_scan_does_not(self):
+        self.verdict([PASS], 0)
+        constructor = sys.modules["depbee.analysis.extractor"].ExtractorAnalyzer  # the mock
+        service.scan_project(self.upd, extract=True)
+        self.assertNotIn("strict_sources", constructor.call_args.kwargs)  # as before
+        install_checked(self.upd)
+        self.assertIs(constructor.call_args.kwargs["strict_sources"], True)
+        self.refetch.assert_not_called()
+
+    def test_one_matching_metadata_read_installs(self):
+        backend = self.real_analysis(self.doc())
+        result = install_checked(self.upd)
+        self.assertEqual(result["apply"]["outcome"], "applied", result["report"]["results"])
+        self.assertEqual((len(self.ci_calls), backend.fetched), (1, ["example"]))
+        self.refetch.assert_not_called()
+
+    def test_only_the_analyzed_metadata_counts_never_a_later_read(self):
+        # The analysis reads a dist that names two sha512 digests; a later read would name only
+        # the lockfile's. Nothing reads again, so the change stays held and nothing installs.
+        later = self.doc()
         cases = {
-            "a second digest": {"integrity": f"{digest} {sri('x', 'sha1')}"},
-            "sha1 only": {"integrity": sri("1.1.0", "sha1")},
-            "sha256 only": {"integrity": sri("1.1.0", "sha256")},
-            "another tarball": {"resolved": other},
+            "two digests then one": self.doc(f"{sri('1.1.0')} {sri('other')}"),
+            "another digest then the lockfile's": self.doc(sri("other")),
+            "another tarball then the right one": self.doc(
+                tarball="https://registry.npmjs.org/example/-/example-1.1.0.tgz?x"),
+        }  # fmt: skip
+        for case, first in cases.items():
+            with self.subTest(case):
+                backend = self.real_analysis(first, later)
+                result = install_checked(self.upd)
+                (row,) = result["report"]["results"]
+                self.assertEqual((row["status"], row["reason"]), ("incomplete", "analysis_failed"))
+                self.assertRegex(row["detail"], "Strict sources|does not match")
+                self.assertEqual(result["apply"]["outcome"], "refused")
+                self.assertEqual((self.ci_calls, backend.fetched), ([], ["example"]))
+        self.refetch.assert_not_called()
+
+    def test_a_lockfile_entry_npm_would_check_otherwise_is_held(self):
+        cases = {
+            "a second digest": {"integrity": f"{sri('1.1.0')} {sri('x', 'sha1')}"},
+            "another tarball": {"resolved": "https://registry.npmjs.org/other/-/other-1.1.0.tgz"},
             "another tarball path": {
                 "resolved": "https://registry.npmjs.org/example/-/example-1.1.0.tgz?x=1"},
         }  # fmt: skip
-        self.verdict([PASS], 0)
         for case, fields in cases.items():
             with self.subTest(case):
                 self.lock_entry(**fields)
-                with self.assertRaisesRegex(GuardError, "Nothing was installed"):
-                    install_checked(self.upd)
-                self.registry.assert_not_called()  # refused before the check downloads
+                self.real_analysis(self.doc())
+                result = install_checked(self.upd)
+                self.assertEqual(result["apply"]["outcome"], "refused")
+                self.assertIn("Strict sources", result["report"]["results"][0]["detail"])
                 self.assertEqual(self.ci_calls, [])
 
-    def test_the_registry_must_name_the_same_url_and_single_digest(self):
-        self.verdict([PASS], 0)
-        tarball = "https://registry.npmjs.org/example/-/example-1.1.0.tgz"
+    def test_bundles_and_nested_shrinkwraps_are_refused_before_any_download(self):
+        lock = json.loads(self.original["package-lock.json"])
+        nested = {"version": "1.0.0", "integrity": sri("1.0.0"), "resolved":
+                  "https://registry.npmjs.org/inner/-/inner-1.0.0.tgz"}  # fmt: skip
+
+        def with_lock(edit):
+            changed = json.loads(json.dumps(lock))
+            edit(changed["packages"])
+            return lambda: (self.upd / "package-lock.json").write_text(json.dumps(changed), "utf-8")
+
+        def with_package(field, value):
+            data = {"name": "app", "dependencies": {"example": "^1.0.0"}, field: value}
+            return lambda: (self.upd / "package.json").write_text(json.dumps(data), "utf-8")
+
         cases = {
-            "two sha512 digests": {"tarball": tarball,
-                                   "integrity": f"{sri('1.1.0')} {sri('y')}"},
-            "another digest": {"tarball": tarball, "integrity": sri("other")},
-            "another tarball": {"tarball": tarball + "?x", "integrity": sri("1.1.0")},
-            "no dist": None,
+            "package.json bundleDependencies": with_package("bundleDependencies", ["example"]),
+            "package.json bundledDependencies": with_package("bundledDependencies", True),
+            "a root lock entry bundle": with_lock(lambda packages: packages.update(
+                {"": {"name": "app", "bundleDependencies": ["example"]}})),
+            "a package's bundle": with_lock(lambda packages: packages[
+                "node_modules/example"].update(bundleDependencies=["inner"])),
+            "an entry inside a bundle": with_lock(lambda packages: packages.update(
+                {"node_modules/example/node_modules/inner": {**nested, "inBundle": True}})),
+            "a nested shrinkwrap": with_lock(lambda packages: packages[
+                "node_modules/example"].update(hasShrinkwrap=True)),
         }  # fmt: skip
-        for case, dist in cases.items():
+        constructor = sys.modules["depbee.analysis.extractor"].ExtractorAnalyzer  # the mock
+        for case, make in cases.items():
             with self.subTest(case):
-                versions = {"1.1.0": {} if dist is None else {"dist": dist}}
-                self.served["example"] = {"versions": versions, "time": {}}
-                with self.assertRaisesRegex(GuardError, "Nothing was installed"):
+                make()
+                with self.assertRaisesRegex(GuardError, "Nothing was downloaded or installed"):
                     install_checked(self.upd)
+                constructor.assert_not_called()
                 self.assertEqual(self.ci_calls, [])
-        self.registry.side_effect = GuardError("registry unreachable")
-        with self.assertRaisesRegex(GuardError, "registry unreachable"):
-            install_checked(self.upd)
-        self.assertEqual(self.ci_calls, [])
+                for name, data in self.original.items():
+                    (self.upd / name).write_bytes(data)
+        self.verdict([PASS], 0)  # an ordinary project of the same packages still installs
+        self.assertEqual(install_checked(self.upd)["apply"]["outcome"], "applied")
 
     def test_node_modules_is_looked_at_again_right_before_npm_ci(self):
         self.verdict([PASS], 0)
@@ -1038,3 +1121,113 @@ class InstallCheckedTests(ApplyFixture):
         code, _, err = cli()
         self.assertEqual(code, 2)
         self.assertIn('"status": "error"', err)
+
+
+class StrictSourceTests(CacheFixture):
+    """ExtractorAnalyzer strict_sources over the real feature cache: the lockfile entry against
+    the dist of the one packument the analysis reads, on a miss and on a hit (FakeBackend)."""
+
+    def setUp(self):
+        super().setUp()
+        self.digest = sri("1.1.0")
+        self.doc["versions"]["1.1.0"]["dist"]["integrity"] = self.digest
+        self.new["packages"]["node_modules/example"]["integrity"] = self.digest
+        self.save_locks()
+        patcher = mock.patch(
+            "depbee.analysis.registry.packument", side_effect=AssertionError("registry asked")
+        )
+        self.registry = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def row(self, **options):
+        return self.scan(**options)["results"][0]
+
+    def test_one_matching_read_passes_on_a_miss_and_on_a_hit(self):
+        first = self.row(strict_sources=True)
+        self.assertEqual((first["status"], first["cache_hit"]), ("not_flagged", False))
+        second = self.row(strict_sources=True)
+        self.assertEqual((second["status"], second["cache_hit"]), ("not_flagged", True))
+        self.assertEqual(self.backend.fetched, ["example", "example"])  # one read per check
+        self.assertEqual(len(self.backend.calls), 1)  # extracted once, then from the cache
+        self.registry.assert_not_called()
+
+    def test_a_cached_result_does_not_pass_a_lockfile_the_strict_check_refuses(self):
+        self.row(strict_sources=True)  # stores the cache entry
+        entry = self.new["packages"]["node_modules/example"]
+        entry["integrity"] = f"{self.digest} {sri('x', 'sha1')}"
+        self.save_locks()
+        plain = self.row()  # a plain check: one shared digest is enough, as before
+        self.assertEqual((plain["status"], plain["cache_hit"]), ("not_flagged", True))
+        strict = self.row(strict_sources=True)
+        self.assertEqual(strict["status"], "incomplete")
+        self.assertIn("Strict sources", strict["detail"])
+        self.assertEqual(len(self.backend.calls), 1)
+
+    def test_mismatching_or_doubled_digests_are_held_only_when_strict(self):
+        dist, entry = (
+            self.doc["versions"]["1.1.0"]["dist"],
+            self.new["packages"]["node_modules/example"],
+        )
+        url = dist["tarball"]
+        cases = {
+            "registry lists two sha512": (dist, {"integrity": f"{self.digest} {sri('y')}"}),
+            "registry names another tarball": (dist, {"tarball": url + "?x"}),
+            "lockfile lists two digests": (entry, {"integrity": f"{self.digest} {sri('z', 'sha256')}"}),
+            "lockfile resolves elsewhere": (entry, {"resolved": url.replace("1.1.0.tgz", "9.tgz")}),
+        }  # fmt: skip
+        for case, (target, fields) in cases.items():
+            with self.subTest(case):
+                saved = dict(target)
+                target.update(fields)
+                self.save_locks()
+                strict = self.row(strict_sources=True, no_cache=True)
+                self.assertEqual(strict["status"], "incomplete")
+                self.assertIn("Strict sources", strict["detail"])
+                self.assertEqual(self.row(no_cache=True)["status"], "not_flagged")  # unchanged
+                target.clear()
+                target.update(saved)
+                self.save_locks()
+
+    def test_a_later_read_is_never_made(self):
+        later = copy.deepcopy(self.doc)
+        self.doc["versions"]["1.1.0"]["dist"]["integrity"] = f"{self.digest} {sri('y')}"
+        reads = iter([self.doc, later])
+
+        def fetch(name):
+            self.backend.fetched.append(name)
+            return next(reads)
+
+        self.backend.fetch_packument = fetch
+        self.assertEqual(self.row(strict_sources=True)["status"], "incomplete")
+        self.assertEqual(self.backend.fetched, ["example"])
+        self.registry.assert_not_called()
+
+
+class StrictDownloadTests(Fixture):
+    """The strict check and the download use the same dist: the tarball is checked with
+    registry.verify against the dist the lockfile was compared with (stand-in depbee-analyzer,
+    synthetic tarballs from a FakeRegistry, no network)."""
+
+    def setUp(self):
+        super().setUp()
+        self.doc = packument({"1.0.0": "2026-01-01T00:00:00Z", "1.0.1": "2026-01-02T00:00:00Z",
+                              "1.1.0": "2026-01-03T00:00:00Z"})  # fmt: skip
+        self.served = serve_tarballs(self.doc, "example")  # each dist.integrity: its tarball's
+        digest = self.doc["versions"]["1.1.0"]["dist"]["integrity"]
+        self.new["packages"]["node_modules/example"]["integrity"] = digest
+        self.save_locks()
+
+    def analyze(self):
+        backend = stand_in_backend(FakeBackend(self.doc).fetch_packument, [])
+        with mock.patch("depbee.analysis.registry._open", self.served):
+            analyzer = RealExtractorAnalyzer(backend=backend, strict_sources=True)
+            return analyzer.analyze(self.request())["results"][0]
+
+    def test_the_download_is_checked_against_the_compared_dist(self):
+        self.assertEqual(self.analyze()["status"], "complete")
+        url = self.doc["versions"]["1.1.0"]["dist"]["tarball"]
+        self.assertIn(url, self.served.opened)
+        self.served.files[url] += b"x"  # other bytes at the same address
+        row = self.analyze()
+        self.assertEqual(row["status"], "failed")
+        self.assertIn("sha512 integrity", row["error"])

@@ -7,7 +7,6 @@ import contextlib
 import hashlib
 import json
 import os
-import re
 import secrets
 import shutil
 import tempfile
@@ -17,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import __version__, bundled, config
-from .analysis import bounded, cache, registry
+from .analysis import bounded, cache
 from .analysis.artifact import ArtifactAnalyzer
 from .contracts import GuardError, elapsed_since, parse_json
 from .inference.lightgbm import LightGBMPredictor
@@ -59,8 +58,6 @@ GUARD_CHANGED = (
 GUARD_MISMATCH = (
     "The check's report does not match the planned lockfile changes; nothing was installed"
 )
-# One SRI token of a sha512 digest (64 bytes: 86 base64 characters and "=="), nothing else.
-_SHA512 = re.compile(r"sha512-[A-Za-z0-9+/]{86}==")
 # The environment variable of each asset folder (_sources), by its settings key, model first.
 ASSET_VARIABLES = {
     "model_dir": "DEPBEE_MODEL_DIR", "known_malicious_dir": "DEPBEE_KNOWN_MALICIOUS_DIR",
@@ -126,6 +123,7 @@ def scan_project(
     no_cache: bool = False,
     known_malicious_dir: Path | None = None,
     git_dir: Path | None = None,
+    strict_sources: bool = False,
 ) -> dict:
     """Build the request, pick the analyzer and model, and return the pipeline.scan() report.
 
@@ -146,6 +144,9 @@ def scan_project(
     With extract=True the report also has elapsed_seconds (in total and per result) and cache_hit.
     With extract=False, progress, local_root and the cache options are ignored, and any
     local_sources raise GuardError.
+    strict_sources (extract only, install_checked): the analyzer also fails a change whose
+    lockfile entry and analyzed registry dist do not name the same tarball URL and single
+    sha512 digest (ExtractorAnalyzer strict_sources). False leaves every call as it was.
 
     Raises GuardError, OSError, ValueError or RecursionError for bad options or invalid inputs
     (lockfiles, analysis, model); the caller maps them to its error output.
@@ -162,9 +163,11 @@ def scan_project(
         return scan(request, analyzer, predictor, **detectors)
     from .analysis.extractor import ExtractorAnalyzer
 
+    strict = {"strict_sources": True} if strict_sources else {}
     analyzer = ExtractorAnalyzer(
-        sources, progress=progress, **_cache_options(predictor, cache_dir, no_cache), **detectors
-    )
+        sources, progress=progress, **_cache_options(predictor, cache_dir, no_cache), **detectors,
+        **strict,
+    )  # fmt: skip
     report = scan(request, analyzer, predictor, **_with_rules(detectors, analyzer))
     return _timed(report, analyzer, started)
 
@@ -736,24 +739,35 @@ def install_checked(
     command uses (_sources, the default cache), and the base is always the lockfile in Git HEAD,
     so the caller cannot pick an easier model or baseline. Refused with GuardError before the
     check: another install_checked() of the same project still running (_install_lock: refused,
-    not waited for), a project that read_project() refuses, a project .npmrc, a node_modules that
-    is not the project's own folder, a lock entry without a valid integrity, and more than
-    GUARD_MAX_PACKAGES changes to analyze. The scan must have read the plan's bytes and base
-    (same request_id as the plan made with the hashed files), and its report must have exactly
-    the plan's changes (_guard_rows), else GuardError. Without an added or updated change npm
-    is never started: no change is "unchanged", removals only are "refused" (removal_only). An
-    install needs every added or updated change analyzed with a complete pass (_complete_pass)
-    and exit code 0; an item that is no pass while the gate would let it through is a
-    GuardError. apply_preview() with mode install and no confirmation then refuses any item
-    the gate lists, compares the two files once more and, right before npm ci starts, the
-    files, the .npmrc and the plan again (ready). Nothing in the project is written. A process
-    that writes the files after that last comparison is not stopped; npm ci's own check
-    afterwards reports it. apply_preview() itself, as the dashboard and update --apply use
-    it, is unchanged.
+    not waited for), a project that read_project() refuses, a bundle or a nested shrinkwrap
+    anywhere in the tree (_tree_problem), a project .npmrc, a node_modules that is not the
+    project's own folder, a lock entry without a valid integrity, and more than
+    GUARD_MAX_PACKAGES changes to analyze. The scan runs with strict_sources: a change whose
+    lockfile entry and the dist of the packument the analysis fetched once and uses do not name
+    the same tarball URL and single sha512 digest is a failed (held) change, on a cache hit as
+    on a download, and the registry is never asked again here. The scan must have read the
+    plan's bytes and base (same request_id as the plan made with the hashed files), and its
+    report must have exactly the plan's changes (_guard_rows), else GuardError. Without an added
+    or updated change npm is never started: no change is "unchanged", removals only are
+    "refused" (removal_only). An install needs every added or updated change analyzed with a
+    complete pass (_complete_pass) and exit code 0; an item that is no pass while the gate
+    would let it through is a GuardError. apply_preview() with mode install and no confirmation
+    then refuses any item the gate lists, compares the two files once more and, right before
+    npm ci starts, the files, the .npmrc, the plan and node_modules again (ready). Nothing in
+    the project is written. A process that writes the files after that last comparison is not
+    stopped; npm ci's own check afterwards reports it. apply_preview() itself, as the
+    dashboard and update --apply use it, is unchanged.
     """
     project = Path(os.path.abspath(project))
     with _install_lock(project):
-        package_bytes, lock_bytes, _ = npm_cli.read_project(project)
+        package_bytes, lock_bytes, package = npm_cli.read_project(project)
+        shape = _tree_problem(package, lock_bytes)
+        if shape:
+            raise GuardError(
+                f"{shape}: npm installs that part of the tree from inside another package, not "
+                "from the lockfile's own tarball and digest that depbee guard ci checks. Nothing "
+                "was downloaded or installed; install such a project yourself after review"
+            )
         if os.path.lexists(project / ".npmrc"):
             raise GuardError(
                 "The project has a .npmrc, which npm ci would read: depbee does not install "
@@ -770,9 +784,6 @@ def install_checked(
         plan = plan_project(project)
         if plan["head_lock_sha256"] != sums[1]:
             raise GuardError(GUARD_CHANGED)
-        for change in plan["changes"]:  # before any download: what npm ci would verify
-            if change["kind"] != "removed":
-                _bound(change, _lockfile_source_problem(change["after"]))
 
         def limit(index: int, total: int, change: dict) -> None:
             if total > GUARD_MAX_PACKAGES:
@@ -783,7 +794,9 @@ def install_checked(
             if progress:
                 progress(index, total, change)
 
-        report = scan_project(project, extract=True, progress=limit)
+        # Strict sources: each change is analyzed only if npm ci would check the very tarball the
+        # analysis checks, judged from the one packument the analysis itself fetched and uses.
+        report = scan_project(project, extract=True, progress=limit, strict_sources=True)
         if report["request_id"] != plan["request_id"]:
             raise GuardError(GUARD_CHANGED)
         installs = _guard_rows(plan, report)
@@ -796,9 +809,6 @@ def install_checked(
             raise GuardError(GUARD_MISMATCH)
         if not all(passed) and update_gate(report) == ([], []):
             raise GuardError(GUARD_MISMATCH)  # not a pass, yet the gate would let it through
-        if all(passed):
-            for change, _ in installs:
-                _bound(change, _registry_source_problem(change["after"]))
         started = []
 
         def ready() -> None:
@@ -824,49 +834,26 @@ def install_checked(
     return {"report": report, "apply": {**apply, "npm_ci_started": bool(started)}}
 
 
-def _bound(change: dict, problem: str | None) -> None:
-    if problem:
-        after = change["after"]
-        raise GuardError(
-            f"{after['name']}@{after['version']}: {problem}. depbee guard ci installs only "
-            "lockfile entries whose resolved is the registry's tarball URL and whose integrity "
-            "is the registry's one sha512 digest, so that npm ci checks the bytes depbee "
-            "analyzed. Nothing was installed"
-        )
-
-
-def _lockfile_source_problem(after: dict) -> str | None:
-    """Why npm ci would not fetch and verify this entry as the check did, from the lockfile:
-    resolved must be the registry's own tarball URL, which the analyzer downloads
-    (registry.tarball_url), and integrity exactly one sha512 digest. The analyzer accepts any
-    digest the lockfile shares with the registry; npm checks the strongest one it lists."""
-    url = registry.tarball_url(after["name"], after["version"])
-    if after.get("resolved") != url:
-        return f"resolved is not {url}"
-    token = (after.get("integrity") or "").strip(npm_cli.SRI_SEPARATORS)
-    if not (_SHA512.fullmatch(token) and npm_cli.valid_sri(token)):
-        return "integrity is not exactly one sha512 digest"
-    return None
-
-
-def _registry_source_problem(after: dict) -> str | None:
-    """Why the registry metadata of this entry (fetched again, version metadata is immutable)
-    does not name that same URL and that same single digest, the ones the analyzed tarball
-    was checked against (registry.verify)."""
-    name, version = after["name"], after["version"]
-    with bounded.budget():
-        packument = registry.packument(name)
-    versions = packument.get("versions") if isinstance(packument, dict) else None
-    manifest = versions.get(version) if isinstance(versions, dict) else None
-    dist = manifest.get("dist") if isinstance(manifest, dict) else None
-    if not isinstance(dist, dict):
-        return "the registry metadata has no dist for this version"
-    if dist.get("tarball") != registry.tarball_url(name, version):
-        return "the registry's dist.tarball is not its own tarball URL"
-    integrity = dist.get("integrity")
-    expected = after["integrity"].strip(npm_cli.SRI_SEPARATORS)
-    if not isinstance(integrity, str) or integrity.strip(npm_cli.SRI_SEPARATORS) != expected:
-        return "the registry's dist.integrity is not that one sha512 digest"
+def _tree_problem(package: dict, lock_bytes: bytes) -> str | None:
+    """Which part of the tree npm ci would take from inside another package, if any: a bundle
+    (bundleDependencies or bundledDependencies of package.json or of any lock entry, the root's
+    included, and any entry marked inBundle, which comes in its parent's tarball) or a package
+    with its own npm-shrinkwrap.json (hasShrinkwrap), whose subtree npm reads from that file.
+    Only these markers npm writes are read; npm's handling of them is not modelled."""
+    bundles = ("bundleDependencies", "bundledDependencies")
+    for field in bundles:
+        if package.get(field):
+            return f"package.json has {field}"
+    lock, _ = parse_json(lock_bytes, "package-lock.json")  # read_project() checked its shape
+    for location, entry in lock["packages"].items():
+        where = location or "the lockfile's root entry"
+        if entry.get("hasShrinkwrap"):
+            return f"{where} has its own npm-shrinkwrap.json (hasShrinkwrap)"
+        if entry.get("inBundle"):
+            return f"{where} is bundled inside another package (inBundle)"
+        for field in bundles:
+            if entry.get(field):
+                return f"{where} has {field}"
     return None
 
 

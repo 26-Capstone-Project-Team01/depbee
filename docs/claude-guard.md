@@ -125,16 +125,16 @@ MCP의 `scan_lockfile` 결과는 에이전트가 읽는 보고서입니다. 그 
 
 ### 네트워크와 캐시
 
-다시 검사할 때 바뀐 패키지마다 npm registry 메타데이터를 새로 받고, 통과해 설치할 버전은 주소와 integrity 대조를 위해 한 번 더 받습니다. 패키지 tarball은 depbee의 특징 캐시(`~/.cache/depbee`)에 없을 때만 받습니다. 캐시 항목의 키는 모델 해시, 분석기 커밋, 두 버전과 그 integrity이므로, 같은 사용자의 네이티브 MCP나 CLI가 같은 모델로 먼저 검사했다면 대부분 내려받지 않습니다. Docker로 실행한 MCP의 캐시는 컨테이너 볼륨에 있어 공유되지 않으므로 그때는 다시 내려받습니다. 캐시는 속도를 위한 것이고, 판정은 매번 모델과 기지 악성 색인으로 새로 계산합니다.
+다시 검사할 때 바뀐 패키지마다 npm registry 메타데이터를 한 번 새로 받고, 설치를 정하는 데에도 그 한 번의 응답만 씁니다. 패키지 tarball은 depbee의 특징 캐시(`~/.cache/depbee`)에 없을 때만 받습니다. 캐시 항목의 키는 모델 해시, 분석기 커밋, 두 버전과 그 integrity이므로, 같은 사용자의 네이티브 MCP나 CLI가 같은 모델로 먼저 검사했다면 대부분 내려받지 않습니다. Docker로 실행한 MCP의 캐시는 컨테이너 볼륨에 있어 공유되지 않으므로 그때는 다시 내려받습니다. 캐시는 속도를 위한 것이고, 판정은 매번 모델과 기지 악성 색인으로 새로 계산합니다.
 
 ### 설치하는 조건과 순서
 
 1. 같은 프로젝트(실제 경로 기준)의 다른 `depbee guard ci`가 실행 중이면 기다리지 않고 거부합니다. 잠금은 이력 파일 옆 `locks/` 폴더의 파일에 거는 운영체제 잠금이라 프로세스가 끝나면 풀립니다.
-2. 검사 전에 거부합니다: `depbee update`가 지원하지 않는 프로젝트(workspaces, `npm-shrinkwrap.json`, registry 밖 의존성 등), 프로젝트 `.npmrc`, 프로젝트 자신의 폴더가 아닌 `node_modules`, 유효한 integrity가 없는 lockfile 항목.
-3. `package.json`·`package-lock.json`을 읽어 해시를 남기고, Git HEAD와 비교한 변경 목록을 만듭니다. 추가·업데이트된 lockfile 항목은 내려받기 전에 `resolved`가 registry의 그 버전 tarball 주소(`https://registry.npmjs.org/<이름>/-/<이름>-<버전>.tgz`, 분석기가 받는 주소)와 같고 `integrity`가 sha512 값 하나뿐이어야 합니다. `npm ci`는 lockfile의 `resolved`에서 받아 `integrity`로 확인하므로, 여러 값을 적거나 다른 주소를 적은 항목은 분석한 tarball과 다른 바이트를 받아들일 수 있어 거부합니다. 분석할 변경이 20개를 넘으면 내려받기 전에 멈춥니다(MCP와 같은 상한).
-4. `depbee scan --extract`와 같은 검사를 합니다. 검사가 읽은 lockfile과 HEAD가 3단계와 다르면(요청 ID 비교) 설치하지 않습니다.
+2. 검사 전에 거부합니다: `depbee update`가 지원하지 않는 프로젝트(workspaces, `npm-shrinkwrap.json`, registry 밖 의존성 등), 프로젝트 `.npmrc`, 프로젝트 자신의 폴더가 아닌 `node_modules`, 유효한 integrity가 없는 lockfile 항목. 트리 어디에든 번들(`package.json`이나 lockfile 항목의 `bundleDependencies`·`bundledDependencies`, `inBundle` 항목)이나 자기 `npm-shrinkwrap.json`을 가진 패키지(`hasShrinkwrap`)가 있어도 거부합니다. npm은 그 부분을 다른 패키지의 tarball이나 그 안의 shrinkwrap에서 가져오므로, lockfile 항목의 tarball과 digest를 묶는 이 명령의 검사가 닿지 않기 때문입니다. npm이 lockfile에 적는 이 표시만 보고, npm의 처리 방식을 따로 흉내 내지 않습니다.
+3. `package.json`·`package-lock.json`을 읽어 해시를 남기고, Git HEAD와 비교한 변경 목록을 만듭니다. 분석할 변경이 20개를 넘으면 내려받기 전에 멈춥니다(MCP와 같은 상한).
+4. `depbee scan --extract`와 같은 검사를 엄격 모드로 합니다. 분석기는 바뀐 버전마다 registry 메타데이터를 한 번 받아 그 응답의 `dist`로 분석하는데, 엄격 모드에서는 그 `dist`와 lockfile 항목을 비교해 `resolved`와 `dist.tarball`이 모두 registry의 그 버전 tarball 주소(`https://registry.npmjs.org/<이름>/-/<이름>-<버전>.tgz`)이고 `integrity`와 `dist.integrity`가 같은 sha512 값 하나일 때만 분석합니다. 내려받은 tarball은 바로 그 `dist`로 확인하고(`registry.verify`), 특징 캐시를 쓸 때도 같은 비교를 먼저 하므로 캐시 적중이 이 조건을 건너뛰지 않습니다. 조건이 어긋나면 그 항목은 보류가 되어 설치하지 않습니다. `npm ci`는 lockfile의 `resolved`에서 받아 lockfile의 `integrity`로 확인하므로, 이 비교로 npm이 받아들일 바이트가 분석한 tarball의 sha512에 묶입니다. 나중에 registry에 다시 묻지 않으므로 그 사이 바뀐 응답이 설치를 허락하는 일은 없습니다. 검사가 읽은 lockfile과 HEAD가 3단계와 다르면(요청 ID 비교) 설치하지 않습니다.
 5. 보고서가 3단계의 변경 목록과 정확히 맞는지(항목마다 행 하나, 같은 위치·버전·삭제 여부) 확인하고, 맞지 않으면 오류로 멈춥니다. 바뀐 항목이 없거나 삭제만 있으면 depbee가 검사한 설치 항목이 없으므로 npm을 실행하지 않습니다. 설치하려면 추가·업데이트가 하나 이상 있고 그 모두가 실제로 분석돼 ML 위험 점수가 있고, ML 기준 미만이며 기지 악성 목록과 대조해 일치가 없어야 합니다(보고서 종료 코드 0). 그다음 `depbee update --apply install`과 같은 반영 게이트를 확인 없이 적용합니다. 기지 악성 일치는 거부, ML 기준 이상·보류·기지 악성 미확인도 거부이며, 경고를 확인하고 진행하는 옵션은 없습니다. 이 조건은 `depbee guard ci`에만 적용되고, 대시보드와 `depbee update --apply`의 반영 규칙은 그대로입니다.
-6. 모두 통과했으면 설치할 버전마다 registry 메타데이터를 한 번 더 받아, 그 버전의 `dist.tarball`이 같은 주소이고 `dist.integrity`가 lockfile의 그 sha512 값 하나와 같은지 확인합니다(배포된 버전의 메타데이터는 바뀌지 않으므로, 분석한 tarball을 확인한 값과 npm이 확인할 값이 같아집니다). 다르거나 받지 못하면 설치하지 않습니다. 사용자 npm 설정이 다른 registry를 쓰게 해 `npm ci`가 받는 주소가 바뀌어도, `npm ci`는 같은 sha512로 확인하므로 다른 바이트는 설치되지 않습니다.
+6. 사용자 npm 설정이 다른 registry를 쓰게 해 `npm ci`가 받는 주소가 바뀌어도, `npm ci`는 lockfile의 같은 sha512로 확인하므로 다른 바이트는 설치되지 않습니다.
 7. 두 파일을 다시 읽어 해시를 비교하고, npm 버전을 확인한 뒤 `npm ci`를 시작하기 바로 전에 두 파일, `.npmrc`, Git HEAD 기준 변경 목록, `node_modules`가 프로젝트 자신의 폴더인지를 한 번 더 확인합니다. 하나라도 다르면 `npm ci`를 시작하지 않습니다.
 8. `npm ci --ignore-scripts`는 `depbee update --apply install`과 같은 고정 옵션으로 실행합니다(설치 스크립트 미실행, Git 실행 파일과 전역 설정을 없는 경로로 고정, `npm_config_*`·`NODE_OPTIONS` 환경 변수 제거, 시간·출력 상한). 끝난 뒤 두 파일이 그대로인지 확인합니다.
 
@@ -184,5 +184,5 @@ depbee는 프로젝트 파일을 쓰지 않습니다. 반영 경로를 그대로
 - 명령 문자열의 흔한 형태만 판정합니다. 스크립트 파일, 셸 별칭과 함수, `package.json` 스크립트 안의 npm 실행(`npm run setup`이 내부에서 `npm install`을 실행하는 경우), 변수로 조립하거나 인코딩한 명령, yarn·pnpm·bun은 보지 못합니다. 사용자의 터미널, IDE 작업, 다른 에이전트가 실행하는 명령에는 적용되지 않습니다.
 - lockfile 변경 준비(2단계)는 에이전트의 npm이 프로젝트에서 실행합니다. 설치 스크립트는 실행하지 않지만 사용자 npm 설정을 읽고, registry 패키지가 Git 커밋에 의존하면 npm이 그 tarball을 받아 준비할 수 있습니다([알려진 예외](usage.md#업데이트-미리보기-depbee-update)). 프로젝트 `.npmrc`가 있으면 훅이 이 단계를 거부합니다.
 - 통과는 모델과 목록의 판정일 뿐 패키지가 안전하다는 보증이 아닙니다. 검사 범위는 Git HEAD 대비 바뀐 항목뿐입니다.
-- `depbee guard ci`는 바뀐 항목의 `integrity`가 sha512 값 하나이고 registry 메타데이터의 `dist.integrity`도 같은 값 하나일 때만 설치합니다. sha1만 있는 오래된 배포본처럼 이 조건을 맞출 수 없는 패키지는 검사(`depbee scan`, MCP)는 되지만 이 명령으로 설치되지 않으며, 사용자가 판단해 직접 설치합니다. 이 조건은 이 명령에만 있고 일반 검사의 결과, 보고서 형식, 캐시 키는 그대로입니다.
+- `depbee guard ci`는 바뀐 항목의 `integrity`가 sha512 값 하나이고 분석이 받은 registry 메타데이터의 `dist.integrity`도 같은 값 하나일 때만 설치합니다. sha1만 있는 오래된 배포본처럼 이 조건을 맞출 수 없는 패키지는 검사(`depbee scan`, MCP)는 되지만 이 명령으로는 보류되어 설치되지 않으며, 사용자가 판단해 직접 설치합니다. 번들이나 자기 shrinkwrap을 가진 패키지가 트리에 있는 프로젝트도 이 명령으로는 설치하지 않습니다. 이 조건들은 이 명령에만 있고 일반 검사의 결과, 보고서 형식, 캐시 키는 그대로입니다.
 - Windows PowerShell 5.1은 `&` 뒤의 경로를 와일드카드로 찾습니다. depbee 설치 경로에 `[`나 `]`가 있으면 거부 메시지의 PowerShell 명령 대신 Bash 도구를 쓰거나 대괄호 없는 경로에 설치합니다.
