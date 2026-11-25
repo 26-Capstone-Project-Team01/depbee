@@ -28,6 +28,8 @@ from depbee import cli, guard, service
 from depbee.analysis.extractor import ExtractorAnalyzer as RealExtractorAnalyzer
 from depbee.cli import main
 from depbee.contracts import GuardError
+from depbee.inputs import git as git_input
+from depbee.inputs import npm_cli
 from depbee.service import GUARD_CHANGED, install_checked
 
 
@@ -529,6 +531,53 @@ class SettingsTests(Fixture):
         code, out, _ = self.cli("enable", str(self.settings))
         self.assertEqual((code, self.settings.read_bytes(), self.backups()), (0, first, []))
         self.assertIn("바꿀 것이 없습니다", out)
+
+    def test_a_path_that_only_leads_to_this_python_is_not_taken_for_it(self):
+        # This depbee's Python is a stand-in path of the test run, so no real install is read.
+        venv = self.root / "venv" / "bin"
+        venv.mkdir(parents=True)
+        python = str(venv / "python")
+        # Another user's hook: <venv>/lnk/../python, where lnk is a link elsewhere. Text alone
+        # (normpath) makes it <venv>/python; POSIX follows lnk first and reaches another file.
+        elsewhere = self.root / "elsewhere" / "deep"
+        elsewhere.mkdir(parents=True)
+        (self.root / "elsewhere" / "python").write_text("not run\n", "utf-8")  # harmless file
+        dotted = str(venv / "lnk" / ".." / "python")
+        try:
+            (venv / "lnk").symlink_to(elsewhere, target_is_directory=True)
+            if os.name != "nt":
+                self.assertNotEqual(os.path.realpath(dotted), os.path.realpath(python))
+        except OSError:
+            pass  # this Windows account makes no links; the text alone decides below
+        sep = "\\" if os.name == "nt" else "/"
+        unclear = [
+            dotted,
+            f"{venv}{sep}.{sep}python",
+            "python",
+            f"bin{sep}python",
+        ]  # no pathlib: it drops "."
+        if os.name != "nt":
+            unclear.append(python.upper())  # POSIX file names are case-sensitive
+        with mock.patch.object(sys, "executable", python):
+            for command in unclear:
+                with self.subTest(command=command):
+                    theirs = {**guard.handler(python), "command": command}
+                    self.write(self.settings, {"hooks": {"PreToolUse": [
+                        {"matcher": "Bash|PowerShell", "hooks": [theirs]}]}})  # fmt: skip
+                    code, out, _ = self.cli("enable", str(self.settings))
+                    self.assertEqual(code, 0, out)
+                    self.assertIn("자동으로 지우지 않음", out)
+                    self.assertEqual(self.cli("status", str(self.settings))[0], 2)
+                    self.cli("disable", str(self.settings))
+                    self.assertEqual(json.loads(self.settings.read_text("utf-8")), {"hooks": {
+                        "PreToolUse": [{"matcher": "Bash|PowerShell", "hooks": [theirs]}]}})  # fmt: skip
+            if os.name == "nt":  # Windows reads letter case and slash direction alike
+                same = {**guard.handler(python), "command": python.upper().replace("\\", "/")}
+                self.write(self.settings, {"hooks": {"PreToolUse": [
+                    {"matcher": "Bash|PowerShell", "hooks": [same]}]}})  # fmt: skip
+                self.cli("disable", str(self.settings))
+                self.assertEqual(json.loads(self.settings.read_text("utf-8")), {})
+        self.run.assert_not_called()
 
     def test_the_same_shape_with_another_command_is_kept_and_reported(self):
         # Another install's Python, or a program of the user's with the same arguments: not
@@ -1084,7 +1133,7 @@ class InstallCheckedTests(ApplyFixture):
                 result = install_checked(self.upd)
                 (row,) = result["report"]["results"]
                 self.assertEqual((row["status"], row["reason"]), ("incomplete", "analysis_failed"))
-                self.assertRegex(row["detail"], "Strict sources|does not match")
+                self.assertIn("Strict sources", row["detail"])
                 self.assertEqual(result["apply"]["outcome"], "refused")
                 self.assertEqual((self.ci_calls, backend.fetched), ([], ["example"]))
         self.refetch.assert_not_called()
@@ -1188,19 +1237,73 @@ class InstallCheckedTests(ApplyFixture):
         self.assertEqual(self.ci_calls, [])
         self.refetch.assert_not_called()
 
+    def test_a_version_that_is_not_canonical_stops_every_entry_before_any_download(self):
+        constructor = sys.modules["depbee.analysis.extractor"].ExtractorAnalyzer  # the mock
+        lock = json.loads(self.original["package-lock.json"])
+        lock["packages"]["node_modules/neighbour"] = {  # a well-formed added entry beside it
+            "version": "1.0.0", "integrity": sri("1.0.0"),
+            "resolved": "https://registry.npmjs.org/neighbour/-/neighbour-1.0.0.tgz",
+        }  # fmt: skip
+        for version in ("01.1.0", "1.01.0", "1.1.0+build.1", "1.1.0-01"):
+            with self.subTest(version=version):
+                lock["packages"]["node_modules/example"]["version"] = version
+                (self.upd / "package-lock.json").write_text(json.dumps(lock), "utf-8")
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = main(["guard", "ci", str(self.upd), "--format", "json"])
+                self.assertEqual((code, out.getvalue()), (2, ""))
+                error = json.loads(err.getvalue())
+                self.assertEqual((error["status"], error["exit_code"]), ("error", 2))
+                self.assertIn("no valid version", error["error"])
+        constructor.assert_not_called()  # the neighbour is not analyzed or downloaded either
+        self.assertEqual(self.ci_calls, [])
+        self.refetch.assert_not_called()
+
     def test_npm_that_could_not_be_started_is_not_reported_as_started(self):
         self.verdict([PASS], 0)
 
         def cannot_start(project):
             raise FileNotFoundError(2, "No such file or directory")
 
-        self.npm_ci = cannot_start
+        def stopped_while_suspended(project):  # the Windows job could not be set up
+            raise git_input.ChildNotStarted("Unable to start the child process in a Windows job")
+
+        for case, failure in {"no program": cannot_start,
+                              "no job": stopped_while_suspended}.items():  # fmt: skip
+            with self.subTest(case):
+                self.npm_ci = failure
+                apply = install_checked(self.upd)["apply"]
+                self.assertEqual((apply["outcome"], apply["npm_ci_started"]), ("failed", False))
+                self.assertTrue(apply["error"].startswith(npm_cli.NPM_NOT_STARTED))
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(main(["guard", "ci", str(self.upd)]), 2)
+                self.assertIn(cli.GUARD_STOPPED, out.getvalue())
+
+        def stopped_after_it_ran(project):  # a time limit reached while npm ci was running
+            raise GuardError("npm did not finish within 600 seconds")
+
+        self.npm_ci = stopped_after_it_ran
         apply = install_checked(self.upd)["apply"]
-        self.assertEqual((apply["outcome"], apply["npm_ci_started"]), ("failed", False))
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(main(["guard", "ci", str(self.upd)]), 2)
-        self.assertIn(cli.GUARD_STOPPED, out.getvalue())
+        self.assertEqual((apply["outcome"], apply["npm_ci_started"]), ("failed", True))
+
+    def test_only_a_child_stopped_before_it_ran_reads_as_not_started(self):
+        cases = {
+            git_input.ChildNotStarted("Unable to set up a Windows job for the child processes"):
+                True,
+            FileNotFoundError(2, "No such file or directory"): True,
+            GuardError("npm did not finish within 600 seconds"): False,
+            GuardError("npm output exceeds 1048576 bytes (stderr 1048576)"): False,
+        }  # fmt: skip
+        for error, not_started in cases.items():
+            with (
+                self.subTest(error=str(error)),
+                mock.patch("depbee.inputs.npm_cli._run", side_effect=error),
+                self.assertRaises(GuardError) as caught,
+            ):
+                npm_cli._call(["node"], self.upd, {})
+            self.assertEqual(str(caught.exception).startswith(npm_cli.NPM_NOT_STARTED),
+                             not_started)  # fmt: skip
 
     def test_npm_ci_runs_in_the_real_folder_checked_even_if_a_link_moves(self):
         alias, other = self.root / "alias", self.root / "same-files"
@@ -1335,6 +1438,23 @@ class StrictSourceTests(CacheFixture):
                 target.clear()
                 target.update(saved)
                 self.save_locks()
+
+    def test_every_strict_digest_mismatch_says_strict_sources(self):
+        # A registry digest that shares nothing with the lockfile's: the strict comparison runs
+        # first and names it; a plain check keeps its own wording.
+        self.doc["versions"]["1.1.0"]["dist"]["integrity"] = sri("another tarball")
+        strict = self.row(strict_sources=True, no_cache=True)
+        self.assertEqual((strict["status"], strict["reason"]), ("incomplete", "analysis_failed"))
+        self.assertTrue(strict["detail"].startswith("Strict sources: "), strict["detail"])
+        self.assertIn("registry dist.integrity", strict["detail"])
+        plain = self.row(no_cache=True)
+        self.assertEqual(
+            plain["detail"], "Lockfile integrity does not match the registry integrity"
+        )
+        # Other analysis failures keep their own wording in strict mode too.
+        del self.doc["versions"]["1.1.0"]
+        gone = self.row(strict_sources=True, no_cache=True)
+        self.assertEqual(gone["detail"], "Registry no longer serves example@1.1.0")
 
     def test_a_later_read_is_never_made(self):
         later = copy.deepcopy(self.doc)

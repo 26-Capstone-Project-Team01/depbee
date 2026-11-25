@@ -95,6 +95,11 @@ if os.name == "nt":
         ]
 
 
+class ChildNotStarted(GuardError):
+    """The child was stopped before it ran: its Windows job could not be set up while it was
+    still suspended (_ProcessTree), so it was killed without running a single instruction."""
+
+
 class _ProcessTree:
     """A child and every process it starts, killed together.
 
@@ -135,7 +140,7 @@ class _ProcessTree:
         resume.restype = ctypes.c_long
         job = k.CreateJobObjectW(None, None)
         if not job:
-            raise GuardError("Unable to create a Windows job for the child processes")
+            raise ChildNotStarted("Unable to create a Windows job for the child processes")
         self.job = job
         limits = _ExtendedLimits()
         limits.BasicLimitInformation.LimitFlags = _KILL_ON_JOB_CLOSE
@@ -143,7 +148,7 @@ class _ProcessTree:
         if not k.SetInformationJobObject(job, _EXTENDED_LIMITS, ctypes.byref(limits), size):
             k.CloseHandle(job)
             self.job = None
-            raise GuardError("Unable to set up a Windows job for the child processes")
+            raise ChildNotStarted("Unable to set up a Windows job for the child processes")
         # PROCESS_TERMINATE | PROCESS_SET_QUOTA | PROCESS_SUSPEND_RESUME.
         handle = k.OpenProcess(0x0001 | 0x0100 | 0x0800, False, proc.pid)
         started = bool(handle) and k.AssignProcessToJobObject(job, handle) and resume(handle) == 0
@@ -152,7 +157,7 @@ class _ProcessTree:
         if not started:
             k.CloseHandle(job)
             self.job = None
-            raise GuardError("Unable to start the child process in a Windows job")
+            raise ChildNotStarted("Unable to start the child process in a Windows job")
 
     def kill(self) -> None:
         with self.lock:

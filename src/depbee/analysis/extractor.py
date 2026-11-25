@@ -463,13 +463,15 @@ class ExtractorAnalyzer:
             if (packument.get("versions") or {}).get(new) is None:
                 raise GuardError(f"Registry no longer serves {name}@{new}")
             # The tarball is later checked against this registry integrity (analysis.registry).
-            published = _integrity_tokens(_dist(packument, name, new).get("integrity"))
-            if not published & _integrity_tokens(change["after"]["integrity"]):
-                raise GuardError("Lockfile integrity does not match the registry integrity")
-            if self.strict_sources:  # before the cache: a hit must meet it as a download does
+            # Strict first, so that every digest or address mismatch of a strict check says so;
+            # and before the cache: a hit must meet it as a download does.
+            if self.strict_sources:
                 problem = registry.source_problem(change["after"], _dist(packument, name, new))
                 if problem:
                     raise GuardError(f"Strict sources: {problem}")
+            published = _integrity_tokens(_dist(packument, name, new).get("integrity"))
+            if not published & _integrity_tokens(change["after"]["integrity"]):
+                raise GuardError("Lockfile integrity does not match the registry integrity")
         elif self.strict_sources:
             raise GuardError("Strict sources: a local copy is not what npm ci would install")
         skipped: list[tuple[str, list[str]]] = []

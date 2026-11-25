@@ -27,7 +27,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ..contracts import MAX_JSON_BYTES, GuardError, parse_json
-from .git import _run, is_link
+from .git import ChildNotStarted, _run, is_link
 
 TIMEOUT_SECONDS = 120
 # The start of the error when npm could not be started at all (_call): it never ran.
@@ -316,6 +316,8 @@ def _call(
             argv, cwd, STDOUT_LIMIT, env,
             timeout=timeout, stderr_limit=stderr_limit, name="npm", tree=True,
         )  # fmt: skip
+    except ChildNotStarted as exc:  # stopped while still suspended: npm never ran
+        raise GuardError(f"{NPM_NOT_STARTED}: {exc}") from exc
     except OSError as exc:
         raise GuardError(f"{NPM_NOT_STARTED}: {exc.strerror or type(exc).__name__}") from exc
     return code, out

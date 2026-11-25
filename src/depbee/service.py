@@ -22,8 +22,8 @@ from .contracts import GuardError, elapsed_since, parse_json
 from .inference.lightgbm import LightGBMPredictor
 from .inputs import npm_cli
 from .inputs.npm import (
+    EXACT_VERSION,
     PACKAGE_NAME,
-    VERSION,
     build_package_request,
     build_request,
     check_package_spec,
@@ -850,7 +850,9 @@ def install_checked(
 
 def _entry_problem(lock_bytes: bytes) -> str | None:
     """Which lock entry has no package name and version a registry install could use (a null or
-    malformed name, or version), if any: such an entry stops the call before any download."""
+    malformed name; a version that is not canonical SemVer without +build, as depbee check takes
+    it: 01.2.3 is refused), if any: such an entry stops the call before any download, of the
+    other entries too."""
     lock, _ = parse_json(lock_bytes, "package-lock.json")  # read_project() checked its shape
     for location, entry in lock["packages"].items():
         if not location:
@@ -859,7 +861,7 @@ def _entry_problem(lock_bytes: bytes) -> str | None:
         version = entry.get("version")
         if not isinstance(name, str) or len(name) > 214 or not PACKAGE_NAME.fullmatch(name):
             return f"The lockfile entry {location} has no valid package name"
-        if not isinstance(version, str) or not VERSION.fullmatch(version):
+        if not isinstance(version, str) or not EXACT_VERSION.fullmatch(version):
             return f"The lockfile entry {location} has no valid version"
     return None
 

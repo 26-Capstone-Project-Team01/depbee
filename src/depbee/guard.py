@@ -569,8 +569,17 @@ def _ours(entry: object, python: str) -> bool:
     return _shaped(entry) and _same_path(entry["command"], python)
 
 
-def _same_path(first: str, second: str) -> bool:
-    return os.path.normcase(os.path.normpath(first)) == os.path.normcase(os.path.normpath(second))
+def _same_path(command: str, python: str) -> bool:
+    """command is written as python's own path: an absolute path without . or .. parts and the
+    same text (on Windows up to letter case and slash direction, as Windows reads a path). A
+    path that only leads to it, through .., a link or another spelling, is not taken for it: on
+    POSIX a .. after a symlink leaves the link's target, so it may be another program."""
+    parts = re.split(r"[\\/]", command)
+    if not os.path.isabs(command) or "." in parts or ".." in parts:
+        return False
+    if os.name == "nt":
+        return os.path.normcase(command) == os.path.normcase(python)
+    return command == python
 
 
 def settings_file(path: Path) -> Path:
