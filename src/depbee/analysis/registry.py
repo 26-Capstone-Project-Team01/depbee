@@ -164,10 +164,15 @@ def verify(data: bytes, dist: dict, what: str) -> None:
     raise RegistryError(f"{what} has no sha512, sha384, sha256 or sha1 digest to check")
 
 
+def tarball_url(name: str, version: str) -> str:
+    """The registry's own tarball URL of name@version, the only one tarball() downloads."""
+    return f"https://{HOST}/{name}/-/{name.rpartition('/')[2]}-{version}.tgz"
+
+
 def tarball(name: str, version: str, dist: dict) -> bytes:
     """The checked tarball of name@version: registry URL and path, size, time, integrity."""
     what = f"{name}@{version} tarball"
-    expected = f"https://{HOST}/{name}/-/{name.rpartition('/')[2]}-{version}.tgz"
+    expected = tarball_url(name, version)
     if dist.get("tarball") != expected:
         raise RegistryError(f"{what} URL is not {expected}: {_shown(dist.get('tarball'))}")
     data = download(expected, MAX_TARBALL_BYTES)

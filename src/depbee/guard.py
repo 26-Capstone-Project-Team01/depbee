@@ -119,7 +119,7 @@ STEPS = (
     "Git HEAD에 기준 package-lock.json이 없는 새 프로젝트는 의존성을 넣기 전 상태를 사용자가 먼저 커밋해야 "
     "비교할 수 있습니다."
 )
-PREPARE_EXAMPLE = "npm install <이름>@<정확한 버전> --package-lock-only --ignore-scripts"
+UNKNOWN_FOLDER = "<프로젝트 폴더의 절대 경로>"
 
 
 class _Unreadable(Exception):
@@ -137,7 +137,7 @@ def _quote(text: str, powershell: bool) -> str:
 def guard_command(project: str | None, powershell: bool) -> str:
     """The `depbee guard ci` command of this Python for the tool's shell."""
     words = [_quote(sys.executable, powershell), "-I", "-m", "depbee", "guard", "ci"]
-    words.append(_quote(project, powershell) if project else "<프로젝트 폴더의 절대 경로>")
+    words.append(_quote(project, powershell) if project else UNKNOWN_FOLDER)
     return ("& " if powershell else "") + " ".join(words)
 
 
@@ -351,21 +351,33 @@ class _Check:
                 names = []
             return self._refuse(
                 f"npm {_shown(command)}: {problem}. 설치·업데이트는 아래 순서로만 진행합니다.\n"
-                + self._steps([name for name in names if _registry_package(name)])
+                + self._steps([name for name in names if _registry_package(name)], options)
             )
         if command in NPM_CI:
+            target = self._target(options)[1]
             return self._refuse(
                 f"npm {command}은(는) 검사 결과와 묶이지 않은 설치입니다. 설치는 depbee가 같은 lockfile을 다시 "
-                f"검사한 뒤 실행합니다: {guard_command(self.project, self.powershell)}\n"
-                "변경을 먼저 만들어야 하면 다음 순서를 따릅니다.\n" + self._steps([])
+                f"검사한 뒤 실행합니다: {guard_command(target, self.powershell)}\n"
+                "변경을 먼저 만들어야 하면 다음 순서를 따릅니다.\n" + self._steps([], options)
             )
         if command in NPM_EXEC or command in NPM_INIT:
             return self._refuse(self._exec_text())
         return self._refuse(
             f"npm {_shown(command)}은(는) 이 가드가 통과시키는 npm 명령이 아닙니다(조회·스크립트 실행 명령과 "
             "lockfile만 바꾸는 install·update·uninstall·audit fix만 통과, 약어는 판정하지 않음). 설치가 필요하면 "
-            "아래 순서를, 그 밖의 작업은 사용자에게 요청하세요.\n" + self._steps([])
+            "아래 순서를, 그 밖의 작업은 사용자에게 요청하세요.\n" + self._steps([], options)
         )
+
+    def _target(self, options: list[str]) -> tuple[bool, str | None]:
+        """(whether npm was given --prefix or -C, the project folder it then works in; None if
+        the text does not tell it). The last one counts, as for npm."""
+        value = None
+        for i, word in enumerate(options):
+            if word in ("--prefix", "-C"):
+                value = options[i + 1] if i + 1 < len(options) else ""
+            elif word.startswith("--prefix="):
+                value = word.partition("=")[2]
+        return (False, self.project) if value is None else (True, _folder(self.project, value))
 
     def _prepare(
         self, command: str, options: list[str], prefixed: bool
@@ -439,13 +451,16 @@ class _Check:
             )
         return None
 
-    def _steps(self, names: list[str]) -> str:
-        prepare = (
-            f"npm install {' '.join(names)} --package-lock-only --ignore-scripts"
-            if names
-            else PREPARE_EXAMPLE
-        )
-        return STEPS.format(prepare=prepare, guard=guard_command(self.project, self.powershell))
+    def _steps(self, names: list[str], options: list[str] = ()) -> str:
+        """STEPS for these package words, each quoted for the tool's shell (a range such as
+        >=4 <5 stays one word), and for the folder npm would work in (--prefix or -C kept)."""
+        prefixed, target = self._target(list(options))
+        words = ["npm", "install"]
+        if prefixed:
+            words += ["--prefix", _quote(target, self.powershell) if target else UNKNOWN_FOLDER]
+        words += [_quote(name, self.powershell) for name in names] or ["<이름>@<정확한 버전>"]
+        prepare = " ".join([*words, "--package-lock-only", "--ignore-scripts"])
+        return STEPS.format(prepare=prepare, guard=guard_command(target, self.powershell))
 
     def _exec_text(self) -> str:
         return (

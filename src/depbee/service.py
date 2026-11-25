@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import tempfile
@@ -16,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import __version__, bundled, config
-from .analysis import bounded, cache
+from .analysis import bounded, cache, registry
 from .analysis.artifact import ArtifactAnalyzer
 from .contracts import GuardError, elapsed_since, parse_json
 from .inference.lightgbm import LightGBMPredictor
@@ -58,6 +59,8 @@ GUARD_CHANGED = (
 GUARD_MISMATCH = (
     "The check's report does not match the planned lockfile changes; nothing was installed"
 )
+# One SRI token of a sha512 digest (64 bytes: 86 base64 characters and "=="), nothing else.
+_SHA512 = re.compile(r"sha512-[A-Za-z0-9+/]{86}==")
 # The environment variable of each asset folder (_sources), by its settings key, model first.
 ASSET_VARIABLES = {
     "model_dir": "DEPBEE_MODEL_DIR", "known_malicious_dir": "DEPBEE_KNOWN_MALICIOUS_DIR",
@@ -767,6 +770,9 @@ def install_checked(
         plan = plan_project(project)
         if plan["head_lock_sha256"] != sums[1]:
             raise GuardError(GUARD_CHANGED)
+        for change in plan["changes"]:  # before any download: what npm ci would verify
+            if change["kind"] != "removed":
+                _bound(change, _lockfile_source_problem(change["after"]))
 
         def limit(index: int, total: int, change: dict) -> None:
             if total > GUARD_MAX_PACKAGES:
@@ -790,6 +796,10 @@ def install_checked(
             raise GuardError(GUARD_MISMATCH)
         if not all(passed) and update_gate(report) == ([], []):
             raise GuardError(GUARD_MISMATCH)  # not a pass, yet the gate would let it through
+        if all(passed):
+            for change, _ in installs:
+                _bound(change, _registry_source_problem(change["after"]))
+        started = []
 
         def ready() -> None:
             current_package, current_lock, _ = npm_cli.read_project(project)
@@ -802,6 +812,8 @@ def install_checked(
                     "package.json, package-lock.json, .npmrc or Git HEAD changed after the "
                     "check; npm ci was not started"
                 )
+            npm_cli.check_install_dir(project)  # npm ci empties it first: still a folder here
+            started.append(True)  # nothing below stops npm ci from starting
 
         preview = {"package_json_sha256": sums[0], "package_lock_sha256": sums[1],
                    "new_package_lock_sha256": sums[1]}  # fmt: skip
@@ -809,7 +821,53 @@ def install_checked(
             project, {"preview": preview, "report": report}, package_bytes, lock_bytes,
             mode="install", ready=ready,
         )  # fmt: skip
-    return {"report": report, "apply": apply}
+    return {"report": report, "apply": {**apply, "npm_ci_started": bool(started)}}
+
+
+def _bound(change: dict, problem: str | None) -> None:
+    if problem:
+        after = change["after"]
+        raise GuardError(
+            f"{after['name']}@{after['version']}: {problem}. depbee guard ci installs only "
+            "lockfile entries whose resolved is the registry's tarball URL and whose integrity "
+            "is the registry's one sha512 digest, so that npm ci checks the bytes depbee "
+            "analyzed. Nothing was installed"
+        )
+
+
+def _lockfile_source_problem(after: dict) -> str | None:
+    """Why npm ci would not fetch and verify this entry as the check did, from the lockfile:
+    resolved must be the registry's own tarball URL, which the analyzer downloads
+    (registry.tarball_url), and integrity exactly one sha512 digest. The analyzer accepts any
+    digest the lockfile shares with the registry; npm checks the strongest one it lists."""
+    url = registry.tarball_url(after["name"], after["version"])
+    if after.get("resolved") != url:
+        return f"resolved is not {url}"
+    token = (after.get("integrity") or "").strip(npm_cli.SRI_SEPARATORS)
+    if not (_SHA512.fullmatch(token) and npm_cli.valid_sri(token)):
+        return "integrity is not exactly one sha512 digest"
+    return None
+
+
+def _registry_source_problem(after: dict) -> str | None:
+    """Why the registry metadata of this entry (fetched again, version metadata is immutable)
+    does not name that same URL and that same single digest, the ones the analyzed tarball
+    was checked against (registry.verify)."""
+    name, version = after["name"], after["version"]
+    with bounded.budget():
+        packument = registry.packument(name)
+    versions = packument.get("versions") if isinstance(packument, dict) else None
+    manifest = versions.get(version) if isinstance(versions, dict) else None
+    dist = manifest.get("dist") if isinstance(manifest, dict) else None
+    if not isinstance(dist, dict):
+        return "the registry metadata has no dist for this version"
+    if dist.get("tarball") != registry.tarball_url(name, version):
+        return "the registry's dist.tarball is not its own tarball URL"
+    integrity = dist.get("integrity")
+    expected = after["integrity"].strip(npm_cli.SRI_SEPARATORS)
+    if not isinstance(integrity, str) or integrity.strip(npm_cli.SRI_SEPARATORS) != expected:
+        return "the registry's dist.integrity is not that one sha512 digest"
+    return None
 
 
 def _guard_rows(plan: dict, report: dict) -> list[tuple[dict, dict]]:
@@ -849,11 +907,13 @@ def _complete_pass(row: dict) -> bool:
 
 
 def _not_applied(outcome: str, reason: str | None) -> dict:
-    """An apply document (apply_preview()'s fields) of an install that never reached npm."""
+    """An apply document (apply_preview()'s fields and npm_ci_started) of an install that never
+    reached npm."""
     return {
         "mode": "install", "outcome": outcome, "reason": reason, "error": None, "blocked": [],
         "confirmation_required": [], "confirmed": False, "files": [], "backup": None,
         "npm_version": None, "npm_ci_exit_code": None, "notices": [UNCHANGED_NOTICE],
+        "npm_ci_started": False,
     }  # fmt: skip
 
 

@@ -18,7 +18,7 @@ from test_apply import PASS, ApplyFixture
 from test_update import sri
 from test_workflow import Fixture
 
-from depbee import guard, service
+from depbee import cli, guard, service
 from depbee.cli import main
 from depbee.contracts import GuardError
 from depbee.service import GUARD_CHANGED, install_checked
@@ -244,6 +244,25 @@ class DecisionTests(Fixture):
         # A cd before npm moves the project the refusal names.
         moved = self.decide("cd sub && npm ci")
         self.assertIn(guard.guard_command(str(self.project / "sub"), False), moved)
+
+    def test_the_refusal_keeps_the_prefix_folder_and_quotes_each_word(self):
+        sub = str(self.project / "sub dir")
+        for tool in ("Bash", "PowerShell"):
+            powershell = tool == "PowerShell"
+            with self.subTest(tool):
+                reason = self.decide('npm --prefix "sub dir" install "lodash@>=4 <5"', tool)
+                prepare = (f"npm install --prefix {guard._quote(sub, powershell)} "
+                           f"{guard._quote('lodash@>=4 <5', powershell)} "
+                           "--package-lock-only --ignore-scripts")  # fmt: skip
+                self.assertIn(prepare, reason)
+                self.assertIn(guard.guard_command(sub, powershell), reason)
+                self.assertNotIn(guard.guard_command(str(self.project), powershell), reason)
+                ci = self.decide('npm ci --prefix "sub dir"', tool)
+                self.assertIn(guard.guard_command(sub, powershell), ci)
+        self.assertIn("'lodash@>=4 <5'", self.decide('npm i "lodash@>=4 <5"'))  # one word
+        unknown = self.decide('npm --prefix "$DIR" ci')
+        self.assertIn(guard.UNKNOWN_FOLDER, unknown)
+        self.assertNotIn(guard.guard_command(str(self.project), False), unknown)
 
     def test_quoting_of_the_guard_command(self):
         self.assertEqual(guard._quote("C:\\it's\u2019 x", True), "'C:\\it''s\u2019\u2019 x'")
@@ -673,6 +692,22 @@ class InstallCheckedTests(ApplyFixture):
         self.bases = None  # successive Git HEAD lockfiles, else base.json every time
         self.patch("depbee.inputs.npm.read_base_lock", side_effect=self.git_head)
         self.at_version = None  # runs when npm --version runs, right before npm ci
+        # The registry metadata the guard fetches again: by default the lockfile's own URL and
+        # digest (what the real registry gives for a well-formed lockfile); never the network.
+        self.served = {}  # name -> packument that replaces the default
+        self.registry = self.patch("depbee.analysis.registry.packument", side_effect=self.serve)
+
+    def serve(self, name):
+        if name in self.served:
+            return self.served[name]
+        lock = json.loads((self.upd / "package-lock.json").read_bytes())
+        versions = {
+            entry["version"]: {"dist": {"tarball": entry["resolved"],
+                                        "integrity": entry["integrity"]}}
+            for location, entry in lock["packages"].items()
+            if location.rpartition("node_modules/")[2] == name
+        }  # fmt: skip
+        return {"versions": versions, "time": {}}
 
     def git_head(self, project, ref, git_dir=None):
         self.assertEqual((Path(project), ref), (self.upd.absolute(), "HEAD"))
@@ -888,6 +923,80 @@ class InstallCheckedTests(ApplyFixture):
         with self.assertRaisesRegex(GuardError, f"at most {service.GUARD_MAX_PACKAGES}"):
             install_checked(self.upd)
         self.assertEqual(self.ci_calls, [])
+
+    def lock_entry(self, **fields):
+        """Rewrite node_modules/example of the project's new lockfile with these fields."""
+        lock = json.loads(self.original["package-lock.json"])
+        lock["packages"]["node_modules/example"].update(fields)
+        (self.upd / "package-lock.json").write_text(json.dumps(lock), "utf-8")
+
+    def test_npm_must_verify_what_was_analyzed_before_any_download(self):
+        digest = sri("1.1.0")
+        other = "https://registry.npmjs.org/other/-/other-1.1.0.tgz"
+        cases = {
+            "a second digest": {"integrity": f"{digest} {sri('x', 'sha1')}"},
+            "sha1 only": {"integrity": sri("1.1.0", "sha1")},
+            "sha256 only": {"integrity": sri("1.1.0", "sha256")},
+            "another tarball": {"resolved": other},
+            "another tarball path": {
+                "resolved": "https://registry.npmjs.org/example/-/example-1.1.0.tgz?x=1"},
+        }  # fmt: skip
+        self.verdict([PASS], 0)
+        for case, fields in cases.items():
+            with self.subTest(case):
+                self.lock_entry(**fields)
+                with self.assertRaisesRegex(GuardError, "Nothing was installed"):
+                    install_checked(self.upd)
+                self.registry.assert_not_called()  # refused before the check downloads
+                self.assertEqual(self.ci_calls, [])
+
+    def test_the_registry_must_name_the_same_url_and_single_digest(self):
+        self.verdict([PASS], 0)
+        tarball = "https://registry.npmjs.org/example/-/example-1.1.0.tgz"
+        cases = {
+            "two sha512 digests": {"tarball": tarball,
+                                   "integrity": f"{sri('1.1.0')} {sri('y')}"},
+            "another digest": {"tarball": tarball, "integrity": sri("other")},
+            "another tarball": {"tarball": tarball + "?x", "integrity": sri("1.1.0")},
+            "no dist": None,
+        }  # fmt: skip
+        for case, dist in cases.items():
+            with self.subTest(case):
+                versions = {"1.1.0": {} if dist is None else {"dist": dist}}
+                self.served["example"] = {"versions": versions, "time": {}}
+                with self.assertRaisesRegex(GuardError, "Nothing was installed"):
+                    install_checked(self.upd)
+                self.assertEqual(self.ci_calls, [])
+        self.registry.side_effect = GuardError("registry unreachable")
+        with self.assertRaisesRegex(GuardError, "registry unreachable"):
+            install_checked(self.upd)
+        self.assertEqual(self.ci_calls, [])
+
+    def test_node_modules_is_looked_at_again_right_before_npm_ci(self):
+        self.verdict([PASS], 0)
+        self.at_version = lambda: (self.upd / "node_modules").write_text("", "utf-8")
+        apply = install_checked(self.upd)["apply"]
+        self.assertEqual((apply["outcome"], apply["npm_ci_started"]), ("failed", False))
+        self.assertIn("node_modules", apply["error"])
+        self.assertEqual(self.ci_calls, [])
+
+    def test_whether_npm_ci_started_is_reported(self):
+        self.verdict([PASS], 0)
+        self.assertTrue(install_checked(self.upd)["apply"]["npm_ci_started"])
+
+        def timeout(project):
+            raise GuardError("npm did not finish within 600 seconds")
+
+        self.npm_ci = timeout
+        apply = install_checked(self.upd)["apply"]
+        self.assertEqual((apply["outcome"], apply["npm_ci_started"]), ("failed", True))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main(["guard", "ci", str(self.upd)]), 2)
+        self.assertIn("node_modules는 중간 상태일 수 있습니다", out.getvalue())
+        self.assertNotIn(cli.GUARD_STOPPED, out.getvalue())
+        self.verdict([{**PASS, "known": "not_run"}])  # refused by the gate: never started
+        self.assertFalse(install_checked(self.upd)["apply"]["npm_ci_started"])
 
     def test_a_second_guard_on_the_same_project_is_refused(self):
         self.verdict([PASS], 0)

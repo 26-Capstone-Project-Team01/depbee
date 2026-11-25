@@ -1285,7 +1285,8 @@ def _guard_ci(args: argparse.Namespace) -> int:
         elif apply["reason"] == "removal_only":
             print(GUARD_REMOVAL)
         else:
-            print(GUARD_STOPPED if apply["npm_ci_exit_code"] is None else GUARD_CI_FAILED)
+            # A timeout ends npm ci without an exit code: whether it started is the guard's own.
+            print(GUARD_CI_FAILED if apply["npm_ci_started"] else GUARD_STOPPED)
     return 0 if apply["outcome"] == "applied" else _apply_exit(report, apply) or 2
 
 
