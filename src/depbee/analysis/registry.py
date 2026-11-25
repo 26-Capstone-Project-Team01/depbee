@@ -184,6 +184,8 @@ def source_problem(entry: dict, dist: dict) -> str | None:
     entry's integrity and dist.integrity are the same single sha512 digest. Used by the strict
     analysis of depbee guard ci (ExtractorAnalyzer strict_sources); a plain check accepts more.
     """
+    if not (isinstance(entry.get("name"), str) and isinstance(entry.get("version"), str)):
+        return "lockfile entry has no package name and version"
     url = tarball_url(entry["name"], entry["version"])
     digest = (entry.get("integrity") or "").strip(_SRI_SPACE)
     listed = dist.get("integrity")

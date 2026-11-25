@@ -30,6 +30,8 @@ from ..contracts import MAX_JSON_BYTES, GuardError, parse_json
 from .git import _run, is_link
 
 TIMEOUT_SECONDS = 120
+# The start of the error when npm could not be started at all (_call): it never ran.
+NPM_NOT_STARTED = "Unable to run npm"
 # npm ci downloads and unpacks every tarball of the tree, not only metadata as the preview does:
 # minutes for a large project on a slow link. It is the ceiling of one MCP call too.
 CI_TIMEOUT_SECONDS = 600
@@ -315,7 +317,7 @@ def _call(
             timeout=timeout, stderr_limit=stderr_limit, name="npm", tree=True,
         )  # fmt: skip
     except OSError as exc:
-        raise GuardError(f"Unable to run npm: {exc.strerror or type(exc).__name__}") from exc
+        raise GuardError(f"{NPM_NOT_STARTED}: {exc.strerror or type(exc).__name__}") from exc
     return code, out
 
 

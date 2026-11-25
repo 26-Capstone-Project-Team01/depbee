@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -65,8 +66,40 @@ def event(command, tool="Bash", cwd=None, **extra):
 
 
 class DecisionTests(Fixture):
+    def setUp(self):
+        super().setUp()
+        # npm's project folder is the nearest one with a package.json: this one, whatever the
+        # folders above the test run hold.
+        (self.project / "package.json").write_text("{}", "utf-8")
+
     def decide(self, command, tool="Bash", cwd=None):
         return guard.decide(event(command, tool, str(cwd or self.project)))
+
+    def test_without_a_prefix_the_refusal_names_the_folder_npm_would_use(self):
+        deep = self.project / "src" / "lib"
+        deep.mkdir(parents=True)
+        reason = self.decide("npm ci", cwd=deep)
+        self.assertIn(guard.guard_command(str(self.project), False), reason)
+        self.assertNotIn(guard.guard_command(str(deep), False), reason)
+        (self.project / "src" / "node_modules").mkdir()  # npm stops at node_modules too
+        self.assertIn(guard.guard_command(str(self.project / "src"), False),
+                      self.decide("npm ci", cwd=deep))  # fmt: skip
+        (self.project / "src" / "node_modules").rmdir()
+        (self.project / ".npmrc").write_text("x=1\n", "utf-8")  # read from npm's folder
+        prep = self.decide("npm i x@1.0.0 --package-lock-only --ignore-scripts", cwd=deep)
+        self.assertIn(".npmrc", prep)
+
+    def test_a_powershell_folder_with_a_quote_is_kept_or_left_unknown(self):
+        quoted = self.project / "O'Brien"
+        quoted.mkdir()
+        (quoted / "package.json").write_text("{}", "utf-8")
+        reason = self.decide("npm ci", "PowerShell", cwd=quoted)
+        self.assertIn(guard.guard_command(str(quoted), True), reason)
+        self.assertIn("O''Brien", reason)  # PowerShell's own doubled quote
+        # A folder the command names with a doubled quote is not read from the text.
+        moved = self.decide("Set-Location 'O''Brien'; npm ci", "PowerShell")
+        self.assertIn(guard.UNKNOWN_FOLDER, moved)
+        self.assertNotIn("OBrien", moved)
 
     def assert_denied(self, commands, tool="Bash", contains=None):
         for command in commands:
@@ -173,8 +206,11 @@ class DecisionTests(Fixture):
         )
         (self.project / "sub").mkdir()
         (self.project / "sub" / ".npmrc").write_text("x=1\n", "utf-8")
-        self.assert_denied(["cd sub && npm i x --package-lock-only --ignore-scripts",
-                            "npm --prefix sub i x --package-lock-only --ignore-scripts"])  # fmt: skip
+        # --prefix is npm's folder as given; without it npm uses the nearest package.json.
+        self.assert_denied(["npm --prefix sub i x --package-lock-only --ignore-scripts"])
+        self.assert_passed(["cd sub && npm i x --package-lock-only --ignore-scripts"])
+        (self.project / "sub" / "package.json").write_text("{}", "utf-8")
+        self.assert_denied(["cd sub && npm i x --package-lock-only --ignore-scripts"])
 
     def test_every_segment_is_judged(self):
         self.assert_denied([
@@ -261,6 +297,8 @@ class DecisionTests(Fixture):
         self.assertIn(guard.guard_command(str(self.project), True), shell)
         self.assertTrue(guard.guard_command("C:/p", True).startswith("& '"))
         # A cd before npm moves the project the refusal names.
+        (self.project / "sub").mkdir()
+        (self.project / "sub" / "package.json").write_text("{}", "utf-8")
         moved = self.decide("cd sub && npm ci")
         self.assertIn(guard.guard_command(str(self.project / "sub"), False), moved)
 
@@ -1131,6 +1169,65 @@ class InstallCheckedTests(ApplyFixture):
         self.assertNotIn(cli.GUARD_STOPPED, out.getvalue())
         self.verdict([{**PASS, "known": "not_run"}])  # refused by the gate: never started
         self.assertFalse(install_checked(self.upd)["apply"]["npm_ci_started"])
+
+    def test_lock_entries_without_a_valid_name_or_version_stop_before_anything(self):
+        constructor = sys.modules["depbee.analysis.extractor"].ExtractorAnalyzer  # the mock
+        for case, fields in {"null name": {"name": None}, "a number as name": {"name": 5},
+                             "an empty name": {"name": ""}, "null version": {"version": None},
+                             "no semantic version": {"version": "latest"}}.items():  # fmt: skip
+            with self.subTest(case):
+                self.lock_entry(**fields)
+                with self.assertRaisesRegex(GuardError, "downloads and installs nothing"):
+                    install_checked(self.upd)
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = main(["guard", "ci", str(self.upd), "--format", "json"])
+                self.assertEqual((code, out.getvalue()), (2, ""))
+                self.assertEqual(json.loads(err.getvalue())["status"], "error")
+        constructor.assert_not_called()
+        self.assertEqual(self.ci_calls, [])
+        self.refetch.assert_not_called()
+
+    def test_npm_that_could_not_be_started_is_not_reported_as_started(self):
+        self.verdict([PASS], 0)
+
+        def cannot_start(project):
+            raise FileNotFoundError(2, "No such file or directory")
+
+        self.npm_ci = cannot_start
+        apply = install_checked(self.upd)["apply"]
+        self.assertEqual((apply["outcome"], apply["npm_ci_started"]), ("failed", False))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main(["guard", "ci", str(self.upd)]), 2)
+        self.assertIn(cli.GUARD_STOPPED, out.getvalue())
+
+    def test_npm_ci_runs_in_the_real_folder_checked_even_if_a_link_moves(self):
+        alias, other = self.root / "alias", self.root / "same-files"
+        shutil.copytree(self.upd, other)  # a folder with the very same two files
+
+        def point(link, target):
+            try:
+                os.symlink(target, link, target_is_directory=True)
+            except OSError:
+                if os.name != "nt":
+                    raise
+                import _winapi
+
+                _winapi.CreateJunction(str(target), str(link))  # no rights needed
+
+        def remove(link):
+            os.unlink(link) if os.path.islink(link) else os.rmdir(link)
+
+        point(alias, self.upd)
+        self.verdict([PASS], 0)
+        self.at_version = lambda: (remove(alias), point(alias, other))
+        result = install_checked(alias)
+        self.assertEqual(result["apply"]["outcome"], "applied")
+        (ci,) = self.ci_calls
+        self.assertEqual(Path(os.path.realpath(ci["cwd"])), Path(os.path.realpath(self.upd)))
+        self.assertFalse((other / "node_modules").exists())
+        remove(alias)
 
     def test_a_second_guard_on_the_same_project_is_refused(self):
         self.verdict([PASS], 0)

@@ -108,7 +108,7 @@ depbee guard disable .claude/settings.local.json
 | depbee 환경 변수(`DEPBEE_`)를 바꾼 명령의 `depbee guard ci`, `depbee guard enable`·`disable` | 거부 |
 | 그 밖의 depbee 명령(`depbee guard ci`, `depbee update --apply install` 등) | 통과 |
 
-판정할 수 없는 형태는 통과시키지 않고 거부하며, npm을 다른 명령 없이 직접 실행하라고 안내합니다. 반대로 단어 하나로 모든 것을 막지도 않습니다. npm 단어가 따옴표 안의 데이터로만 나오는 명령은 그대로 둡니다.
+판정할 수 없는 형태는 통과시키지 않고 거부하며, npm을 다른 명령 없이 직접 실행하라고 안내합니다. 안내에 적는 프로젝트 폴더는 npm이 실제로 쓰는 폴더입니다: `--prefix`·`-C`가 있으면 그 폴더, 없으면 작업 폴더와 그 위에서 가장 가까운 `package.json`이나 `node_modules`가 있는 폴더(lockfile 변경 준비의 `.npmrc` 확인도 그 폴더에서 합니다). 명령에서 폴더를 알 수 없으면(변수, PowerShell 작은따옴표 안의 `''`처럼 문자열에서 정확히 되살릴 수 없는 경우) 경로 대신 자리 표시를 둡니다. 반대로 단어 하나로 모든 것을 막지도 않습니다. npm 단어가 따옴표 안의 데이터로만 나오는 명령은 그대로 둡니다.
 
 ## `depbee guard ci`
 
@@ -129,8 +129,8 @@ MCP의 `scan_lockfile` 결과는 에이전트가 읽는 보고서입니다. 그 
 
 ### 설치하는 조건과 순서
 
-1. 같은 프로젝트(실제 경로 기준)의 다른 `depbee guard ci`가 실행 중이면 기다리지 않고 거부합니다. 잠금은 이력 파일 옆 `locks/` 폴더의 파일에 거는 운영체제 잠금이라 프로세스가 끝나면 풀립니다.
-2. 검사 전에 거부합니다: `depbee update`가 지원하지 않는 프로젝트(workspaces, `npm-shrinkwrap.json`, registry 밖 의존성 등), 프로젝트 `.npmrc`, 프로젝트 자신의 폴더가 아닌 `node_modules`, 유효한 integrity가 없는 lockfile 항목. 트리 어디에든 번들(`package.json`이나 lockfile 항목의 `bundleDependencies`·`bundledDependencies`, `inBundle` 항목)이나 자기 `npm-shrinkwrap.json`을 가진 패키지(`hasShrinkwrap`)가 있어도 거부합니다. npm은 그 부분을 다른 패키지의 tarball이나 그 안의 shrinkwrap에서 가져오므로, lockfile 항목의 tarball과 digest를 묶는 이 명령의 검사가 닿지 않기 때문입니다. npm이 lockfile에 적는 이 표시만 보고, npm의 처리 방식을 따로 흉내 내지 않습니다.
+1. 프로젝트 경로를 실제 경로(링크와 junction을 푼 경로) 하나로 정하고 끝까지 그 경로만 씁니다. 검사 도중 링크가 같은 파일을 가진 다른 폴더를 가리키게 바뀌어도 설치는 검사한 폴더에서 하고, `npm ci` 직전에 그 경로가 다시 링크를 지나게 되었으면 시작하지 않습니다. 같은 프로젝트의 다른 `depbee guard ci`가 실행 중이면 기다리지 않고 거부합니다. 잠금은 이력 파일 옆 `locks/` 폴더의 파일에 거는 운영체제 잠금이라 프로세스가 끝나면 풀립니다.
+2. 검사 전에 거부합니다: `depbee update`가 지원하지 않는 프로젝트(workspaces, `npm-shrinkwrap.json`, registry 밖 의존성 등), 프로젝트 `.npmrc`, 프로젝트 자신의 폴더가 아닌 `node_modules`, 유효한 integrity가 없는 lockfile 항목, 이름이 null이거나 버전이 없는 항목처럼 registry 이름·버전으로 읽을 수 없는 항목(npm과 네트워크를 쓰지 않고 오류 JSON, 종료 코드 2). 트리 어디에든 번들(`package.json`이나 lockfile 항목의 `bundleDependencies`·`bundledDependencies`, `inBundle` 항목)이나 자기 `npm-shrinkwrap.json`을 가진 패키지(`hasShrinkwrap`)가 있어도 거부합니다. npm은 그 부분을 다른 패키지의 tarball이나 그 안의 shrinkwrap에서 가져오므로, lockfile 항목의 tarball과 digest를 묶는 이 명령의 검사가 닿지 않기 때문입니다. npm이 lockfile에 적는 이 표시만 보고, npm의 처리 방식을 따로 흉내 내지 않습니다.
 3. `package.json`·`package-lock.json`을 읽어 해시를 남기고, Git HEAD와 비교한 변경 목록을 만듭니다. 분석할 변경이 20개를 넘으면 내려받기 전에 멈춥니다(MCP와 같은 상한).
 4. `depbee scan --extract`와 같은 검사를 엄격 모드로 합니다. 분석기는 바뀐 버전마다 registry 메타데이터를 한 번 받아 그 응답의 `dist`로 분석하는데, 엄격 모드에서는 그 `dist`와 lockfile 항목을 비교해 `resolved`와 `dist.tarball`이 모두 registry의 그 버전 tarball 주소(`https://registry.npmjs.org/<이름>/-/<이름>-<버전>.tgz`)이고 `integrity`와 `dist.integrity`가 같은 sha512 값 하나일 때만 분석합니다. 내려받은 tarball은 바로 그 `dist`로 확인하고(`registry.verify`), 특징 캐시를 쓸 때도 같은 비교를 먼저 하므로 캐시 적중이 이 조건을 건너뛰지 않습니다. 조건이 어긋나면 그 항목은 보류가 되어 설치하지 않습니다. `npm ci`는 lockfile의 `resolved`에서 받아 lockfile의 `integrity`로 확인하므로, 이 비교로 npm이 받아들일 바이트가 분석한 tarball의 sha512에 묶입니다. 나중에 registry에 다시 묻지 않으므로 그 사이 바뀐 응답이 설치를 허락하는 일은 없습니다. 검사가 읽은 lockfile과 HEAD가 3단계와 다르면(요청 ID 비교) 설치하지 않습니다.
 5. 보고서가 3단계의 변경 목록과 정확히 맞는지(항목마다 행 하나, 같은 위치·버전·삭제 여부) 확인하고, 맞지 않으면 오류로 멈춥니다. 바뀐 항목이 없거나 삭제만 있으면 depbee가 검사한 설치 항목이 없으므로 npm을 실행하지 않습니다. 설치하려면 추가·업데이트가 하나 이상 있고 그 모두가 실제로 분석돼 ML 위험 점수가 있고, ML 기준 미만이며 기지 악성 목록과 대조해 일치가 없어야 합니다(보고서 종료 코드 0). 그다음 `depbee update --apply install`과 같은 반영 게이트를 확인 없이 적용합니다. 기지 악성 일치는 거부, ML 기준 이상·보류·기지 악성 미확인도 거부이며, 경고를 확인하고 진행하는 옵션은 없습니다. 이 조건은 `depbee guard ci`에만 적용되고, 대시보드와 `depbee update --apply`의 반영 규칙은 그대로입니다.
@@ -138,7 +138,7 @@ MCP의 `scan_lockfile` 결과는 에이전트가 읽는 보고서입니다. 그 
 7. 두 파일을 다시 읽어 해시를 비교하고, npm 버전을 확인한 뒤 `npm ci`를 시작하기 바로 전에 두 파일, `.npmrc`, Git HEAD 기준 변경 목록, `node_modules`가 프로젝트 자신의 폴더인지를 한 번 더 확인합니다. 하나라도 다르면 `npm ci`를 시작하지 않습니다.
 8. `npm ci --ignore-scripts`는 `depbee update --apply install`과 같은 고정 옵션으로 실행합니다(설치 스크립트 미실행, Git 실행 파일과 전역 설정을 없는 경로로 고정, `npm_config_*`·`NODE_OPTIONS` 환경 변수 제거, 시간·출력 상한). 끝난 뒤 두 파일이 그대로인지 확인합니다.
 
-depbee는 프로젝트 파일을 쓰지 않습니다. 반영 경로를 그대로 쓰므로 설치 전에 두 파일의 사본이 이력 파일 옆 `backups/`에 남습니다. 7단계의 마지막 확인 뒤 npm이 파일을 읽기까지의 사이에 다른 프로세스가 파일을 쓰는 것은 막지 못합니다. 그런 변경은 8단계의 확인이나 npm ci 자신의 `package.json`·lockfile 일치 확인에서 실패로 드러날 수 있지만, 설치가 이미 진행된 뒤일 수 있습니다. 같은 프로젝트에서 사람이나 다른 도구가 동시에 파일을 고치지 않게 합니다. `--format json`의 `apply.npm_ci_started`는 7단계를 마치고 `npm ci`를 시작했는지를 알립니다. 시작한 뒤 실패하거나 시간이 다 되면 `node_modules`는 중간 상태일 수 있고 두 파일은 그대로이며, 출력도 그렇게 안내합니다. 시작 전에 멈췄으면 설치하지 않았다고 안내합니다. 원인을 확인한 뒤 다시 실행하면 처음부터 다시 검사합니다.
+depbee는 프로젝트 파일을 쓰지 않습니다. 반영 경로를 그대로 쓰므로 설치 전에 두 파일의 사본이 이력 파일 옆 `backups/`에 남습니다. 7단계의 마지막 확인 뒤 npm이 파일을 읽기까지의 사이에 다른 프로세스가 파일을 쓰는 것은 막지 못합니다. 그런 변경은 8단계의 확인이나 npm ci 자신의 `package.json`·lockfile 일치 확인에서 실패로 드러날 수 있지만, 설치가 이미 진행된 뒤일 수 있습니다. 같은 프로젝트에서 사람이나 다른 도구가 동시에 파일을 고치지 않게 합니다. `--format json`의 `apply.npm_ci_started`는 7단계를 마치고 `npm ci`를 시작했는지를 알립니다. npm 프로세스를 만들지 못했으면 시작하지 않은 것으로 봅니다. 시작한 뒤 실패하거나 시간이 다 되면 `node_modules`는 중간 상태일 수 있고 두 파일은 그대로이며, 출력도 그렇게 안내합니다. 시작 전에 멈췄으면 설치하지 않았다고 안내합니다. 원인을 확인한 뒤 다시 실행하면 처음부터 다시 검사합니다.
 
 ## 설치 허가로 쓰지 않는 것
 

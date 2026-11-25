@@ -237,6 +237,19 @@ def _folder(current: str | None, target: str) -> str | None:
     return os.path.normpath(os.path.join(current, target))
 
 
+def _npm_root(folder: str | None) -> str | None:
+    """The folder npm works in when no --prefix is given: the nearest of folder and its parents
+    that has a package.json file or a node_modules folder, else folder itself (@npmcli/config
+    loadLocalPrefix; a workspace root above it, which npm would take instead, is not looked
+    for: depbee guard ci does not install workspaces)."""
+    if folder is None:
+        return None
+    for candidate in (Path(folder), *Path(folder).parents):
+        if (candidate / "package.json").is_file() or (candidate / "node_modules").is_dir():
+            return str(candidate)
+    return folder
+
+
 def _option(token: str) -> tuple[str, object] | None:
     """(name, value) of an option of a lockfile-only change, None for any other option."""
     if token in PREPARE_SHORT:
@@ -276,6 +289,9 @@ class _Check:
         self.command, self.powershell = command, powershell
         self.project = os.path.normpath(cwd) if isinstance(cwd, str) and cwd else None
         self.mentions_npm = _NPM_WORD.search(command) is not None
+        # shlex reads PowerShell's doubled quote ('O''Brien') as two strings and drops the
+        # quote, so a folder written in such a command is not told from the text.
+        self.unsure_folders = powershell and "''" in command
 
     def reason(self) -> str | None:
         if not self.mentions_npm and "depbee" not in self.command.lower():
@@ -313,7 +329,7 @@ class _Check:
         if kind is None:
             if program in CHANGE_FOLDER:
                 target = next((w for w in words[1:] if not w.startswith("-")), "~")
-                self.project = _folder(self.project, target)
+                self.project = self._folder(target)
             elif self.mentions_npm and (
                 program in SHELLS
                 or variable
@@ -377,7 +393,12 @@ class _Check:
                 value = options[i + 1] if i + 1 < len(options) else ""
             elif word.startswith("--prefix="):
                 value = word.partition("=")[2]
-        return (False, self.project) if value is None else (True, _folder(self.project, value))
+        if value is None:
+            return False, _npm_root(self.project)
+        return True, self._folder(value)
+
+    def _folder(self, target: str) -> str | None:
+        return None if self.unsure_folders else _folder(self.project, target)
 
     def _prepare(
         self, command: str, options: list[str], prefixed: bool
@@ -416,9 +437,7 @@ class _Check:
             return f"registry 패키지 이름이 아닌 인자 {_shown(bad[0])}", words
         if command == "uninstall" and not words:
             return "제거할 패키지 이름이 없습니다", words
-        project = self.project
-        if "prefix" in values:
-            project = _folder(project, values["prefix"])
+        project = self._target(options)[1]  # where npm reads the project .npmrc
         if project is None:
             return "명령으로 바꾼 프로젝트 폴더를 판정할 수 없습니다", words
         if os.path.lexists(os.path.join(project, ".npmrc")):

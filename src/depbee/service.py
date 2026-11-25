@@ -22,6 +22,8 @@ from .contracts import GuardError, elapsed_since, parse_json
 from .inference.lightgbm import LightGBMPredictor
 from .inputs import npm_cli
 from .inputs.npm import (
+    PACKAGE_NAME,
+    VERSION,
     build_package_request,
     build_request,
     check_package_spec,
@@ -758,9 +760,16 @@ def install_checked(
     stopped; npm ci's own check afterwards reports it. apply_preview() itself, as the
     dashboard and update --apply use it, is unchanged.
     """
-    project = Path(os.path.abspath(project))
+    # One real path for the whole call: a link or junction re-pointed meanwhile, even to a
+    # folder with the same files, does not move where npm ci runs.
+    project = Path(os.path.realpath(os.path.abspath(project)))
     with _install_lock(project):
         package_bytes, lock_bytes, package = npm_cli.read_project(project)
+        entry = _entry_problem(lock_bytes)
+        if entry:
+            raise GuardError(
+                f"{entry}; depbee guard ci downloads and installs nothing for such a lockfile"
+            )
         shape = _tree_problem(package, lock_bytes)
         if shape:
             raise GuardError(
@@ -823,6 +832,9 @@ def install_checked(
                     "check; npm ci was not started"
                 )
             npm_cli.check_install_dir(project)  # npm ci empties it first: still a folder here
+            if os.path.realpath(project) != str(project):
+                raise GuardError("The project folder's path now leads through a link; npm ci was "
+                                 "not started")  # fmt: skip
             started.append(True)  # nothing below stops npm ci from starting
 
         preview = {"package_json_sha256": sums[0], "package_lock_sha256": sums[1],
@@ -831,7 +843,25 @@ def install_checked(
             project, {"preview": preview, "report": report}, package_bytes, lock_bytes,
             mode="install", ready=ready,
         )  # fmt: skip
-    return {"report": report, "apply": {**apply, "npm_ci_started": bool(started)}}
+    # npm that could not be started at all never ran, though ready() had finished.
+    unstarted = (apply["error"] or "").startswith(npm_cli.NPM_NOT_STARTED)
+    return {"report": report, "apply": {**apply, "npm_ci_started": bool(started) and not unstarted}}
+
+
+def _entry_problem(lock_bytes: bytes) -> str | None:
+    """Which lock entry has no package name and version a registry install could use (a null or
+    malformed name, or version), if any: such an entry stops the call before any download."""
+    lock, _ = parse_json(lock_bytes, "package-lock.json")  # read_project() checked its shape
+    for location, entry in lock["packages"].items():
+        if not location:
+            continue
+        name = entry.get("name", location.rpartition("node_modules/")[2])
+        version = entry.get("version")
+        if not isinstance(name, str) or len(name) > 214 or not PACKAGE_NAME.fullmatch(name):
+            return f"The lockfile entry {location} has no valid package name"
+        if not isinstance(version, str) or not VERSION.fullmatch(version):
+            return f"The lockfile entry {location} has no valid version"
+    return None
 
 
 def _tree_problem(package: dict, lock_bytes: bytes) -> str | None:
