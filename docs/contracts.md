@@ -264,6 +264,17 @@ feature를 추출한 보고서(`scan --extract`, `check`)에만 소요 시간과
 - 실행 기록: 등록한 프로젝트면 6절 `applies` 표에 미리보기 실행과 같은 트랜잭션으로 남긴다(대시보드는 미리보기 실행을 먼저 기록하고 반영 때 `record_apply()`로 더함, 7절). 새 lockfile 내용은 저장하지 않는다.
 - 하람 결정(2026-11-16 18:0x, 교차 검토 REV-UPD02-R1 뒤): (1) 기지 악성 미확인 확인은 새로 설치되는 버전이 있는 항목만 대상으로 하고 삭제만 있는 반영은 확인 없이 진행하며, 삭제 항목도 기지 악성 일치면 거부한다. (2) 프로젝트 `.npmrc`가 있으면 `install`은 거부하고 `lockfile` 반영만 허용한다. (3) `install`은 새 lockfile의 내려받는 항목에 `integrity`가 모두 있어야 한다(`lockfile`은 그대로 허용). 재검토(2026-11-16 19:3x) 뒤 결정으로 `integrity`는 유효한 SRI여야 하고 bundled 항목도 예외가 아니다. (4) 확인 옵션 이름 `--confirm-warnings`, `install`의 `--globalconfig` 고정(실제 전역 npmrc를 읽지 않음), 부분 백업 폴더를 남김, 반영 단계 실패를 보고서와 함께 출력·기록하는 형식은 지금 동작을 유지한다.
 
+### 5.2 검사 후 설치 (`depbee guard ci`, `install_checked`)
+
+`depbee guard ci [폴더] [--format json]`(서비스 함수 `install_checked`)은 프로젝트의 `package-lock.json`을 Git HEAD와 비교해 지금 검사하고, 그 바이트 그대로 5.1절의 `install` 반영 경로(`apply_preview`, `confirm` 없음)로 설치한다. Claude Code 설치 가드([설치 가드](claude-guard.md))가 에이전트에게 안내하는 설치 명령이다. JSON 출력은 `{report, apply}`이고 `report`는 4절 보고서, `apply`는 5.1절 형식이다(`files`는 빈 목록, `confirmed`는 false). 결과 계약은 바꾸지 않았다.
+
+- 옵션: 모델·색인·캐시·기준 옵션이 없다. 모델과 색인은 다른 명령과 같은 출처 순서, 기준은 Git HEAD, 캐시는 기본 폴더다.
+- 검사 전 거부(error JSON, 종료 코드 2): 같은 프로젝트(실제 경로, Windows는 대소문자 무시)의 `install_checked`가 실행 중(이력 파일 옆 `locks/install-<해시>.lock`의 운영체제 잠금, 기다리지 않음), `npm_cli.read_project` 실패, 프로젝트 `.npmrc`, 프로젝트 자신의 폴더가 아닌 `node_modules`, 유효한 integrity 없는 항목, 분석 대상 변경이 20개(`GUARD_MAX_PACKAGES`, MCP와 같음) 초과, Git 기준 읽기 실패, 검사가 읽은 요청(`request_id`)이 해시한 파일로 만든 계획과 다름.
+- 게이트: 5.1절 `update_gate`를 확인 없이 적용한다. `blocked`나 `confirmation_required`가 하나라도 있으면 `refused`다. `results`가 비면 `unchanged`이고 설치하지 않는다.
+- `npm ci` 직전 재확인: `apply_preview(..., ready=...)`가 `npm_cli.clean_install(..., ready)`에 넘긴 함수가 npm 버전 확인 뒤, `npm ci` 시작 바로 전에 두 파일의 SHA-256, `.npmrc` 없음, Git HEAD 기준 계획의 `request_id`를 다시 비교한다. 다르면 `npm ci`를 시작하지 않고 `failed`(`install_failed`)다. 그 뒤 다른 프로세스가 파일을 쓰는 것은 막지 않는다.
+- 종료 코드: `applied`면 0, 그 밖에는 5.1절 규칙의 값이되 0이면 2다(`unchanged`도 2).
+- 이력: 기록하지 않는다. 설치 전 두 파일의 백업은 5.1절과 같이 `backups/`에 남는다.
+
 ## 6. 로컬 이력 저장소 (`depbee.history`)
 
 대시보드(7절)에 등록한 프로젝트의 `scan`·`update` 미리보기 보고서와 업데이트 반영 기록(5.1절)을 표준 라이브러리 `sqlite3`로 한 파일에 기록한다. CLI와 대시보드가 같은 API(`register_project`, `record`, `record_apply`, `list_projects`, `list_runs`, `list_previews`, `get_run`, `list_applies`)를 쓴다. 파일 형식은 depbee 내부 형식이며 4·5절의 보고서·진입점 형식에 속하지 않는다.

@@ -49,6 +49,12 @@ RESTORE_NOTICE = (
     "package-lock.json을 프로젝트에 복사하고, 설치한 node_modules도 되돌리려면 그 뒤 "
     "npm ci --ignore-scripts를 실행합니다."
 )
+# depbee guard ci (install_checked): changes analyzed per call, as for the MCP tools.
+GUARD_MAX_PACKAGES = 20
+GUARD_CHANGED = (
+    "package-lock.json or Git HEAD changed while depbee checked the project; nothing was "
+    "installed. Run depbee guard ci again"
+)
 # The environment variable of each asset folder (_sources), by its settings key, model first.
 ASSET_VARIABLES = {
     "model_dir": "DEPBEE_MODEL_DIR", "known_malicious_dir": "DEPBEE_KNOWN_MALICIOUS_DIR",
@@ -552,9 +558,12 @@ def _sha256(data: bytes) -> str:
 
 def apply_preview(
     project: Path, result: dict, new_package: bytes, new_lock: bytes, *, mode: str,
-    confirm: bool = False,
+    confirm: bool = False, ready: Callable[[], None] | None = None,
 ) -> dict:  # fmt: skip
     """Apply a checked preview ({preview, report} and the new file bytes of the same preview).
+
+    ready: with mode install, run right before npm ci starts (npm_cli.clean_install); its
+    GuardError stops the install as install_failed with its message.
 
     Nothing is written when there is no change, a known malicious match, items to confirm and no
     confirm, a project .npmrc with mode install (refused: npm ci would read it), or when the
@@ -668,7 +677,7 @@ def apply_preview(
         if scratch is None:
             return done("applied")
         try:
-            version, code = npm_cli.clean_install(project.absolute(), scratch)
+            version, code = npm_cli.clean_install(project.absolute(), scratch, ready)
         except (GuardError, OSError) as exc:
             if isinstance(exc, GuardError) and "depbee_install_" not in str(exc):
                 error = str(exc)  # npm_cli's own messages: no npm output
@@ -709,6 +718,121 @@ def apply_preview(
                 done(
                     "failed", "install_failed", "The temporary install folder could not be removed"
                 )
+
+
+def install_checked(
+    project: Path, *, progress: Callable[[int, int, dict], None] | None = None
+) -> dict:
+    """depbee guard ci: install the project's package-lock.json with npm ci --ignore-scripts only
+    if its change from Git HEAD passes a check made now on exactly those bytes: {report, apply}.
+
+    No asset, cache or base option: the model, the index and the cache are the ones every
+    command uses (_sources, the default cache), and the base is always the lockfile in Git HEAD,
+    so the caller cannot pick an easier model or baseline. Refused with GuardError before the
+    check: another install_checked() of the same project still running (_install_lock: refused,
+    not waited for), a project that read_project() refuses, a project .npmrc, a node_modules that
+    is not the project's own folder, a lock entry without a valid integrity, and more than
+    GUARD_MAX_PACKAGES changes to analyze. The scan must have read the plan's bytes and base
+    (same request_id as the plan made with the hashed files), else GuardError. apply_preview()
+    with mode install and no confirmation then installs only if no item is refused or needs a
+    confirmation (no change at all is "unchanged": nothing is installed), after it compares the
+    two files once more; right before npm ci starts, the files, the .npmrc and the plan are
+    compared again (ready). Nothing in the project is written. A process that writes the files
+    after that last comparison is not stopped; npm ci's own check afterwards reports it.
+    """
+    project = Path(os.path.abspath(project))
+    with _install_lock(project):
+        package_bytes, lock_bytes, _ = npm_cli.read_project(project)
+        if os.path.lexists(project / ".npmrc"):
+            raise GuardError(
+                "The project has a .npmrc, which npm ci would read: depbee does not install "
+                "it. Review the .npmrc and install yourself"
+            )
+        npm_cli.check_install_dir(project)
+        missing = npm_cli.missing_integrity(lock_bytes)
+        if missing:
+            raise GuardError(
+                f"{len(missing)} lockfile entries have no valid integrity to check (first: "
+                f"{missing[0][0]}); depbee does not install them"
+            )
+        sums = (_sha256(package_bytes), _sha256(lock_bytes))
+        plan = plan_project(project)
+        if plan["head_lock_sha256"] != sums[1]:
+            raise GuardError(GUARD_CHANGED)
+
+        def limit(index: int, total: int, change: dict) -> None:
+            if total > GUARD_MAX_PACKAGES:
+                raise GuardError(
+                    f"{total} changed packages to analyze; depbee guard ci analyzes at most "
+                    f"{GUARD_MAX_PACKAGES}. Nothing was installed"
+                )
+            if progress:
+                progress(index, total, change)
+
+        report = scan_project(project, extract=True, progress=limit)
+        if report["request_id"] != plan["request_id"]:
+            raise GuardError(GUARD_CHANGED)
+
+        def ready() -> None:
+            current_package, current_lock, _ = npm_cli.read_project(project)
+            if (
+                (_sha256(current_package), _sha256(current_lock)) != sums
+                or os.path.lexists(project / ".npmrc")
+                or plan_project(project)["request_id"] != plan["request_id"]
+            ):
+                raise GuardError(
+                    "package.json, package-lock.json, .npmrc or Git HEAD changed after the "
+                    "check; npm ci was not started"
+                )
+
+        preview = {"package_json_sha256": sums[0], "package_lock_sha256": sums[1],
+                   "new_package_lock_sha256": sums[1]}  # fmt: skip
+        apply = apply_preview(
+            project, {"preview": preview, "report": report}, package_bytes, lock_bytes,
+            mode="install", ready=ready,
+        )  # fmt: skip
+    return {"report": report, "apply": apply}
+
+
+@contextlib.contextmanager
+def _install_lock(project: Path):
+    """Hold the install lock of this project (its real path), a lock on a file in locks/ next
+    to the history file that the system frees when the process ends; GuardError if another
+    process or call holds it."""
+    from . import history
+
+    key = hashlib.sha256(os.path.normcase(os.path.realpath(project)).encode("utf-8", "replace"))
+    try:
+        folder = Path(os.path.abspath(history.db_path())).parent / "locks"
+        folder.mkdir(parents=True, exist_ok=True)
+        stream = open(folder / f"install-{key.hexdigest()[:32]}.lock", "a+b")  # noqa: SIM115
+    except (OSError, RuntimeError) as exc:
+        raise GuardError(f"The install lock could not be opened ({type(exc).__name__})") from None
+    locked = False
+    try:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            locked = True
+        except OSError:
+            raise GuardError(
+                "Another depbee guard ci is checking or installing this project; nothing was "
+                "installed. Run it again when that one has ended"
+            ) from None
+        yield
+    finally:
+        if locked and os.name == "nt":
+            with contextlib.suppress(OSError):
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        stream.close()
 
 
 def _inside(path: Path, folder: Path) -> bool:

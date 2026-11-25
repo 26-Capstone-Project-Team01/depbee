@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import stat
+from collections.abc import Callable
 from pathlib import Path
 
 from ..contracts import MAX_JSON_BYTES, GuardError, parse_json
@@ -350,14 +351,18 @@ def update_lock(work: Path, names: list[str]) -> str:
     return version
 
 
-def clean_install(project: Path, scratch: Path) -> tuple[str, int]:
+def clean_install(
+    project: Path, scratch: Path, ready: Callable[[], None] | None = None
+) -> tuple[str, int]:
     """Run `npm ci --ignore-scripts` in project; return (npm version, npm ci exit code).
 
     project is the absolute project folder, checked by read_project() and without a project
     .npmrc (the caller refuses one). scratch is an absolute, new folder depbee made, which the
     caller has checked is outside the project: the missing Git program and global config file
     are named inside it. npm ci removes what node_modules holds before it installs, so that
-    folder is looked at once more here, where npm is started (check_install_dir).
+    folder is looked at once more here, where npm is started (check_install_dir). ready, if
+    given, runs after the npm version check, right before npm ci starts; it raises GuardError
+    to stop it.
     """
     npm, env = _npm(), _environment()
     no_git, no_global = scratch / "no-git" / "git", scratch / "no-globalconfig" / "npmrc"
@@ -371,6 +376,8 @@ def clean_install(project: Path, scratch: Path) -> tuple[str, int]:
         f"--globalconfig={no_global}",
     )  # fmt: skip
     version = _version(npm, pinned, project, env)
+    if ready is not None:
+        ready()
     code, _ = _call(
         [*npm, "ci", *CI_OPTIONS, *pinned], project, env, CI_TIMEOUT_SECONDS, CI_STDERR_LIMIT
     )
