@@ -4,6 +4,7 @@
 
 `.github/workflows/ci.yml`의 `checks` job은 이 도구 자체의 Linux/Windows, Python 3.11/3.13 검사다.
 lint·회귀 테스트·native LightGBM 합성 테스트·wheel/sdist 빌드를 수행한다. `extract`까지 설치하므로 고정한 분석기의 loader 경계 테스트도 돈다.
+Ubuntu의 Python 3.13에서는 설치된 MCP 서버를 stdio로 시작하고 `scan_lockfile`로 lodash 4.17.20 → 4.17.21 변경을 실제 레지스트리에서 검사한다. CLI와 같은 CI 스크립트로 모델·색인·분석기 출처와 정적 규칙 6개의 판정을 확인한다.
 `action` job은 아래 GitHub Action의 판정 규칙을 예시 보고서로 검사한 뒤, 실제 버전 변경을 분석기와 npm registry로 검사한다(자기 검사 절).
 두 job 모두 secret을 쓰지 않는다. pip은 depbee-analyzer 공개 저장소에서 고정 커밋을 받는다.
 Action은 확인한 commit SHA로 고정했고 권한은 contents:read다.

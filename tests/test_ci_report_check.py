@@ -1,7 +1,7 @@
 """Which reports CI's check of a real scan accepts (.github/scripts/check_lodash_report.py).
 
-The reports here are made up from this checkout's manifests and analyzer pin. Nothing is scanned
-and nothing is downloaded: the scans whose reports that script checks run in ci.yml's action job.
+These tests build reports from the checkout's manifests and analyzer pin. CI also runs the
+checker against real scans from the Action, CLI update preview and MCP server.
 """
 
 import contextlib

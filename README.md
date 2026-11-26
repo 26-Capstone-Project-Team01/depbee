@@ -6,7 +6,7 @@ depbee는 npm 패키지를 설치하기 전에 버전 변경을 검사합니다.
 
 ## 설치와 준비
 
-Python 3.11 이상과 Git이 필요합니다. depbee는 GitHub의 공개 저장소에서 소스로 배포합니다. PyPI 패키지와 GitHub Release는 없습니다. 소스를 받아 가상환경에 설치합니다.
+Python 3.11 이상과 Git이 필요합니다. CLI·대시보드에서 업데이트를 미리 보거나 설치 가드로 패키지를 설치하려면 Node.js와 npm도 준비합니다. depbee는 GitHub의 공개 저장소에서 소스로 배포합니다. PyPI 패키지와 GitHub Release는 없습니다. 소스를 받아 가상환경에 설치합니다.
 
 ```sh
 git clone https://github.com/26-Capstone-Project-Team01/depbee.git

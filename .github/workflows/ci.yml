@@ -31,6 +31,38 @@ jobs:
       - run: python -m ruff check .
       - run: python -m unittest discover -s tests -v
       - run: python -m build
+      - name: Scan the lodash update against Git HEAD through MCP stdio
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          work="$(mktemp -d "$RUNNER_TEMP/mcp.XXXXXX")"
+          cp examples/lodash-updated/package-lock.json examples/lodash-update/package-lock.json
+          python -I - "$work" <<'PY'
+          import asyncio
+          import sys
+          from pathlib import Path
+
+          from mcp import Client
+          from mcp.client.stdio import StdioServerParameters
+
+          work = Path(sys.argv[1])
+          project = Path("examples/lodash-update").resolve()
+          server = StdioServerParameters(command=sys.executable, args=["-I", "-m", "depbee", "mcp"],
+                                         cwd=str(work), env={"HOME": str(work), "USERPROFILE": str(work)})
+
+          async def scan():
+              async with Client(server) as client:
+                  result = await client.call_tool("scan_lockfile", {"project": str(project)})
+                  assert not result.is_error, result.content
+                  (block,) = result.content
+                  (work / "report.json").write_text(block.text, encoding="utf-8")
+
+          asyncio.run(scan())
+          PY
+          files="$(python -I -c \
+            'from depbee.analysis.extractor import _installed_identity as identity; print(identity()["files_sha256"])')"
+          python -I .github/scripts/check_lodash_report.py "$work/report.json" "$files"
 
   # The GitHub Action: its decision rules on example reports, then a real update (lodash 4.17.20
   # to 4.17.21) checked with the pinned analyzer and the npm registry.

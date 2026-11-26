@@ -8,6 +8,7 @@
 - 새 wheel에서 같은 lodash 4.17.20 → 4.17.21 변경을 CLI 업데이트 미리보기, MCP stdio의 `scan_lockfile`, 대시보드 프로젝트 등록 후 검사로 실행했다. 세 보고서의 모델 D04-E00, 색인, 규칙 6개의 판정, 점수 `3.950535635136895e-07`과 종료 코드 0이 일치했다. 각 보고서는 CI 검사 스크립트도 통과했다. 대시보드는 TestClient를 통해 검사했고 저장된 실행을 새 세션에서 다시 열었다.
 - 호스트 Node.js 24.11.0과 npm 11.6.1로 미리보기가 생성한 lockfile의 SHA-256이 저장소의 기대 파일과 일치했다. 별도 임시 Git 프로젝트에서는 `depbee guard ci`가 같은 변경을 검사하고 실제 `npm ci --ignore-scripts`를 종료 코드 0으로 마쳤다. 설치된 버전은 4.17.21이었고 두 프로젝트 파일의 바이트는 설치 전후 같았다.
 - Windows Python 3.13.5에서 전체 테스트 899개 중 894개가 통과했다. POSIX 파일명과 심볼릭 링크 권한을 전제로 한 5개는 건너뛰었다. Ruff 검사도 통과했다.
+- `b2d7cca`에서 GitHub 호스팅 러너의 Windows·Ubuntu와 Python 3.11·3.13 네 조합이 통과했다. 호스트 npm으로 lockfile을 만들고 분석 결과를 확인하는 작업도 두 이벤트에서 통과했다. [push 실행](https://github.com/26-Capstone-Project-Team01/depbee/actions/runs/45850326381) · [PR 실행](https://github.com/26-Capstone-Project-Team01/depbee/actions/runs/45850419930)
 
 ## 2026-11-25: 설치 가드 be3bd6f 독립 검토 후속(훅 소유 판별, 시작 여부, 비정규 버전, 엄격 대조 문구)
 
