@@ -97,8 +97,8 @@ def _installed_identity() -> dict | None:
     }
 
 
-def _with_this_python(requirement: str) -> str:
-    """The end of an instruction: the command that installs requirement into the Python that
+def _with_this_python(*requirements: str) -> str:
+    """The end of an instruction: the one command that installs requirements into the Python that
     runs this depbee, named by its own path. The depbee of an environment that is not activated
     is a supported way to run it (docs/usage.md), and there the shell's python can be another
     environment's: a bare "python -m pip" would install into that one. Each form takes a path
@@ -120,8 +120,9 @@ def _with_this_python(requirement: str) -> str:
             return "'" + text.translate({ord(q): q * 2 for q in "'\u2018\u2019\u201a\u201b"}) + "'"
 
         if set("[]`").isdisjoint(python):
-            return f", in PowerShell: & {quote(python)} -m pip install {quote(requirement)}"
-        arguments = subprocess.list2cmdline(["-m", "pip", "install", requirement])
+            words = " ".join(map(quote, requirements))
+            return f", in PowerShell: & {quote(python)} -m pip install {words}"
+        arguments = subprocess.list2cmdline(["-m", "pip", "install", *requirements])
         return (
             ", in PowerShell: & { $ErrorActionPreference = 'Stop'; "
             "$p = [Diagnostics.Process]::Start([Diagnostics.ProcessStartInfo]@{"
@@ -129,16 +130,18 @@ def _with_this_python(requirement: str) -> str:
             "WorkingDirectory = $PWD.ProviderPath}); $p.WaitForExit(); "
             'if ($p.ExitCode) { throw "pip exited with code $($p.ExitCode)" } }'
         )
-    return f": {shlex.quote(python)} -m pip install {shlex.quote(requirement)}"
+    return f": {shlex.join([python, '-m', 'pip', 'install', *requirements])}"
 
 
-def _how_to_get_the_analyzer() -> str:
+def _how_to_get_the_analyzer(cause: ImportError) -> str:
     """What a user without depbee-analyzer can do, said for the depbee at hand.
 
     An installed depbee names the public commit its own metadata pins and its own interpreter:
     a command for any folder and any PATH. Only depbee run from a source tree, which has no
-    metadata, is sent to the extra.
+    metadata, is sent to the extra. The command ends the text, the cause before it: all that
+    follows the lead can be typed as it is.
     """
+    missing = f"depbee-analyzer is missing ({cause})."
     try:
         pins = importlib.metadata.requires("depbee") or []
     except importlib.metadata.PackageNotFoundError:
@@ -146,12 +149,12 @@ def _how_to_get_the_analyzer() -> str:
     for pin in pins:
         if pin.startswith("depbee-analyzer @"):
             return (
-                "depbee-analyzer is missing. Install the commit that this depbee pins into the "
-                "Python that runs it" + _with_this_python(pin.split(";")[0].strip())
+                f"{missing} Install the commit that this depbee pins into the Python that runs it"
+                + _with_this_python(pin.split(";")[0].strip())
             )
     return (
-        "depbee-analyzer is missing. In a depbee checkout, install it into the Python that "
-        "runs depbee" + _with_this_python(".[extract]")
+        f"{missing} In a depbee checkout, install it into the Python that runs depbee"
+        + _with_this_python(".[extract]")
     )
 
 
@@ -202,7 +205,7 @@ class FeatureExtractorBackend:
             from depbee_analyzer.core.sources import LocalArchiveSnapshotSource
             from depbee_analyzer.rules.diff_scan import RULESET_VERSION
         except ImportError as exc:
-            raise GuardError(f"{_how_to_get_the_analyzer()} ({exc})") from exc
+            raise GuardError(_how_to_get_the_analyzer(exc)) from exc
         self.errors = (
             FeatureExtractorError,
             registry.RegistryError,
