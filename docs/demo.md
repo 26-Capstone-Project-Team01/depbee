@@ -177,6 +177,41 @@ python -I src/depbee/actions.py report docs/examples/result-contract/03-known-ma
 Windows에서 `--markdown`으로 CLI Markdown을 summary에 붙이려면 PowerShell 7.4 이상에서 준비의 `PYTHONIOENCODING`이나 `$env:PYTHONUTF8 = '1'`을 둔 채 `depbee scan ... --format markdown --output "<새 파일>" > "<summary 파일>"`로 만듭니다. 둘 다 없으면 summary가 시스템 코드 페이지로 저장되어 판정이 "보고서를 판정하지 못했습니다"로 실패합니다.
 설치와 `--extract` 검사를 포함한 실제 PR 검사는 위 **실제 제품 검사**의 workflow를 따릅니다.
 
+### 네 진입점 보고서 대조
+
+같은 lockfile 변경을 네 진입점이 같게 보고하는지는 `.github/scripts/check_lodash_report.py --compare`로 확인합니다. 대상은 저장소 예시의 정상 변경 하나(lodash 4.17.20에서 4.17.21)이고, 모델·임계값·색인·분석기는 설치본 그대로 씁니다. 이 스크립트는 보고서를 체크아웃의 모델·색인 manifest와 `pyproject.toml`의 분석기 고정 커밋에 비추어 확인하므로, `<depbee 폴더>`는 설치한 depbee와 같은 커밋이어야 합니다.
+
+1. 대조용 프로젝트를 만듭니다. Git HEAD의 lockfile은 4.17.20, 작업 파일은 4.17.21입니다.
+
+   ```powershell
+   mkdir "<대조 폴더>"; cd "<대조 폴더>"
+   Copy-Item "<depbee 폴더>\examples\lodash-update\package.json", "<depbee 폴더>\examples\lodash-update\package-lock.json" .
+   git init; git add package.json package-lock.json; git commit -m "lodash 4.17.20"
+   Copy-Item "<depbee 폴더>\examples\lodash-updated\package-lock.json" . -Force
+   ```
+
+2. CLI, MCP, 대시보드의 보고서를 한 번에 받습니다. `<새 결과 폴더>`는 아직 없는 절대 경로여야 합니다.
+
+   ```powershell
+   python -I "<depbee 폴더>\.github\scripts\capture_entry_reports.py" "<대조 폴더>" "<새 결과 폴더>"
+   ```
+
+   이 스크립트는 설치된 depbee의 세 진입점을 실제로 실행합니다. `cli.json`은 `depbee scan --extract`의 보고서이고, `mcp.json`은 stdio로 띄운 MCP 서버의 `scan_lockfile` 응답입니다. `dashboard.json`은 대시보드 서버를 띄워 프로젝트를 등록하고 검사만 폼을 보낸 뒤, 서버가 이력에 저장한 실행을 다시 읽은 것입니다. 브라우저 클릭과 에이전트 대화는 거치지 않습니다. 이력, 홈 폴더, 추출 캐시는 결과 폴더 안에만 생기고, 세 진입점이 캐시 하나를 같이 써서 tarball은 한 번만 받습니다.
+3. Action 보고서는 depbee 저장소의 같은 커밋 PR 실행에서 받습니다. Actions 탭에서 그 실행의 `action` job이 남긴 `depbee-report` artifact를 내려받으면 `report.json`이 들어 있습니다(로그인 필요, `gh run download <실행 번호> --repo 26-Capstone-Project-Team01/depbee --name depbee-report --dir "<내려받을 폴더>"`도 같습니다). push 실행의 artifact는 workflow가 action의 명령으로 직접 실행한 scan을 action이 판정해 올린 것이므로, action이 스스로 scan한 보고서가 필요하면 PR 실행의 것을 씁니다.
+4. 네 보고서를 대조합니다.
+
+   ```powershell
+   python -I "<depbee 폴더>\.github\scripts\check_lodash_report.py" --compare "cli=<새 결과 폴더>\cli.json" "mcp=<새 결과 폴더>\mcp.json" "dashboard=<새 결과 폴더>\dashboard.json" "action=<내려받을 폴더>\report.json"
+   ```
+
+   파일마다 확인 한 줄이 나오고, 모두 같으면 마지막 줄이 `4 reports say the same (cli, mcp, dashboard, action)`으로 시작하며 종료 코드는 0입니다. 다르면 종료 코드 1과 함께 `report parity failed` 아래에 필드마다 한 줄씩 `results[0].score differs: cli=..., mcp=..., dashboard=..., action=...`처럼 필드 이름과 진입점별 값이 나옵니다.
+
+보고서의 모든 값을 비교합니다. 요청 ID와 변경 ID, lockfile 위치, 패키지와 이전·이후·비교 버전, 모델 ID와 모델·manifest 해시, 임계값, 색인 기준 시점과 해시, 분석기 버전·커밋·설치 파일 digest, 특징 값, 점수와 그 설명, 근거 문구, 규칙 묶음 버전, 규칙 여섯 개 각각의 버전·결과·근거, ML·기지 악성·규칙 판정과 둘의 일치 여부(`rule_ml_agreement`), 항목 판정, 전체 판정과 종료 코드가 모두 들어갑니다. 한 번의 실행이나 한 대의 PC에만 속하는 값 세 가지는 비교하지 않습니다. 보고서와 항목의 소요 시간(`elapsed_seconds`), 항목의 캐시 사용 여부(`cache_hit`), 분석기를 실행한 Python 버전(`provenance.feature_extractor.python`)입니다. 값은 종류와 값이 정확히 같아야 합니다. 임계값, 특징 값, 개수, 설명에 다시 적힌 특징 값도 정확히 비교합니다. 모델이 부동소수점으로 계산한 네 가지(점수 `score`, 설명의 기여도 `contribution`, 나머지 기여도 합 `others_sum`, 기준값 `base_value`)만 운영체제의 수학 라이브러리 차이를 넘지 않는 상대 오차 1e-12까지 같은 값으로 봅니다. 이 허용은 보고서 안의 정확한 위치로 정해지므로, 같은 이름의 특징 값에는 적용되지 않습니다. 분석기 설치 파일 digest는 Windows와 Linux 설치에서 같은 값이므로, 다른 PC에서 만든 Action 보고서와도 그대로 비교됩니다.
+
+`이름=파일`은 둘 이상이면 되고, 직접 저장한 파일도 받습니다. `scan --format json --output`의 보고서, `update --format json`의 출력, MCP 도구 응답, `history.get_run`이 돌려준 실행을 JSON으로 저장한 파일이 그대로 쓰입니다. Action 보고서 없이 대조했다면 세 진입점 대조로 기록하고, 네 진입점 대조라고 적지 않습니다.
+
+이 대조는 위 lodash 변경의 통과 보고서만 받습니다. 기지 악성 일치와 보류 장면에서 진입점별 조치가 같은지는 자동으로 대조하지 않으므로 각 절의 기대 결과로 확인합니다. depbee 저장소의 CI는 `action` job에서 같은 대조를 다섯 보고서(action, `update` 미리보기, CLI scan, MCP, 대시보드)로 실행합니다.
+
 ### 시연 뒤 정리
 
 1. 대시보드는 Ctrl+C로 끄고 에이전트 세션을 끝냅니다.
