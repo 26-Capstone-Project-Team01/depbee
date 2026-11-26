@@ -220,6 +220,7 @@ CLI 종료 코드 0/1/2의 의미는 그대로다.
 - 같은 job에서 러너의 Node.js 24.11.0과 npm 11.6.1로 임시 프로젝트의 `depbee update` 미리보기를 실행한다. 같은 스크립트로 미리보기 보고서도 검사하고, 변경이 한 건이며 `package.json`이 그대로이고 후보 lockfile의 SHA-256이 `examples/lodash-updated/package-lock.json`과 일치하는지 확인한다.
 - 이 확인 스크립트가 받아들이는 보고서와 거절하는 보고서(보류, 다른 모델·manifest·색인, 검증되지 않은 분석기, 빠지거나 형식이 틀린 digest)는 단위 테스트 `tests/test_ci_report_check.py`가 합성 보고서로 본다.
 - 판정 모듈의 단위 테스트는 `tests/test_actions.py`이다(적대적 패키지 이름 이스케이프, lockfile 줄 찾기, Release 입력의 전부·전무·부분·형식 오류, 두 모드의 기준 커밋 검사, 모델 ID와 색인 기준 시점이 없는 scan 보고서의 실패와 자기 검사 호환, summary의 code span 표시, 캐시 신원 계산, 경로 입력의 링크 workspace 경계(심볼릭 링크는 POSIX, junction은 Windows에서 돎), `verify` 여러 쌍, `action.yml` 단계 순서·조건·인자를 텍스트로 확인 포함).
+- scan과 판정을 이어서 보는 회귀 테스트는 `tests/test_known_malicious_wiring.py`에 있다. 합성 색인과 가짜 분석기·모델로 `depbee scan --extract`가 쓴 `report.json`을 기본 판정에 넘겨, ML 점수가 낮아도 기지 악성 일치 항목이 lockfile의 그 항목 줄에 `::error`로 실패하고 같은 점수의 일치 없는 변경은 통과함을 확인한다.
 
 ## CI 신뢰 경계
 

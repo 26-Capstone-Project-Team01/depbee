@@ -1,4 +1,4 @@
-"""Known malicious index wiring (KM-01): service, CLI, MCP, dashboard options and D-16.
+"""Known malicious index wiring (KM-01): service, CLI, Actions gate, MCP, dashboard options, D-16.
 
 Synthetic only: indexes built from made-up MAL-EXAMPLE-* records, FakeBackend for
 depbee-analyzer and the registry, fake predictors and a fake npm; no network, no package code.
@@ -18,11 +18,11 @@ from test_cache import EXTRACTOR, Model
 from test_dashboard import BASE, PORT, SESSION, ScreenFixture
 from test_extract import FakeBackend, packument
 from test_known_malicious import AS_OF, record, semver, snapshot
-from test_mcp import NO_SDK, SDK, MCPFixture
+from test_mcp import NO_SDK, SDK, MCPFixture, entry
 from test_update import UpdateFixture
 from test_workflow import Fixture
 
-from depbee import known_malicious, mcp
+from depbee import actions, known_malicious, mcp
 from depbee.analysis import cache
 from depbee.analysis.baseline import Baseline, select_baseline
 from depbee.analysis.extractor import ExtractorAnalyzer
@@ -157,6 +157,66 @@ class ServiceTests(IndexMixin, MCPFixture):
         (row,) = json.loads(out)["results"]
         self.assertEqual((code, row["status"], row["known_malicious"]["status"]),
                          (0, "not_flagged", "not_hit"))  # fmt: skip
+
+    def test_scanned_hit_with_a_low_score_fails_the_default_action_gate(self):
+        # action.yml's "Scan with depbee" and "Decide from the report" steps on one scan: the
+        # report.json the scan wrote, its Markdown, the lockfile it read and no fail-on.
+        self.scores["quiet"] = 0.1  # the same low score, on a package no record lists
+        self.old["packages"]["node_modules/quiet"] = entry("quiet", "1.0.0")
+        self.new["packages"] = {"node_modules/quiet": entry("quiet", "1.1.0"),
+                                "node_modules/example": self.new["packages"]["node_modules/example"]}  # fmt: skip
+        self.write(self.base, self.old)
+        # One key a line, as npm writes it; the listed entry is not the first one.
+        self.head.write_text(json.dumps(self.new, indent=2) + "\n", encoding="utf-8")
+        self.assertEqual(self.head.read_text(encoding="utf-8").splitlines()[8],
+                         '    "node_modules/example": {')  # fmt: skip
+
+        def scan_then_decide(records, name):
+            folder, _ = self.index(records)
+            out = self.root / name
+            report, markdown, summary = out / "report.json", out / "summary.md", out / "step.md"
+            os.environ["GITHUB_STEP_SUMMARY"] = str(summary)
+            printed = io.StringIO()
+            # The workspace is the current folder and the lockfile input is relative to it.
+            with contextlib.chdir(self.root):
+                code, text, err = self.run_cli(
+                    "scan", "project", "--base-lock", str(self.base), "--extract", "--model-dir",
+                    "m", "--known-malicious-dir", str(folder), "--format", "markdown", "--output",
+                    str(report))  # fmt: skip
+                markdown.write_text(text, encoding="utf-8")
+                with contextlib.redirect_stdout(printed):
+                    decided = actions.main(["report", str(report), "--lockfile",
+                                            "project/package-lock.json", "--fail-on", "",
+                                            "--markdown", str(markdown)])  # fmt: skip
+            results = json.loads(report.read_text("utf-8"))["results"]
+            rows = {row["package"]: row for row in results}
+            self.assertEqual((err, sorted(rows)), ("", ["example", "quiet"]))
+            for row in results:
+                self.assertEqual((row["score"], row["ml"]), (0.1, {"status": "not_hit"}))
+            verdicts = {package: (row["status"], row["known_malicious"]["status"])
+                        for package, row in rows.items()}  # fmt: skip
+            return code, verdicts, decided, printed.getvalue().splitlines(), summary.read_text(
+                "utf-8")  # fmt: skip
+
+        code, verdicts, decided, lines, summary = scan_then_decide(LISTED, "listed")
+        self.assertEqual((code, decided), (1, 1))
+        self.assertEqual(verdicts, {"example": ("flagged", "hit"),
+                                    "quiet": ("not_flagged", "not_hit")})  # fmt: skip
+        # One annotation, an error on the listed entry's own line of the lockfile.
+        self.assertEqual(lines, [
+            "::error file=project/package-lock.json,line=9::depbee: example@1.1.0 "
+            "(node_modules/example): 기지 악성 기록 일치(MAL-EXAMPLE-0001)"])  # fmt: skip
+        self.assertTrue(summary.startswith("## depbee 검사 결과: 위험 판정 있음 (종료 코드 1)\n"))
+        self.assertIn("### depbee Actions 판정: 실패\n", summary)
+        self.assertIn("- 기지 악성 기록 일치 1개: 항상 실패\n", summary)
+        self.assertIn("- ML 위험 점수 기준 이상 0개: 경고\n", summary)
+        # The same change and scores against a list that names neither package: the gate passes,
+        # so the failure above is the match and not something every such report gets.
+        code, verdicts, decided, lines, summary = scan_then_decide(OTHER, "other")
+        self.assertEqual((code, decided, lines), (0, 0, []))
+        self.assertEqual(set(verdicts.values()), {("not_flagged", "not_hit")})
+        self.assertIn("### depbee Actions 판정: 통과\n", summary)
+        self.assertIn("- 기지 악성 기록 일치 0개: 항상 실패\n", summary)
 
     def test_scan_without_extract(self):
         folder, sha = self.index(LISTED)
