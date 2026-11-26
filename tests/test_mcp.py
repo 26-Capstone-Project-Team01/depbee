@@ -6,23 +6,30 @@ Synthetic only: FakeBackend stands in for depbee-analyzer and the registry, the 
 the predictor are fakes; no network, no package code. The protocol tests need the [mcp] extra.
 """
 
+import base64
 import contextlib
 import copy
 import functools
+import importlib.metadata
 import importlib.util
 import io
 import json
 import os
+import shlex
+import shutil
 import stat
+import subprocess
 import sys
+import tempfile
 import threading
+import tomllib
 import types
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from test_detectors import ADVISORY, KnownList, Rules, rule
-from test_extract import INTEGRITY, FakeBackend, PackagePredictor, packument
+from test_extract import INTEGRITY, READ_BACK, FakeBackend, PackagePredictor, packument
 from test_markdown import HOSTILE
 from test_workflow import Fixture
 
@@ -42,6 +49,7 @@ TIMES = {
 # The assets installed with depbee, and the model ID and list time README.md and docs/usage.md
 # give for them.
 ASSETS = Path(mcp.__file__).resolve().parent / "assets"
+REPOSITORY = Path(__file__).resolve().parents[1]
 INSTALLED = ("D04-E00", "2026-10-06T14:00:47Z")
 
 
@@ -751,18 +759,180 @@ class ResponseTests(MCPFixture):
 
 
 class WithoutSDKTests(unittest.TestCase):
-    def test_depbee_mcp_without_the_sdk_says_how_to_install_it(self):
+    """`depbee mcp` in a Python that cannot import the SDK: nothing on stdout, one JSON error on
+    stderr and exit code 2, with an install command only where installing the SDK is the remedy.
+    The command is read back as a shell reads it and never run: nothing is downloaded or
+    installed."""
+
+    # The Python of a virtual environment that is not activated, in a folder with a space and a
+    # quote (test_extract has the other characters a Windows path can hold).
+    POSIX = "/home/o'brien/my project/.venv/bin/python"
+    WINDOWS = "C:\\Users\\O'Brien\\my project\\.venv\\Scripts\\python.exe"
+    PYTHON = WINDOWS if os.name == "nt" else POSIX
+
+    def site(self, version, server=""):
+        """A folder that holds a stand-in SDK as pip leaves one: the mcp distribution at this
+        version (its metadata; None: metadata that names no version) and an mcp package whose
+        server module has this source."""
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        (root / "mcp").mkdir()
+        (root / "mcp" / "__init__.py").write_text("", "utf-8")
+        (root / "mcp" / "server.py").write_text(server, "utf-8")
+        info = root / ("mcp.dist-info" if version is None else f"mcp-{version}.dist-info")
+        info.mkdir()
+        (info / "METADATA").write_text(
+            "Metadata-Version: 2.1\nName: mcp\n"
+            + ("" if version is None else f"Version: {version}\n"), "utf-8")  # fmt: skip
+        return root
+
+    def no_sdk(self):
+        """This Python has no mcp distribution."""
+        real = importlib.metadata.distribution
+
+        def distribution(name):
+            if name == "mcp":
+                raise importlib.metadata.PackageNotFoundError(name)
+            return real(name)
+
+        return mock.patch("importlib.metadata.distribution", distribution)
+
+    def error(self, done_code, out, err):
+        """The message of the one JSON error on stderr; nothing on stdout, exit code 2."""
+        self.assertEqual((done_code, out), (2, ""))
+        self.assertNotIn("Traceback", err)
+        error = json.loads(err)
+        self.assertEqual((error["status"], error["exit_code"]), ("error", 2))
+        return error["error"]
+
+    def run_mcp(self, site=None):
+        """The error of `depbee mcp` in a Python named PYTHON whose SDK is the stand-in of this
+        site folder, or that has none."""
         out, err = io.StringIO(), io.StringIO()
         # Every SDK module, also those other tests imported: none of them can be imported now.
-        hidden = {name: None for name in sys.modules if name.split(".")[0] in ("mcp", "mcp_types")}
-        with mock.patch.dict(sys.modules, {**hidden, "mcp": None}), \
+        hidden = {name for name in sys.modules if name.split(".")[0] in ("mcp", "mcp_types")}
+        path = sys.path if site is None else [str(site), *sys.path]
+        with mock.patch.dict(sys.modules), mock.patch.object(sys, "path", path), \
+                mock.patch.object(sys, "executable", self.PYTHON), \
+                self.no_sdk() if site is None else contextlib.nullcontext(), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):  # fmt: skip
+            for name in hidden:
+                del sys.modules[name]
+            if site is None:
+                sys.modules.update(dict.fromkeys({*hidden, "mcp"}))
             code = main(["mcp"])
-        self.assertEqual((code, out.getvalue()), (2, ""))
-        error = json.loads(err.getvalue())
-        self.assertEqual(error["status"], "error")
-        self.assertIn('pip install -e ".[mcp]"', error["error"])
-        self.assertNotIn("Traceback", err.getvalue())
+        return self.error(code, out.getvalue(), err.getvalue())
+
+    def test_a_missing_sdk_gets_a_command_for_any_folder_and_the_python_that_runs_depbee(self):
+        error = self.run_mcp()
+        self.assertIn("is not installed", error)
+        # The old advice, pip install -e ".[mcp]", installed the folder the user stood in (an
+        # npm project has no pyproject.toml) into whatever Python the shell's pip belonged to.
+        self.assertNotIn(".[mcp]", error)
+        self.assertNotIn("-e", error.split())
+        command = error.partition(": ")[2].rpartition(" (")[0]
+        if os.name == "nt":  # PowerShell: & calls a quoted path, a quote inside one doubled
+            self.assertEqual(
+                command,
+                "& 'C:\\Users\\O''Brien\\my project\\.venv\\Scripts\\python.exe' -m pip install "
+                f"'{mcp.SDK_REQUIREMENT}'")  # fmt: skip
+        else:
+            self.assertEqual(shlex.split(command),
+                             [self.PYTHON, "-m", "pip", "install", mcp.SDK_REQUIREMENT])  # fmt: skip
+
+    def test_each_shell_reads_that_python_and_the_one_requirement(self):
+        """The command of both forms, whatever system the tests run on: a POSIX shell's words,
+        and the one call that the parser of each PowerShell here reads."""
+        said = {}
+        missing = ModuleNotFoundError("No module named 'mcp'", name="mcp")
+        for system, python in (("posix", self.POSIX), ("nt", self.WINDOWS)):
+            with mock.patch.object(os, "name", system), self.no_sdk(), \
+                    mock.patch.object(sys, "executable", python):  # fmt: skip
+                said[system] = mcp._without_sdk(missing).partition(": ")[2].rpartition(" (")[0]
+        self.assertEqual(shlex.split(said["posix"]),
+                         [self.POSIX, "-m", "pip", "install", mcp.SDK_REQUIREMENT])  # fmt: skip
+        shells = [shell for shell in ("powershell", "pwsh") if shutil.which(shell)]
+        if not shells:
+            self.skipTest("no PowerShell here to read the Windows form")
+        for shell in shells:
+            with self.subTest(shell):
+                done = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                     base64.b64encode(READ_BACK.encode("utf-16-le")).decode()],
+                    env={**os.environ, "DEPBEE_COMMANDS": said["nt"]},
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace",
+                    timeout=120,
+                )  # fmt: skip
+                self.assertEqual(done.returncode, 0, done.stderr)
+                (line,) = done.stdout.splitlines()  # one statement
+                count, operator, *words = line.split(" ")
+                self.assertEqual(
+                    [count, operator, *(base64.b64decode(word).decode() for word in words)],
+                    ["1", "Ampersand", self.WINDOWS, "-m", "pip", "install", mcp.SDK_REQUIREMENT],
+                )
+
+    def test_an_sdk_outside_the_range_is_named_and_gets_the_same_command(self):
+        # The stand-in's mcp.server has no MCPServer, as SDK 1.x; pip replaces any of these.
+        for version in ("1.27.0", "2.2.9", "3.0.0"):
+            with self.subTest(version):
+                error = self.run_mcp(self.site(version))
+                self.assertIn(f"mcp {version} is installed", error)
+                self.assertIn(f" -m pip install '{mcp.SDK_REQUIREMENT}'", error)
+                self.assertIn("MCPServer", error)  # the import error itself
+
+    def test_an_sdk_inside_the_range_that_fails_to_import_gets_no_install_command(self):
+        # pip would call the requirement already satisfied: the error names the Python to
+        # repair and the import failure instead (here a package that the SDK imports).
+        for version in ("2.3.0", "2.10.1"):
+            with self.subTest(version):
+                error = self.run_mcp(self.site(version, "import depbee_test_no_such_module\n"))
+                self.assertIn(f"mcp {version} is installed", error)
+                self.assertIn("No module named 'depbee_test_no_such_module'", error)
+                self.assertIn(self.PYTHON, error)
+                self.assertNotIn("pip install", error)
+
+    def test_a_version_depbee_cannot_place_gets_the_command_only_as_a_condition(self):
+        # PEP 440 puts a pre-release of the lower bound below it (2.3.0rc1 and 2.3.dev1 are not
+        # >=2.3) and one of a later release inside (2.4.0rc1); depbee has no parser for that.
+        # Neither "install it" nor "installing is no remedy" is known to be true, as with
+        # metadata that names no version.
+        for version in ("2.3.0rc1", "2.3.dev1", "2.4.0rc1", None):
+            with self.subTest(version):
+                error = self.run_mcp(self.site(version))
+                self.assertNotIn("None", error)
+                if version:
+                    self.assertIn(f"mcp {version} is installed", error)
+                self.assertIn("MCPServer", error)  # the import error itself
+                self.assertNotIn("no remedy", error)
+                before, _, after = error.partition("If the installed version is outside the range")
+                self.assertNotIn("pip install", before)
+                self.assertIn(f" -m pip install '{mcp.SDK_REQUIREMENT}'", after)
+
+    def test_a_projects_own_mcp_file_that_hides_a_compatible_sdk_is_named(self):
+        """`python -m depbee mcp` as a child process in an npm project that has an mcp.py of
+        its own: Python imports that file as mcp, before the SDK (here a stand-in at 2.3.0 on
+        PYTHONPATH, which comes before any SDK of this Python). No import is replaced."""
+        project = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        (project / "package.json").write_text('{"name": "x", "version": "1.0.0"}', "utf-8")
+        (project / "mcp.py").write_text("# the project's own module\n", "utf-8")
+        src = str(Path(mcp.__file__).resolve().parents[1])
+        done = subprocess.run(
+            [sys.executable, "-m", "depbee", "mcp"], cwd=project, stdin=subprocess.DEVNULL,
+            env={**os.environ, "PYTHONPATH": os.pathsep.join([src, str(self.site("2.3.0"))]),
+                 "PYTHONDONTWRITEBYTECODE": "1"},
+            capture_output=True, text=True, timeout=120,
+        )  # fmt: skip
+        error = self.error(done.returncode, done.stdout, done.stderr)
+        self.assertIn("mcp 2.3.0 is installed", error)
+        self.assertIn(str(project / "mcp.py"), error)  # what to move out of the way
+        self.assertIn("-P -m depbee mcp", error)  # or how to start depbee past it
+        self.assertIn(sys.executable, error)
+        self.assertNotIn("pip install", error)
+
+    @unittest.skipUnless((REPOSITORY / "pyproject.toml").is_file(), "not run from a source tree")
+    def test_the_command_asks_for_the_sdk_of_the_mcp_extra(self):
+        project = tomllib.loads((REPOSITORY / "pyproject.toml").read_text("utf-8"))
+        self.assertEqual(project["project"]["optional-dependencies"]["mcp"],
+                         [mcp.SDK_REQUIREMENT])  # fmt: skip
 
 
 @unittest.skipUnless(SDK, NO_SDK)

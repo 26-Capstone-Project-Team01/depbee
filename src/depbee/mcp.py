@@ -8,15 +8,19 @@ installs, updates or writes project files (only the CLI's extracted-feature cach
 The tool functions need no MCP SDK; build_server() and serve() import it (extra [mcp]).
 """
 
+import importlib.metadata
+import importlib.util
 import json
 import os
 import re
 import stat
+import sys
 import threading
 from concurrent import futures
 from pathlib import Path
 
 from . import __version__, service
+from .analysis.extractor import _with_this_python
 from .cli import (
     AGREEMENT_LABELS,
     DETECTOR_REASON_LABELS,
@@ -32,6 +36,10 @@ from .cli import (
 from .contracts import GuardError
 from .inputs.git import is_link as _is_link
 
+# The SDK that `depbee mcp` imports, as pip is asked for it: the mcp extra of pyproject.toml
+# (tests/test_mcp.py keeps the two equal). Not read from depbee's installed metadata, which an
+# editable install keeps from the day it was made and a source tree on PYTHONPATH does not have.
+SDK_REQUIREMENT = "mcp>=2.3,<3"
 # What an agent waits for in one tool call, not a bound on the work: a late call gives an error,
 # never a verdict, and starts no further change, but the work already running goes on with no
 # fixed end (see _respond).
@@ -318,6 +326,68 @@ def _package_strings(value: object, path: str = "", inside: bool = False, names:
             yield from _package_strings(item, f"{path}/{index}", inside)
 
 
+def _without_sdk(exc: ImportError) -> str:
+    """Why build_server() could not import the SDK and, where installing it is the remedy, the
+    command that does. An agent starts `depbee mcp` in the user's project (an npm project is no
+    depbee checkout: a relative ".[mcp]" means nothing there) and often from an environment that
+    is not activated, so the command names the requirement itself and the Python that runs
+    depbee, quoted for the system's shell (extractor._with_this_python). That command is
+    advised only for a Python with no mcp distribution or with one known to be outside
+    SDK_REQUIREMENT (pip replaces it). With one known to be inside, pip would call the
+    requirement already satisfied, so the error names that Python and the import failure
+    instead (a package the SDK needs, a broken binary) and, when Python imported another file
+    as mcp, that file: `python -m depbee` puts the folder it starts in before the SDK, and a
+    project can have an mcp.py of its own. A version depbee cannot place in the range gets
+    both, the command as a condition."""
+    needs = f"depbee mcp needs the MCP Python SDK ({SDK_REQUIREMENT})"
+    install = _with_this_python(SDK_REQUIREMENT)
+    try:
+        sdk = importlib.metadata.distribution("mcp")
+    except importlib.metadata.PackageNotFoundError:
+        return (
+            f"{needs}, which is not installed. Install it into the Python that runs depbee"
+            f"{install} ({exc})"
+        )
+    version = sdk.metadata.get("Version")  # None: metadata that names no version
+    # shortcut: only a final release (digits and dots) is compared; a pre-release of the lower
+    # bound is below it in PEP 440 and one of a later release is not, so 2.3.0rc1 and its like
+    # are not placed. packaging's specifiers if depbee ever depends on packaging.
+    placed = re.fullmatch(r"\d+(?:\.\d+)*", version or "")
+    low, high = (
+        [int(n) for n in bound.split(".")] for bound in re.findall(r"\d[\d.]*", SDK_REQUIREMENT)
+    )
+    if placed and not low <= [int(n) for n in version.split(".")] < high:
+        return (
+            f"{needs}, but mcp {version} is installed. Install a compatible version into the "
+            f"Python that runs depbee{install} ({exc})"
+        )
+    fits = "so installing it is no remedy:" if placed else "and may be outside that range;"
+    said = (
+        f"{needs}. {f'mcp {version}' if version else 'An mcp distribution of no known version'} "
+        f"is installed in the Python that runs depbee, {sys.executable}, {fits} its import "
+        f"failed ({exc})"
+    )
+    try:
+        origin = getattr(importlib.util.find_spec("mcp"), "origin", None)
+    except (ImportError, ValueError):
+        origin = None
+    # The file pip installed; an editable SDK has none there, and then nothing is claimed.
+    own = sdk.locate_file("mcp/__init__.py")
+    if origin and os.path.isfile(origin) and os.path.isfile(own):
+        if not os.path.samefile(origin, own):
+            said += (
+                f". Python imported {origin} as mcp, which hides the SDK. Start depbee from a "
+                "folder without such a file, or with the folder left off the import path: the "
+                "depbee console script, or python -P -m depbee mcp"
+            )
+    if not placed:
+        said += (
+            ". If the installed version is outside the range, install a compatible one into "
+            f"that Python{install}"
+        )
+    return said
+
+
 def build_server(model_dir: Path | None = None, known_malicious_dir: Path | None = None):
     """Register two inspection tools. The service resolves optional server-side asset paths
     for each call and defaults to the installed model and index."""
@@ -326,9 +396,7 @@ def build_server(model_dir: Path | None = None, known_malicious_dir: Path | None
         from mcp.server.mcpserver.exceptions import ToolError
         from mcp.types import ToolAnnotations
     except ImportError as exc:
-        raise GuardError(
-            f'depbee mcp needs the MCP Python SDK 2.x: pip install -e ".[mcp]" ({exc})'
-        ) from exc
+        raise GuardError(_without_sdk(exc)) from exc
 
     def result(response: dict) -> dict:
         if "error" in response:  # an MCP tool error, so that no client reads it as a result
