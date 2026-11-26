@@ -5,8 +5,7 @@
 `.github/workflows/ci.yml`의 `checks` job은 이 도구 자체의 Linux/Windows, Python 3.11/3.13 검사다.
 lint·회귀 테스트·native LightGBM 합성 테스트·wheel/sdist 빌드를 수행한다. `extract`까지 설치하므로 고정한 분석기의 loader 경계 테스트도 돈다.
 `action` job은 아래 GitHub Action의 판정 규칙을 예시 보고서로 검사한 뒤, 실제 버전 변경을 분석기와 npm registry로 검사한다(자기 검사 절).
-`docker` job은 기본 이미지를 자격 증명 없이 빌드하고 실행해 CLI, MCP, 대시보드, 이미지의 npm을 검사한다(Docker 이미지 검사 절).
-세 job 모두 secret을 쓰지 않는다. 분석기(depbee-analyzer)는 공개 저장소라 pip과 이미지 빌드가 고정 커밋을 로그인 없이 받는다.
+두 job 모두 secret을 쓰지 않는다. pip은 depbee-analyzer 공개 저장소에서 고정 커밋을 받는다.
 Action은 확인한 commit SHA로 고정했고 권한은 contents:read다.
 의존성은 pyproject의 범위로 설치한다. 첫 환경 검증 후 팀 공통 lock/constraints를 도입한다.
 
@@ -200,7 +199,7 @@ CLI 종료 코드 0/1/2의 의미는 그대로다.
 
 ### 제한과 미검증
 
-- depbee는 Git 소스로만 배포한다. PyPI 패키지, 컨테이너 레지스트리의 이미지, GitHub Release는 없다. action은 `uses:`의 커밋에서 depbee를 설치하고, 분석기는 그 커밋이 고정한 Git 주소에서 받는다.
+- depbee는 Git 소스로만 배포한다. PyPI 패키지와 GitHub Release는 없다. action은 `uses:`의 커밋에서 depbee를 설치하고, 분석기는 그 커밋이 고정한 Git 주소에서 받는다.
 - 모델과 기지 악성 색인을 첨부한 Release가 없다. Release 다섯 입력 경로는 입력 검사와 단계 배선만 확인했고 실제 다운로드는 확인하지 않았다.
 - depbee 저장소의 CI는 PR에서 이 action을 그대로 실행한다(아래 자기 검사). 다른 저장소에서는 공개 시연 저장소의 PR이 `759cc68`로 고정한 action을 실행했다. `ms` 2.1.1에서 2.1.3으로의 변경 하나는 통과로 판정됐고([run 45290776914](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/actions/runs/45290776914)), lockfile을 바꾸지 않은 PR은 바뀐 항목 0개로 끝났다([run 45290763429](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo/actions/runs/45290763429)). 위 사용 예시의 SHA(`863efe6`)는 그 뒤의 `main` 병합 커밋이고, 다른 저장소에서 이 SHA로 실행한 기록은 아직 없다.
 - fork PR과 Dependabot PR에서의 실행, 같은 PR의 두 번째 실행에서 캐시가 복원되는지, 경고·실패 항목의 lockfile 줄 주석이 PR 화면에 놓이는 모습은 확인하지 않았다. secret과 쓰기 권한을 쓰지 않으므로 fork PR과 Dependabot PR에서도 조건 분기 없이 같은 방식으로 동작하도록 만들었다. 확인한 범위는 아래 자기 검사와 `docs/validation.md`에 있다.
@@ -217,24 +216,9 @@ CLI 종료 코드 0/1/2의 의미는 그대로다.
 - `push` 실행에는 PR 기준 커밋이 없어 action이 scan할 수 없다. 같은 설치·scan·판정 명령을 HEAD를 기준으로 직접 실행하고, 그 보고서를 `report` 입력으로 넘겨 `uses: ./`의 입력 검사, summary, artifact 배선을 확인한다. `report`가 있으면 설치·다운로드·변경 수·캐시·scan 단계는 건너뛰고 Release 입력도 검사하지 않으며, summary에 자기 검사라고 적힌다.
 - 그 직접 실행의 scan은 통과하는 변경이므로 종료 코드 0이어야 하고, 다른 종료 코드면 단계가 실패한다. 보고서는 이 단계가 workspace 안에 새로 만든 폴더에 쓴다. 체크아웃에 들어 있던 파일이나 앞 명령이 남긴 파일이 이번 scan의 보고서로 판정되는 일이 없다. action 자신의 scan 단계는 종료 코드를 로그에만 남기고 보고서로 판정하는 원래 정책 그대로다.
 - 어느 쪽이든 마지막 단계(`.github/scripts/check_lodash_report.py`)가 action이 남긴 `report.json`을 확인한다. 전체가 통과(종료 코드 0)이고 항목은 lodash 4.17.20 → 4.17.21 하나이며, 비교 버전이 4.17.20, ML 판정이 기준 미만, 기지 악성이 미적중이어야 한다. `model_id`·모델 해시·색인 기준 시점·색인 해시는 저장소의 manifest와 같아야 하고, `provenance.model.manifest_sha256`은 저장소 manifest 파일의 SHA-256이어야 한다. `provenance.feature_extractor.commit`은 `pyproject.toml`이 고정한 커밋이어야 하고, `files_sha256`은 그 job에 설치된 분석기 파일에 대해 depbee가 계산한 값(`extractor._installed_identity`)과 같아야 한다. 두 값은 설치된 분석기가 그 커밋의 Git 설치 그대로일 때만 보고서에 들어간다.
+- 같은 job에서 러너의 Node.js 24.11.0과 npm 11.6.1로 임시 프로젝트의 `depbee update` 미리보기를 실행한다. 같은 스크립트로 미리보기 보고서도 검사하고, 변경이 한 건이며 `package.json`이 그대로이고 후보 lockfile의 SHA-256이 `examples/lodash-updated/package-lock.json`과 일치하는지 확인한다.
 - 이 확인 스크립트가 받아들이는 보고서와 거절하는 보고서(보류, 다른 모델·manifest·색인, 검증되지 않은 분석기, 빠지거나 형식이 틀린 digest)는 단위 테스트 `tests/test_ci_report_check.py`가 합성 보고서로 본다.
 - 판정 모듈의 단위 테스트는 `tests/test_actions.py`이다(적대적 패키지 이름 이스케이프, lockfile 줄 찾기, Release 입력의 전부·전무·부분·형식 오류, 두 모드의 기준 커밋 검사, 모델 ID와 색인 기준 시점이 없는 scan 보고서의 실패와 자기 검사 호환, summary의 code span 표시, 캐시 신원 계산, 경로 입력의 링크 workspace 경계(심볼릭 링크는 POSIX, junction은 Windows에서 돎), `verify` 여러 쌍, `action.yml` 단계 순서·조건·인자를 텍스트로 확인 포함).
-
-### Docker 이미지 검사 (depbee CI `docker` job)
-
-CI는 기본 이미지를 문서의 명령 그대로 빌드한다(`docker build -t depbee:ci .`). secret, 빌드 인자, 토큰을 쓰지 않고 이미지를 push하지 않는다. 빌드는 `pyproject.toml`이 고정한 분석기 커밋을 공개 저장소에서 받고, 마지막 단계에서 설치된 분석기의 출처와 모델·색인의 SHA-256을 확인한다. 컨테이너에는 저장소의 예시와 그 예시로 만든 임시 Git 저장소만 읽기 전용으로 연결한다. 실제 버전 변경을 검사하는 단계만 npm registry에 연결하고 나머지는 네트워크 없이 실행한다.
-
-- 합성 예시: 네트워크 없이 읽기 전용 루트로 예시 프로젝트를 scan해(추출이 없어 보류) 보고서의 모델과 색인이 이미지에 든 것인지 확인한다.
-- 실제 변경(CLI): `examples/lodash-updated`를 `examples/lodash-update`의 lockfile과 비교해 `scan --extract`한다. 보고서는 `action` job과 같은 스크립트로 확인한다(통과, lodash 4.17.20 → 4.17.21, 모델과 색인, 고정한 분석기 커밋).
-- Git HEAD: 소유자가 다른 Git 저장소(HEAD는 4.17.20, 작업 파일은 4.17.21)의 HEAD를 기준으로 `plan`이 되는지 확인한다.
-- MCP: 문서의 등록 방식으로 띄운 stdio 서버가 초기화되고 도구 두 개를 내는지, `scan_lockfile`이 그 저장소의 변경을 실제로 검사해 같은 보고서 확인을 통과하는지 본다.
-- 대시보드: 문서의 실행 방식(호스트의 `127.0.0.1`에만 같은 번호로 게시한 포트, `/projects` 아래의 읽기 전용 연결, 홈 볼륨)으로 띄운다. 출력한 주소, Host와 세션 검사, 연결한 폴더 목록, 그 밖의 경로 거부를 확인한다.
-- 등록한 프로젝트: 빈 볼륨의 첫 등록은 현황판(첫 화면)으로 이어져야 한다. 현황판에 나온 그 프로젝트의 링크를 열어 lockfile의 패키지가 보이는지 확인한다. **검사만** 요청이 `/projects` 아래 저장소의 HEAD lockfile과 비교해 실제로 검사하고, 기록된 실행 화면의 결과가 점수가 매겨진 통과(`not_flagged`) 하나이며 그 패키지와 새 버전, 이미지의 모델 ID가 나오는지 확인한다. registry나 분석기 문제로 끝내지 못한 검사는 같은 redirect와 화면으로 답하지만 결과가 보류라서 이 확인에서 실패한다.
-- 홈 볼륨: 첫 컨테이너를 종료해 지운 뒤 같은 볼륨으로 새 컨테이너를 만든다. 등록한 프로젝트와 첫 컨테이너의 실행 기록이 그대로 열리는지, 같은 폴더를 다시 등록하면 프로젝트가 늘지 않고 그 프로젝트의 화면으로 이어지는지 확인한다. 끝으로 볼륨에 기록된 두 실행의 보고서를 이미지의 이력 모듈로 읽어 CLI 보고서와 같은 스크립트로 확인한다.
-- 이미지의 npm: PATH에 `npm`과 `npx`가 없는지 확인한다. depbee가 업데이트 확인 때 쓰는 호출(`inputs.npm_cli`)이 Node.js 24.11.0의 npm 11.6.1을 찾아, 의존성 없는 임시 프로젝트의 lockfile을 네트워크 없이 다시 쓰는지 확인한다.
-- 업데이트 미리보기: 읽기 전용으로 연결한 `examples/lodash-update`에 `depbee update`를 실행한다. 이미지의 npm이 사본에서 lockfile을 다시 쓰고(`--ignore-scripts`, 설치 없음) 분석기가 그 변경을 검사한다. npm이 쓴 lockfile의 SHA-256이 저장소의 `examples/lodash-updated/package-lock.json`과 같은지, 보고서가 위와 같은 확인을 통과하는지 본다. 반영은 하지 않는다.
-- `core` 단계: `docker build --target core`로 따로 빌드한다. root가 아닌 사용자이고 분석기 모듈이 없는지, 합성 예시의 보고서가 기본 이미지의 것과 바이트 단위로 같은지 네트워크 없이 확인한다. `check`는 종료 코드 2로 끝나야 하고, 그 오류는 이 이미지에서 실제로 할 수 있는 일인 기본 이미지 빌드(`docker build -t depbee:local .`)를 안내해야 하며 pip 설치 명령을 적으면 실패한다(이 이미지에는 pip과 소스가 없다).
-- CI가 하지 않는 것: 대시보드의 업데이트 확인 화면과 반영(같은 서비스 함수를 CLI의 `depbee update` 미리보기로 실행한다), 브라우저로 누르는 조작. [정해 둔 정상 예시](docker.md#전체-이미지-확인)로 직접 확인할 수 있다.
 
 ## CI 신뢰 경계
 

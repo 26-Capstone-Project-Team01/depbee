@@ -12,13 +12,12 @@ import hashlib
 import importlib.metadata
 import json
 import os
-import re
 import shlex
 import shutil
 import sys
 import tomllib
 import unittest
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from unittest import mock
 
 from test_config import ML, NO_ML, NativeAssets, run_cli
@@ -106,8 +105,8 @@ class ShippedFilesTests(unittest.TestCase):
         self.assertEqual(sorted(d.split(">")[0] for d in base), ["lightgbm", "numpy"])
         analyzer = {name: needs for name, needs in extras.items() if "depbee-analyzer" in str(needs)}
         self.assertEqual(list(analyzer), ["extract"])
-        # One pin: the team's public repository over HTTPS at a full commit id. An image build
-        # and an action run fetch it without credentials, and the installed identity
+        # One pin: the team's public repository over HTTPS at a full commit id. The action
+        # fetches it without credentials, and the installed identity
         # (extractor._installed_identity) and action.yml's cache key read this exact form.
         (pin,) = analyzer["extract"]
         self.assertRegex(pin, r"^depbee-analyzer @ git\+https://github\.com/"
@@ -118,36 +117,6 @@ class ShippedFilesTests(unittest.TestCase):
             kept = [line.split()[0] for line in attributes.read_text("utf-8").splitlines()
                     if line.endswith(" -text")]  # fmt: skip
             self.assertEqual(sorted(kept), sorted(f"src/depbee/assets/{n}" for n in bundled.SHA256))
-
-    @unittest.skipUnless((REPOSITORY / ".dockerignore").is_file(), "not run from a checkout")
-    def test_the_docker_build_context_admits_every_file_of_the_package_data(self):
-        # .dockerignore admits only what it names, and the image installs depbee from that.
-        # Package data it does not name is in the wheel of a host install and missing in the
-        # image, whose build still succeeds: the dashboard's script once was, and there the
-        # pages answered while the script's address alone failed.
-        project = tomllib.loads((REPOSITORY / "pyproject.toml").read_text("utf-8"))
-        lines = (REPOSITORY / ".dockerignore").read_text("utf-8").splitlines()
-        named = [line[1:] for line in lines if line.startswith("!")]
-        for package, patterns in project["tool"]["setuptools"]["package-data"].items():
-            folder = REPOSITORY / "src" / package.replace(".", "/")
-            shipped = [file for pattern in patterns for file in folder.glob(pattern)]
-            self.assertTrue(shipped, package)
-            for file in shipped:
-                path = PurePosixPath(file.relative_to(REPOSITORY).as_posix())
-                with self.subTest(str(path)):
-                    self.assertTrue(any(path.match(pattern) for pattern in named),
-                                    ".dockerignore does not name it")  # fmt: skip
-
-    @unittest.skipUnless((REPOSITORY / "Dockerfile").is_file(), "not run from a checkout")
-    def test_the_image_build_can_receive_no_credential(self):
-        # The default build installs the pinned public analyzer anonymously. No instruction
-        # takes a build argument or mounts a secret, and the default target (the last stage)
-        # is the one with the analyzer; core stays a target of its own.
-        text = (REPOSITORY / "Dockerfile").read_text("utf-8")
-        self.assertNotRegex(text, r"(?m)^\s*(ARG\b|RUN\s+--mount)")
-        stages = re.findall(r"(?m)^FROM \S+ AS (\S+)$", text)
-        self.assertEqual(stages[-1], "full")
-        self.assertIn("core", stages)
 
 
 class ShippedDefaultTests(Fixture):
@@ -468,12 +437,6 @@ class ResolverTests(NativeAssets):
                     else:  # what a POSIX shell reads: that interpreter and one requirement
                         self.assertEqual(shlex.split(command(said)),
                                          [python, "-m", "pip", "install", requirement])  # fmt: skip
-            # depbee's image has no pip and no source tree: the default image, not an install.
-            with mock.patch.dict(os.environ, {"DEPBEE_CONTAINER_PROJECTS": "/projects"}):
-                in_image = advice(installed)
-            self.assertIn("built with --target core", in_image)
-            self.assertIn("docker build -t depbee:local .", in_image)
-            self.assertNotIn("pip", in_image)
 
 
 if __name__ == "__main__":

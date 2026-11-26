@@ -337,8 +337,6 @@ footer .note { max-width: none; }
 /* A long name breaks inside its own step: it never pushes the page sideways. */
 .trail li { min-width: 0; overflow-wrap: anywhere; }
 .trail a { display: inline-block; padding-block: .35rem; }
-/* A trail of folders (the container's folder picker): its steps are paths. */
-.trail.paths { font-family: var(--mono); }
 
 /* A view's list and what stands above it: the search, the candidates-only filter beside it,
    and the line that says what is known of the candidates. */

@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 # No job uses a secret or a token of its own. depbee-analyzer, which the extract extra pins by
-# commit, is a public repository: pip and the image build fetch it without credentials.
+# commit, is a public repository and pip fetches it without credentials.
 jobs:
   checks:
     strategy:
@@ -101,7 +101,7 @@ jobs:
           BASE_SHA=main fails run inputs
           echo "All expected exit codes"
       # From here on the lockfile in Git holds lodash 4.17.20 and the working one the lockfile
-      # that npm wrote for 4.17.21 (the docker job checks that it is that file).
+      # that npm wrote for 4.17.21. The host preview below verifies the fixture.
       - name: Update the example lockfile in the working tree
         shell: bash
         run: cp examples/lodash-updated/package-lock.json examples/lodash-update/package-lock.json
@@ -140,408 +140,28 @@ jobs:
         with:
           lockfile: examples/lodash-update/package-lock.json
           report: ${{ steps.scanned.outputs.report }}
-      # Either way the action left one report, in the folder it made for this run. The analyzer
-      # it names must be the one installed in this job, by depbee's digest of the installed files.
-      - name: The action's report names the update, the model, the index and the analyzer
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.11.0'
+      - name: Check the action report and preview the same update with the host npm
         shell: bash
         run: |
           files="$(python -I -c \
             'from depbee.analysis.extractor import _installed_identity as identity; print(identity()["files_sha256"])')"
           python -I .github/scripts/check_lodash_report.py "$RUNNER_TEMP"/depbee.*/report.json "$files"
-
-  # The default image as docs/docker.md builds it: no secret, no build argument and no token.
-  # The build fetches the analyzer that pyproject.toml pins from its public repository. The
-  # image is never pushed. It is then run the way it is used: its own entrypoint and user and
-  # the examples mounted read-only, with the npm registry for the steps that check a real update
-  # and without a network for the rest.
-  docker:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - name: Build the default image without credentials, whose own user is not root
-        shell: bash
-        run: |
-          docker build -t depbee:ci .
-          user="$(docker image inspect --format '{{.Config.User}}' depbee:ci)"
-          case "${user%%:*}" in '' | 0 | root) echo "depbee:ci runs as root"; exit 1 ;; esac
-          # The digest the image's depbee gives its installed analyzer files. Every report of a
-          # real scan below must name it.
-          files="$(docker run --rm --network none --read-only --entrypoint python depbee:ci -I -c \
-            'from depbee.analysis.extractor import _installed_identity as identity; print(identity()["files_sha256"])')"
-          echo "ANALYZER_FILES=$files" >> "$GITHUB_ENV"
-      - name: Scan the synthetic example offline with the image's model and index
-        shell: bash
-        run: |
-          status=0
-          docker run --rm --network none --read-only --tmpfs /tmp \
-            --mount "type=bind,source=$PWD/examples/project,target=/project,readonly" \
-            --mount "type=bind,source=$PWD/examples/baseline,target=/baseline,readonly" \
-            depbee:ci scan /project --base-lock /baseline/package-lock.json --format json \
-            > docker-report.json || status=$?
-          cat docker-report.json
-          test "$status" -eq 2  # One changed package, no extracted features: held, not passed.
-          python3 -I - <<'PY'
-          import json
-          from pathlib import Path
-          assets = Path("src/depbee/assets")
-          model = json.loads((assets / "model" / "manifest.json").read_bytes())
-          index = json.loads((assets / "index" / "manifest.json").read_bytes())
-          report = json.loads(Path("docker-report.json").read_bytes())
-          assert (report["status"], report["exit_code"]) == ("incomplete", 2)
-          # A report names them only after LightGBM loaded that model and the index was read.
-          assert report["model_id"] == model["model_id"]
-          assert report["provenance"]["model"]["model_sha256"] == model["model_sha256"]
-          known = report["detectors"]["known_malicious"]
-          assert (known["list_as_of"], known["list_sha256"]) == (index["list_as_of"], index["index_sha256"])
-          (row,) = report["results"]
-          assert (row["package"], row["after_version"]) == ("example-package", "1.1.0")
-          assert (row["status"], row["reason"]) == ("incomplete", "analysis_missing")
-          assert (row["ml"]["status"], row["known_malicious"]["status"]) == ("not_run", "not_hit")
-          PY
-      # The image's analyzer on a real update: both lodash tarballs come from the npm registry
-      # and are read, never run. The report must pass and name the analyzer commit that
-      # pyproject.toml pins, which only the unchanged Git install of that pin is given.
-      - name: Scan a real update with the image's analyzer
-        shell: bash
-        run: |
-          status=0
-          docker run --rm --read-only --tmpfs /tmp \
-            --mount "type=bind,source=$PWD/examples/lodash-updated,target=/project,readonly" \
-            --mount "type=bind,source=$PWD/examples/lodash-update,target=/baseline,readonly" \
-            depbee:ci scan /project --base-lock /baseline/package-lock.json --extract --format json \
-            > docker-lodash-report.json || status=$?
-          cat docker-lodash-report.json
-          test "$status" -eq 0
-          python3 -I .github/scripts/check_lodash_report.py docker-lodash-report.json "$ANALYZER_FILES"
-      # The default base: no --base-lock and no --base-ref, so the image's Git reads HEAD of an
-      # ordinary repository that the runner's user owns, allowed by safe.directory /project alone.
-      - name: Plan against Git HEAD in a project another user owns
-        shell: bash
-        run: |
-          project="$(mktemp -d "$RUNNER_TEMP/git-project.XXXXXX")"
-          cp examples/lodash-update/package.json examples/lodash-update/package-lock.json "$project/"
-          git init --quiet --initial-branch=main "$project"
-          git -C "$project" add package.json package-lock.json
-          git -C "$project" -c user.name=depbee-ci -c user.email=depbee-ci@example.invalid \
-            -c core.hooksPath=/dev/null commit --quiet -m baseline
-          # From here the baseline is in HEAD only: the working file is the updated lockfile.
-          cp examples/lodash-updated/package-lock.json "$project/package-lock.json"
-          # mktemp made the folder 0700, and the image's user reads it as "other".
-          chmod -R a+rX "$project"
-          # The MCP and dashboard steps below mount the same project.
-          echo "GIT_PROJECT=$project" >> "$GITHUB_ENV"
-          owner="$(stat -c %u "$project")"
-          image_user="$(docker image inspect --format '{{.Config.User}}' depbee:ci)"
-          echo "fixture owner UID $owner, image user $image_user"
-          test "$owner" -ne "${image_user%%:*}"  # Fails on a user name too: the image names its UID.
-          docker run --rm --network none --read-only --tmpfs /tmp \
-            --mount "type=bind,source=$project,target=/project,readonly" \
-            depbee:ci plan /project > docker-plan.json
-          cat docker-plan.json
-          python3 -I - <<'PY'
-          import json
-          from pathlib import Path
-          (change,) = json.loads(Path("docker-plan.json").read_bytes())["changes"]
-          assert (change["location"], change["kind"]) == ("node_modules/lodash", "updated")
-          before, after = change["before"], change["after"]
-          assert (before["name"], before["version"]) == ("lodash", "4.17.20")  # Git HEAD
-          assert (after["name"], after["version"]) == ("lodash", "4.17.21")  # working file
-          PY
-      # The server as docs/docker.md registers it: stdin kept open, the project mounted read-only
-      # at /project. scan_lockfile then checks that project's change against Git HEAD, with the
-      # registry and the analyzer, as an agent's call before an install does.
-      - name: Initialize the MCP server, list its tools and scan the project over stdio
-        shell: bash
-        run: |
-          python3 -I - <<'PY'
-          import json
-          import os
-          import subprocess
-          from pathlib import Path
-          # stdin stays open until the last answer is read, as an agent keeps it. timeout ends a
-          # server that hangs: its stdout then ends without the answer, which fails here.
-          project = f"type=bind,source={os.environ['GIT_PROJECT']},target=/project,readonly"
-          server = subprocess.Popen(
-              ["timeout", "--signal=KILL", "300", "docker", "run", "--rm", "-i", "--read-only",
-               "--tmpfs", "/tmp", "--mount", project, "depbee:ci", "mcp"],
-              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-
-          def send(**message):
-              server.stdin.write(json.dumps({"jsonrpc": "2.0", **message}) + "\n")
-              server.stdin.flush()
-
-          def call(request_id, method, params):
-              """Send one request, then read up to the answer with its id and return the result."""
-              send(id=request_id, method=method, params=params)
-              for line in server.stdout:  # JSON-RPC only: the server's log goes to stderr.
-                  answer = json.loads(line)
-                  if "method" not in answer and answer.get("id") == request_id:
-                      print(answer)
-                      assert answer["jsonrpc"] == "2.0"
-                      return answer["result"]
-              raise SystemExit(f"The server ended without an answer to {method}")
-
-          version = "2025-06-18"
-          result = call(1, "initialize", {"protocolVersion": version, "capabilities": {},
-                                          "clientInfo": {"name": "depbee-ci", "version": "0"}})
-          assert result["protocolVersion"] == version
-          assert result["serverInfo"]["name"] == "depbee"
-          assert "tools" in result["capabilities"]
-          # A notification (no id, no answer) ends the handshake; only then are the tools listed.
-          send(method="notifications/initialized")
-          tools = call(2, "tools/list", {})["tools"]
-          assert sorted(tool["name"] for tool in tools) == ["check_package", "scan_lockfile"]
-          scanned = call(3, "tools/call", {"name": "scan_lockfile",
-                                           "arguments": {"project": "/project"}})
-          assert not scanned.get("isError"), scanned
-          (block,) = scanned["content"]  # one text block: notices, package data and the report
-          Path("docker-mcp-scan.json").write_text(block["text"], "utf-8")
-          server.stdin.close()
-          assert server.wait() == 0  # The server ends when its client closes stdin.
-          PY
-          python3 -I .github/scripts/check_lodash_report.py docker-mcp-scan.json "$ANALYZER_FILES"
-      # The dashboard as docs/docker.md starts it: the image's own port, published on the runner's
-      # 127.0.0.1 alone under the same number, the Git project of the step above mounted read-only
-      # under /projects, and a volume for the home folder. What the pages do is tested in tests/;
-      # this is the image: the web extra, the templates and the script file they name, where it
-      # listens, the address it prints, the folder it registers from, the Git it reads that
-      # folder's HEAD with, the analyzer a scan from the page runs, and the volume a second
-      # container, made anew from the image, knows the registered project and its run from.
-      - name: Open the dashboard through a port published on 127.0.0.1, then in a new container
-        shell: bash
-        run: |
-          docker volume rm --force depbee-ci-home > /dev/null  # the checks below start it empty
-          python3 -I - <<'PY'
-          import http.client
-          import json
-          import os
-          import re
-          import subprocess
-          import time
-          from pathlib import Path
-          from urllib.parse import urlencode
-
-          MODEL = json.loads(Path("src/depbee/assets/model/manifest.json").read_bytes())["model_id"]
-
-          def docker(*arguments, check=True):
-              done = subprocess.run(["docker", *arguments], check=check, capture_output=True, text=True)
-              return done.stdout
-
-          def started(name):
-              """A container started as docs/docker.md says: (the path of its address, its
-              session). The address line is never echoed: it is a secret."""
-              project = f"type=bind,source={os.environ['GIT_PROJECT']},target=/projects/example,readonly"
-              docker("run", "--rm", "-d", "--name", name, "-p", "127.0.0.1:5757:5757",
-                     "--mount", project, "--mount", "type=volume,source=depbee-ci-home,target=/home/depbee",
-                     "depbee:ci", "dashboard")
-              for _ in range(120):
-                  for line in docker("logs", name).splitlines():
-                      if line.startswith("http://"):
-                          address = re.fullmatch(r"http://127\.0\.0\.1:5757(/s/([A-Za-z0-9_-]{43}))/", line)
-                          assert address, "not this host's 127.0.0.1 at the published port with a session"
-                          return address[1], address[2]
-                  time.sleep(0.5)
-              raise SystemExit("The dashboard printed no address")
-
-          def call(method, url, host="127.0.0.1:5757", header="location", **form):
-              """(status, the header named, body) of one request to the published port. The
-              time limit is that of one change's analysis: a scan answers when it is done."""
-              body = urlencode({"session": session, **form}) if method == "POST" else None
-              headers = {"Host": host}
-              if body:
-                  headers |= {"Origin": "http://127.0.0.1:5757",
-                              "Content-Type": "application/x-www-form-urlencoded"}
-              connection = http.client.HTTPConnection("127.0.0.1", 5757, timeout=330)
-              connection.request(method, url, body, headers)
-              response = connection.getresponse()
-              return response.status, response.getheader(header), response.read().decode()
-
-          def script(page):
-              """The script file a page names, read as a browser reads it: from under the
-              session, as a script, and the checked-out file byte for byte. An image built
-              without that file still answers every page. Only this address fails there, and
-              with it all the script does."""
-              (source,) = re.findall(r'<script\b[^>]*\ssrc="([^"]*)"', page)
-              name = re.fullmatch(re.escape(base) + r"/static/([^/]+)", source)
-              # This session's own file and no script of the page's own beside it. The session
-              # is a secret, so a failure shows the address without it.
-              assert name and page.count("<script") == 1, source.removeprefix(base)
-              status, kind, body = call("GET", source, header="content-type")
-              assert (status, kind) == (200, "text/javascript; charset=utf-8"), (status, kind)
-              file = Path("src/depbee/dashboard/static", name[1]).read_bytes()
-              assert file and body.encode() == file, f"{name[1]} is not the checked-out file"
-
-          def links():
-              """The project links on the session's first page, which lists what is registered."""
-              status, _, page = call("GET", base + "/")
-              assert status == 200, status
-              return set(re.findall(rf'href="({re.escape(base)}/projects/\d+)"', page))
-
-          def usable(link):
-              """The project behind its link: its page lists the lockfile's package, and a scan
-              of it compares HEAD's lockfile under /projects with the working one. The image's
-              analyzer checks that update with the registry. The page of the run it is recorded
-              as must show one result, scored and not flagged, for that version and the
-              image's model. A scan that the registry or the analyzer did not finish answers
-              with the same redirect and a page that names the same package and model, but its
-              result is held: another class and no score. Returns the run's path."""
-              status, _, page = call("GET", link)
-              assert status == 200 and "lodash" in page, status
-              status, run, _ = call("POST", link + "/scans")
-              assert status == 303 and re.fullmatch(re.escape(base) + r"/runs/\d+", run), status
-              status, _, page = call("GET", run)
-              assert status == 200, status
-              results = re.findall(r'<section class="result ([^"]*)"', page)
-              assert results == ["not_flagged"], results
-              assert page.count('<div class="scored">') == 1
-              # The card's title: the package, then the version it moves to.
-              for shown in ('<span class="ident">lodash</span>', " 4.17.21</span></h3>", MODEL):
-                  assert shown in page, shown
-              return run.removeprefix(base)
-
-          def register(first):
-              """Register the example and return its project link, read from the first page.
-              first: nothing was registered before, as on a new volume. That first project of
-              all must land on the overview, the first page, which lists it. Registering a
-              folder that is a project already must land on that project itself."""
-              status, landed, _ = call("POST", base + "/projects", path="/projects/example")
-              (link,) = links()
-              assert (status, landed) == (303, base + "/" if first else link), (status, landed)
-              return link
-
-          try:
-              base, session = started("depbee-dashboard")
-              status, _, page = call("GET", base + "/")
-              assert status == 200 and f'action="{base}/projects/pick"' in page, status
-              script(page)  # the page before the first project, a document of its own
-              assert links() == set()  # a new volume knows no project
-              assert call("GET", base + "/", host="localhost:5757")[0] == 400
-              assert call("GET", "/s/" + "A" * 43 + "/")[0] == 403
-              # The folder button leads to the mounted folders, which offer the example alone.
-              assert call("POST", base + "/projects/pick")[:2] == (303, base + "/projects/mounted")
-              status, _, page = call("GET", base + "/projects/mounted")
-              assert status == 200, status
-              assert re.findall(r'name="path" value="([^"]*)"', page) == ["/projects/example"], page
-              assert call("GET", base + "/projects/mounted?at=..")[0] == 404
-              for outside in ("/project", "/etc", "/home/depbee", "/projects/../etc"):
-                  assert call("POST", base + "/projects", path=outside)[0] == 400, outside
-              # The first project of the new volume lands on the overview, whose link opens it.
-              run = usable(register(first=True))
-              script(call("GET", base + "/")[2])  # the console around every other page
-              print("The dashboard answered on 127.0.0.1:5757, registered /projects/example alone"
-                    " and scanned its update")
-
-              # --rm: the first container goes with all it wrote outside the volume, and the
-              # next one has only the volume to know the project and its run from.
-              docker("stop", "depbee-dashboard")
-              first = base
-              base, session = started("depbee-dashboard-again")
-              assert base != first  # each container prints an address of its own
-              (link,) = links()
-              status, _, page = call("GET", base + run)  # the first container's run
-              assert status == 200 and '<span class="ident">lodash</span>' in page, status
-              assert " 4.17.21</span></h3>" in page
-              again = usable(link)
-              # The same folder is still that project: registering it again adds no second one.
-              assert register(first=False) == link
-              print("A new container read the registered project and its run from the home volume")
-              Path("docker-dashboard-runs.txt").write_text(
-                  " ".join(path.rsplit("/", 1)[1] for path in (run, again)))
-          finally:
-              docker("rm", "--force", "depbee-dashboard", "depbee-dashboard-again", check=False)
-          PY
-          # The two runs as the home volume keeps them, read with the image's own history
-          # module: each recorded report must pass the check that the CLI's report passes.
-          for run in $(cat docker-dashboard-runs.txt); do
-            docker run --rm --network none --read-only \
-              --mount type=volume,source=depbee-ci-home,target=/home/depbee \
-              --entrypoint python depbee:ci -I -c \
-              'import json, sys; from depbee import history; print(json.dumps(history.get_run(int(sys.argv[1]))["report"]))' \
-              "$run" > "docker-dashboard-run-$run.json"
-            python3 -I .github/scripts/check_lodash_report.py "docker-dashboard-run-$run.json" "$ANALYZER_FILES"
-          done
-      # The npm the image ships for the update check, run as depbee runs it (inputs.npm_cli):
-      # node with the npm-cli.js copied next to it, and no npm command on PATH. A scratch project
-      # without dependencies needs no registry, so this runs offline.
-      - name: Run the bundled npm offline, as an update check does
-        shell: bash
-        run: |
-          docker run --rm -i --network none --read-only --tmpfs /tmp \
-            --entrypoint python depbee:ci -I - <<'PY'
-          import json
-          import shutil
-          import subprocess
-          import tempfile
-          from pathlib import Path
-
-          from depbee.inputs import npm_cli
-
-          assert shutil.which("npm") is None and shutil.which("npx") is None
-          node = subprocess.run(["node", "--version"], capture_output=True, text=True, check=True)
-          work = Path(tempfile.mkdtemp()) / "project"
-          work.mkdir()
-          root = {"name": "synthetic-example-only", "version": "1.0.0"}
-          (work / "package.json").write_text(json.dumps(root))
-          lock = {**root, "lockfileVersion": 3, "packages": {"": root}}
-          (work / "package-lock.json").write_text(json.dumps(lock))
-          npm = npm_cli.update_lock(work, [])  # npm --version, then the lock-only update
-          written = json.loads((work / "package-lock.json").read_bytes())
-          print(node.stdout.strip(), npm, written)
-          # The versions docs/docker.md names, and a lockfile that npm itself wrote.
-          assert (node.stdout.strip(), npm) == ("v24.11.0", "11.6.1")
-          assert written == {**lock, "requires": True}
-          PY
-      # The update check itself, on the example whose package.json asks for lodash 4.17.21 while
-      # its lockfile holds 4.17.20: that npm writes the new lockfile in a copy (always with
-      # --ignore-scripts, nothing is installed) and the analyzer checks the change. The project is
-      # mounted read-only and nothing is applied.
-      - name: Preview a real update with the bundled npm and check it
-        shell: bash
-        run: |
-          status=0
-          docker run --rm \
-            --mount "type=bind,source=$PWD/examples/lodash-update,target=/project,readonly" \
-            depbee:ci update --project /project --format json > docker-update.json || status=$?
-          cat docker-update.json
-          test "$status" -eq 0
-          python3 -I - <<'PY'
+          project="$(mktemp -d "$RUNNER_TEMP/preview.XXXXXX")"
+          cp examples/lodash-update/package.json "$project/"
+          git show HEAD:examples/lodash-update/package-lock.json > "$project/package-lock.json"
+          python -I -m depbee update --project "$project" --format json > "$project/preview.json"
+          python -I .github/scripts/check_lodash_report.py "$project/preview.json" "$files"
+          python -I - "$project/preview.json" <<'PY'
           import hashlib
           import json
+          import sys
           from pathlib import Path
-          preview = json.loads(Path("docker-update.json").read_bytes())["preview"]
+          preview = json.loads(Path(sys.argv[1]).read_bytes())["preview"]
           assert (preview["npm_version"], preview["changed_count"]) == ("11.6.1", 1), preview
           assert preview["package_json_changed"] is False
-          # The lockfile npm wrote is the checked-in one that the other steps scan.
           updated = Path("examples/lodash-updated/package-lock.json").read_bytes()
           assert preview["new_package_lock_sha256"] == hashlib.sha256(updated).hexdigest()
           PY
-          python3 -I .github/scripts/check_lodash_report.py docker-update.json "$ANALYZER_FILES"
-      # The core target stays a build of its own: depbee without the analyzer, which fetches no
-      # Git repository. It checks what needs no analyzer and says what to install for the rest.
-      - name: Build the core target and run it offline without the analyzer
-        shell: bash
-        run: |
-          docker build --target core -t depbee:ci-core .
-          user="$(docker image inspect --format '{{.Config.User}}' depbee:ci-core)"
-          case "${user%%:*}" in '' | 0 | root) echo "depbee:ci-core runs as root"; exit 1 ;; esac
-          run() { docker run --rm --network none --read-only --tmpfs /tmp "$@"; }
-          fails() { if "$@"; then echo "Expected a failure: $*"; exit 1; fi; }
-          fails run --entrypoint python depbee:ci-core -I -c 'import depbee_analyzer'
-          status=0
-          run --mount "type=bind,source=$PWD/examples/project,target=/project,readonly" \
-            --mount "type=bind,source=$PWD/examples/baseline,target=/baseline,readonly" \
-            depbee:ci-core scan /project --base-lock /baseline/package-lock.json --format json \
-            > core-report.json || status=$?
-          test "$status" -eq 2  # held, as in the default image without --extract
-          cmp core-report.json docker-report.json  # and the same report, byte for byte
-          status=0
-          run depbee:ci-core check lodash@4.17.21 2> core-check.json || status=$?
-          cat core-check.json
-          test "$status" -eq 2
-          # What it tells the user to do must work for this image, which has no pip and no
-          # source tree to install the analyzer from: build the default image.
-          grep -qF 'docker build -t depbee:local .' core-check.json
-          fails grep -qF 'pip install' core-check.json

@@ -2,8 +2,6 @@
 
 설치본에 든 기본 자산과 사용자 지정, 명령별 옵션, 업데이트 반영 조건과 백업·복구, 이력 보관 방식, MCP 설정을 설명합니다. 처음 실행하는 명령은 [빠른 시작](../README.md), 네 진입점을 순서대로 실행하는 예시는 [진입점별 시연](demo.md)에 있습니다.
 
-Docker 이미지로 CLI 검사, MCP, 대시보드를 실행하는 방법은 [Docker로 실행하기](docker.md)에 있습니다.
-
 분석기는 Python 배포와 실행 명령에서 `depbee-analyzer`, import에서 `depbee_analyzer`를 사용합니다. 이전 배포명은 `feature-extractor`, import는 `feature_extractor`였습니다. 새 환경에서는 depbee의 `[extract]` 옵션이 지정한 커밋을 설치합니다. 저장된 결과와 이력에서 분석기의 출처를 읽을 때는 기존 JSON 키 `provenance.feature_extractor`를 사용합니다.
 
 ## 기본 자산
@@ -235,7 +233,7 @@ depbee는 [대시보드](#로컬-대시보드-depbee-dashboard)에 등록한 프
 - 위치: 환경 변수 `DEPBEE_HISTORY_DB`(파일 경로, 실행할 때마다 읽고 빈 값은 없는 것으로 봄)가 있으면 그 파일, 없으면 `~/.local/share/depbee/history.sqlite3`입니다(Windows도 홈 폴더 기준). 대상 프로젝트의 파일로는 위치를 바꿀 수 없습니다. `DEPBEE_HISTORY_DB` 없이 홈 폴더를 정하지 못하면 `scan`·`update`는 기록만 건너뛰고(출력 없음), 등록·조회 API는 오류(`RuntimeError`)를 냅니다.
 - 이 파일은 SQLite 헤더의 application_id로 depbee 이력임을 표시합니다. 그 표시가 없는 파일(다른 프로그램의 SQLite 파일 등)에는 쓰지 않습니다.
 - 이력 형식 버전은 3입니다. 버전 2는 반영 기록 표를, 버전 3은 업데이트 미리보기마다 그 미리보기를 만든 `package.json`·`package-lock.json`의 SHA-256과 대상 이름을 담는 표와 색인을 더했습니다. 이전 depbee가 만든 버전 1·2 파일은 그대로 읽고, 처음 쓸 때 같은 트랜잭션에서 버전 3으로 올리며 이미 기록된 미리보기도 새 표에 채웁니다(기록 5,000건 파일에서 0.1초 안팎). 올리기 전에도 대시보드의 후보는 똑같이 보이지만, 저장된 미리보기를 하나씩 읽어 찾으므로 기록이 많으면 화면이 느리게 열립니다. 올린 뒤에는 이전 depbee가 이 파일을 "더 새 depbee가 만든 파일"로 보고 쓰지 않으며(기록 실패 문구), 이전 depbee의 대시보드도 이 파일을 읽지 못합니다.
-- 프로젝트는 절대 경로로 구분합니다(Windows에서는 대소문자 무시). 폴더를 옮기면 다른 프로젝트이고, 폴더가 사라져도 기록은 지우지 않습니다. Docker 이미지에서는 그 경로가 컨테이너 경로(`/projects/<별칭>`)입니다. 호스트의 어느 폴더를 연결했는지는 구분하지 않으므로 프로젝트마다 다른 별칭을 씁니다. [프로젝트 별칭과 이력](docker.md#프로젝트-별칭과-이력)
+- 프로젝트는 절대 경로로 구분합니다(Windows에서는 대소문자 무시). 폴더를 옮기면 다른 프로젝트이고, 폴더가 사라져도 기록은 지우지 않습니다.
 - 내용: 이력에는 검사한 패키지의 이름·버전과 근거 문자열(예: 추가된 설치 스크립트 명령의 앞부분)이 그대로 들어갑니다. 악성 사례를 검사한 기록에는 그 문자열이 남으므로, 다른 사람이 쓸 수 있는 폴더나 동기화 폴더에 두지 않습니다. 이 파일의 내용은 표시용 기록이며 다른 검사나 반영의 입력으로 쓰지 않습니다.
 - 지우기: 자동으로 지우지 않습니다. 이력을 없애려면 그 파일을 지웁니다(쓰는 동안에만 옆에 `-journal` 파일이 생깁니다).
 
@@ -282,13 +280,12 @@ depbee dashboard --background          # 백그라운드로 실행 (아래 백�
 - 반영: 확인이 필요한데 확인란이 없거나, `.npmrc`가 있었는데 설치까지를 고르면 아무것도 실행하지 않고 미리보기를 그대로 둔 채 안내와 함께 미리보기 화면을 다시 보입니다. 그 밖에는 미리보기를 메모리에서 먼저 꺼내 지운 뒤 `depbee update --apply`와 같은 반영(`service.apply_preview`)을 등록 경로에 실행합니다: 원본·새 lockfile 해시 재확인, 원본 백업, 파일 교체, 설치까지면 `npm ci --ignore-scripts`. 그래서 한 미리보기로는 반영을 한 번만 시도하고, 새로고침이나 폼 재전송은 "미리보기가 없음"으로 거부됩니다. 거부·실패여도 같은 미리보기로 다시 시도할 수 없고 업데이트 확인을 다시 해야 합니다.
 - 결과 화면: 결과(반영함, 바뀐 항목 없음, 반영하지 않음, 실패), 방식, 이유, 오류, 확인한 항목, 바꾼 파일과 SHA-256, 백업 위치, npm 버전과 `npm ci` 종료 코드, 안내(설치 스크립트 미실행, 되돌리는 방법)입니다. 미리보기 실행이 이력에 있으면 그 실행에 반영 기록을 더합니다. 반영 기록을 남기지 못해도 결과와 백업 위치는 그대로 보이고 기록하지 못했다는 한 줄을 더합니다.
 - 백업·되돌리기: `depbee update --apply`와 같습니다. 바꾸기 전에 원본 두 파일을 이력 파일 옆 `backups/`에 백업하고, 자동으로 되돌리지 않습니다. 되돌리려면 백업 폴더의 두 파일을 프로젝트에 복사하고, 설치한 `node_modules`도 되돌리려면 그 뒤 `npm ci --ignore-scripts`를 실행합니다.
-- 한 번에 한 작업: 검사만, 업데이트 확인, 반영은 대시보드 프로세스에서 한 번에 하나만 실행합니다(요청 안에서 끝날 때까지 기다림). 누른 버튼은 실행 중임을 글자로 알리고("후보 확인 중…", "검사 중…", "반영 중…", 폴더 선택은 "폴더 선택 창을 확인하세요…", Docker 컨테이너에서는 "연결한 폴더 목록을 여는 중…") 그동안 그 화면의 실행 버튼은 요청을 다시 보내지 않습니다. 스크립트를 끈 브라우저나 다른 탭에서 실행 중에 또 보내면 409와 고정 문구로 거부합니다(프로젝트 탭이 있는 화면이라 먼저 보낸 작업의 결과를 보러 갈 수 있습니다). 조회 화면은 그동안에도 열립니다. CLI와 대시보드가 같은 프로젝트를 동시에 반영하는 것은 막지 않습니다(반영 직전의 해시 재확인이 미리보기 뒤 바뀐 파일을 거부합니다).
+- 한 번에 한 작업: 검사만, 업데이트 확인, 반영은 대시보드 프로세스에서 한 번에 하나만 실행합니다(요청 안에서 끝날 때까지 기다림). 누른 버튼은 실행 중임을 글자로 알리고("후보 확인 중…", "검사 중…", "반영 중…", 폴더 선택은 "폴더 선택 창을 확인하세요…") 그동안 그 화면의 실행 버튼은 요청을 다시 보내지 않습니다. 스크립트를 끈 브라우저나 다른 탭에서 실행 중에 또 보내면 409와 고정 문구로 거부합니다(프로젝트 탭이 있는 화면이라 먼저 보낸 작업의 결과를 보러 갈 수 있습니다). 조회 화면은 그동안에도 열립니다. CLI와 대시보드가 같은 프로젝트를 동시에 반영하는 것은 막지 않습니다(반영 직전의 해시 재확인이 미리보기 뒤 바뀐 파일을 거부합니다).
 - 미리보기 보관: 미리보기 결과(새 `package.json`·lockfile 바이트 포함)는 대시보드 프로세스 메모리에만 있고 파일이나 이력에 쓰지 않습니다. 최근 10개까지 두고 넘으면 가장 오래된 것부터 지우며, 대시보드를 끄거나 다시 시작하면 모두 사라집니다.
 
 보안 동작:
 
 - `127.0.0.1`에만 바인딩하고 다른 주소로 여는 옵션은 없습니다. 모든 요청의 Host 헤더가 `127.0.0.1:<포트>`와 정확히 같아야 합니다(DNS rebinding 방지, 다르면 400).
-- Docker 이미지의 대시보드는 컨테이너의 인터페이스에 바인딩하고, 호스트의 `127.0.0.1`에 같은 번호로 게시한 포트로 엽니다. 이미지에 설정된 환경 변수 `DEPBEE_CONTAINER_PROJECTS`가 이 동작을 켜고, 등록할 수 있는 폴더를 그 값(`/projects`) 아래로 제한합니다. Host, 세션, Origin 검사는 같습니다. 컨테이너의 대시보드는 그 폴더 안에 실제로 있는 폴더와 파일만 읽고 링크를 따라가지 않으며, 검사만은 그 안의 일반 `.git` 폴더에서만 Git 이력을 읽습니다. [Docker의 대시보드](docker.md#대시보드)
 - 세션: 실행할 때마다 무작위 세션 값을 만들어 시작 주소에 넣습니다. 모든 화면·폼·CSS는 `/s/<세션>/` 아래에 있고, 이 접두사가 없거나 세션이 다르면 조회를 포함한 모든 요청을 고정 문구 403으로 거부합니다. 같은 PC의 다른 프로세스·계정도 `127.0.0.1`에 접속할 수 있기 때문입니다. 쿠키는 쓰지 않습니다(응답에 `Set-Cookie`가 없고 요청의 `Cookie`는 무시). 로그인 단계도 없습니다. 쿠키를 없애면 로그인 단계가 세션을 넘길 곳이 주소뿐이라 따로 두어도 보호가 늘지 않습니다.
 - 알려진 한계(받아들인 위험): 세션 값이 주소에 있으므로 브라우저 주소창과 방문 기록에 남고, 시작 줄이나 그 주소를 볼 수 있는 사람은 대시보드가 도는 동안 화면을 보고 검사, 업데이트 확인·반영을 할 수 있습니다. 주소를 다른 사람에게 보이지 않게 하고, 쓰지 않을 때는 대시보드를 끕니다. 대시보드를 끄면 그 주소는 무효가 됩니다(다음 실행은 새 세션). 예전 쿠키 방식의 한계(같은 브라우저로 연 127.0.0.1의 다른 포트 서버가 세션 쿠키를 받음)는 쿠키를 없애 사라졌습니다.
 - 상태를 바꾸는 요청은 POST만 받습니다(프로젝트 등록, 검사만, 업데이트 확인, 반영, 화면 테마 저장). GET은 npm을 실행하거나 상태를 바꾸지 않습니다. POST는 `Origin: http://127.0.0.1:<포트>`이고 폼의 숨은 세션 값이 맞아야 하며, 브라우저가 `Sec-Fetch-Site`를 보냈으면 `same-origin`이나 `none`이어야 합니다(하나라도 아니면 403). 본문은 16 KiB, 폼 필드는 4개, 경로·대상 이름 칸은 각각 1024자까지 받습니다.
@@ -451,7 +448,6 @@ src/depbee/
   history.py              # 로컬 이력 저장소(SQLite): 프로젝트 등록, 보고서 기록·조회
   dashboard/              # 로컬 대시보드(depbee dashboard): app.py, templates/, static/
   dashboard/lifecycle.py  # 백그라운드 대시보드의 시작·상태·종료(잠금, 상태 파일, 제어 요청)
-  dashboard/mounted.py    # 컨테이너의 대시보드: 연결한 폴더 목록과 등록 범위(DEPBEE_CONTAINER_PROJECTS)
 scripts/write_manifest.py # 모델 파일로 manifest.json 생성
 scripts/build_known_malicious_index.py # OSV npm all.zip으로 기지 악성 색인 폴더 생성
 tests/                    # 합성 자료를 이용한 회귀·모델 연동 테스트
@@ -460,8 +456,7 @@ docs/                     # 구조·연결 규약·CI 설계·개발 순서
 models/                   # 직접 준비한 모델·색인을 두는 폴더(선택), Git 제외
 data/                     # 실제 샘플, Git 제외
 artifacts/                # 요청·분석·결과 JSON, Git 제외
-Dockerfile                # 로컬 이미지 빌드(기본: 분석기 포함, core: 분석기 제외)
-.github/workflows/ci.yml  # 이 도구 자체의 검사·테스트·패키징, Action과 이미지의 실제 검사
+.github/workflows/ci.yml  # 이 도구 자체의 검사·테스트·패키징, Action의 실제 검사
 .github/scripts/          # CI가 실제 검사의 보고서를 확인하는 스크립트
 ```
 
@@ -481,7 +476,7 @@ ML 추론(LightGBM)은 기본 설치에 들어 있고 `ml`은 이전 명령과�
 
 Windows에서는 PowerShell 형식(`& '<Python 경로>' -m pip install '<분석기>'`)으로, macOS/Linux에서는 셸 형식(`<Python 경로> -m pip install '<분석기>'`, 경로는 필요할 때 작은따옴표로 감쌈)으로 나옵니다. Windows에서 Python 경로에 `[`, `]`, 백틱이 있으면 PowerShell의 명령 찾기(`&`, `Get-Command`, `Start-Process`)가 그 경로를 와일드카드로 읽어 다른 Python을 실행할 수 있으므로, 경로를 그대로 Windows의 프로세스 실행 API(`System.Diagnostics.ProcessStartInfo`)에 넘기는 더 긴 PowerShell 명령으로 나옵니다. 이 명령도 pip을 명령을 입력한 폴더에서 실행하므로 소스 checkout의 `.[extract]`가 그대로 동작합니다. 그 파일이 없거나 pip이 실패하면 그 줄이 오류로 끝나며, PowerShell 창과 현재 위치, 변수, `$ErrorActionPreference`는 그대로입니다. 어느 형식이든 아래처럼 오류 JSON을 디코딩해 나온 명령 전체를 복사해 실행하고, 이 문서의 형식을 보고 직접 다시 쓰지 않습니다.
 
-오류는 stderr의 JSON 한 줄(`{"status": "error", "exit_code": 2, "error": "..."}`)이고, 명령은 `error` 값 안에서 Windows는 `in PowerShell:` 뒤, macOS/Linux는 콜론 뒤부터 맨 끝 괄호(import 오류) 앞까지입니다. 이 줄은 역슬래시, 큰따옴표, 비ASCII 문자와 제어 문자를 이스케이프한 JSON이므로 줄에 보이는 글자를 복사하지 말고 디코딩한 `error` 값에서 명령을 복사합니다. 디코딩할 때는 오류를 낸 것과 같은 depbee 실행 파일로 같은 명령을 다시 실행합니다. 가상환경을 활성화하지 않고 그 안의 depbee를 직접 실행했다면 PATH의 `depbee`는 다른 환경의 것이거나 없을 수 있으므로 그 경로를 그대로 씁니다. 예를 들어 PowerShell에서는 `(.\.venv\Scripts\depbee.exe check ms@2.1.3 2>&1 | ConvertFrom-Json).error`, macOS/Linux에서는 `.venv/bin/depbee check ms@2.1.3 2>&1 >/dev/null | .venv/bin/python -c 'import json, sys; print(json.load(sys.stdin)["error"])'`입니다. PowerShell에서 `[`나 `]`가 든 폴더로 이동할 때는 그냥 `cd`가 이름을 와일드카드로 읽어 다른 폴더로 갈 수 있으므로 `cd -LiteralPath '<폴더>'`를 씁니다. 디코딩한 명령에서 경로의 작은따옴표가 PowerShell에서는 `''`, `’’`처럼 두 번씩, macOS/Linux에서는 `'"'"'`로 적혀 있는 것은 셸이 원래 글자 하나로 읽는 표기이므로 고치지 않고 그대로 실행합니다. 분석기를 뺀 Docker 이미지(`core`)에서는 같은 오류가 [기본 이미지를 빌드](docker.md#이미지-빌드)하라고 안내합니다.
+오류는 stderr의 JSON 한 줄(`{"status": "error", "exit_code": 2, "error": "..."}`)이고, 명령은 `error` 값 안에서 Windows는 `in PowerShell:` 뒤, macOS/Linux는 콜론 뒤부터 맨 끝 괄호(import 오류) 앞까지입니다. 이 줄은 역슬래시, 큰따옴표, 비ASCII 문자와 제어 문자를 이스케이프한 JSON이므로 줄에 보이는 글자를 복사하지 말고 디코딩한 `error` 값에서 명령을 복사합니다. 디코딩할 때는 오류를 낸 것과 같은 depbee 실행 파일로 같은 명령을 다시 실행합니다. 가상환경을 활성화하지 않고 그 안의 depbee를 직접 실행했다면 PATH의 `depbee`는 다른 환경의 것이거나 없을 수 있으므로 그 경로를 그대로 씁니다. 예를 들어 PowerShell에서는 `(.\.venv\Scripts\depbee.exe check ms@2.1.3 2>&1 | ConvertFrom-Json).error`, macOS/Linux에서는 `.venv/bin/depbee check ms@2.1.3 2>&1 >/dev/null | .venv/bin/python -c 'import json, sys; print(json.load(sys.stdin)["error"])'`입니다. PowerShell에서 `[`나 `]`가 든 폴더로 이동할 때는 그냥 `cd`가 이름을 와일드카드로 읽어 다른 폴더로 갈 수 있으므로 `cd -LiteralPath '<폴더>'`를 씁니다. 디코딩한 명령에서 경로의 작은따옴표가 PowerShell에서는 `''`, `’’`처럼 두 번씩, macOS/Linux에서는 `'"'"'`로 적혀 있는 것은 셸이 원래 글자 하나로 읽는 표기이므로 고치지 않고 그대로 실행합니다.
 
 ### Git 주소로 설치
 
@@ -512,7 +507,7 @@ python -m pip install "./depbee-0.2.1-py3-none-any.whl[extract,mcp,web]"  # ML �
 
 같은 버전 번호의 시험 wheel을 교체할 때는 새 가상환경을 사용하거나 `python -m pip install --force-reinstall`에 사용할 wheel 경로와 extra를 지정합니다.
 
-PowerShell에서 가상환경 활성화가 제한되면 활성화하지 않고 `.\.venv\Scripts\python.exe -m pip install ".[extract,mcp,web]"`과 `.\.venv\Scripts\depbee.exe --help`를 직접 실행할 수 있습니다. 가상환경 활성화 없이 계속 사용하려면 Python 3.11 이상의 `pipx` 환경에서 `pipx install ".[extract,mcp,web]"`로 설치합니다. `pipx ensurepath`를 한 번 실행하고 새 터미널에서 `depbee --help`를 확인합니다. Windows의 `depbee.exe`와 macOS/Linux의 `depbee`는 Python 환경의 실행 명령입니다. depbee는 공개 저장소의 소스로만 배포합니다. PyPI 패키지, GitHub Release, Python 없이 실행하는 독립 바이너리는 제공하지 않습니다. Python을 설치하지 않고 쓰려면 소스에서 [Docker 이미지](docker.md#이미지-빌드)를 빌드합니다.
+PowerShell에서 가상환경 활성화가 제한되면 활성화하지 않고 `.\.venv\Scripts\python.exe -m pip install ".[extract,mcp,web]"`과 `.\.venv\Scripts\depbee.exe --help`를 직접 실행할 수 있습니다. 가상환경 활성화 없이 계속 사용하려면 Python 3.11 이상의 `pipx` 환경에서 `pipx install ".[extract,mcp,web]"`로 설치합니다. `pipx ensurepath`를 한 번 실행하고 새 터미널에서 `depbee --help`를 확인합니다. Windows의 `depbee.exe`와 macOS/Linux의 `depbee`는 Python 환경의 실행 명령입니다. depbee는 공개 저장소의 소스로만 배포합니다. PyPI 패키지, GitHub Release, Python 없이 실행하는 독립 바이너리는 제공하지 않습니다.
 
 ## 검증
 

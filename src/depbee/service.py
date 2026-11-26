@@ -75,16 +75,13 @@ def list_dependencies(project: Path, *, declared: bool = False) -> list[dict]:
 
 
 def plan_project(
-    project: Path, base_lock: Path | None = None, *, base_ref: str | None = None,
-    git_dir: Path | None = None,
-) -> dict:  # fmt: skip
+    project: Path, base_lock: Path | None = None, *, base_ref: str | None = None
+) -> dict:
     """Changed version pairs between the base lockfile and project/package-lock.json.
 
-    The base is base_lock, else project/package-lock.json in Git base_ref (default HEAD), read
-    from the repository Git finds for project or, given git_dir, from that Git folder alone
-    (inputs.git.read_base_lock).
+    The base is base_lock, else project/package-lock.json in Git base_ref (default HEAD).
     """
-    return build_request(project, base_lock, base_ref=base_ref, git_dir=git_dir)
+    return build_request(project, base_lock, base_ref=base_ref)
 
 
 def _local_sources(
@@ -124,12 +121,11 @@ def scan_project(
     cache_dir: Path | None = None,
     no_cache: bool = False,
     known_malicious_dir: Path | None = None,
-    git_dir: Path | None = None,
     strict_sources: bool = False,
 ) -> dict:
     """Build the request, pick the analyzer and model, and return the pipeline.scan() report.
 
-    base_lock, base_ref, git_dir: the base lockfile, as in plan_project().
+    base_lock, base_ref: the base lockfile, as in plan_project().
     analysis: trusted precomputed analysis JSON. extract: run depbee-analyzer instead.
     local_sources: NAME@VERSION=DIR specs under local_root (extract only).
     model_dir: trusted model directory. If None, DEPBEE_MODEL_DIR is read on each call, and if
@@ -157,7 +153,7 @@ def scan_project(
     # Intended error priority: option conflict before reading lockfiles, local sources after.
     if analysis and extract:
         raise GuardError("Use either an analysis file or extraction, not both")
-    request = plan_project(project, base_lock, base_ref=base_ref, git_dir=git_dir)
+    request = plan_project(project, base_lock, base_ref=base_ref)
     sources = _local_sources(local_sources or [], extract, local_root)
     predictor, detectors = _assets(model_dir, known_malicious_dir)
     if not extract:

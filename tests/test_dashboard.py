@@ -591,7 +591,7 @@ class PageTests(DashboardFixture):
                  *(p for p in static.glob("*") if p.is_file())]  # fmt: skip
         self.assertEqual(sorted(p.name for p in files), [
             "app.js", "applied.html", "apply_lines.html", "base.html", "counts.html",
-            "error.html", "history.html", "inspector.html", "model.html", "mounted.html",
+            "error.html", "history.html", "inspector.html", "model.html",
             "overview.css", "overview.html", "preview.html", "project.html",
             "project_head.html", "projects.html", "report.html", "run.html", "scanned.html",
             "score_history.html", "start.html", "style.css", "trail.html", "updates.html"])  # fmt: skip
@@ -759,12 +759,14 @@ class ConsoleTests(DashboardFixture):
             self.assertEqual(body[2][1], {"method": "post", "action": f"{S}/projects/pick"})
             self.assertEqual(body[3][1], {"type": "hidden", "name": "session", "value": SESSION})
             self.assertEqual(body[4][1]["type"], "submit")
+            self.assertEqual(body[4][1]["data-busy-label"], "폴더 선택 창을 확인하세요…")
             self.assertIn(">프로젝트 추가</button>", html)
             # What else the page says is for a screen reader only: what the button opens, and
             # the line the script speaks through.
             self.assertEqual([attrs["class"] for tag, attrs in body if tag == "p"],
                              ["visually-hidden"] * 2)  # fmt: skip
             self.assertEqual(body[4][1]["aria-describedby"], body[5][1]["id"])
+            self.assertIn("npm 프로젝트 폴더를 이 PC에서 고릅니다.", html)
             for absent in ("등록한 프로젝트", "프로젝트 0개", SAFETY_NOTE.replace("'", "&#39;")):
                 self.assertNotIn(absent, html)
             self.assertIn("<title>프로젝트 추가 - depbee</title>", html)
@@ -776,6 +778,7 @@ class ConsoleTests(DashboardFixture):
         self.assertTrue(icon.text.startswith("<svg "))
         # The pages outside a project keep the console.
         model = self.page("/model")
+        self.assertIn("이 화면은 이 PC의 127.0.0.1에서만 열립니다.", model)
         self.assertIn('<a class="skip" href="#main">본문으로 건너뛰기</a>', model)
         self.assertIn('<main id="main">', model)
         self.assertNotIn('<a class="tab" ', model)

@@ -1228,15 +1228,8 @@ def _dashboard(args: argparse.Namespace) -> int:
 
         serve(args.port, **options)
         return 0
-    from .dashboard import lifecycle, mounted
+    from .dashboard import lifecycle
 
-    if mounted.root() is not None:
-        # A background process would end with the container, whose own life is the instance's.
-        raise GuardError(
-            "A container's dashboard runs in the foreground only: --background, --status and "
-            "--stop are not used there. docker run -d starts it detached, docker logs shows its "
-            "address and docker stop ends it"
-        )
     if args.background:
         state, started = lifecycle.start(args.port, **options)
         print(state["url"])

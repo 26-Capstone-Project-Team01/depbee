@@ -15,11 +15,7 @@ is the start page instead: one button that adds the first one, and nothing else.
 that first project comes back to the overview (enroll); a later one opens its own project.
 
 A project is registered by its folder's path: typed into the form, or chosen in the desktop's
-own folder dialog (.picker, a child process), which is checked as a typed one is. In a container
-(.mounted) the dialog's button opens the folders mounted into it instead, and only a folder
-among those is registered or used: each time a project is listed, checked, scanned or applied
-there, its folder, the files read and the Git folder are looked at again (_found, _refused,
-mounted.repository), and a link is never followed.
+own folder dialog (.picker, a child process), which is checked as a typed one is.
 
 The pages work without a script. The one script (static/app.js, from under the session like the
 stylesheets) only marks a button whose request is running, stops a second request meanwhile and
@@ -87,7 +83,7 @@ from ..cli import (
 from ..contracts import MAX_JSON_BYTES, GuardError, read_json
 from ..inputs.npm import MAX_NAME_LENGTH, PACKAGE_NAME
 from ..inputs.npm_cli import DEPENDENCY_FIELDS, UPDATE_NAME
-from . import mounted, picker, theme
+from . import picker, theme
 
 HOST = "127.0.0.1"
 MAX_BODY = 16 * 1024  # bytes of a request body (Starlette answers 413 above it)
@@ -205,7 +201,7 @@ THEME_FAILED_TITLE = "화면 테마를 저장하지 못했습니다"
 THEME_FAILED = "설정 폴더에 쓸 수 없어 지금 화면 테마를 그대로 둡니다."
 # The pages of the console a GET opens (under the session): where the theme form may go back to.
 PAGES = re.compile(
-    r"/(?:|model|projects/mounted|projects/[0-9]+(?:/updates|/history)?|runs/[0-9]+|previews/[A-Za-z0-9_-]+)"
+    r"/(?:|model|projects/[0-9]+(?:/updates|/history)?|runs/[0-9]+|previews/[A-Za-z0-9_-]+)"
 )
 MAX_BACK = 2048  # characters of the address the theme form goes back to, decoded
 MODEL_LIMITS = (
@@ -219,11 +215,7 @@ REGISTER_ERRORS = {
     "folder": "폴더를 찾을 수 없습니다.",
     "lockfile": "폴더에 package-lock.json 파일이 없습니다.",
     "unreadable": "경로를 확인할 수 없습니다.",
-    "outside": "컨테이너에 연결한 프로젝트 폴더 밖의 경로는 등록할 수 없습니다(링크를 거치는 경로 "
-    "포함).",
 }
-# The container's folder picker (.mounted) was asked for something it does not list.
-MOUNTED_MISSING = "컨테이너에 연결한 프로젝트 폴더 안의 폴더가 아닙니다."
 # The folder dialog gave no folder (picker.choose); both open the form for a typed path.
 PICK_ERRORS = {
     "unavailable": "폴더 선택 창을 열 수 없습니다(데스크톱 화면이 없거나 이 Python에 tkinter가 "
@@ -264,12 +256,6 @@ PREVIEW_GONE = (
 )
 PREVIEW_GONE_TITLE = "미리보기가 없습니다"
 PROJECT_MISSING = "등록한 프로젝트 폴더를 찾을 수 없습니다."
-# A container's dashboard found package.json or package-lock.json to be a link or no file
-# (_refused): nothing read it, and nothing ran.
-INPUT_REFUSED = (
-    "프로젝트의 package.json이나 package-lock.json이 링크이거나 일반 파일이 아니어서 읽지 "
-    "않았습니다. 컨테이너의 대시보드는 연결한 폴더 안에 있는 실제 파일만 읽습니다."
-)
 PREVIEW_FAILED = "업데이트 확인을 끝내지 못했습니다(파일이나 데이터를 읽거나 쓰지 못함)."
 SCAN_TITLE = "검사 오류"  # error.html's heading for a scan (default: the update one)
 SCAN_FAILED = "검사를 끝내지 못했습니다(파일이나 데이터를 읽거나 쓰지 못함)."
@@ -293,12 +279,6 @@ APPLY_NOT_RECORDED = (
     "반영 기록을 로컬 이력에 남기지 못했습니다. 위 결과와 백업 위치는 실제로 일어난 일입니다."
 )
 STARTED = "이 주소를 브라우저에서 여세요. 종료하려면 Ctrl+C를 누르세요."
-# In a container the address is the host's, where the port has to be published under its number.
-CONTAINER_STARTED = (
-    "이 주소를 호스트의 브라우저에서 여세요. 컨테이너의 {port}번 포트를 호스트의 127.0.0.1에만 "
-    "같은 번호로 게시해야 열립니다(docker run -p 127.0.0.1:{port}:{port}). 종료하려면 Ctrl+C를 "
-    "누르거나 docker stop을 실행하세요."
-)
 STOPPED = "대시보드를 종료했습니다. 위 주소는 더 이상 열리지 않습니다."
 # _apply_lines wording without the CLI option: a dashboard apply, and a stored one (CLI or here).
 DASHBOARD_REASONS = {
@@ -411,11 +391,7 @@ def build_app(
         """A page of the console. project: the registered project the page is about, shown as
         the open tab (the template gets its tab); section: the view the page belongs to
         (packages, updates, history; manage and model for the two pages outside a project).
-        Every template also gets contained: this dashboard is a container's (.mounted), where
-        a page says what choosing a folder and installing do there, not on a desktop. And the
-        theme the user chose (theme.py) with the rail's button for the next one, whose form goes
-        back to this page: only a page a GET opened has that button, as an answer to a POST has
-        no address to come back to (theme_back None)."""
+        The theme button on a GET page returns to that page. A POST has no return address."""
         tabs = _tabs(project) if tabs is None else tabs
         chosen = theme.load()
         # The way back keeps the page's query but a check's one-time return (checked): coming
@@ -424,7 +400,6 @@ def build_app(
         back = base + request.url.path + (f"?{query}" if query else "")
         html = ENV.get_template(name).render(
             safety_note=SAFETY_NOTE, base=base, session=session, tabs=tabs, section=section,
-            contained=mounted.root() is not None,
             project=next((tab for tab in tabs if tab["current"]), None), rail=_rail(tabs),
             attention=sum(tab["cell"] in RAIL_ORDER[:3] for tab in tabs),
             theme=chosen, theme_next=theme.next_of(chosen), theme_words=THEME_WORDS,
@@ -485,9 +460,8 @@ def build_app(
                     portfolio=portfolio, chart=_chart(portfolio))  # fmt: skip
 
     def enroll(request: Request, path: str, typed: bool) -> Response:
-        """Register the folder at path, however it was given (the dialog, the container's list
-        of mounted folders, a typed path); a path that fails the registration checks registers
-        nothing. The first project of all opens the overview, where it stands with nothing
+        """Register the folder selected in the dialog or entered in the form after validating
+        its path. The first project of all opens the overview, where it stands with nothing
         inspected yet: the start page's one button ends there. Every later registration opens
         its own project, as does registering a folder again."""
         problem = _registration_problem(path)
@@ -522,15 +496,10 @@ def build_app(
         A server that has been asked to end opens no dialog, and picker.choose closes the open
         one, so that the server does not wait for it. ending() is asked again after the answer,
         here in the server's own thread, where the stop request is taken too: an answer that
-        comes back after that request registers nothing either.
-
-        A container has no desktop: there the same button leads to the folders mounted into it
-        (mounted_folders), and no dialog is ever started."""
+        comes back after that request registers nothing either."""
         form = await read_form(request)
         if isinstance(form, Response):
             return form
-        if mounted.root() is not None:
-            return RedirectResponse(f"{base}/projects/mounted", 303)
         if ending():
             return _text(503, PICK_STOPPED)
         if not picking.acquire(blocking=False):
@@ -547,20 +516,6 @@ def build_app(
         if outcome != "chosen":
             return projects(request, 503, PICK_ERRORS[outcome], manual=True)
         return enroll(request, folder, False)
-
-    def mounted_folders(request: Request) -> Response:
-        """The container's folder picker: the folders below the mounted one that the at query
-        names (mounted.listing), each project among them with the form that registers its path
-        as a typed one is registered. It lists names and registers nothing; outside a container
-        there is no such page."""
-        top, given = mounted.root(), request.query_params.getlist("at")
-        if top is None or len(given) > 1:
-            return _text(404, MOUNTED_MISSING)
-        view = mounted.listing(given[0] if given else "")
-        if view is None and given not in ([], [""]):
-            return _text(404, MOUNTED_MISSING)
-        # Without a view the mounted folder itself is not there: the page says how to mount one.
-        return page(request, "mounted.html", section="manage", root=str(top), view=view)
 
     def held(found: dict, state: dict) -> list[dict]:
         """The update previews of the project that this process still holds, newest first: the
@@ -712,9 +667,6 @@ def build_app(
         if not _found(found["path"]):  # the registered path, checked as at registration
             return page(request, "error.html", 400, project=found, section="updates",
                         message=PROJECT_MISSING)  # fmt: skip
-        if _refused(found["path"], "package.json", "package-lock.json"):
-            return page(request, "error.html", 400, project=found, section="updates",
-                        message=INPUT_REFUSED)  # fmt: skip
         if not busy.acquire(blocking=False):
             return stopped(request, 409, BUSY_TITLE, BUSY, BUSY_NOTE, found)
         try:
@@ -755,9 +707,6 @@ def build_app(
         if not _found(found["path"]):  # the registered path, checked as at registration
             return page(request, "error.html", 400, project=found, section="updates",
                         message=PROJECT_MISSING, title=SCAN_TITLE)  # fmt: skip
-        if _refused(found["path"], "package-lock.json"):
-            return page(request, "error.html", 400, project=found, section="updates",
-                        message=INPUT_REFUSED, title=SCAN_TITLE)  # fmt: skip
         if not busy.acquire(blocking=False):
             return stopped(request, 409, BUSY_TITLE, BUSY, BUSY_NOTE, found)
         try:
@@ -803,10 +752,6 @@ def build_app(
         if found is None or not _found(found["path"]):
             return page(request, "error.html", 400, project=found, section="updates",
                         message=PROJECT_MISSING)  # fmt: skip
-        # Looked at again here: the files may have changed since the preview read them.
-        if _refused(found["path"], "package.json", "package-lock.json"):
-            return page(request, "error.html", 400, project=found, section="updates",
-                        message=INPUT_REFUSED)  # fmt: skip
         if not busy.acquire(blocking=False):
             return stopped(request, 409, BUSY_TITLE, BUSY, BUSY_NOTE, found)
         try:
@@ -875,7 +820,6 @@ def build_app(
             Route("/", home),
             Route("/projects", register, methods=["POST"]),
             Route("/projects/pick", pick, methods=["POST"]),
-            Route("/projects/mounted", mounted_folders),
             Route("/projects/{project_id:int}", project),
             Route("/projects/{project_id:int}/updates", updates),
             Route("/projects/{project_id:int}/history", project_history),
@@ -902,37 +846,18 @@ def build_app(
 
 
 def _found(path: str) -> bool:
-    """The registered folder still exists, looked at as at registration (no share or device).
-    In a container it is a folder of the mounted one as it is spelled (mounted.problem): a path
-    outside that folder, as an older history may hold, is not looked at."""
+    """The registered folder still exists, looked at as at registration (no share or device)."""
     try:
-        if mounted.root() is not None:
-            return mounted.problem(Path(path)) is None
         real = mcp._unlinked(mcp._local_path(path, "project"), "project")
         return real is not None and stat.S_ISDIR(real.stat().st_mode)
     except (GuardError, OSError, ValueError):
         return False
 
 
-def _refused(path: str, *names: str) -> bool:
-    """A container's dashboard must not read one of the files names of the registered folder at
-    path: it is there, but not as a regular file of the mounted folder itself (a link, or
-    something that is no file), or it cannot be looked at (mounted.problem). Asked each time
-    before a file is read or a service is given the folder, since the file may have changed
-    since it was last read. Only a file that is really missing is not refused: its reader's own
-    error says that it is missing. Always False on a desktop, which reads a file through its
-    links as before."""
-    return mounted.root() is not None and any(
-        mounted.problem(Path(path) / name, stat.S_ISREG) not in (None, "missing") for name in names
-    )
-
-
 def _registration_problem(text: str) -> str | None:
     """A REGISTER_ERRORS key, or None for an absolute local folder with a regular
     package-lock.json file. The MCP path checks: shares, device paths, reserved names and links
-    to them are refused before anything behind them is touched. In a container the folder and
-    its lockfile must be in the mounted folder as they are spelled (mounted.problem): a path
-    outside it is refused before anything of it is looked at, and a link wherever it leads."""
+    to them are refused before anything behind them is touched."""
     if len(text) > MAX_PATH:
         return "long"
     try:
@@ -942,15 +867,6 @@ def _registration_problem(text: str) -> str | None:
     if not path.is_absolute():
         return "absolute"
     try:
-        if mounted.root() is not None:
-            for target, kind, missing in ((path, stat.S_ISDIR, "folder"),
-                                          (path / "package-lock.json", stat.S_ISREG, "lockfile")):  # fmt: skip
-                problem = mounted.problem(target, kind)
-                if problem in ("outside", "link"):
-                    return "outside"
-                if problem is not None:
-                    return "unreadable" if problem == "unreadable" else missing
-            return None
         folder = mcp._unlinked(path, "path")
         if folder is None or not stat.S_ISDIR(folder.stat().st_mode):
             return "folder"
@@ -983,8 +899,8 @@ def _project(project_id: int) -> dict | None:
 def _short_path(path: str) -> str:
     """A registered path as the overview and a project's head show it: "…", its separator and
     its last three folders, or the path itself when it has no more than three below its drive
-    or root. A path is a Windows one by its drive or its UNC "\\\\", else a POSIX one (a
-    container's), where a backslash is part of a folder's name. The separator shown is the one
+    or root. A path is a Windows one by its drive or its UNC "\\\\", else a POSIX one,
+    where a backslash is part of a folder's name. The separator shown is the one
     the path is written with; the whole path is on hover (title) and on project management."""
     windows = re.match(r"[A-Za-z]:|\\\\", path) is not None
     pure = PureWindowsPath(path) if windows else PurePosixPath(path)
@@ -1148,8 +1064,6 @@ def _sha256(folder: str, name: str) -> str | None:
     """SHA-256 of the regular file name in a registered folder, reached as at registration; None
     if it is not there, cannot be read or is larger than any file depbee previews."""
     try:
-        if _refused(folder, name):
-            return None
         real = mcp._unlinked(mcp._local_path(folder, "project") / name, name)
         if real is None:
             return None
@@ -1582,8 +1496,6 @@ def _dependencies(path: str) -> tuple[list[dict], str | None]:
     if not _found(path):
         return [], "프로젝트 폴더를 찾을 수 없습니다."
     try:
-        if _refused(path, "package-lock.json"):
-            return [], "package-lock.json이 일반 파일이 아닙니다."
         lock = mcp._unlinked(folder / "package-lock.json", "package-lock.json")
         if lock is None:
             return [], "package-lock.json이 없습니다."
@@ -1604,8 +1516,6 @@ def _declared_as(row: dict) -> str | None:
 def _preview_targets(path: str) -> set[str]:
     """Peer-only entries in the lockfile cannot be targeted by npm update."""
     try:
-        if _refused(path, "package.json"):
-            return set()
         manifest = mcp._unlinked(Path(path) / "package.json", "package.json")
         if manifest is None or not stat.S_ISREG(manifest.lstat().st_mode):
             return set()
@@ -1660,12 +1570,9 @@ def _run_preview(project: Path, names: list[str], options: dict) -> tuple | str:
 def _run_scan(project: Path, options: dict) -> tuple | str:
     """(report, run id or None) of service.scan_project with extraction against Git HEAD,
     recorded as depbee scan records it without base options; or the error page's message
-    (a GuardError's own, else fixed). Runs in a worker thread. In a container Git is handed the
-    project's own Git folder (mounted.repository) and looks for no other."""
+    (a GuardError's own, else fixed). Runs in a worker thread."""
     try:
-        chosen = {} if mounted.root() is None else {"git_dir": mounted.repository(project)}
-        report = service.scan_project(project, None, base_ref=None, extract=True, **options,
-                                      **chosen)  # fmt: skip
+        report = service.scan_project(project, None, base_ref=None, extract=True, **options)
     except GuardError as exc:
         return str(exc)
     except (OSError, ValueError, RecursionError):
@@ -1913,20 +1820,12 @@ def serve(
     Either way the server is asked to end by its should_exit flag, which uvicorn's handler of
     Ctrl+C sets as the control endpoint does. It then finishes the requests it has, and the app
     is given that flag (build_app's stopping) so that an open folder dialog is not one of them
-    for long: it is closed, and its request registers nothing.
-
-    In a container (dashboard.mounted) the socket is bound on every interface of the container,
-    which is where Docker sends a published port, and port 0 means mounted.PORT: the container
-    cannot see which host port it was published under, so that must be the same number. The
-    address printed, and the only Host and Origin the app takes, stay those of 127.0.0.1 at
-    that port: the host's side of a port published to 127.0.0.1 alone."""
+    for long: it is closed, and its request registers nothing."""
     if not 0 <= port <= 65535:
         raise GuardError("--port must be between 0 and 65535")
     # Only when given, so that build_app is called as before without an index.
     known = {"known_malicious_dir": known_malicious_dir} if known_malicious_dir else {}
-    contained = mounted.root() is not None
-    bind = mounted.BIND if contained else HOST
-    sock = socket.create_server((bind, (port or mounted.PORT) if contained else port))
+    sock = socket.create_server((HOST, port))
     try:
         actual = sock.getsockname()[1]
         session = secrets.token_urlsafe(32)
@@ -1935,7 +1834,7 @@ def serve(
         if background is not None:
             app = background.control(app, lambda: setattr(server, "should_exit", True))
         config = uvicorn.Config(
-            app, host=bind, port=actual, access_log=False,
+            app, host=HOST, port=actual, access_log=False,
             server_header=False, proxy_headers=False, log_level="warning", lifespan="off",
             ws="none",
         )  # fmt: skip
@@ -1944,7 +1843,7 @@ def serve(
         url = f"http://{HOST}:{actual}/s/{session}/"
         if background is None:
             print(url, flush=True)
-            print(CONTAINER_STARTED.format(port=actual) if contained else STARTED, flush=True)
+            print(STARTED, flush=True)
         else:
             background.publish(url, actual)
         try:
