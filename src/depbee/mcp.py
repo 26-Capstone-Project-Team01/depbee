@@ -338,15 +338,16 @@ def _without_sdk(exc: ImportError) -> str:
     instead (a package the SDK needs, a broken binary) and, when Python imported another file
     as mcp, that file: `python -m depbee` puts the folder it starts in before the SDK, and a
     project can have an mcp.py of its own. A version depbee cannot place in the range gets
-    both, the command as a condition."""
+    both, the command as a condition. A command is always the end of the message, with the
+    import error before it: text after it would be pasted into the shell with it."""
     needs = f"depbee mcp needs the MCP Python SDK ({SDK_REQUIREMENT})"
     install = _with_this_python(SDK_REQUIREMENT)
     try:
         sdk = importlib.metadata.distribution("mcp")
     except importlib.metadata.PackageNotFoundError:
         return (
-            f"{needs}, which is not installed. Install it into the Python that runs depbee"
-            f"{install} ({exc})"
+            f"{needs}, which is not installed ({exc}). Install it into the Python that runs "
+            f"depbee{install}"
         )
     version = sdk.metadata.get("Version")  # None: metadata that names no version
     # shortcut: only a final release (digits and dots) is compared; a pre-release of the lower
@@ -358,8 +359,8 @@ def _without_sdk(exc: ImportError) -> str:
     )
     if placed and not low <= [int(n) for n in version.split(".")] < high:
         return (
-            f"{needs}, but mcp {version} is installed. Install a compatible version into the "
-            f"Python that runs depbee{install} ({exc})"
+            f"{needs}, but mcp {version} is installed ({exc}). Install a compatible version into "
+            f"the Python that runs depbee{install}"
         )
     fits = "so installing it is no remedy:" if placed else "and may be outside that range;"
     said = (

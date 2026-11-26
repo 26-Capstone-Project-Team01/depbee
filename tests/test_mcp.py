@@ -25,11 +25,19 @@ import threading
 import tomllib
 import types
 import unittest
+import venv
 from pathlib import Path
 from unittest import mock
 
 from test_detectors import ADVISORY, KnownList, Rules, rule
-from test_extract import INTEGRITY, READ_BACK, FakeBackend, PackagePredictor, packument
+from test_extract import (
+    FAKE_PIP,
+    INTEGRITY,
+    READ_BACK,
+    FakeBackend,
+    PackagePredictor,
+    packument,
+)
 from test_markdown import HOSTILE
 from test_workflow import Fixture
 
@@ -761,7 +769,8 @@ class ResponseTests(MCPFixture):
 class WithoutSDKTests(unittest.TestCase):
     """`depbee mcp` in a Python that cannot import the SDK: nothing on stdout, one JSON error on
     stderr and exit code 2, with an install command only where installing the SDK is the remedy.
-    The command is read back as a shell reads it and never run: nothing is downloaded or
+    The command is the whole end of the message, so that it can be pasted as displayed: it is
+    read back as a shell reads it and run only against a stand-in pip. Nothing is downloaded or
     installed."""
 
     # The Python of a virtual environment that is not activated, in a folder with a space and a
@@ -804,15 +813,47 @@ class WithoutSDKTests(unittest.TestCase):
         self.assertEqual((error["status"], error["exit_code"]), ("error", 2))
         return error["error"]
 
-    def run_mcp(self, site=None):
-        """The error of `depbee mcp` in a Python named PYTHON whose SDK is the stand-in of this
-        site folder, or that has none."""
+    def displayed(self, error, system=os.name):
+        """The command as the error displays it: all that follows the last lead-in of that
+        system's form, to the very end. Nothing after it is dropped, so text that came after
+        the command would be typed with it."""
+        return error.rpartition(", in PowerShell: " if system == "nt" else ": ")[2]
+
+    def stand_in(self):
+        """The Python of a new virtual environment in a folder with a space and a quote. Its pip
+        installs nothing: it prints the Python that ran it and its arguments (FAKE_PIP)."""
+        home = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve() / "my env o'brien"
+        venv.create(home, with_pip=False)
+        (site,) = [*home.glob("Lib/site-packages"), *home.glob("lib/python*/site-packages")]
+        (site / "pip").mkdir()
+        (site / "pip" / "__main__.py").write_text(FAKE_PIP, "utf-8")
+        return home / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+    def typed(self, shell, line):
+        """(the Python, its pip arguments) that the stand-in pip reports when line is all that
+        is typed in shell; the line must succeed."""
+        if os.name == "nt":
+            typed = [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                     base64.b64encode(line.encode("utf-16-le")).decode()]  # fmt: skip
+        else:
+            typed = [shell, "-c", line]
+        # Without PowerShell 7's module path a Windows PowerShell child loads its own modules.
+        env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+        done = subprocess.run(typed, env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                              text=True, errors="replace", timeout=120)  # fmt: skip
+        self.assertEqual(done.returncode, 0, (line, done.stderr))
+        (ran,) = (json.loads(said[4:]) for said in done.stdout.splitlines() if said[:4] == "PIP ")
+        return os.path.normcase(ran[0]), ran[1]
+
+    def run_mcp(self, site=None, python=None):
+        """The error of `depbee mcp` in a Python named python (PYTHON) whose SDK is the stand-in
+        of this site folder, or that has none."""
         out, err = io.StringIO(), io.StringIO()
         # Every SDK module, also those other tests imported: none of them can be imported now.
         hidden = {name for name in sys.modules if name.split(".")[0] in ("mcp", "mcp_types")}
         path = sys.path if site is None else [str(site), *sys.path]
         with mock.patch.dict(sys.modules), mock.patch.object(sys, "path", path), \
-                mock.patch.object(sys, "executable", self.PYTHON), \
+                mock.patch.object(sys, "executable", python or self.PYTHON), \
                 self.no_sdk() if site is None else contextlib.nullcontext(), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):  # fmt: skip
             for name in hidden:
@@ -829,7 +870,7 @@ class WithoutSDKTests(unittest.TestCase):
         # npm project has no pyproject.toml) into whatever Python the shell's pip belonged to.
         self.assertNotIn(".[mcp]", error)
         self.assertNotIn("-e", error.split())
-        command = error.partition(": ")[2].rpartition(" (")[0]
+        command = self.displayed(error)
         if os.name == "nt":  # PowerShell: & calls a quoted path, a quote inside one doubled
             self.assertEqual(
                 command,
@@ -839,6 +880,21 @@ class WithoutSDKTests(unittest.TestCase):
             self.assertEqual(shlex.split(command),
                              [self.PYTHON, "-m", "pip", "install", mcp.SDK_REQUIREMENT])  # fmt: skip
 
+    def test_the_command_as_displayed_runs_that_python_with_the_one_requirement(self):
+        """Each instruction with a command (no SDK, one outside the range, one depbee cannot
+        place), typed whole as the error ends, in each shell here that reads this system's form.
+        An import error after the command made the shells refuse the line."""
+        names = ("powershell", "pwsh") if os.name == "nt" else ("sh", "bash", "dash", "zsh")
+        shells = [shell for shell in names if shutil.which(shell)]
+        self.assertTrue(shells)
+        python = self.stand_in()
+        for version in (None, "1.27.0", "2.3.0rc1"):
+            error = self.run_mcp(version and self.site(version), str(python))
+            for shell in shells:
+                with self.subTest(version=version, shell=shell):
+                    self.assertEqual(self.typed(shell, self.displayed(error)),
+                                     (os.path.normcase(python), ["install", mcp.SDK_REQUIREMENT]))  # fmt: skip
+
     def test_each_shell_reads_that_python_and_the_one_requirement(self):
         """The command of both forms, whatever system the tests run on: a POSIX shell's words,
         and the one call that the parser of each PowerShell here reads."""
@@ -847,7 +903,7 @@ class WithoutSDKTests(unittest.TestCase):
         for system, python in (("posix", self.POSIX), ("nt", self.WINDOWS)):
             with mock.patch.object(os, "name", system), self.no_sdk(), \
                     mock.patch.object(sys, "executable", python):  # fmt: skip
-                said[system] = mcp._without_sdk(missing).partition(": ")[2].rpartition(" (")[0]
+                said[system] = self.displayed(mcp._without_sdk(missing), system)
         self.assertEqual(shlex.split(said["posix"]),
                          [self.POSIX, "-m", "pip", "install", mcp.SDK_REQUIREMENT])  # fmt: skip
         shells = [shell for shell in ("powershell", "pwsh") if shutil.which(shell)]
@@ -876,8 +932,8 @@ class WithoutSDKTests(unittest.TestCase):
             with self.subTest(version):
                 error = self.run_mcp(self.site(version))
                 self.assertIn(f"mcp {version} is installed", error)
-                self.assertIn(f" -m pip install '{mcp.SDK_REQUIREMENT}'", error)
                 self.assertIn("MCPServer", error)  # the import error itself
+                self.assertTrue(error.endswith(f" -m pip install '{mcp.SDK_REQUIREMENT}'"), error)
 
     def test_an_sdk_inside_the_range_that_fails_to_import_gets_no_install_command(self):
         # pip would call the requirement already satisfied: the error names the Python to
@@ -905,7 +961,7 @@ class WithoutSDKTests(unittest.TestCase):
                 self.assertNotIn("no remedy", error)
                 before, _, after = error.partition("If the installed version is outside the range")
                 self.assertNotIn("pip install", before)
-                self.assertIn(f" -m pip install '{mcp.SDK_REQUIREMENT}'", after)
+                self.assertTrue(after.endswith(f" -m pip install '{mcp.SDK_REQUIREMENT}'"), after)
 
     def test_a_projects_own_mcp_file_that_hides_a_compatible_sdk_is_named(self):
         """`python -m depbee mcp` as a child process in an npm project that has an mcp.py of
