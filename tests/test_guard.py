@@ -1245,6 +1245,23 @@ class InstallCheckedTests(ApplyFixture):
         self.verdict([{**PASS, "known": "not_run"}])  # refused by the gate: never started
         self.assertFalse(install_checked(self.upd)["apply"]["npm_ci_started"])
 
+    def test_ctrl_c_during_npm_ci_stays_a_plain_cancellation(self):
+        # The guard replaces no project file, so apply_preview() has no change of depbee's to
+        # report (tests/test_apply_interrupt.py): the interrupt ends the call as before.
+        def interrupted(project):
+            raise KeyboardInterrupt  # as _run ends once Ctrl+C came and it has stopped npm
+
+        self.verdict([PASS], 0)
+        self.npm_ci = interrupted
+        with self.assertRaises(KeyboardInterrupt):
+            install_checked(self.upd)
+        self.assertEqual(len(self.ci_calls), 1)
+        for name, data in self.original.items():
+            self.assertEqual((self.upd / name).read_bytes(), data, name)
+        self.assertFalse(list(self.root.glob("depbee_install_*")))  # scratch folder removed
+        self.npm_ci = lambda project: (0, b"", b"")
+        self.assertEqual(install_checked(self.upd)["apply"]["outcome"], "applied")  # lock freed
+
     def test_lock_entries_without_a_valid_name_or_version_stop_before_anything(self):
         constructor = sys.modules["depbee.analysis.extractor"].ExtractorAnalyzer  # the mock
         for case, fields in {"null name": {"name": None}, "a number as name": {"name": 5},

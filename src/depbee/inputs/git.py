@@ -3,6 +3,7 @@
 Nothing is fetched, and the working tree, index and branches are left untouched.
 """
 
+import contextlib
 import os
 import re
 import shutil
@@ -75,6 +76,8 @@ class ChildNotStarted(GuardError):
 class _ProcessTree:
     """A child and every process it starts, killed together.
 
+    Made before the child exists and owning nothing, so that the caller's cleanup (close()) is
+    in place for every step of start() and for an interrupt right after it.
     Windows: the child starts suspended (CREATE_SUSPENDED), joins a Job Object and only then
     runs, so every process it starts is in the job too; a fast native wrapper such as a venv
     python.exe would otherwise start its child first. The job kills them all when its last
@@ -83,10 +86,14 @@ class _ProcessTree:
     starts its own session leaves the group.
     """
 
-    def __init__(self, proc: subprocess.Popen) -> None:
-        self.proc = proc
+    def __init__(self) -> None:
+        self.proc: subprocess.Popen | None = None
         self.job = None
         self.lock = threading.Lock()  # a reader thread may kill while close() frees the job
+
+    def start(self, proc: subprocess.Popen) -> None:
+        """Take the child just made (Windows: into a new job, and only then let it run)."""
+        self.proc = proc
         if os.name != "nt":
             return
         self.kernel32 = k = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -110,34 +117,39 @@ class _ProcessTree:
         resume = ctypes.WinDLL("ntdll").NtResumeProcess
         resume.argtypes = (wintypes.HANDLE,)
         resume.restype = ctypes.c_long
-        job = k.CreateJobObjectW(None, None)
-        if not job:
+        # Each handle has its owner in the statement that makes it: the job is close()'s, which
+        # also ends the child however far this got, and the process handle is this block's.
+        self.job = k.CreateJobObjectW(None, None)
+        if not self.job:
             raise ChildNotStarted("Unable to create a Windows job for the child processes")
-        self.job = job
         limits = _ExtendedLimits()
         limits.BasicLimitInformation.LimitFlags = _KILL_ON_JOB_CLOSE
         size = ctypes.sizeof(limits)
-        if not k.SetInformationJobObject(job, _EXTENDED_LIMITS, ctypes.byref(limits), size):
-            k.CloseHandle(job)
-            self.job = None
+        if not k.SetInformationJobObject(self.job, _EXTENDED_LIMITS, ctypes.byref(limits), size):
             raise ChildNotStarted("Unable to set up a Windows job for the child processes")
-        # PROCESS_TERMINATE | PROCESS_SET_QUOTA | PROCESS_SUSPEND_RESUME.
-        handle = k.OpenProcess(0x0001 | 0x0100 | 0x0800, False, proc.pid)
-        started = bool(handle) and k.AssignProcessToJobObject(job, handle) and resume(handle) == 0
-        if handle:
-            k.CloseHandle(handle)
+        handle = None
+        try:
+            # PROCESS_TERMINATE | PROCESS_SET_QUOTA | PROCESS_SUSPEND_RESUME.
+            handle = k.OpenProcess(0x0001 | 0x0100 | 0x0800, False, proc.pid)
+            started = (
+                bool(handle)
+                and k.AssignProcessToJobObject(self.job, handle)
+                and resume(handle) == 0
+            )
+        finally:
+            if handle:
+                k.CloseHandle(handle)
         if not started:
-            k.CloseHandle(job)
-            self.job = None
             raise ChildNotStarted("Unable to start the child process in a Windows job")
 
     def kill(self) -> None:
         with self.lock:
             if self.job:
                 self.kernel32.TerminateJobObject(self.job, 1)
-                return
         if os.name == "nt":
-            self.proc.kill()
+            # The child itself too: one that start() had not put in the job yet is not the job's.
+            with contextlib.suppress(OSError):  # already ending with its job
+                self.proc.kill()
         else:
             try:
                 os.killpg(self.proc.pid, signal.SIGKILL)
@@ -151,8 +163,9 @@ class _ProcessTree:
             info = (ctypes.c_uint8 * 48)()
             if not self.kernel32.QueryInformationJobObject(self.job, 1, info, 48, None):
                 return True
-            return int.from_bytes(bytes(info[40:44]), "little") > 0
-        if os.name == "nt":
+            if int.from_bytes(bytes(info[40:44]), "little") > 0:
+                return True
+        if os.name == "nt":  # without a job, or not in it yet
             return self.proc.poll() is None
         try:
             os.killpg(self.proc.pid, 0)
@@ -161,7 +174,8 @@ class _ProcessTree:
         return True
 
     def close(self, name: str) -> None:
-        """Kill every process left, wait until none runs, or raise GuardError."""
+        """Kill every process left, wait until none runs, or raise GuardError. Also after a
+        start() that failed or was interrupted at any step: the job is closed here."""
         try:
             self.kill()
             deadline = time.monotonic() + STOP_SECONDS
@@ -206,6 +220,17 @@ def _run(
         timeout = TIMEOUT_SECONDS
     caps = {"stdout": limit, "stderr": stderr_limit}
     captured: dict[str, bytes] = {}
+
+    def drain(name: str) -> None:
+        captured[name] = getattr(proc, name).read(caps[name] + 1)
+        if len(captured[name]) > caps[name]:
+            (group or proc).kill()
+
+    # All made before the child exists, so that nothing but its cleanup follows its start: one
+    # reader per pipe (a child filling one pipe cannot block the other) and, with tree, the
+    # owner of its processes.
+    readers = [threading.Thread(target=drain, args=(name,), daemon=True) for name in caps]
+    group = _ProcessTree() if tree else None
     with subprocess.Popen(
         argv,
         cwd=cwd,
@@ -217,23 +242,11 @@ def _run(
         creationflags=_CREATE_SUSPENDED if tree and os.name == "nt" else 0,
     ) as proc:
         try:
-            group = _ProcessTree(proc) if tree else None
-        except BaseException:
-            proc.kill()
-            raise
-        kill = group.kill if group else proc.kill
-
-        def drain(name: str) -> None:
-            captured[name] = getattr(proc, name).read(caps[name] + 1)
-            if len(captured[name]) > caps[name]:
-                kill()
-
-        # One reader per pipe, so a child filling one pipe cannot block the other.
-        readers = [threading.Thread(target=drain, args=(name,), daemon=True) for name in caps]
-        for reader in readers:
-            reader.start()
-        deadline = time.monotonic() + timeout
-        try:
+            if group is not None:
+                group.start(proc)
+            for reader in readers:
+                reader.start()
+            deadline = time.monotonic() + timeout
             for reader in readers:
                 reader.join(max(0.0, deadline - time.monotonic()))
             if any(reader.is_alive() for reader in readers):
@@ -244,6 +257,7 @@ def _run(
         finally:
             # Popen's exit then closes the pipes and reaps the child.
             if group is not None:
+                group.proc = proc  # also when the interrupt came before start() took it
                 group.close(name)
             elif proc.poll() is None:
                 proc.kill()

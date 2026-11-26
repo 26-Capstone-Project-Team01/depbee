@@ -573,13 +573,13 @@ class ProcessTreeTests(unittest.TestCase):
                 self.assert_stopped()
 
     def test_a_child_cannot_start_processes_before_it_is_in_the_tree(self):
-        real = git_input._ProcessTree.__init__
+        real = git_input._ProcessTree.start
 
         def slow(tree, proc):
             time.sleep(1)  # the parent starts its grandchild well within this second if it runs
             real(tree, proc)
 
-        with mock.patch.object(git_input._ProcessTree, "__init__", slow):
+        with mock.patch.object(git_input._ProcessTree, "start", slow):
             self.test_a_grandchild_left_after_a_normal_exit_is_killed()
 
     def test_processes_that_do_not_stop_are_an_error(self):
@@ -608,7 +608,8 @@ class ProcessTreeTests(unittest.TestCase):
                 proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, creationflags=flags)
                 self.addCleanup(proc.wait)
                 self.addCleanup(proc.kill)  # runs first; a no-op once the process has ended
-                tree = git_input._ProcessTree(proc)
+                tree = git_input._ProcessTree()
+                tree.start(proc)
                 limits = git_input._ExtendedLimits()
                 size = ctypes.sizeof(limits)
                 self.assertTrue(tree.kernel32.QueryInformationJobObject(

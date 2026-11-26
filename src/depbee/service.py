@@ -51,6 +51,14 @@ RESTORE_NOTICE = (
     "package-lock.json을 프로젝트에 복사하고, 설치한 node_modules도 되돌리려면 그 뒤 "
     "npm ci --ignore-scripts를 실행합니다."
 )
+# Ctrl+C during the install, after project files were replaced (apply_preview).
+INTERRUPTED = "The install was cancelled before npm ci finished; node_modules may be incomplete"
+INTERRUPTED_NOTICE = (
+    "설치를 취소해 npm ci가 끝나지 않았습니다. 바꾼 파일은 그대로 두었고 node_modules는 일부만 "
+    "설치된 상태일 수 있습니다. 바꾼 lockfile 그대로 설치를 마치려면 직접 "
+    "npm ci --ignore-scripts를 실행합니다. depbee update를 다시 실행하면 새 미리보기를 만들므로 "
+    "다른 버전이 선택될 수 있습니다."
+)
 # depbee guard ci (install_checked): changes analyzed per call, as for the MCP tools.
 GUARD_MAX_PACKAGES = 20
 GUARD_CHANGED = (
@@ -584,7 +592,11 @@ def apply_preview(
     then each changed file is written to a temporary file in the project and swapped in with
     os.replace(). Mode install then runs npm ci --ignore-scripts (npm_cli.clean_install) and
     checks that npm left package.json and the lockfile as written. Nothing is ever restored
-    automatically.
+    automatically. A KeyboardInterrupt (Ctrl+C) during that install, once a project file was
+    replaced, is install_failed with the error INTERRUPTED and no npm version or exit code:
+    the new files and the backup stay, npm ci is not run again and node_modules may be
+    incomplete. Before a file is replaced, and for a caller whose files are the checked ones
+    already (install_checked), it is raised as anywhere else.
 
     Returns {mode, outcome, reason, error, blocked, confirmation_required, confirmed, files,
     backup, npm_version, npm_ci_exit_code, notices}. outcome: applied, unchanged (no change),
@@ -614,6 +626,8 @@ def apply_preview(
             notices.append(LOCKFILE_NOTICE)
         if apply["npm_ci_exit_code"] is not None:
             notices.append(SCRIPTS_NOTICE)
+        if error == INTERRUPTED:
+            notices.append(INTERRUPTED_NOTICE)
         if apply["backup"] is not None:
             notices.append(RESTORE_NOTICE)
         apply.update(outcome=outcome, reason=reason, error=error, notices=notices)
@@ -685,6 +699,12 @@ def apply_preview(
             return done("applied")
         try:
             version, code = npm_cli.clean_install(project.absolute(), scratch, ready)
+        except KeyboardInterrupt:
+            # Ctrl+C, npm already stopped (_run). With project files replaced the caller must
+            # still report and record them; with none (install_checked) nothing is to report.
+            if not apply["files"]:
+                raise
+            return done("failed", "install_failed", INTERRUPTED)
         except (GuardError, OSError) as exc:
             if isinstance(exc, GuardError) and "depbee_install_" not in str(exc):
                 error = str(exc)  # npm_cli's own messages: no npm output
