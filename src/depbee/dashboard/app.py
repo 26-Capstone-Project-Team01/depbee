@@ -278,6 +278,10 @@ PREVIEW_NOT_RECORDED = (
 APPLY_NOT_RECORDED = (
     "반영 기록을 로컬 이력에 남기지 못했습니다. 위 결과와 백업 위치는 실제로 일어난 일입니다."
 )
+# A page drawn although the history could not be read for its rail (build_app's finished): what
+# the page says of that above its content, and the state of the one tab it has (_lone_tab).
+RAIL_UNREAD = "이력을 읽지 못해 다른 프로젝트와 최근 실행 상태는 표시하지 않았습니다."
+RAIL_UNREAD_STATE = "최근 실행을 읽지 못함"
 STARTED = "이 주소를 브라우저에서 여세요. 종료하려면 Ctrl+C를 누르세요."
 STOPPED = "대시보드를 종료했습니다. 위 주소는 더 이상 열리지 않습니다."
 # _apply_lines wording without the CLI option: a dashboard apply, and a stored one (CLI or here).
@@ -415,6 +419,19 @@ def build_app(
         page with the tabs: a double click must not end on bare text with no way on."""
         return page(request, "error.html", status, project=project, section="updates",
                     title=title, message=message, note=note)  # fmt: skip
+
+    def finished(request: Request, name: str, found: dict, status: int = 200,
+                 **context) -> Response:  # fmt: skip
+        """The page that says what a scan or an apply did on the registered project found,
+        once it has run. It cannot be asked for again (the work is not repeated, an applied
+        preview is gone), so it does not depend on the history: when the rail cannot be read,
+        it is drawn with that project alone (_lone_tab) and says so above its content
+        (RAIL_UNREAD), where every other page ends as the fixed 500 (failed)."""
+        try:
+            tabs = _tabs(found)
+        except Exception:  # whatever also kept the run from being recorded (_run_scan)
+            tabs, context["rail_unread"] = [_lone_tab(found)], RAIL_UNREAD
+        return page(request, name, status, section="updates", tabs=tabs, **context)
 
     async def read_form(request: Request) -> dict | Response:
         """The urlencoded form whose session field is this run's session, or the refusal."""
@@ -718,8 +735,8 @@ def build_app(
                         message=outcome, title=SCAN_TITLE)  # fmt: skip
         report, run_id = outcome
         if run_id is None:  # the result is not hidden when it could not be recorded
-            return page(request, "scanned.html", project=found, section="updates",
-                        not_recorded=SCAN_NOT_RECORDED, **_report(report))  # fmt: skip
+            return finished(request, "scanned.html", found, not_recorded=SCAN_NOT_RECORDED,
+                            **_report(report))  # fmt: skip
         return RedirectResponse(f"{base}/runs/{run_id}", 303)
 
     def show_preview(request: Request) -> Response:
@@ -762,12 +779,11 @@ def build_app(
                                               confirmed)  # fmt: skip
         finally:
             busy.release()
-        if isinstance(outcome, str):
-            return page(request, "error.html", 500, project=found, section="updates",
-                        message=outcome)  # fmt: skip
+        if isinstance(outcome, str):  # the preview is used up: this page says to look at the files
+            return finished(request, "error.html", found, 500, message=outcome)
         applied, recorded = outcome
-        return page(
-            request, "applied.html", project=found, section="updates",
+        return finished(
+            request, "applied.html", found,
             run_id=kept["run_id"] if recorded else None,
             not_recorded=None if recorded else (
                 APPLY_NOT_RECORDED if kept["run_id"] is not None else PREVIEW_NOT_RECORDED),
@@ -953,6 +969,14 @@ def _tabs(current: dict | None, recent: int = 1) -> list[dict]:
             "current": current is not None and project["id"] == current["id"],
         })  # fmt: skip
     return tabs
+
+
+def _lone_tab(found: dict) -> dict:
+    """The tab of a registered project when neither the other projects nor its runs can be read
+    from the history (_tabs failed): its folder's name alone, and the mark and word of a result
+    that is unknown (base.html), since it may have runs."""
+    return {**found, "name": _names([found["path"]])[0], "found": True, "cell": "none",
+            "state": RAIL_UNREAD_STATE, "runs": [], "current": True}  # fmt: skip
 
 
 def _head(found: dict, dependencies: list[dict], problem: str | None, state: dict,
