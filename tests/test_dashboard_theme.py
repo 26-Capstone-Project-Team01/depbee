@@ -381,10 +381,10 @@ class ThemeRouteTests(DashboardFixture):
     def test_the_way_back_takes_ascii_digits_and_long_encoded_pages(self):
         response = self.choose("light", f"{S}/projects/\uff11")
         self.assertEqual(response.headers["location"], f"{S}/")
-        folder = "%ED%95%9C" * 220  # 220 Hangul syllables, percent-encoded
-        response = self.choose("light", f"{S}/projects/mounted?at={folder}")
-        self.assertEqual(response.headers["location"], f"{S}/projects/mounted?at={folder}")
-        response = self.choose("light", f"{S}/projects/mounted?at=" + "a" * 2100)
+        query = "%ED%95%9C" * 220  # 220 Hangul syllables, percent-encoded
+        response = self.choose("light", f"{S}/projects/1?q={query}")
+        self.assertEqual(response.headers["location"], f"{S}/projects/1?q={query}")
+        response = self.choose("light", f"{S}/projects/1?q=" + "a" * 2100)
         self.assertEqual(response.headers["location"], f"{S}/")
 
     def test_a_wrong_theme_or_session_changes_nothing(self):

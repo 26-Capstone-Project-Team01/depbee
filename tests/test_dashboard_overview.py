@@ -546,8 +546,7 @@ class OverviewTests(test_dashboard.DashboardFixture):
         return name, context
 
     def test_the_first_project_of_all_opens_the_overview_whichever_way_it_was_given(self):
-        mount = self.root / "mounted"  # for the container: what its projects are mounted under
-        first, second = mount / "first", mount / "second"
+        first, second = self.root / "first", self.root / "second"
         for folder in (first, second):
             folder.mkdir(parents=True)
             (folder / "package-lock.json").write_bytes(self.head.read_bytes())
@@ -559,19 +558,9 @@ class OverviewTests(test_dashboard.DashboardFixture):
         def typed(folder):
             return self.post(str(folder), SESSION)
 
-        def listed(folder):
-            """The container's list: the folder button leads there, and the folder's form on
-            it sends its path where a typed one goes."""
-            self.assertEqual(self.pick().headers["location"], f"{S}/projects/mounted")
-            page = self.get("/projects/mounted").text
-            self.assertIn(f'<input type="hidden" name="path" value="{folder}">', page)
-            return self.post(str(folder), SESSION)
-
-        ways = (("the folder dialog", dialog, {}), ("a typed path", typed, {}),
-                ("the container's list", listed, {"DEPBEE_CONTAINER_PROJECTS": str(mount)}))  # fmt: skip
         with mock.patch.object(test_dashboard_picker.picker, "choose") as choose:
-            for way, register, environment in ways:
-                with self.subTest(way=way), mock.patch.dict("os.environ", environment):
+            for register in (dialog, typed):
+                with self.subTest(way=register.__name__):
                     self.assertEqual(self.view("/")[0], "start.html")
                     # What registers nothing leaves the next folder the first: a closed dialog,
                     # one that cannot be used, and a folder that is refused.

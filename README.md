@@ -1,12 +1,12 @@
 # depbee
 
-depbee는 npm 패키지를 설치하기 전에 버전 변경을 검사합니다. 공개 악성 기록에 등록된 이름·버전인지 확인하고, 새 버전과 이전 배포본의 차이로 계산한 ML 위험 점수와 근거를 보여 줍니다. 검사는 패키지 코드를 실행하지 않습니다. 낮은 점수만으로 안전을 보증할 수는 없습니다.
+depbee는 npm 패키지를 설치하기 전에 버전 변경을 검사합니다. 공개 악성 기록에 등록된 이름·버전인지 확인하고, 새 버전과 이전 배포본을 비교해 정적 규칙 6개의 판정과 ML 위험 점수, 그 근거를 보여 줍니다. 검사는 패키지 코드를 실행하지 않습니다. 낮은 점수만으로 안전을 보증할 수는 없습니다.
 
 진입점은 네 가지입니다. [CLI](#cli)와 [로컬 대시보드](#로컬-대시보드)로 자기 프로젝트를 검사하고 업데이트를 관리합니다. [MCP](#mcp)는 AI 에이전트의 설치 전 검사에, [GitHub Actions](#github-actions)는 PR의 lockfile 변경 검사에 씁니다. 통과·경고·실패가 PR에 어떻게 나타나는지는 합성 정책 [공개 시연](#공개-시연)에서, depbee가 PR의 변경을 실제로 검사한 실행은 [실제 제품 검사](#실제-제품-검사)에서 바로 볼 수 있습니다.
 
 ## 설치와 준비
 
-Python 3.11 이상과 Git이 필요합니다. depbee는 GitHub의 공개 저장소에서 소스로 배포합니다. PyPI 패키지, GitHub Release, 컨테이너 레지스트리의 이미지는 없습니다. 소스를 받아 가상환경에 설치합니다.
+Python 3.11 이상과 Git이 필요합니다. CLI·대시보드에서 업데이트를 미리 보거나 설치 가드로 패키지를 설치하려면 Node.js와 npm도 준비합니다. depbee는 GitHub의 공개 저장소에서 소스로 배포합니다. PyPI 패키지와 GitHub Release는 없습니다. 소스를 받아 가상환경에 설치합니다.
 
 ```sh
 git clone https://github.com/26-Capstone-Project-Team01/depbee.git
@@ -34,8 +34,6 @@ depbee --help
 가상환경을 활성화하면 어느 프로젝트에서든 `depbee`를 실행할 수 있습니다. `extract`는 패키지에서 특징을 추출하는 분석기를 고정된 커밋으로 설치합니다. 분석기도 공개 저장소이므로 pip이 로그인이나 토큰 없이 받습니다. [분석기 저장소](https://github.com/26-Capstone-Project-Team01/depbee-analyzer) · [Git 주소로 바로 설치](docs/usage.md#git-주소로-설치) · [wheel과 pipx 설치](docs/usage.md#wheel-만들기와-설치)
 
 **설치 직후 `depbee check lodash@4.17.21`로 첫 검사를 실행하세요.** wheel에는 모델 `D04-E00`과 `2026-10-06T14:00:47Z` 기준 OSV npm 색인이 들어 있습니다. `depbee setup`으로 현재 자산을 확인할 수 있고, 매 보고서에 실제 검사에 쓴 모델과 색인이 기록됩니다. [기본 자산 변경](docs/usage.md#기본-자산) · [결과 재현에 남길 값](docs/usage.md#결과-재현에-남길-값)
-
-호스트에 Python과 Node.js를 설치하지 않고 쓰려면 로컬 Docker 이미지 하나로 CLI 검사, stdio MCP, 대시보드를 실행합니다. [Docker로 실행](#docker로-실행)
 
 ## CLI
 
@@ -163,42 +161,6 @@ depbee 저장소의 CI는 이 Action으로 실제 버전 변경(lodash 4.17.20�
 python -I src/depbee/actions.py report docs/examples/result-contract/03-known-malicious-low-ml.json --lockfile examples/project/package-lock.json
 ```
 
-## Docker로 실행
-
-호스트에 Python과 Node.js가 없어도 depbee 저장소에서 빌드한 로컬 이미지 `depbee:local`로 대시보드, CLI 검사, stdio MCP를 실행합니다. 저장소 루트에서 `docker build -t depbee:local .`로 빌드하며 토큰, 빌드 시크릿, 빌드 인자가 필요 없습니다. 레지스트리에 올린 이미지는 없습니다. [이미지 빌드](docs/docker.md#이미지-빌드)
-
-대시보드는 검사할 npm 프로젝트 폴더에서 아래 블록 하나로 시작합니다. 프로젝트는 읽기 전용으로 연결하고, 포트는 호스트의 `127.0.0.1`에만 게시하며, 등록과 기록은 `depbee-home` 볼륨에 남깁니다.
-
-**PowerShell**
-
-```powershell
-$project = (Get-Location).Path
-$hash = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($project)), 0, 4).Replace('-', '').ToLower()
-$alias = "$(Split-Path -Leaf $project)-$hash"
-docker run --rm -it -p 127.0.0.1:5757:5757 --mount "type=bind,source=$project,target=/projects/$alias,readonly" --mount type=volume,source=depbee-home,target=/home/depbee depbee:local dashboard
-```
-
-**Bash**
-
-```sh
-project="$PWD"
-valid='^[0123456789abcdef]{64}$'
-if { out="$({ printf '%s' "$project" | sha256sum; } 2>/dev/null)" && hash="${out%%[[:space:]]*}" && [[ "$hash" =~ $valid ]]; } ||
-   { out="$({ printf '%s' "$project" | shasum -a 256; } 2>/dev/null)" && hash="${out%%[[:space:]]*}" && [[ "$hash" =~ $valid ]]; }; then
-    alias="$(basename "$project")-${hash:0:8}"
-    docker run --rm -it -p 127.0.0.1:5757:5757 --mount "type=bind,source=$project,target=/projects/$alias,readonly" --mount type=volume,source=depbee-home,target=/home/depbee depbee:local dashboard
-else
-    unset project alias
-    echo 'sha256sum과 shasum으로 경로 해시를 만들지 못해 컨테이너를 시작하지 않았습니다. docs/docker.md의 "별칭을 직접 정합니다"를 따르세요.' >&2
-fi
-```
-
-출력된 `http://127.0.0.1:5757/s/...` 주소를 브라우저에서 열어 연결한 폴더를 등록하고, Ctrl+C로 종료합니다. 읽기 전용 연결에서는 조회, 검사만, 업데이트 확인까지 할 수 있습니다.
-
-이력은 프로젝트를 컨테이너 경로(`/projects/<별칭>`)로 구분합니다. 같은 볼륨에서 다른 프로젝트를 이미 쓴 별칭에 연결하면 이전 프로젝트의 기록이 그 프로젝트의 기록으로 보입니다. 위의 `$alias`는 폴더 이름에 절대 경로의 해시를 붙여 폴더마다 다른 별칭을 만듭니다. Bash 블록은 `sha256sum`을 쓰고, 그 결과를 쓸 수 없으면 `shasum`을 씁니다. 어느 도구에서도 온전한 해시를 얻지 못하면 컨테이너를 시작하지 않습니다. 그때는 별칭을 직접 정합니다. [프로젝트 별칭과 이력](docs/docker.md#프로젝트-별칭과-이력)
-
-[CLI 검사](docs/docker.md#cli-검사) · [MCP 등록](docs/docker.md#claude-code에-stdio-mcp-서버-등록) · [프로젝트 여러 개](docs/docker.md#프로젝트-여러-개) · [쉼표가 있는 경로](docs/docker.md#쉼표가-있는-경로) · [읽기 전용 연결과 반영](docs/docker.md#읽기-전용-연결과-반영) · [포트](docs/docker.md#포트) · [종료](docs/docker.md#종료)
-
 ## 참고 문서
 
-[네 진입점 시연](docs/demo.md) · [상세 사용법과 지원 범위](docs/usage.md) · [Claude Code 설치 가드](docs/claude-guard.md) · [Docker로 실행하기](docs/docker.md) · [결과 필드와 연결 규약](docs/contracts.md) · [구조](docs/architecture.md) · [검증 기록](docs/validation.md) · [공개 Actions 시연 저장소](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo)
+[네 진입점 시연](docs/demo.md) · [상세 사용법과 지원 범위](docs/usage.md) · [Claude Code 설치 가드](docs/claude-guard.md) · [결과 필드와 연결 규약](docs/contracts.md) · [구조](docs/architecture.md) · [검증 기록](docs/validation.md) · [공개 Actions 시연 저장소](https://github.com/26-Capstone-Project-Team01/depbee-actions-demo)

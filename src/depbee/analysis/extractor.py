@@ -135,17 +135,10 @@ def _with_this_python(requirement: str) -> str:
 def _how_to_get_the_analyzer() -> str:
     """What a user without depbee-analyzer can do, said for the depbee at hand.
 
-    In depbee's image (the variable its Dockerfile sets, as dashboard.mounted reads it) nothing
-    can be installed: there is no pip and no source tree, so the answer is the default image.
     An installed depbee names the public commit its own metadata pins and its own interpreter:
     a command for any folder and any PATH. Only depbee run from a source tree, which has no
     metadata, is sent to the extra.
     """
-    if os.environ.get("DEPBEE_CONTAINER_PROJECTS"):
-        return (
-            "This image has no depbee-analyzer: it was built with --target core. Build the "
-            "default image in a depbee checkout instead: docker build -t depbee:local ."
-        )
     try:
         pins = importlib.metadata.requires("depbee") or []
     except importlib.metadata.PackageNotFoundError:

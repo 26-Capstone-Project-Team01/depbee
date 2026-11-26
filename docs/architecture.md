@@ -3,7 +3,7 @@
 현재는 Python 단일 패키지를 사용한다. CLI와 LightGBM 추론을 같은 언어로 연결하고,
 CLI, GitHub Action, MCP, 대시보드가 모두 `pipeline.scan()`을 재사용한다. 저장소를 여러 서비스로 나누지 않는다.
 
-배포는 공개 Git 저장소의 소스 하나다. 호스트 설치(pip), 로컬에서 빌드하는 Docker 이미지(`Dockerfile`), 커밋 SHA로 고정하는 GitHub Action(`action.yml`)이 모두 이 소스에서 나오고, PyPI 패키지와 GitHub Release와 레지스트리 이미지는 없다. 분석기(depbee-analyzer)는 `pyproject.toml`의 `extract`가 공개 저장소의 커밋 하나로 고정하며, 세 경로 모두 그 커밋을 로그인 없이 받는다. 설치된 분석기가 그 고정 커밋의 Git 설치 그대로인지는 depbee가 실행할 때 확인한다(`extractor._installed_identity`, 이미지 빌드의 마지막 단계도 같은 함수로 확인).
+공개 Git 저장소의 소스를 pip으로 설치하거나 커밋 SHA로 고정한 GitHub Action(`action.yml`)으로 사용한다. 두 경로 모두 분석에 필요한 depbee-analyzer를 `pyproject.toml`의 `extract`가 지정한 공개 커밋에서 설치한다. depbee는 실행할 때 설치된 분석기의 출처와 파일을 확인한다(`extractor._installed_identity`).
 
 ```text
 프로젝트 폴더 + 기준 lockfile(파일, 또는 inputs/git.py로 읽은 Git 커밋의 파일)

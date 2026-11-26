@@ -56,11 +56,10 @@
 <main id="main">
 {% block main %}{% endblock %}
 </main>
-<footer>{# contained (app.page): a container listens on every interface of its own, so who can
-   open the page is decided by how Docker published the port, which the dashboard cannot see. #}
+<footer>
 {# What keeps a reader safe is in view; where the page opens is behind the question mark. #}
 <p class="note">{{ safety_note }} 주소에 이번 실행의 세션 값이 들어 있으니 다른 사람에게 보이지 않게 합니다. <button type="button" class="help" popovertarget="help-where" aria-label="이 화면이 열리는 곳"><span aria-hidden="true">?</span></button></p>
-<div class="help-pop" id="help-where" popover><p>{% if contained %}이 화면은 docker run의 -p로 컨테이너의 포트를 호스트의 127.0.0.1에만 게시했을 때 이 PC에서만 열립니다.{% else %}이 화면은 이 PC의 127.0.0.1에서만 열립니다.{% endif %}</p></div>
+<div class="help-pop" id="help-where" popover><p>이 화면은 이 PC의 127.0.0.1에서만 열립니다.</p></div>
 </footer>
 {# What the script says while a request runs and after a check, for a screen reader. #}
 <p class="visually-hidden" id="live" role="status" aria-live="polite"></p>

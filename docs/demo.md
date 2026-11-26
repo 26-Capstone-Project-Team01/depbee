@@ -81,7 +81,7 @@ CLI와 대시보드는 장면마다 상태를 따로 두도록 서로 다른 시
 6. 보류(네트워크 없음): `package-lock.json`의 한 항목에서 `version`과 `resolved`의 버전을 같은 패키지의 pre-release(예: `3.0.0-canary.1`)로 바꾸고 `depbee scan . --extract --cache-dir $cache`. 첫 줄 `depbee 검사 결과: 보류(완료하지 못한 항목 있음) (종료 코드 2)`이고 이유는 학습 범위 밖(`out_of_training_scope`)입니다. pre-release는 registry를 조회하기 전에 보류합니다. 끝나면 `git checkout -- package-lock.json`.
 7. 기지 악성 일치(네트워크 없음): 설치본 색인 `assets\index\index.json`(설치된 depbee 패키지 폴더 안, 폴더 위치는 `python -c "import depbee; print(depbee.__path__[0])"`로 확인)의 `packages`(`[이름, [[기록 ID, [버전...], [범위...]], ...]]` 목록)에서 버전 목록이 있는 이름·버전을 하나 고릅니다. lockfile 항목 하나의 키(`node_modules/<이름>`), `version`, `resolved`를 그 이름·버전으로 바꾸고(`integrity`는 그대로) `depbee scan .`를 `--extract` 없이 실행합니다. 첫 줄 `depbee 검사 결과: 위험 판정 있음 (종료 코드 1)`, 다음 줄들에 `경고: 기지 악성 기록 일치 1개`가 나옵니다. 이 lockfile에 `--extract`, `npm install`, `npm ci`를 쓰지 않습니다. 추출은 그 버전의 tarball을 받으려 하고, 설치는 악성 코드를 실행할 수 있습니다. 끝나면 `git checkout -- package-lock.json`.
 8. registry에서 내려간 악성 버전의 ML 분석은 그 버전의 로컬 사본이 필요하고 이 저장소에는 없습니다. 방법은 [실행](usage.md#실행)의 `--local-root`·`--local-source`에 있습니다.
-9. 저장소의 예시로 재현(npm과 Git 없음): `depbee scan "<depbee 폴더>\examples\lodash-updated" --base-lock "<depbee 폴더>\examples\lodash-update\package-lock.json" --extract --cache-dir $cache`. lodash 4.17.20에서 4.17.21로의 변경을 registry와 분석기로 검사하고, 첫 줄은 `depbee 검사 결과: 통과 (종료 코드 0)`입니다. depbee 저장소의 CI와 [Docker 이미지 확인](docker.md#전체-이미지-확인)도 이 예시를 씁니다.
+9. 저장소의 예시로 재현(npm과 Git 없음): `depbee scan "<depbee 폴더>\examples\lodash-updated" --base-lock "<depbee 폴더>\examples\lodash-update\package-lock.json" --extract --cache-dir $cache`. lodash 4.17.20에서 4.17.21로의 변경을 registry와 분석기로 검사하고, 첫 줄은 `depbee 검사 결과: 통과 (종료 코드 0)`입니다. depbee 저장소의 CI도 이 예시를 씁니다.
 
 ### 로컬 대시보드
 

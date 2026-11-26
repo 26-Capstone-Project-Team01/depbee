@@ -3,10 +3,7 @@
    do: check the updates, or scan what is not committed. Under it the links between the views,
    each with how many it holds (app._head: lockfile entries, current candidates, stored runs).
    The check sent from the packages view comes back to its list (back, app._back); kept and
-   picked are that view's. Where the folder is not found, a container's page (contained,
-   app.page) says how it comes back there: by mounting the folder again at the path shown,
-   under the name its records are kept by. A desktop's says to put the folder back, or to
-   register the moved one. #}
+   picked are that view's. #}
 {% set url = base ~ "/projects/" ~ project.id %}
 <header class="project-head">
 <div class="head-line">
@@ -28,7 +25,7 @@
 {% endif %}
 </div>
 {% if not project.found %}
-<p class="error">프로젝트 폴더를 찾을 수 없습니다. {% if contained %}대시보드 컨테이너를 종료한 뒤 이 폴더를 같은 별칭으로(위의 컨테이너 경로) 다시 연결해 시작하면 다시 읽습니다.{% else %}폴더를 원래 위치로 되돌리면 다시 읽습니다. 옮긴 폴더는 <a href="{{ base }}/?manage=1">프로젝트 관리</a>에서 새로 등록하세요.{% endif %} 지난 실행과 반영 기록은 <a href="{{ url }}/history">기록</a>에 그대로 있습니다.</p>
+<p class="error">프로젝트 폴더를 찾을 수 없습니다. 폴더를 원래 위치로 되돌리면 다시 읽습니다. 옮긴 폴더는 <a href="{{ base }}/?manage=1">프로젝트 관리</a>에서 새로 등록하세요. 지난 실행과 반영 기록은 <a href="{{ url }}/history">기록</a>에 그대로 있습니다.</p>
 {% endif %}
 <nav class="views" aria-label="{{ project.name }} 화면">
 {% for key, path, label in (("packages", "", "패키지"), ("updates", "/updates", "업데이트"), ("history", "/history", "기록")) %}

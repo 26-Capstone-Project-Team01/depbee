@@ -906,7 +906,7 @@ class InstallCheckedTests(ApplyFixture):
         dist["tarball"] = tarball or dist["tarball"]
         return doc
 
-    def git_head(self, project, ref, git_dir=None):
+    def git_head(self, project, ref):
         self.assertEqual((Path(project), ref), (self.upd.absolute(), "HEAD"))
         return self.bases.pop(0) if self.bases else self.base.read_bytes()
 
