@@ -14,12 +14,18 @@ the management page when the address asks for it (?manage=1). While no project i
 is the start page instead: one button that adds the first one, and nothing else. Registering
 that first project comes back to the overview (enroll); a later one opens its own project.
 
-A project is registered by its folder's path: typed into the form, or chosen in the desktop's
-own folder dialog (.picker, a child process), which is checked as a typed one is.
+A project is registered by the folder chosen in the desktop's own folder dialog (.picker, a
+child process) and by nothing else: no request carries a path to register.
+
+What a project's pages run is named as the CLI names it: a scan of the lockfile's change (depbee
+scan), and an update preview of everything or of named packages with its apply (depbee update).
+They never run a check, the CLI's lookup of one NAME@VERSION (depbee check): they only show that
+command (check_command). An update preview always opens its own page, where it is reviewed and
+applied; one sent from the packages view carries that view's search, filter and open candidate
+to the page's way back (_back).
 
 The pages work without a script. The one script (static/app.js, from under the session like the
-stylesheets) only marks a button whose request is running, stops a second request meanwhile and
-moves the focus to the first candidate a check returned.
+stylesheets) only marks a button whose request is running and stops a second request meanwhile.
 """
 
 import hashlib
@@ -81,19 +87,20 @@ from ..cli import (
     _unchecked,
 )
 from ..contracts import MAX_JSON_BYTES, GuardError, read_json
-from ..inputs.npm import MAX_NAME_LENGTH, PACKAGE_NAME
+from ..inputs.npm import EXACT_VERSION, MAX_NAME_LENGTH, PACKAGE_NAME
 from ..inputs.npm_cli import DEPENDENCY_FIELDS, UPDATE_NAME
 from . import picker, theme
 
 HOST = "127.0.0.1"
 MAX_BODY = 16 * 1024  # bytes of a request body (Starlette answers 413 above it)
 MAX_FIELDS = 4  # form fields; the largest form (apply) has three
-MAX_PATH = 1024  # characters of a path to register
+MAX_PATH = 1024  # characters of a chosen folder's path
 MAX_TARGETS = 1024  # characters of the update target names field
 KEPT_PREVIEWS = 10  # update previews kept in memory; the oldest is dropped first
 RECENT_RUNS = 10  # runs per project in the list's trend table
 MAX_ID = 2**63 - 1  # SQLite's largest integer; a larger id in a URL is simply not found
-MAX_ITEM = 40  # characters of a candidate's key (<run id>.<position>) carried through a check
+# A candidate's key in an address (<run id>.<position>), as _back carries it.
+ITEM = re.compile(r"[0-9]{1,19}\.[0-9]{1,9}")
 # The history stores a lone surrogate in a result row's location as the text \udXXX, which a
 # location can also hold as it is: a stored location with this text may stand for either.
 ESCAPED_SURROGATE = "\\ud"
@@ -160,6 +167,9 @@ DECLARED_LABELS = {
     "peerDependencies": "피어",
 }
 NPM_PAGE = "https://www.npmjs.com/package/"
+# A package name that every shell takes as it is written (check_command): letters, digits and
+# . _ - after a letter or a digit, with or without a scope. An npm name may also hold ~ ! * ' ( ).
+SHELL_PLAIN = re.compile(r"(?:@[A-Za-z0-9][A-Za-z0-9._-]*/)?[A-Za-z0-9][A-Za-z0-9._-]*")
 # The stylesheets and the one script, each under its own route /static/<name>: nothing else of
 # static/ is served, and no file name is ever taken from a request.
 STYLES = ("style.css", "overview.css")
@@ -189,7 +199,7 @@ SECURITY_HEADERS = [
     (b"referrer-policy", b"same-origin"),
     (b"cache-control", b"no-store"),
 ]
-KIND_LABELS = {"scan": "검사(scan)", "update_preview": "업데이트 미리보기"}
+KIND_LABELS = {"scan": "lockfile 변경 검사(scan)", "update_preview": "업데이트 미리보기(update)"}
 # The rail's theme button (theme.py): each theme as the button names it now, and as the words
 # that say what the next press does.
 THEME_WORDS = {
@@ -207,21 +217,24 @@ MAX_BACK = 2048  # characters of the address the theme form goes back to, decode
 MODEL_LIMITS = (
     "학습 데이터 버전과 공격 유형별 탐지율은 저장된 보고서에 출처가 없어 보이지 않습니다."
 )
+# Why the folder chosen in the dialog was not registered (_registration_problem).
 REGISTER_ERRORS = {
-    "long": f"경로가 너무 깁니다({MAX_PATH}자 이하).",
-    "local": "로컬 폴더 경로가 아닙니다(빈 값, 네트워크 공유·장치 경로, Windows 예약 이름).",
-    "absolute": "절대 경로를 입력하세요.",
-    "link": "링크를 확인할 수 없거나 네트워크 공유·장치로 가는 링크가 있는 경로입니다.",
-    "folder": "폴더를 찾을 수 없습니다.",
-    "lockfile": "폴더에 package-lock.json 파일이 없습니다.",
-    "unreadable": "경로를 확인할 수 없습니다.",
+    "long": f"고른 폴더의 경로가 너무 깁니다({MAX_PATH}자 이하).",
+    "local": "고른 폴더가 로컬 폴더가 아닙니다(네트워크 공유·장치 경로, Windows 예약 이름).",
+    "absolute": "고른 폴더의 절대 경로를 알 수 없습니다.",
+    "link": "링크를 확인할 수 없거나 네트워크 공유·장치로 가는 링크가 있는 폴더입니다.",
+    "folder": "고른 폴더를 찾을 수 없습니다.",
+    "lockfile": "고른 폴더에 package-lock.json 파일이 없습니다.",
+    "unreadable": "고른 폴더를 확인할 수 없습니다.",
 }
-# The folder dialog gave no folder (picker.choose); both open the form for a typed path.
+# The folder dialog gave no folder (picker.choose): nothing was registered, and the same button
+# is what to use again.
 PICK_ERRORS = {
-    "unavailable": "폴더 선택 창을 열 수 없습니다(데스크톱 화면이 없거나 이 Python에 tkinter가 "
-    "없음). 아래에 폴더 경로를 직접 입력하세요.",
-    "timeout": f"폴더 선택 창에서 {picker.PICK_SECONDS}초 안에 폴더를 고르지 않아 창을 닫았습니다. "
-    "다시 선택하거나 아래에 폴더 경로를 직접 입력하세요.",
+    "unavailable": "폴더 선택 창을 열 수 없어 프로젝트를 등록하지 않았습니다(데스크톱 화면이 없거나 "
+    "이 Python에 tkinter가 없음). 데스크톱 화면이 있는 세션에서 tkinter가 있는 Python으로 depbee "
+    "dashboard를 실행한 뒤 프로젝트 폴더 선택을 다시 누르세요.",
+    "timeout": f"폴더 선택 창에서 {picker.PICK_SECONDS}초 안에 폴더를 고르지 않아 창을 닫았고 "
+    "프로젝트를 등록하지 않았습니다. 프로젝트 폴더 선택을 다시 누르세요.",
 }
 PICK_OPEN_TITLE = "폴더 선택 창이 이미 열려 있습니다"
 PICK_OPEN = "먼저 연 폴더 선택 창이 아직 열려 있어 창을 새로 열지 않았습니다."
@@ -244,7 +257,9 @@ SESSION_REFUSED = (
     "세션 주소가 맞지 않습니다. depbee dashboard가 이번 실행에서 출력한 주소로 여세요."
 )
 FORM_REFUSED = "폼의 세션 값이 맞지 않습니다. 화면을 새로 열고 다시 시도하세요."
-BUSY = "다른 검사, 업데이트 확인이나 반영이 실행 중입니다. 끝난 뒤 다시 시도하세요."
+BUSY = (
+    "다른 lockfile 변경 검사, 업데이트 미리보기나 반영이 실행 중입니다. 끝난 뒤 다시 시도하세요."
+)
 BUSY_TITLE = "다른 작업이 실행 중입니다"
 BUSY_NOTE = (
     "먼저 보낸 작업은 계속 실행됩니다. 끝나면 그 결과를 프로젝트의 업데이트와 기록 화면에서 볼 수 "
@@ -252,19 +267,23 @@ BUSY_NOTE = (
 )
 PREVIEW_GONE = (
     "이 업데이트 미리보기가 없습니다(이미 반영을 시도했거나, 오래되어 지워졌거나, 대시보드를 다시 "
-    "시작함). 프로젝트 화면에서 업데이트 확인을 다시 실행하세요."
+    "시작함). 프로젝트 화면에서 업데이트 미리보기를 다시 실행하세요."
 )
 PREVIEW_GONE_TITLE = "미리보기가 없습니다"
 PROJECT_MISSING = "등록한 프로젝트 폴더를 찾을 수 없습니다."
-PREVIEW_FAILED = "업데이트 확인을 끝내지 못했습니다(파일이나 데이터를 읽거나 쓰지 못함)."
-SCAN_TITLE = "검사 오류"  # error.html's heading for a scan (default: the update one)
-SCAN_FAILED = "검사를 끝내지 못했습니다(파일이나 데이터를 읽거나 쓰지 못함)."
+PREVIEW_FAILED = "업데이트 미리보기를 끝내지 못했습니다(파일이나 데이터를 읽거나 쓰지 못함)."
+SCAN_TITLE = "lockfile 변경 검사 오류"  # error.html's heading for a scan (default: the update one)
+SCAN_FAILED = "lockfile 변경 검사를 끝내지 못했습니다(파일이나 데이터를 읽거나 쓰지 못함)."
 SCAN_NOT_RECORDED = (
     "이 검사를 로컬 이력에 기록하지 못했습니다(이력 파일이 없거나 쓰지 못함). 검사 결과는 아래와 "
     "같습니다."
 )
 APPLY_FAILED = "반영 중 예기치 않은 오류가 났습니다. 프로젝트 파일과 백업 폴더를 직접 확인하세요."
 TARGETS_TOO_LONG = f"대상 이름이 너무 깁니다({MAX_TARGETS}자 이하)."
+TARGETS_BLANK = (
+    "패키지 이름이 비어 있어 미리보기를 실행하지 않았습니다. 업데이트할 패키지 이름을 입력하거나, "
+    "전체를 보려면 전체 업데이트 미리보기를 누르세요."
+)
 CHOOSE_MODE = "반영 방식(lockfile 반영 또는 설치까지)을 하나 고르세요."
 CONFIRM_NEEDED = "확인이 필요한 항목이 있습니다. 목록을 검토하고 확인란을 선택한 뒤 진행하세요."
 NPMRC_NO_INSTALL = (
@@ -291,7 +310,7 @@ DASHBOARD_REASONS = {
 }
 CONFIRMED_HERE = "대시보드에서 확인함"
 CONFIRMED_STORED = "확인함"
-RETRY_HERE = "업데이트 확인을 다시 실행하고 목록을 검토한 뒤 확인 단계에서 진행합니다."
+RETRY_HERE = "업데이트 미리보기를 다시 실행하고 목록을 검토한 뒤 확인란을 선택해 반영합니다."
 
 
 def _finalize(value):
@@ -398,9 +417,7 @@ def build_app(
         The theme button on a GET page returns to that page. A POST has no return address."""
         tabs = _tabs(project) if tabs is None else tabs
         chosen = theme.load()
-        # The way back keeps the page's query but a check's one-time return (checked): coming
-        # back must not land on that check and move the focus again.
-        query = urlencode([(k, v) for k, v in request.query_params.multi_items() if k != "checked"])
+        query = urlencode(request.query_params.multi_items())
         back = base + request.url.path + (f"?{query}" if query else "")
         html = ENV.get_template(name).render(
             safety_note=SAFETY_NOTE, base=base, session=session, tabs=tabs, section=section,
@@ -449,16 +466,12 @@ def build_app(
             return _text(403, FORM_REFUSED)
         return form
 
-    def projects(request: Request, status: int = 200, error: str | None = None, *,
-                 typed: bool = False, manual: bool = False) -> Response:  # fmt: skip
-        """The management page. error: why nothing was registered; typed: it is about the path
-        typed into the form (else about the folder dialog); manual: the form for a typed path
-        is shown open."""
+    def projects(request: Request, status: int = 200, error: str | None = None) -> Response:
+        """The management page. error: why the folder dialog registered nothing."""
         # The tabs are the list: each with its recent runs for the trend table.
         return page(request, "projects.html", status, section="manage",
-                    tabs=_tabs(None, RECENT_RUNS), error=error, typed=typed,
-                    manual=typed or manual, pick_seconds=picker.PICK_SECONDS,
-                    switch_keys=SWITCH_KEYS)  # fmt: skip
+                    tabs=_tabs(None, RECENT_RUNS), error=error,
+                    pick_seconds=picker.PICK_SECONDS, switch_keys=SWITCH_KEYS)  # fmt: skip
 
     def home(request: Request) -> Response:
         """The session's first page. While no project is registered it is the start page,
@@ -476,26 +489,17 @@ def build_app(
         return page(request, "overview.html", section="overview", tabs=tabs,
                     portfolio=portfolio, chart=_chart(portfolio))  # fmt: skip
 
-    def enroll(request: Request, path: str, typed: bool) -> Response:
-        """Register the folder selected in the dialog or entered in the form after validating
-        its path. The first project of all opens the overview, where it stands with nothing
-        inspected yet: the start page's one button ends there. Every later registration opens
-        its own project, as does registering a folder again."""
+    def enroll(request: Request, path: str) -> Response:
+        """Register the folder selected in the dialog after validating its path. The first
+        project of all opens the overview, where it stands with nothing inspected yet: the
+        start page's one button ends there. Every later registration opens its own project, as
+        does registering a folder again."""
         problem = _registration_problem(path)
-        if problem:  # the input is not echoed
-            return projects(request, 400, REGISTER_ERRORS[problem], typed=typed)
+        if problem:  # the path is not echoed
+            return projects(request, 400, REGISTER_ERRORS[problem])
         first = not history.list_projects()
         project_id = history.register_project(Path(path))
         return RedirectResponse(f"{base}/" if first else f"{base}/projects/{project_id}", 303)
-
-    async def register(request: Request) -> Response:
-        form = await read_form(request)
-        if isinstance(form, Response):
-            return form
-        paths = form.get("path", [])
-        if len(paths) != 1:
-            return _text(400, "경로 하나를 입력하세요.")
-        return enroll(request, paths[0], True)
 
     picking = threading.Lock()  # one folder dialog at a time; pages stay open meanwhile
     # What picker.choose is given to watch: nothing in an app without a server that ends.
@@ -505,10 +509,12 @@ def build_app(
         return stopping is not None and stopping()
 
     async def pick(request: Request) -> Response:
-        """Open the desktop's folder dialog (POST from the management page) and register the
-        folder chosen there. The dialog runs in a child process that a worker thread waits for
-        (picker.choose). Closing it registers nothing, and so does a dialog that cannot be
-        shown or is still open at its time limit: those open the form for a typed path.
+        """Open the desktop's folder dialog (POST from the start or the management page) and
+        register the folder chosen there: the form carries the session and no path, so the
+        only path ever registered is the one the dialog's child process answers. The dialog
+        runs in that child, which a worker thread waits for (picker.choose). Closing it
+        registers nothing, and so does a dialog that cannot be shown or is still open at its
+        time limit: the management page then says why, with the same button to try again.
 
         A server that has been asked to end opens no dialog, and picker.choose closes the open
         one, so that the server does not wait for it. ending() is asked again after the answer,
@@ -531,8 +537,8 @@ def build_app(
         if outcome == "cancelled":
             return RedirectResponse(f"{base}/?manage=1", 303)
         if outcome != "chosen":
-            return projects(request, 503, PICK_ERRORS[outcome], manual=True)
-        return enroll(request, folder, False)
+            return projects(request, 503, PICK_ERRORS[outcome])
+        return enroll(request, folder)
 
     def held(found: dict, state: dict) -> list[dict]:
         """The update previews of the project that this process still holds, newest first: the
@@ -552,9 +558,7 @@ def build_app(
         The search, the kind and the tab (show) narrow the list together (_filters); each tab
         counts the rows the search and the kind leave, and a tab with none lists them all.
         selected: the candidate opened beside the list, one of the rows the filters leave: the
-        one the address names (_selected), which after a check is the first one that check
-        returned (_landing); returned: what the check that sent the browser here found
-        (_returned)."""
+        one the address names (_selected)."""
         found = _project(request.path_params["project_id"])
         if found is None:
             return _text(404, "등록된 프로젝트가 아닙니다.")
@@ -583,19 +587,19 @@ def build_app(
         head = _head(found, dependencies, problem, state)
         targets = _preview_targets(found["path"]) if any(row["direct"] for row in rows) else set()
         shown = [row["candidate"] for row in rows if row["candidate"] is not None]
-        selected = _selected(params, shown)
-        returned = _returned(params, state, shown, selected)
         return page(request, "project.html", project=found, section="packages", rows=rows,
+                    check_example=_check_example(rows),
                     direct_count=direct_count, nested_count=len(dependencies) - direct_count,
                     query=query, scope=scope, show=show, counts=counts,
                     targets=targets, max_query=MAX_NAME_LENGTH, problem=problem, state=state,
-                    returned=returned, selected=selected, previews=held(found, state),
+                    selected=_selected(params, shown), previews=held(found, state),
                     head=head)  # fmt: skip
 
     def updates(request: Request) -> Response:
-        """The updates view: the named check, the previews this process still holds (held) and
-        the current candidates in groups (_grouped). selected: the candidate opened beside the
-        list, the first one shown when the address names none."""
+        """The updates view: the named preview, the previews this process still holds (held),
+        each linked to the page where it is reviewed and applied, and the current candidates in
+        groups (_grouped). selected: the candidate opened beside the list, the first one shown
+        when the address names none."""
         found = _project(request.path_params["project_id"])
         if found is None:
             return _text(404, "등록된 프로젝트가 아닙니다.")
@@ -607,11 +611,12 @@ def build_app(
             if applied and applied[0]["run_id"] == last["id"] and applied[0]["outcome"] == "applied"
             else None
         )
-        head = _head(found, *_dependencies(found["path"]), state)
+        dependencies, problem = _dependencies(found["path"])
+        head = _head(found, dependencies, problem, state)
         groups = _grouped(state["rows"])
         shown = [row for group in groups for row in group["rows"]]
         return page(request, "updates.html", project=found, section="updates", state=state,
-                    head=head, groups=groups,
+                    head=head, groups=groups, check_example=_check_example(dependencies),
                     previews=held(found, state), applied_at=applied_at, max_targets=MAX_TARGETS,
                     selected=_selected(request.query_params, shown))  # fmt: skip
 
@@ -651,11 +656,16 @@ def build_app(
 
     def preview_page(request: Request, kept: dict, preview_id: str, status: int = 200,
                      error: str | None = None) -> Response:  # fmt: skip
+        """The page of a kept preview: its report, and the form that applies it. back: the
+        packages view it was sent from (_back of the address, which the apply form's address
+        keeps), where its way out without applying leads; None: the updates view."""
+        back = _back(request.query_params.getlist("back"))
         result = kept["result"]
         blocked, required = service.update_gate(result["report"])
         threshold = result["report"].get("threshold")
         return page(
-            request, "preview.html", status, preview_id=preview_id, error=error,
+            request, "preview.html", status, preview_id=preview_id, error=error, back=back,
+            carried="" if back is None else "?" + urlencode({"back": back}),
             project=_project(kept["project_id"]), section="updates", created_at=kept["created_at"],
             run_id=kept["run_id"], not_recorded=PREVIEW_NOT_RECORDED if kept["run_id"] is None
             else None, lines=_preview_lines(result["preview"], _clean),
@@ -668,7 +678,10 @@ def build_app(
         )  # fmt: skip
 
     async def check_update(request: Request) -> Response:
-        """Preview and check an update of a registered project (POST from its page)."""
+        """Preview an update of a registered project, of everything or of the names given, as
+        depbee update does without --apply (POST from its pages). Nothing of the project is
+        written. Whatever page sent it, the answer opens the preview's own page: the one place
+        where it is reviewed and, by a second POST, applied."""
         form = await read_form(request)
         if isinstance(form, Response):
             return form
@@ -681,6 +694,11 @@ def build_app(
         if len(targets[0]) > MAX_TARGETS:
             return page(request, "error.html", 400, project=found, section="updates",
                         message=TARGETS_TOO_LONG)  # fmt: skip
+        # Only the empty field of the button that previews everything means everything: blanks
+        # typed where names belong are no names, and never a preview of the whole project.
+        if targets[0] and not targets[0].split():
+            return page(request, "error.html", 400, project=found, section="updates",
+                        message=TARGETS_BLANK)  # fmt: skip
         if not _found(found["path"]):  # the registered path, checked as at registration
             return page(request, "error.html", 400, project=found, section="updates",
                         message=PROJECT_MISSING)  # fmt: skip
@@ -703,14 +721,9 @@ def build_app(
         }  # fmt: skip
         while len(previews) > KEPT_PREVIEWS:
             previews.popitem(last=False)
-        # Sent from the packages view and recorded: back to that list, where the first candidate
-        # this check returned is opened (_landing). The preview stays held and nothing is
-        # applied. Any other check opens its preview, as before.
-        back = _back(form)
-        if back is not None and run_id is not None:
-            landing = await run_in_threadpool(_landing, found, back, run_id)
-            return RedirectResponse(f"{base}/projects/{found['id']}?{landing}", 303)
-        return RedirectResponse(f"{base}/previews/{preview_id}", 303)
+        back = _back(form.get("back", []))
+        carried = "" if back is None else "?" + urlencode({"back": back})
+        return RedirectResponse(f"{base}/previews/{preview_id}{carried}", 303)
 
     async def scan(request: Request) -> Response:
         """Scan a registered project's uncommitted lockfile change against Git HEAD, as depbee
@@ -834,7 +847,6 @@ def build_app(
     app = Starlette(
         routes=[
             Route("/", home),
-            Route("/projects", register, methods=["POST"]),
             Route("/projects/pick", pick, methods=["POST"]),
             Route("/projects/{project_id:int}", project),
             Route("/projects/{project_id:int}/updates", updates),
@@ -1429,16 +1441,16 @@ def _listed(dependencies: list[dict], query: str, scope: str) -> list[dict]:
     ]
 
 
-def _back(form: dict) -> list[tuple[str, str]] | None:
-    """The query of the packages view that a check was sent from, as the pairs which that
-    view's own links write: the form's back field, read as the view reads its address
-    (_filters), with the candidate it had open (item). None without the field: the check was
-    not sent from that view.
+def _back(given: list[str]) -> str | None:
+    """The packages view that a preview was sent from, as the query of that view's address: the
+    one value given (the form's back field, then the back query of the preview's page), read as
+    the view reads its own address (_filters), with the candidate it had open (item). None
+    without a value: the preview was not sent from that view.
 
-    The redirect after the check is always an address of that view, built from these pairs and
-    never from the field's text: a field the view would refuse is the view without a filter."""
-    given = form.get("back")
-    if given is None:
+    The query is built from what the view reads and never from the text given, and it is only
+    ever written after this project's own address: a value the view would refuse, one that is
+    no query of it, or one given twice is the view without a filter."""
+    if not given:
         return None
     params = QueryParams(given[0] if len(given) == 1 else "")
     query, scope, show = _filters(params) or ("", "all", "all")
@@ -1450,68 +1462,16 @@ def _back(form: dict) -> list[tuple[str, str]] | None:
     if show != "all":
         pairs.append(("show", show))
     items = params.getlist("item")
-    if len(items) == 1 and len(items[0]) <= MAX_ITEM:
+    if len(items) == 1 and ITEM.fullmatch(items[0]):
         pairs.append(("item", items[0]))
-    return pairs
+    return urlencode(pairs)
 
 
-def _landing(project: dict, back: list[tuple[str, str]], run_id: int) -> str:
-    """The query and the fragment of the packages view's address that a recorded check sent
-    from that view comes back to: back (_back) with the run as checked, at the candidate the
-    view opens or at the line that says there is none to open.
-
-    The view opens the candidate its address names (_selected). So the first candidate this
-    run returned among the rows that view lists (_listed) becomes the item, at #picked, the
-    link of the open candidate. When it returned none there, the candidate that was open stays
-    the item and the address goes to #check-status, the line that says what the check found,
-    never to #picked: that is then the candidate of an older check. The browser follows the
-    fragment itself, so the place is the same with the script and without it, and the address
-    still names what is open once the run is taken off it.
-
-    The candidate is looked for under the search and the kind alone, whatever the tab, and when
-    there is one the tab is dropped: a check sent from the tab of unchecked rows has just made
-    them checked. When there is none the tab stays (the view lists everything when that tab is
-    left empty)."""
-    kept = dict(back)
-    dependencies, _ = _dependencies(project["path"])
-    returned = {
-        row["location"]: row for row in _update_state(project)["rows"] if row["run_id"] == run_id
-    }
-    listed = _listed(dependencies, kept.get("q", ""), kept.get("scope", "all"))
-    first = next((returned[row["location"]] for row in listed if row["location"] in returned), None)
-    if first is not None:
-        kept.pop("show", None)
-        kept["item"] = f"{first['run_id']}.{first['position']}"
-    kept["checked"] = run_id
-    return urlencode(kept) + ("#check-status" if first is None else "#picked")
-
-
-def _returned(params, state: dict, shown: list[dict], selected: dict | None) -> dict | None:
-    """What the packages view says of the check that sent the browser to it (the redirect of
-    check_update names its run in the checked query): {id, full (it checked everything), count
-    (how many current candidates it found), first (the first of them among shown, the
-    candidate rows the view lists; None when the view's filters leave none)}.
-
-    None unless checked is given once and is the run of one of the project's current checks
-    (state["checks"]). It is only compared as text with those runs: never read as a number,
-    and nothing is looked up by it. So the run of other files or of another project, a
-    repeated or malformed value and no value at all are all the same.
-
-    None too when first is not selected, the candidate the view opens: the address names
-    another one, which _landing never writes, and the view says nothing of a check whose
-    first candidate is not the one it shows."""
-    given = params.getlist("checked")
-    check = next((c for c in state["checks"] if [str(c["id"])] == given), None)
-    if check is None:
-        return None
-    first = next((row for row in shown if row["run_id"] == check["id"]), None)
-    if first is not None and first is not selected:
-        return None
-    return {
-        "id": check["id"], "full": check["targets"] is None,
-        "count": sum(row["run_id"] == check["id"] for row in state["rows"]),
-        "first": first,
-    }  # fmt: skip
+def _check_example(rows: list[dict]) -> str | None:
+    """The check of one version as a line to run (check_command), for the first of the lockfile
+    entries given that has one: an example that is a real package of this project."""
+    commands = (check_command(row["name"], row["version"]) for row in rows)
+    return next((command for command in commands if command is not None), None)
 
 
 def _dependencies(path: str) -> tuple[list[dict], str | None]:
@@ -1686,6 +1646,23 @@ def npm_link(name: object) -> str | None:
     return NPM_PAGE + quote(name, safe="@/")
 
 
+def check_command(name: object, version: object) -> str | None:
+    """The CLI command that checks this one registry version and writes nothing, depbee check
+    NAME@VERSION, as a line to copy: the dashboard runs no check of its own. None for a name
+    or a version that depbee check would refuse (service.check_package), and for a name with a
+    character some shell reads (SHELL_PLAIN): a pasted line must be the words it shows."""
+    if (
+        not isinstance(name, str)
+        or not isinstance(version, str)
+        or len(name) > MAX_NAME_LENGTH
+        or not PACKAGE_NAME.fullmatch(name)
+        or not SHELL_PLAIN.fullmatch(name)
+        or not EXACT_VERSION.fullmatch(version)
+    ):
+        return None
+    return f"depbee check {name}@{version}"
+
+
 def _decision(row: dict) -> dict:
     """Whether this one result could be applied as an update, by the update gate's own rule
     (service.update_gate, asked of the row alone; nothing is decided here): refused for a known
@@ -1775,6 +1752,7 @@ def _result(row: dict, report: dict) -> dict:
         "after": row.get("after_version"),
         "location": row["location"],
         "npm": npm_link(row["package"]),
+        "check": check_command(row["package"], row["after_version"]),
         "score": _ml_score(row, _text_label, report),
         "score_raw": None if row.get("score") is None else repr(row["score"]),
         "gauge": _gauge(row.get("score"), report.get("threshold")),

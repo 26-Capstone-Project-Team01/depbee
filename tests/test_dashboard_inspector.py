@@ -269,7 +269,7 @@ class InspectorTests(test_dashboard.DashboardFixture):
             self.assertNotIn(absent, outside)
         # The named check is one line above, folded until it is opened.
         self.assertRegex(html, r'(?s)<div class="action-line">\s*<details class="named">\s*'
-                               r"<summary>지정한 패키지 확인</summary>.*?"
+                               r"<summary>패키지를 지정해 업데이트</summary>.*?"
                                rf'<form method="post" action="{test_dashboard.S}{self.packages}/previews"')  # fmt: skip
         self.assertIn('name="packages" type="text"', html)
 
@@ -289,9 +289,9 @@ class InspectorTests(test_dashboard.DashboardFixture):
         row = html.split('<th scope="row">example<span', 1)[1].split("</tr>", 1)[0]
         self.assertIn('<p class="row-why">', row)
         self.assertIn("기지 악성 목록 미확인", row)
-        # The named check updates what it names and checks what that changes.
+        # The named preview updates what it names, with what that changes under it.
         self.assertNotIn("적은 이름만 계산", html)
-        self.assertIn("지정한 이름을 업데이트 대상으로 삼고, 그 결과 바뀌는 의존성을 검사합니다", html)
+        self.assertIn("그 이름만 업데이트 대상으로 삼습니다(함께 바뀌는 하위 의존성 포함)", html)
 
     def test_grouped_puts_what_needs_a_look_first(self):
         def row(key, status="flagged", n=0):

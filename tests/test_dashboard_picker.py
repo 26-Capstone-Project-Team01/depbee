@@ -10,6 +10,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -33,9 +34,9 @@ from depbee import history
 from depbee.dashboard import picker
 
 PICK_FORM = f'<form method="post" action="{S}/projects/pick">'
-PATH_FORM = f'<form method="post" action="{S}/projects">'
-CLOSED = "<details>\n<summary>폴더 경로 직접 입력</summary>"
-OPEN = "<details open>\n<summary>폴더 경로 직접 입력</summary>"
+# What a page with a way to type a path, or to upload a folder, would hold.
+TYPED = ('name="path"', f'action="{S}/projects"', "직접 입력", "입력하세요", 'type="file"',
+         "webkitdirectory", "multipart", "enctype")  # fmt: skip
 
 
 def stand_in(root: Path, source: str) -> str:
@@ -74,19 +75,17 @@ class PickRouteTests(DashboardFixture):
         self.assertFalse(self.db.exists())
         self.assertEqual(self.files(), before)
 
-    def test_the_dialog_comes_first_and_the_typed_path_is_folded_under_it(self):
+    def test_the_dialog_is_the_only_way_to_add_a_project(self):
         # Before the first project the dialog's form is all there is (the start page): the same
-        # address and the same field as project management's, and no typed path beside it.
+        # address and the same field as project management's.
         html = self.page("/")
         self.assertIn(f'{PICK_FORM}\n<input type="hidden" name="session" value="{SESSION}">\n'
                       '<button type="submit" ', html)  # fmt: skip
         self.assertEqual((html.count("<form "), html.count("<button ")), (1, 1))
-        self.assertNotIn(PATH_FORM, html)
-        self.assertNotIn("<details", html)
-        for upload in ('type="file"', "webkitdirectory", "multipart", "enctype"):
-            self.assertNotIn(upload, html)
+        for absent in (*TYPED, "<details"):
+            self.assertNotIn(absent, html)
         self.assertEqual(self.choose.call_count, 0)  # looking opens no dialog
-        # With a project, project management has the dialog first and the typed path under it.
+        # With a project, project management has the dialog's button and no other way in.
         history.register_project(self.project)
         html = self.page("/?manage=1")
         self.assertNotIn("등록한 프로젝트가 없습니다.", html)
@@ -94,24 +93,22 @@ class PickRouteTests(DashboardFixture):
                   'data-busy-label="폴더 선택 창을 확인하세요…">프로젝트 폴더 선택</button>')  # fmt: skip
         self.assertIn(f'{PICK_FORM}\n<input type="hidden" name="session" value="{SESSION}">\n'
                       f"{button}\n</form>", html)  # fmt: skip
-        self.assertIn(
-            '<p class="note" id="pick-hint">이 PC에서 폴더를 열어 파일을 읽습니다.</p>', html
-        )
-        # The dialog's time limit and the way back to its window are folded with the typed path.
-        folded = html.partition(CLOSED)[2]
-        self.assertIn(f"창은 {picker.PICK_SECONDS}초 뒤 닫히며", folded)
-        self.assertIn(f"{self.app.SWITCH_KEYS}으로 전환하세요.</p>", folded)
-        # The typed path is still there, closed, after the dialog's button; it is not primary.
-        self.assertIn(CLOSED, html)
-        self.assertLess(html.index(PICK_FORM), html.index(CLOSED))
-        self.assertLess(html.index(CLOSED), html.index(PATH_FORM))
-        self.assertLess(html.index(PATH_FORM), html.index("</details>"))
-        self.assertIn('<button type="submit">등록</button>', html)
+        add = html.split('<section class="add"', 1)[1].split("</section>", 1)[0]
+        self.assertEqual((add.count("<form "), add.count("<input "), add.count("<button ")),
+                         (1, 1, 1))  # fmt: skip
+        # The dialog's time limit, the way back to its window and what closing it does are in
+        # view under the button, as what the button is described by.
+        hint = re.search(r'<p class="note" id="pick-hint">(.*?)</p>', add)[1]
+        self.assertIn("이 PC의 폴더 선택 창에서 고르고", hint)
+        self.assertIn(f"창은 {picker.PICK_SECONDS}초 뒤 닫히며", hint)
+        self.assertIn(f"{self.app.SWITCH_KEYS}으로 전환하세요.", hint)
+        self.assertIn("창을 닫거나 시간이 지나면 등록하지 않으며 이 버튼으로 다시 고릅니다.", hint)
         self.assertEqual(html.count('class="primary"'), 1)
         self.assertNotIn('role="alert"', html)
-        # A folder is never uploaded: no file input, no multipart form.
-        for upload in ('type="file"', "webkitdirectory", "multipart", "enctype"):
-            self.assertNotIn(upload, html)
+        # No path is typed and no folder is uploaded: no such field or form on the page.
+        for absent in TYPED:
+            self.assertNotIn(absent, html)
+        self.assertNotIn("<details", add)
         # The section comes before the list of the registered projects.
         self.assertLess(html.index(PICK_FORM), html.index("등록한 프로젝트 1개"))
         self.assertEqual(self.choose.call_count, 0)  # looking opens no dialog
@@ -130,11 +127,9 @@ class PickRouteTests(DashboardFixture):
         self.assertIn(f'<a class="ov-name" href="{S}/projects/1" title="project">project</a>', overview)
         self.assertEqual(project_head(self.page("/projects/1"))[::2],
                          ("project", str(self.project.resolve())))  # fmt: skip
-        # The same folder again opens the first registration, as the typed path does.
+        # The same folder again opens the first registration.
         self.choose.return_value = ("chosen", str(self.project) + os.sep)
         self.assertEqual(self.pick().headers["location"], S + "/projects/1")
-        self.assertEqual(self.post(str(self.project), SESSION).headers["location"],
-                         S + "/projects/1")  # fmt: skip
         self.assertEqual(len(history.list_projects()), 1)
         # A folder chosen from project management once a project is there opens its own project.
         second = self.root / "second"
@@ -156,51 +151,60 @@ class PickRouteTests(DashboardFixture):
         self.assertIn('<body class="start">', html)
         self.assertIn(PICK_FORM, html)
         self.assertNotIn('role="alert"', html)
-        # With a project it is project management, the typed path folded as before.
+        # With a project it is project management: the same button, and no message.
         history.register_project(self.project)
         self.assertEqual(self.pick().headers["location"], S + "/?manage=1")
         html = self.page("/?manage=1")
-        self.assertIn(CLOSED, html)
+        self.assertIn(PICK_FORM, html)
         self.assertNotIn('role="alert"', html)
         self.assertEqual(len(history.list_projects()), 1)
 
-    def test_a_dialog_that_cannot_open_or_runs_out_of_time_opens_the_typed_path(self):
+    def test_a_dialog_that_cannot_open_or_runs_out_of_time_says_why_above_its_button(self):
         before = self.files()
-        for outcome in ("unavailable", "timeout"):
-            with self.subTest(outcome=outcome):
-                self.choose.return_value = (outcome, None)
-                response = self.pick()
-                self.assertEqual(response.status_code, 503)
-                html = response.text
-                alert = f'<p class="error" role="alert">{self.app.PICK_ERRORS[outcome]}</p>'
-                self.assertIn(alert, html)
-                self.assertIn("아래에 폴더 경로를 직접 입력하세요.", html)
-                self.assertIn(OPEN, html)
-                self.assertNotIn(CLOSED, html)
-                # The message is the dialog's, above its button: the path field is not invalid.
-                self.assertLess(html.index(alert), html.index(PICK_FORM))
-                self.assertNotIn("aria-invalid", html)
-                self.assertNotIn("path-error", html)
-                self.assertIn(PATH_FORM, html)
-                self.assert_nothing_registered(before)
-        self.assertIn(f"{picker.PICK_SECONDS}초 안에", self.app.PICK_ERRORS["timeout"])
-        # The typed path then registers the project: the first of all, so the overview opens.
-        self.assertEqual(self.post(str(self.project), SESSION).headers["location"], S + "/")
+        for registered in (False, True):  # before the first project, and with one
+            for outcome in ("unavailable", "timeout"):
+                with self.subTest(outcome=outcome, registered=registered):
+                    self.choose.return_value = (outcome, None)
+                    response = self.pick()
+                    self.assertEqual(response.status_code, 503)
+                    html = response.text
+                    alert = f'<p class="error" role="alert">{self.app.PICK_ERRORS[outcome]}</p>'
+                    # What happened, that nothing was registered, and the button to try again.
+                    self.assertIn(alert, html)
+                    self.assertIn("프로젝트를 등록하지 않았습니다", alert)
+                    self.assertIn("프로젝트 폴더 선택을 다시 누르세요.", alert)
+                    self.assertLess(html.index(alert), html.index(PICK_FORM))
+                    self.assertIn(">프로젝트 폴더 선택</button>", html)
+                    for absent in (*TYPED, "aria-invalid", "<details open"):
+                        self.assertNotIn(absent, html)
+                    assert_one_script(self, html)
+                    if not registered:
+                        self.assert_nothing_registered(before)
+            if not registered:
+                history.register_project(self.project)
         self.assertEqual(len(history.list_projects()), 1)
+        self.assertIn(f"{picker.PICK_SECONDS}초 안에", self.app.PICK_ERRORS["timeout"])
+        self.assertIn("tkinter", self.app.PICK_ERRORS["unavailable"])
+        # The button then registers the folder the next dialog answers.
+        second = self.root / "second"
+        second.mkdir()
+        (second / "package-lock.json").write_bytes(self.head.read_bytes())
+        self.choose.return_value = ("chosen", str(second))
+        self.assertEqual(self.pick().headers["location"], S + "/projects/2")
 
-    def test_a_chosen_folder_is_checked_as_a_typed_path_is(self):
+    def test_a_chosen_folder_is_checked_before_it_is_registered(self):
         (self.root / "lock-dir" / "package-lock.json").mkdir(parents=True)
         cases = [
-            (str(self.root), "폴더에 package-lock.json 파일이 없습니다."),
-            (str(self.root / "lock-dir"), "폴더에 package-lock.json 파일이 없습니다."),
-            (str(self.root / "missing"), "폴더를 찾을 수 없습니다."),
-            (str(self.head), "폴더를 찾을 수 없습니다."),
-            ("project", "절대 경로를 입력하세요."),
-            ("", "로컬 폴더 경로가 아닙니다"),
-            ("\\\\server\\share\\project", "로컬 폴더 경로가 아닙니다"),
-            ("//server/share/project", "로컬 폴더 경로가 아닙니다"),
-            ("\\\\?\\C:\\project", "로컬 폴더 경로가 아닙니다"),
-            ("C:/" + "a" * self.app.MAX_PATH, "경로가 너무 깁니다"),
+            (str(self.root), "고른 폴더에 package-lock.json 파일이 없습니다."),
+            (str(self.root / "lock-dir"), "고른 폴더에 package-lock.json 파일이 없습니다."),
+            (str(self.root / "missing"), "고른 폴더를 찾을 수 없습니다."),
+            (str(self.head), "고른 폴더를 찾을 수 없습니다."),
+            ("project", "고른 폴더의 절대 경로를 알 수 없습니다."),
+            ("", "고른 폴더가 로컬 폴더가 아닙니다"),
+            ("\\\\server\\share\\project", "고른 폴더가 로컬 폴더가 아닙니다"),
+            ("//server/share/project", "고른 폴더가 로컬 폴더가 아닙니다"),
+            ("\\\\?\\C:\\project", "고른 폴더가 로컬 폴더가 아닙니다"),
+            ("C:/" + "a" * self.app.MAX_PATH, "고른 폴더의 경로가 너무 깁니다"),
             # Refused for a reason that depends on the platform; here it must stay inert.
             ('C:/"><script>alert(1)</script>', ""),
         ]
@@ -216,19 +220,13 @@ class PickRouteTests(DashboardFixture):
                     self.assertNotIn(path, html)  # the answer is not echoed
                 assert_one_script(self, html)
                 self.assertNotIn("alert(1)", html)
-                # The dialog's button is what to use again: the typed path stays folded.
-                self.assertIn(CLOSED, html)
-                self.assertNotIn("aria-invalid", html)
+                # The dialog's button is what to use again, under the message.
+                self.assertLess(html.index('role="alert"'), html.index(PICK_FORM))
+                for absent in (*TYPED, "aria-invalid"):
+                    self.assertNotIn(absent, html)
                 self.assert_nothing_registered(before)
-        # The same refusal of a typed path is shown at its field, with the form open.
-        typed = self.post(str(self.root), SESSION)
-        self.assertEqual(typed.status_code, 400)
-        self.assertIn(OPEN + '\n<p class="error" id="path-error" role="alert">폴더에 '
-                      "package-lock.json 파일이 없습니다.</p>", typed.text)  # fmt: skip
-        self.assertIn('aria-describedby="path-hint path-error" aria-invalid="true"', typed.text)
-        self.assert_nothing_registered(before)
 
-    def test_one_dialog_at_a_time_while_pages_and_the_typed_path_stay_open(self):
+    def test_one_dialog_at_a_time_while_pages_stay_open(self):
         seen = {}
 
         def open_dialog():
@@ -238,7 +236,6 @@ class PickRouteTests(DashboardFixture):
             seen["again"] = self.pick()
             seen["page"] = self.get("/")
             seen["files"] = (history.list_projects(), self.db.exists())
-            seen["typed"] = self.post(str(self.project), SESSION)
             return "cancelled", None
 
         self.choose.side_effect = open_dialog
@@ -254,7 +251,6 @@ class PickRouteTests(DashboardFixture):
         self.assertNotIn("이력에 기록하지 않았습니다.", again.text)
         self.assertEqual(seen["page"].status_code, 200)
         self.assertEqual(seen["files"], ([], False))  # an open dialog has written nothing
-        self.assertEqual(seen["typed"].headers["location"], S + "/")  # the first project of all
         self.assertEqual(self.pick().status_code, 303)  # free again
         self.assertEqual(self.choose.call_count, 2)
 

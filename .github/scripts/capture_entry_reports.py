@@ -38,10 +38,14 @@ async def ask_mcp(project: Path, out: Path, env: dict) -> str:
 
 
 def ask_dashboard(project: Path, cache: Path, env: dict) -> dict:
-    """Register the project and send the scan form to a dashboard server started for this, then
-    read the run it recorded."""
+    """Register the project, send the scan form to a dashboard server started for this and read
+    the run it recorded. The dashboard registers only the folder its desktop dialog answers, which
+    a runner cannot show, so the project is registered with the history API that the dialog's
+    handler calls; the scan is still the form of the dashboard's own server."""
     from depbee import history
 
+    history.register_project(project)
+    (registered,) = history.list_projects()
     server = subprocess.Popen([*DEPBEE, "dashboard", "--cache-dir", str(cache)], env=env,
                               stdout=subprocess.PIPE, text=True)  # fmt: skip
     try:
@@ -57,8 +61,6 @@ def ask_dashboard(project: Path, cache: Path, env: dict) -> dict:
             with direct.open(request, timeout=900) as response:
                 return response.url
 
-        post("projects", path=str(project))
-        (registered,) = history.list_projects()
         landed = post(f"projects/{registered['id']}/scans")
         # Any other address is a page that shows a result the history did not keep.
         return history.get_run(int(landed.rpartition("/runs/")[2]))

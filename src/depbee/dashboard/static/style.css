@@ -170,6 +170,8 @@ summary { width: fit-content; padding-block: .55rem; font-weight: 700; cursor: p
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .note, .quiet, .unknown, .tally { color: var(--muted); }
 .note, .tally { font-size: .875rem; }
+/* A CLI command to copy: set as the identifiers are, and broken anywhere rather than cut. */
+code { font-family: var(--mono); font-size: .9375em; overflow-wrap: anywhere; }
 
 /* Verdict marks. A hexagon of the verdict's colour (--mark) with a sign inside it in --glyph, so
    that a mark is read by its sign as well as by its colour: x a risk or a refusal, ! a hold, a
@@ -366,7 +368,6 @@ footer .note { max-width: none; }
 .search-box::before { content: ""; position: absolute; top: 50%; left: .75rem; width: .7rem; height: .7rem; margin-top: -.45rem; border: 2px solid var(--muted); border-radius: 50%; pointer-events: none; }
 .search-box::after { content: ""; position: absolute; top: 50%; left: 1.35rem; width: .4rem; height: 2px; margin-top: .25rem; background: var(--muted); transform: rotate(45deg); pointer-events: none; }
 .state { max-width: none; margin: .75rem 0 0; padding: .55rem .8rem; border-left: 3px solid var(--ink); background: var(--head); font-size: .9375rem; }
-.state:focus-visible { outline-offset: 3px; }
 .filter-summary { font-size: .875rem; }
 .reading { max-width: none; }
 .reading .note { max-width: 46rem; }
@@ -438,7 +439,7 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 .stack .inspect > td { padding: 0; border: 0; background: none; }
 .candidates tr.inspect { display: block; margin: 0; padding: 0; border: 0; background: none; box-shadow: none; }
 #candidate-evidence { scroll-margin-top: 7.5rem; }
-#picked, #check-status { scroll-margin-top: 6rem; }
+#picked { scroll-margin-top: 6rem; }
 .inspector { display: block; margin: .25rem 0 .75rem; padding: .85rem 1rem 1rem; border: 1px solid var(--line-2); border-top: 3px solid var(--honey); background: var(--sheet); font: .9375rem/1.6 var(--sans); --ground: var(--sheet); }
 .inspector.idle { border-top-color: var(--line-2); }
 .inspector h2 { margin: 0; color: var(--muted); font-size: .8125rem; font-weight: 600; }
@@ -468,6 +469,12 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 .gauge .fill { fill: var(--muted); }
 .gauge .fill.over { fill: var(--risk); }
 .gauge .tick { stroke: var(--ink); stroke-width: 2px; vector-effect: non-scaling-stroke; }
+/* What the pages run, each with its CLI command, in the inspector before a candidate. */
+.ops { padding-left: 1.1rem; font-size: .875rem; }
+/* The way to the page where the candidate's preview is reviewed and applied. */
+.inspect-apply { margin: .4rem 0 0; }
+.inspect-apply .action { width: 100%; border-color: var(--honey); background: var(--honey); color: var(--on-honey); white-space: normal; }
+.inspect-apply .action:hover { border-color: var(--honey-strong); background: var(--honey-strong); }
 .inspect-nav { margin: .35rem 0 0; }
 .inspect-nav a { display: inline-flex; align-items: center; min-height: 2.75rem; font-weight: 700; }
 .signal { margin-top: .9rem; padding-top: .7rem; border-top: 1px solid var(--line); }
@@ -521,7 +528,6 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 /* A folder, drawn: this button opens the desktop's folder dialog. */
 .add .primary::before { content: ""; flex: none; width: 1.3rem; height: 1.05rem; background: currentColor; clip-path: polygon(0 0, 40% 0, 52% 18%, 100% 18%, 100% 100%, 0 100%); }
 .add .primary[aria-busy=true]::before { width: 1rem; height: 1rem; background: none; clip-path: none; }
-.add details { max-width: none; margin: .8rem 0 0; border-top: 1px solid var(--line); }
 .projects { display: grid; gap: .75rem; max-width: none; margin: .75rem 0 0; padding: 0; list-style: none; }
 .projects li { padding: .9rem 1.1rem 1rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow); --ground: var(--sheet); }
 .projects h3 { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .55rem; margin: 0; }
@@ -660,7 +666,7 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
    height, so that the address of a pick brings that row into view. */
 @media (min-width: 64rem) {
   body.split main, body.split footer { padding-right: calc(var(--inspect) + 1.5rem); }
-  #candidate-evidence, #picked, #check-status { scroll-margin-top: 35vh; }
+  #candidate-evidence, #picked { scroll-margin-top: 35vh; }
   #candidate-evidence:focus-visible { outline: 0; box-shadow: none; }
   .inspector { position: fixed; top: 0; right: 0; bottom: 0; z-index: 2; width: var(--inspect); margin: 0; padding: 1.1rem 1.25rem 2rem; overflow-y: auto; overscroll-behavior: contain; border-width: 3px 0 0 1px; }
   .inspect-nav .when-open, .inspect-nav .when-closed { display: none; }
