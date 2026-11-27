@@ -1983,6 +1983,13 @@ def applied_document(outcome="applied", reason=None, mode="lockfile", **extra):
 
 
 BACKUP = "C:/synthetic/backups/20261117T000000Z-0123abcd"
+FIXED_500 = "요청을 처리하지 못했습니다(이력 데이터베이스나 파일을 읽지 못함)."
+NO_HISTORY = b"synthetic bytes that are no history database"  # in place of the history file
+
+
+def main_of(html):
+    """The main element of a page: everything but the rail and the footer."""
+    return re.search(r'<main id="main">.*</main>', html, re.S).group()
 
 
 class ScreenFixture(DashboardFixture):
@@ -2048,6 +2055,60 @@ class ScreenFixture(DashboardFixture):
         self.assertIn(f'<p class="error">{message}</p>', response.text)
         self.assertIn(f'<a class="tab" href="{S}/projects/{self.project_id}"', response.text)
         self.assertNotIn("이력에 기록하지 않았습니다.", response.text)
+
+    def answer_errors(self):
+        """Requests go through a client that answers with the app's own 500 instead of raising
+        the exception in the test."""
+        from starlette.testclient import TestClient
+
+        self.client = TestClient(self.app.build_app(PORT, SESSION), base_url=BASE,
+                                 raise_server_exceptions=False)  # fmt: skip
+        self.addCleanup(self.client.close)
+
+    def breaking(self, fake):
+        """fake as a service function during whose run the history file stops being a history
+        (damaged or replaced while the work runs): from then on no write and no read of the
+        history succeeds."""
+
+        def service_call(*args, **kwargs):
+            self.db.write_bytes(NO_HISTORY)
+            return fake(*args, **kwargs)
+
+        return service_call
+
+    def assert_fixed_500(self, response):
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.text, FIXED_500)
+
+    def assert_recovered(self, response, status=200):
+        """A page that says what a scan or an apply did, drawn without the history, and its
+        main element without the line that says so. That line is a paragraph of the content,
+        in view at every width and read like the rest of it, not the rail's title, which only
+        the wide layout shows. The rail has the tab of the page's project alone, whose newest
+        run is unknown in view and to a screen reader (never "not inspected", never a count of
+        projects); the trail leads to that project, and nothing links a stored run."""
+        html = response.text
+        self.assertEqual(response.status_code, status, html)
+        assert_one_script(self, html)
+        said = f'<p class="warning">{self.app.RAIL_UNREAD}</p>\n'
+        main = main_of(html)
+        self.assertEqual((html.count(self.app.RAIL_UNREAD), main.count(said)), (1, 1))
+        self.assertNotIn("rail-title", html)
+        project = f"{S}/projects/{self.project_id}"
+        links = [attrs.get("href") for tag, attrs in Elements(main).found if tag == "a"]
+        self.assertEqual(links[:2], [project, f"{project}/updates"])  # the trail
+        # The rail's links: project management, then the projects, here the current one only.
+        tabs = re.findall(r'<a class="tab[^>]*>.*?</a>', html, re.S)
+        self.assertEqual(len(tabs), 2)
+        _, current = Elements(tabs[1]).found[0]
+        self.assertEqual((current["href"], current.get("aria-current")), (project, "true"))
+        words = unescape(re.sub(r"<[^>]+>", "", tabs[1]))
+        self.assertIn(self.project.name, words)
+        self.assertIn(self.app.RAIL_UNREAD_STATE, words)  # the state a screen reader is told
+        self.assertIn("알 수 없음", words)  # and the word in view
+        for absent in ("조치 필요", "미검사", "실행 기록 없음", f"{S}/runs/"):
+            self.assertNotIn(absent, html)
+        return main.replace(said, "")
 
 
 class UpdateCheckTests(ScreenFixture):
@@ -2634,6 +2695,54 @@ class ScanScreenTests(ScreenFixture):
                 self.assertIn(f'href="{S}/projects/{self.project_id}"', response.text)
         self.assertEqual(history.list_runs(self.project_id), [])
 
+    def test_a_scan_is_shown_when_the_history_breaks_while_it_runs(self):
+        """Neither the record nor the rail's read succeeds once the scan has run: the report is
+        shown as when only the record fails, the scan is not run again, and every other
+        request still ends as the fixed 500 until the history can be read."""
+        self.answer_errors()
+        with mock.patch.object(history, "record", side_effect=sqlite3.OperationalError("x")):
+            unrecorded = self.scan()
+        self.assertEqual(unrecorded.status_code, 200)
+        self.assertIn('<p class="rail-title">프로젝트 1개 · 조치 필요 0</p>', unrecorded.text)
+        history_file = self.db.read_bytes()
+        self.scan_project.side_effect = self.breaking(self.fake_scan)
+        response = self.scan()
+        self.assertEqual(self.assert_recovered(response), main_of(unrecorded.text))
+        self.assertIn(self.app.SCAN_NOT_RECORDED, response.text)
+        self.assertIn("검사 결과: ", response.text)
+        self.assertIn("example", main_of(response.text))
+        self.assertEqual(len(self.scanned), 2)  # one scan a request
+        # Outside that page nothing changed: a page, and a scan that cannot find its project.
+        self.assert_fixed_500(self.get(f"/projects/{self.project_id}"))
+        self.assert_fixed_500(self.get("/"))
+        self.assert_fixed_500(self.scan())
+        self.assertEqual(len(self.scanned), 2)
+        self.db.write_bytes(history_file)
+        self.assertEqual(history.list_runs(self.project_id), [])
+        self.assertIn('<p class="rail-title">프로젝트 1개 · 조치 필요 0</p>',
+                      self.page(f"/projects/{self.project_id}"))  # fmt: skip
+
+    def test_a_recorded_scan_keeps_its_stored_address_when_the_history_is_unread_later(self):
+        """A scan that was recorded goes to the address of its stored run, as ever. While the
+        history cannot be read that address is the fixed 500 like every stored page, and the
+        report is not lost: the same address shows it once the history is read again."""
+        self.answer_errors()
+        response = self.scan()
+        (run,) = history.list_runs(self.project_id)
+        self.assertEqual((response.status_code, response.headers["location"]),
+                         (303, f"{S}/runs/{run['id']}"))  # fmt: skip
+        history_file = self.db.read_bytes()
+        self.db.write_bytes(NO_HISTORY)
+        self.assert_fixed_500(self.get(f"/runs/{run['id']}"))
+        self.db.write_bytes(history_file)
+        self.assertIn("검사 결과: ", self.page(f"/runs/{run['id']}"))
+        self.assertEqual(len(self.scanned), 1)
+
+    def test_a_failed_scan_with_the_history_unread_is_still_the_fixed_500(self):
+        self.answer_errors()
+        self.scan_project.side_effect = self.breaking(mock.Mock(side_effect=GuardError("x")))
+        self.assert_fixed_500(self.scan())
+
     def test_errors_show_a_page_and_record_nothing(self):
         extract = 'Install analyzer dependencies: python -m pip install -e ".[extract]"'
         hostile = '<script>alert(1)</script> "quoted" \u202e'
@@ -2833,6 +2942,74 @@ class ApplyScreenTests(ScreenFixture):
         self.assertIn(f"원본 백업: {BACKUP}", response.text)
         self.assertIn(self.app.APPLY_NOT_RECORDED, response.text)
         self.assertEqual(history.list_applies(self.project_id), [])
+
+    def test_an_apply_is_shown_when_the_history_breaks_while_it_runs(self):
+        """Neither the apply record nor the rail's read succeeds once the files are replaced:
+        the result and the backup are shown as when only the record fails, and the preview is
+        used up, so nothing is applied again."""
+        self.answer_errors()
+        first = self.preview_id()
+        with mock.patch.object(history, "record_apply", side_effect=sqlite3.OperationalError("x")):
+            unrecorded = self.apply(first)
+        self.assertEqual(unrecorded.status_code, 200)
+        preview_id = self.preview_id()
+        history_file = self.db.read_bytes()
+        self.apply_preview.side_effect = self.breaking(self.fake_apply)
+        response = self.apply(preview_id)
+        self.assertEqual(self.assert_recovered(response), main_of(unrecorded.text))
+        self.assertIn("<h1>업데이트 반영: 반영함</h1>", response.text)
+        self.assertIn(f"원본 백업: {BACKUP}", response.text)
+        self.assertIn(self.app.APPLY_NOT_RECORDED, response.text)
+        self.assertEqual(self.apply_preview.call_count, 2)  # one apply a preview
+        self.assert_fixed_500(self.apply(preview_id))  # the page of a preview that is gone
+        self.assert_fixed_500(self.get(f"/projects/{self.project_id}/updates"))
+        self.db.write_bytes(history_file)
+        self.assert_stopped(self.apply(preview_id), 404, self.app.PREVIEW_GONE)
+        self.assertEqual(self.apply_preview.call_count, 2)
+        self.assertEqual(history.list_applies(self.project_id), [])
+
+    def test_an_apply_that_was_recorded_is_shown_when_the_rail_cannot_be_read(self):
+        self.answer_errors()
+        preview_id = self.preview_id()
+        (run,) = history.list_runs(self.project_id)
+        with mock.patch.object(self.app, "_tabs", side_effect=sqlite3.OperationalError("x")):
+            response = self.apply(preview_id)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(f'<p class="warning">{self.app.RAIL_UNREAD}</p>', main_of(response.text))
+        self.assertIn(f"원본 백업: {BACKUP}", response.text)
+        self.assertNotIn(self.app.APPLY_NOT_RECORDED, response.text)
+        # The run is stored, so its link is a true one.
+        self.assertIn(f'<a href="{S}/runs/{run["id"]}">실행 #{run["id"]}</a>에 반영 기록',
+                      response.text)  # fmt: skip
+        (stored,) = history.list_applies(self.project_id)
+        self.assertEqual((stored["run_id"], stored["backup"]), (run["id"], BACKUP))
+
+    def test_an_apply_the_service_failed_says_so_when_the_history_breaks_too(self):
+        """The preview is used up and the files may have changed: the page that says to look at
+        them is not replaced by the fixed text."""
+        self.answer_errors()
+        preview_id = self.preview_id()
+        history_file = self.db.read_bytes()
+        failing = mock.Mock(side_effect=OSError("C:/private synthetic-secret-0123456789"))
+        self.apply_preview.side_effect = self.breaking(failing)
+        response = self.apply(preview_id)
+        self.assert_recovered(response, 500)
+        self.assertIn(f'<p class="error">{self.app.APPLY_FAILED}</p>', response.text)
+        self.assertNotIn("synthetic-secret", response.text)
+        self.db.write_bytes(history_file)
+        self.assertEqual(self.get(f"/previews/{preview_id}").status_code, 404)
+
+    def test_an_apply_with_the_history_unread_runs_nothing_and_keeps_the_preview(self):
+        self.answer_errors()
+        preview_id = self.preview_id()
+        history_file = self.db.read_bytes()
+        self.db.write_bytes(NO_HISTORY)
+        self.assert_fixed_500(self.apply(preview_id))
+        self.assertEqual(self.apply_preview.call_count, 0)
+        self.db.write_bytes(history_file)
+        self.page(f"/previews/{preview_id}")  # still there
+        self.assertEqual(self.apply(preview_id).status_code, 200)
+        self.assertEqual(self.apply_preview.call_count, 1)
 
     def test_refused_and_failed_results_are_shown_and_need_a_new_check(self):
         cases = [

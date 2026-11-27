@@ -36,15 +36,18 @@
 {# A project on one line: its mark, its name (the whole path on hover), its state said for a
    screen reader, then in view its state in a word where the risk and hold counts of its newest
    run do not say it (hidden from a screen reader, which has the state already) and those
-   counts. A run whose result is unknown has the mark of no run and its own word (app._rail). #}
+   counts. A run whose result is unknown has the mark of no run and its own word (app._rail).
+   rail_unread: the history could not be read for this page (app.RAIL_UNREAD). The rail then has
+   no counts and the one tab there is (app._lone_tab) is of an unknown result; the page says why
+   at the top of main, in view at every width (the rail's title is only in the wide layout). #}
 <nav class="tabs" aria-label="프로젝트">
-<p class="rail-title">프로젝트 {{ tabs|length }}개 · 조치 필요 {{ attention }}</p>
-{% if rail %}
+{% if rail_unread is not defined %}<p class="rail-title">프로젝트 {{ tabs|length }}개 · 조치 필요 {{ attention }}</p>
+{% endif %}{% if rail %}
 <ul>
 {% for tab in rail %}
 {% set counts = tab.runs[0].counts if tab.runs else none %}
 {% set risk, hold = (counts.flagged, counts.incomplete) if counts else (0, 0) %}
-{% set state = "unknown" if tab.cell == "none" and tab.runs else tab.cell %}
+{% set state = "unknown" if tab.cell == "none" and (tab.runs or rail_unread is defined) else tab.cell %}
 {% set word = {"gone": "폴더 없음", "risk": "위험", "hold": "보류", "unknown": "알 수 없음", "none": "미검사", "pass": "통과"}[state] %}
 {% set said = (state == "risk" and risk) or (state == "hold" and hold) %}
 <li{% if tab.current %} class="here"{% endif %}><a class="tab" href="{{ base }}/projects/{{ tab.id }}" title="{{ tab.path }}"{% if tab.current %} aria-current="{{ "page" if section == "packages" else "true" }}"{% endif %}><span class="cell {{ tab.cell }}" aria-hidden="true"></span><span class="tab-name">{{ tab.name }}</span><span class="visually-hidden">, {{ tab.state }}</span><span class="tab-count">{% if not said %}<span class="n-{{ state }}" aria-hidden="true">{{ word }}</span>{% endif %}{% if risk %}{% if not said %} {% endif %}<span class="n-risk">위험 {{ risk }}</span>{% endif %}{% if hold %}{% if not said or risk %} {% endif %}<span class="n-hold">보류 {{ hold }}</span>{% endif %}</span></a></li>
@@ -53,7 +56,8 @@
 {% endif %}
 </nav>
 </header>
-<main id="main">
+<main id="main">{% if rail_unread is defined %}
+<p class="warning">{{ rail_unread }}</p>{% endif %}
 {% block main %}{% endblock %}
 </main>
 <footer>
