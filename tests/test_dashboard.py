@@ -6,15 +6,23 @@ with the history API. The Starlette TestClient talks to the app in-process; no s
 npm or registry.
 """
 
+import base64
 import contextlib
+import importlib.machinery
+import importlib.metadata
 import importlib.util
 import io
 import json
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
 import sys
+import tomllib
+import types
 import unittest
+import venv
 from collections import Counter
 from html import unescape
 from html.parser import HTMLParser
@@ -25,11 +33,13 @@ from urllib.parse import urlencode
 import test_mcp
 from test_apply import ApplyFixture, sha
 from test_detectors import ADVISORY, KnownList, Rules, rule
+from test_extract import FAKE_PIP
 from test_markdown import HOSTILE
 from test_output_formats import EXAMPLES, FormatFixture, older
 from test_workflow import Fixture, package
 
-from depbee import history, service
+from depbee import dashboard, history, service
+from depbee.analysis.extractor import _with_this_python
 from depbee.cli import SAFETY_NOTE, _clean, main
 from depbee.contracts import GuardError
 
@@ -3150,20 +3160,176 @@ class EndToEndTests(ApplyFixture):
 
 
 class WithoutWebTests(Fixture):
-    def test_dashboard_without_the_extra_says_how_to_install_it(self):
-        out, err, plan = io.StringIO(), io.StringIO(), io.StringIO()
-        # Every web module, also those other tests imported: none of them can be imported now.
-        hidden = {name: None for name in sys.modules if name.split(".")[0] in WEB_MODULES}
-        with mock.patch.dict(sys.modules, {**hidden, **dict.fromkeys(WEB_MODULES)}):
-            sys.modules.pop("depbee.dashboard.app", None)  # restored when the patch ends
+    """depbee dashboard where importing its web libraries fails, typed in the folder of an npm
+    project as the depbee of an installed wheel is: no Python project is there for pip."""
+
+    def refusal(self, absent=(), gone=(), modules=None, anew=(), path=None):
+        """The error of depbee dashboard: the one JSON object on stderr, with exit code 2 and
+        nothing on stdout. absent: packages that are not installed, with neither a module nor
+        an install record. gone: packages whose module is not found although their install
+        record is there. modules: what sys.modules holds besides. anew: packages that are
+        imported again. path: a folder that comes first on sys.path."""
+        modules = modules or {}
+        found = importlib.metadata.distribution
+        find = importlib.machinery.PathFinder.find_spec
+
+        def distribution(name):
+            if name in absent:
+                raise importlib.metadata.PackageNotFoundError(name)
+            return found(name)
+
+        # The finder of sys.path, which the import system and importlib.util.find_spec both
+        # ask: each then says of these packages what it says where they are not installed.
+        def find_spec(name, path=None, target=None):
+            return None if name.split(".")[0] in (*absent, *gone) else find(name, path, target)
+
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.dict(sys.modules),  # as it was once this ends
+            mock.patch.object(sys, "path", [str(path), *sys.path] if path else sys.path),
+            mock.patch("importlib.metadata.distribution", distribution),
+            mock.patch.object(importlib.machinery.PathFinder, "find_spec", find_spec),
+            contextlib.chdir(self.project),
+        ):
+            # Nothing that an earlier import left answers for them: a real import decides.
+            again = {name.split(".")[0] for name in (*absent, *gone, *modules, *anew)}
+            for name in [name for name in sys.modules if name.split(".")[0] in again]:
+                del sys.modules[name]
+            sys.modules.pop("depbee.dashboard.app", None)
+            sys.modules.update(modules)
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 code = main(["dashboard"])
-            with contextlib.redirect_stdout(plan):  # other commands do not need the extra
-                planned = main(["plan", str(self.project), "--base-lock", str(self.base)])
         self.assertEqual((code, out.getvalue()), (2, ""))
-        error = json.loads(err.getvalue())
-        self.assertEqual(error["status"], "error")
-        self.assertIn('pip install -e ".[web]"', error["error"])
         self.assertNotIn("Traceback", err.getvalue())
+        error = json.loads(err.getvalue())
+        self.assertEqual((error["status"], error["exit_code"]), ("error", 2))
+        self.assertNotIn(chr(0x2014), error["error"])
+        return error["error"]
+
+    def assert_no_command(self, error, cause, why):
+        self.assertIn(f"({sys.executable}): ", error)
+        self.assertIn(cause, error)
+        self.assertTrue(error.endswith(f"No install command is suggested: {why}."), error)
+        self.assertNotIn("pip install", error)
+        self.assertNotIn("Not installed", error)
+
+    def test_the_requirements_named_are_the_web_extra(self):
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        project = tomllib.loads(pyproject.read_text("utf-8"))["project"]
+        self.assertEqual(list(dashboard.WEB.values()), project["optional-dependencies"]["web"])
+        self.assertEqual([re.match("[a-z0-9]+", text)[0] for text in dashboard.WEB.values()],
+                         list(dashboard.WEB))  # fmt: skip
+
+    def test_absent_libraries_get_one_command_for_them_that_ends_the_error(self):
+        cases = [tuple(dashboard.WEB)]
+        if WEB:  # the others are installed here
+            cases += [("starlette",), ("jinja2",), ("uvicorn",), ("starlette", "uvicorn")]
+        # The Python that runs this, and one whose path each shell has to write in its own way.
+        for python in (sys.executable, str(self.root / "O'Brien [dev] env" / "python")):
+            for absent in cases:
+                with self.subTest(python=python, absent=absent):
+                    with mock.patch.object(sys, "executable", python):
+                        error = self.refusal(absent)
+                        shown = _with_this_python(*(dashboard.WEB[name] for name in absent))
+                    lead = error.removesuffix(shown)
+                    self.assertNotEqual(lead, error)  # nothing follows the command
+                    self.assertRegex(lead, r": No module named '\w+'\. ")  # the cause, before it
+                    self.assertIn(f"Not installed: {', '.join(absent)}. ", lead)
+                    self.assertNotIn("pip install", lead)
+                    self.assertNotIn(".[web]", error)  # no project is here to take an extra from
+        plan = io.StringIO()
+        gone = {name: None for name in (*sys.modules, *WEB_MODULES)
+                if name.split(".")[0] in WEB_MODULES}  # fmt: skip
+        with mock.patch.dict(sys.modules, gone), contextlib.redirect_stdout(plan):
+            # Other commands do not need the libraries.
+            planned = main(["plan", str(self.project), "--base-lock", str(self.base)])
         self.assertEqual(planned, 0)
         self.assertEqual(len(json.loads(plan.getvalue())["changes"]), 1)
+
+    def test_what_follows_the_lead_runs_as_typed_in_the_npm_folder(self):
+        """All that the error says after its lead, typed in the npm project's folder in each
+        shell found here, runs the pip of the Python that ran depbee with those requirements
+        and nothing else. That Python is a stand-in whose pip only reports how it was run."""
+        shells = [shell for shell in ("powershell", "pwsh") if shutil.which(shell)]
+        if os.name != "nt":
+            shells = ["sh"]
+        elif not shells:
+            self.skipTest("no PowerShell here")
+        for folder in ("O'Brien env", "O'Brien [dev] env"):  # PowerShell: one form for each
+            home = self.root / folder
+            venv.create(home, with_pip=False)
+            (python,) = [file for file in (home / "Scripts" / "python.exe", home / "bin" / "python")
+                         if file.exists()]  # fmt: skip
+            (site,) = [*home.glob("Lib/site-packages"), *home.glob("lib/python*/site-packages")]
+            (site / "pip").mkdir()
+            (site / "pip" / "__main__.py").write_text(FAKE_PIP, "utf-8")
+            with mock.patch.object(sys, "executable", str(python)):
+                error = self.refusal(tuple(dashboard.WEB))
+            lead = ", in PowerShell: " if os.name == "nt" else " the Python that runs depbee: "
+            typed = error.partition(lead)[2]
+            self.assertTrue(typed, error)
+            for shell in shells:
+                with self.subTest(folder=folder, shell=shell):
+                    command = [shell, "-c", typed]
+                    if os.name == "nt":
+                        command = [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                                   base64.b64encode(typed.encode("utf-16-le")).decode()]  # fmt: skip
+                    # Without PowerShell 7's module path Windows PowerShell loads its own modules.
+                    env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+                    done = subprocess.run(command, cwd=self.project, env=env, timeout=120,
+                                          stdin=subprocess.DEVNULL, capture_output=True,
+                                          text=True, errors="replace")  # fmt: skip
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    ((ran, arguments, where),) = [json.loads(line[4:])
+                                                  for line in done.stdout.splitlines()
+                                                  if line.startswith("PIP ")]  # fmt: skip
+                    self.assertTrue(Path(ran).samefile(python), ran)
+                    self.assertEqual(arguments, ["install", *dashboard.WEB.values()])
+                    self.assertTrue(Path(where).samefile(self.project), where)
+
+    def test_a_library_left_without_its_module_gets_no_command(self):
+        # What is left of a library whose package folder is gone: its install record, which is
+        # what pip goes by. What an install would do then is not depbee's to promise.
+        site = self.root / "site"
+        for name in dashboard.WEB:
+            (site / f"{name}-0.dist-info").mkdir(parents=True)
+            (site / f"{name}-0.dist-info" / "METADATA").write_text(
+                f"Metadata-Version: 2.1\nName: {name}\nVersion: 0\n", "utf-8")  # fmt: skip
+        why = "jinja2 is recorded as installed there"
+        # Alone, and with others that are absent: their command would not bring jinja2 back.
+        for absent in ((), ("starlette", "uvicorn")):
+            with self.subTest(absent=absent):
+                gone = [name for name in dashboard.WEB if name not in absent]
+                error = self.refusal(absent, gone, path=site)
+                self.assert_no_command(error, "No module named 'jinja2'", why)
+        # An absent library that is what failed keeps its command, for the absent ones alone.
+        error = self.refusal(("jinja2", "uvicorn"), ("starlette",), path=site)
+        self.assertIn("Not installed: jinja2, uvicorn. ", error)
+        self.assertTrue(error.endswith(_with_this_python(dashboard.WEB["jinja2"],
+                                                         dashboard.WEB["uvicorn"])), error)  # fmt: skip
+
+    @unittest.skipUnless(WEB, NO_WEB)
+    def test_installed_libraries_that_fail_to_import_get_the_cause_and_no_command(self):
+        shadow = self.root / "shadow"
+        shadow.mkdir()
+        (shadow / "starlette.py").write_text("", "utf-8")
+        cases = {
+            # Not the Starlette the dashboard was written for: the name it imports is not there.
+            "broken": ("cannot import name 'Starlette'", {
+                "modules": {"starlette.applications": types.ModuleType("starlette.applications")},
+            }),
+            # Jinja2 is there and what it imports itself is not.
+            "transitive": ("No module named 'markupsafe'", {
+                "gone": ("markupsafe",), "anew": ("jinja2",),
+            }),
+            # An absent library is not what failed: installing it would leave this cause.
+            "transitive, another absent": ("No module named 'markupsafe'", {
+                "absent": ("uvicorn",), "gone": ("markupsafe",), "anew": ("jinja2",),
+            }),
+            # A file of that name comes before the library on sys.path.
+            "shadowed": ("'starlette' is not a package", {"anew": ("starlette",), "path": shadow}),
+        }  # fmt: skip
+        for label, (cause, state) in cases.items():
+            with self.subTest(label):
+                self.assert_no_command(self.refusal(**state), cause,
+                                       "what failed is not a web library missing from that Python")

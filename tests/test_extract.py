@@ -13,6 +13,7 @@ import io
 import itertools
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -44,6 +45,7 @@ from depbee.analysis.baseline import select_baseline
 from depbee.analysis.extractor import ExtractorAnalyzer, FeatureExtractorBackend, _with_this_python
 from depbee.cli import _print_text, main
 from depbee.contracts import GuardError, read_json
+from depbee.dashboard import WEB
 from depbee.inputs.npm import build_package_request, check_package_spec
 from depbee.pipeline import LOCKFILE_SCOPE, PACKAGE_SCOPE, scan
 from depbee.service import check_package, scan_project
@@ -1080,15 +1082,32 @@ foreach ($statement in $ast.EndBlock.Statements) {
 
 PIN = ("depbee-analyzer @ git+https://github.com/26-Capstone-Project-Team01/depbee-analyzer@"
        + "a" * 40)  # fmt: skip
+# Several requirements in one command, as depbee dashboard names the web libraries it lacks.
+SEVERAL = tuple(WEB.values())
+
+
+class PosixInstallCommandTests(unittest.TestCase):
+    def test_a_posix_shell_reads_back_the_python_and_each_requirement(self):
+        python = "/home/A O'Brien/my env $HOME [x]*/bin/python"
+        for requirements in ((PIN,), (".[extract]",), SEVERAL, ("it's >=1,<2", "a b")):
+            with mock.patch.object(os, "name", "posix"):
+                with mock.patch.object(sys, "executable", python):
+                    said = _with_this_python(*requirements)
+            self.assertTrue(said.startswith(": "), said)
+            self.assertEqual(shlex.split(said[2:]),
+                             [python, "-m", "pip", "install", *requirements])  # fmt: skip
+            if requirements == (".[extract]",):  # one requirement reads as it did
+                self.assertEqual(said, f": {shlex.quote(python)} -m pip install '.[extract]'")
 
 
 class PowerShellInstallCommandTests(unittest.TestCase):
     """The analyzer install command of a Windows depbee (extractor._with_this_python), read back
     by the parser of each PowerShell found here: Windows PowerShell 5.1 and PowerShell 7 (CI's
-    Windows runner has both, its Linux runner pwsh). The path and the requirement are opaque
-    text: whatever they hold, the parser must read one call of that Python with that one
-    requirement. Only the parse is checked: when it runs the call, 5.1 splits a requirement that
-    holds a double quote on python.exe's command line, and depbee's requirements never do."""
+    Windows runner has both, its Linux runner pwsh). The path and the requirements are opaque
+    text: whatever they hold, the parser must read one call of that Python with each
+    requirement as one word. Only the parse is checked: when it runs the call, 5.1 splits a
+    requirement that holds a double quote on python.exe's command line, and depbee's
+    requirements never do."""
 
     def test_each_powershell_reads_back_the_python_and_the_requirement(self):
         shells = [shell for shell in ("powershell", "pwsh") if shutil.which(shell)]
@@ -1101,14 +1120,15 @@ class PowerShellInstallCommandTests(unittest.TestCase):
         odd = ("O'Brien O\u2019Brien \u2018\u201a\u201b '' \u2019\u2019 '\u2019 "
                "\u201c\u201d\u201e\" $HOME 한글")  # fmt: skip
         cases = [
-            ("C:\\Users\\A O\u2019Brien space\\venv\\Scripts\\python.exe", PIN),
-            (f"C:\\Users\\{odd}\\my env\\Scripts\\python.exe", ".[extract]"),
-            ("C:\\Program Files\\Python313\\python.exe", f"{odd} `$x [y] @ file:///C:/{odd}"),
-        ]
+            ("C:\\Users\\A O\u2019Brien space\\venv\\Scripts\\python.exe", (PIN,)),
+            (f"C:\\Users\\{odd}\\my env\\Scripts\\python.exe", (".[extract]",)),
+            ("C:\\Program Files\\Python313\\python.exe", (f"{odd} `$x [y] @ file:///C:/{odd}",)),
+            (f"C:\\Users\\{odd}\\my env\\Scripts\\python.exe", (*SEVERAL, f"{odd} `$x [y]")),
+        ]  # fmt: skip
         commands = []
-        for python, requirement in cases:
+        for python, requirements in cases:
             with mock.patch.object(os, "name", "nt"), mock.patch.object(sys, "executable", python):
-                said = _with_this_python(requirement)
+                said = _with_this_python(*requirements)
             self.assertTrue(said.startswith(", in PowerShell: & "), said)
             commands.append(said.removeprefix(", in PowerShell: "))
         for shell in shells:
@@ -1125,8 +1145,8 @@ class PowerShellInstallCommandTests(unittest.TestCase):
                 self.assertEqual(
                     [[*line[:2], *(base64.b64decode(word).decode() for word in line[2:])]
                      for line in read],
-                    [["1", "Ampersand", python, "-m", "pip", "install", requirement]
-                     for python, requirement in cases],
+                    [["1", "Ampersand", python, "-m", "pip", "install", *requirements]
+                     for python, requirements in cases],
                 )  # fmt: skip
 
 
@@ -1173,13 +1193,13 @@ class PowerShellLiteralPathTests(unittest.TestCase):
             shutil.copyfile(scripts / "python.exe", scripts / exe)
         return scripts / exe
 
-    def ran(self, python, where, requirement=".[extract]", **env):
+    def ran(self, python, where, requirements=(".[extract]",), **env):
         """{(shell, error preference): (runs, $? of the line, the session's folder afterwards,
-        stderr)} for the command depbee prints for that Python and requirement, typed in folder
+        stderr)} for the command depbee prints for that Python and requirements, typed in folder
         where; runs are (interpreter, arguments, pip's folder). Asserts that the preference and a
         variable of the user's are as before and that the session went on after the line."""
         with mock.patch.object(sys, "executable", str(python)):
-            command = _with_this_python(requirement).removeprefix(", in PowerShell: ")
+            command = _with_this_python(*requirements).removeprefix(", in PowerShell: ")
         # Without PowerShell 7's module path a Windows PowerShell child loads its own modules.
         env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"} | env
         env["WHERE"] = str(where)
@@ -1230,26 +1250,28 @@ class PowerShellLiteralPathTests(unittest.TestCase):
         named = "A O\u2019Brien 'q' 한글"
         checkout = self.root / "checkout [c] O\u2019Brien"
         checkout.mkdir()
-        cases = [  # folder, file name, decoys as (folder, file name), requirement
-            (named, "python.exe", [], ".[extract]"),
+        cases = [  # folder, file name, decoys as (folder, file name), requirements
+            (named, "python.exe", [], (".[extract]",)),
+            (named, "python.exe", [], SEVERAL),
             (f"proj [old] {named}", "python.exe",
-             [(f"proj o {named}", "python.exe"), (f"proj `[old`] {named}", "python.exe")], PIN),
-            ("open x[1", "python.exe", [], ".[extract]"),
-            ("space [s]", "py thon.exe", [], ".[extract]"),
-            ("pct %PATH% 한글", "py[thon.exe", [], ".[extract]"),
-            ("names", "py[t]x.exe", [("names", "pytx.exe")], PIN),
-            ("names", "py`y.exe", [("names", "pyy.exe")], ".[extract]"),
+             [(f"proj o {named}", "python.exe"), (f"proj `[old`] {named}", "python.exe")], (PIN,)),
+            (f"proj [old] {named}", "python.exe", [], (*SEVERAL, "a b [c] 'd'")),
+            ("open x[1", "python.exe", [], (".[extract]",)),
+            ("space [s]", "py thon.exe", [], (".[extract]",)),
+            ("pct %PATH% 한글", "py[thon.exe", [], (".[extract]",)),
+            ("names", "py[t]x.exe", [("names", "pytx.exe")], (PIN,)),
+            ("names", "py`y.exe", [("names", "pyy.exe")], (".[extract]",)),
         ]  # fmt: skip
-        for folder, exe, decoys, requirement in cases:
+        for folder, exe, decoys, requirements in cases:
             with self.subTest(f"{folder}/{exe}"):
                 for decoy in decoys:
                     self.python(*decoy)
                 python = self.python(folder, exe)
-                for key, (runs, ok, here, err) in self.ran(python, checkout, requirement).items():
+                for key, (runs, ok, here, err) in self.ran(python, checkout, requirements).items():
                     self.assertEqual(len(runs), 1, (key, runs, err))
                     found, args, cwd = runs[0]
                     self.assertTrue(found.samefile(python), (key, found))
-                    self.assertEqual(args, ["install", requirement], key)
+                    self.assertEqual(args, ["install", *requirements], key)
                     self.assertTrue(cwd.samefile(checkout), (key, cwd))
                     self.assertTrue(ok, (key, err))
                     self.assertTrue(here.samefile(checkout), (key, here))

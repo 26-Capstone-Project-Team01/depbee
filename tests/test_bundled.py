@@ -12,6 +12,7 @@ import hashlib
 import importlib.metadata
 import json
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -408,8 +409,8 @@ class ResolverTests(NativeAssets):
                   else "/home/o'brien/my env/bin/python")  # fmt: skip
 
         def command(said):
-            """The command of an instruction: after its colon, before the import error."""
-            return said.partition(": ")[2].rpartition(" (")[0]
+            """What a user types: all that an instruction says after its lead."""
+            return re.split("that runs (?:it|depbee)(?:, in PowerShell)?: ", said, maxsplit=1)[1]
 
         with mock.patch.dict(sys.modules, missing):
             self.assertEqual(self.used(), ("synthetic-test-only", self.index_sha))
@@ -418,13 +419,16 @@ class ResolverTests(NativeAssets):
             # An installed depbee names the public commit it pins and the Python that runs it:
             # a command for any folder and any PATH. A bare "python" could be another
             # environment's, and the old ".[extract]" meant whatever project the user stood in.
+            # The import error comes before the command, which nothing follows.
+            missing = ("depbee-analyzer is missing (import of depbee_analyzer.core.errors halted; "
+                       "None in sys.modules). ")  # fmt: skip
             self.assertTrue(pinned.startswith(
-                "depbee-analyzer is missing. Install the commit that this depbee pins into the "
-                "Python that runs it"), pinned)  # fmt: skip
+                missing + "Install the commit that this depbee pins into the Python that runs "
+                "it"), pinned)  # fmt: skip
             # Run from a source tree, depbee has no metadata to name a commit from.
             self.assertTrue(extra.startswith(
-                "depbee-analyzer is missing. In a depbee checkout, install it into the Python "
-                "that runs depbee"), extra)  # fmt: skip
+                missing + "In a depbee checkout, install it into the Python that runs "
+                "depbee"), extra)  # fmt: skip
             for said, requirement in ((pinned, pin), (extra, ".[extract]")):
                 with self.subTest(requirement):
                     if windows:  # PowerShell: & calls a quoted path, a quote inside one doubled
