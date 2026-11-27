@@ -261,7 +261,7 @@ class InspectorTests(test_dashboard.DashboardFixture):
                       "보류</span>", row)  # fmt: skip
         self.assertIn('<p class="row-why">분석 결과 없음</p>', row)
         self.assertIn(
-            f'href="{test_dashboard.S}{self.updates}?item={run}.1#candidate-evidence">근거 열기',
+            f'href="{self.updates}?item={run}.1#candidate-evidence">근거 열기',
             row,
         )
         outside = html.split('<aside class="inspector"', 1)[0]
@@ -270,7 +270,7 @@ class InspectorTests(test_dashboard.DashboardFixture):
         # The named check is one line above, folded until it is opened.
         self.assertRegex(html, r'(?s)<div class="action-line">\s*<details class="named">\s*'
                                r"<summary>패키지를 지정해 업데이트</summary>.*?"
-                               rf'<form method="post" action="{test_dashboard.S}{self.packages}/previews"')  # fmt: skip
+                               rf'<form method="post" action="{self.packages}/previews"')  # fmt: skip
         self.assertIn('name="packages" type="text"', html)
 
     def test_the_updates_view_opens_its_riskiest_candidate_and_says_why_each_waits(self):
@@ -311,7 +311,7 @@ class InspectorTests(test_dashboard.DashboardFixture):
         html = self.page(f"{self.packages}?item={inner}")
         tabs = html.split('<nav class="filter-tabs"', 1)[1].split("</nav>", 1)[0]
         self.assertIn(
-            f'href="{test_dashboard.S}/projects/{self.project_id}?show=candidates&amp;item={inner}"',
+            f'href="/projects/{self.project_id}?show=candidates&amp;item={inner}"',
             tabs,
         )
         self.assertIn(f'<input type="hidden" name="item" value="{inner}">', html)
@@ -465,7 +465,7 @@ class InspectorTests(test_dashboard.DashboardFixture):
                      f"<dt>점수 원값</dt><dd>{tiny!r}</dd>", "<dt>판정 기준 점수</dt><dd>0.5</dd>",
                      "<dt>모델</dt><dd>unit-test</dd>", "synthetic evidence",
                      '<h3 id="basis-title">저장된 보고서</h3>',
-                     f'<a href="{test_dashboard.S}/runs/{run}">#{run}</a>',
+                     f'<a href="/runs/{run}">#{run}</a>',
                      "보고서에서 전체 근거 보기"]  # fmt: skip
             places = [body.find(mark) for mark in marks]
             self.assertNotIn(-1, places, view)

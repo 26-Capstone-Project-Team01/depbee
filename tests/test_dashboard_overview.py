@@ -1,4 +1,4 @@
-"""Dashboard overview (the session's first page): which page the root address opens, what the
+"""Dashboard overview (the console's first page): which page the root address opens, what the
 overview is given of each registered project (`portfolio`) and of all of them together
 (`chart`), what the page says of them, that a registration that did not happen stays on the
 management page, the start address and the files of static/ that are served.
@@ -27,7 +27,7 @@ from test_history import sql
 from depbee import history
 from depbee.cli import MODE_LABELS, OUTCOME_LABELS, OVERALL_LABELS, main
 
-S, SESSION, PREVIEW = test_dashboard.S, test_dashboard.SESSION, test_dashboard.PREVIEW
+CSRF, PREVIEW = test_dashboard.CSRF, test_dashboard.PREVIEW
 document = test_dashboard.applied_document
 # The chart's entries for the states it always lists, with no project in any of them.
 CORE = [{"key": key, "cell": key, "label": label, "count": 0}
@@ -336,7 +336,7 @@ class OverviewTests(test_dashboard.DashboardFixture):
 
         # Each project is the way into itself, with its folder under its name.
         for project_id, name in enumerate(("project", "fresh", "moved", "gone"), 1):
-            self.assertIn(f'<a class="ov-name" href="{S}/projects/{project_id}" title="{name}">{name}</a>', html)
+            self.assertIn(f'<a class="ov-name" href="/projects/{project_id}" title="{name}">{name}</a>', html)
         full = str(self.project.resolve())
         self.assertIn(
             f'<span class="ov-path" title="{full}">{self.app._short_path(full)}</span>', html
@@ -372,8 +372,8 @@ class OverviewTests(test_dashboard.DashboardFixture):
         self.assertRegex(html, rf'<span class="verdict risk" title="{re.escape(why)}, {time}">')
         self.assertRegex(found[5], rf"^마지막 성공 반영 {time} gone 마지막 성공 반영 보고서 #{done}$")
         for run in (scan, stale, refused, done):
-            self.assertIn(f'href="{S}/runs/{run}"', html)
-        self.assertIn(f'<a class="ov-add" href="{S}/?manage=1">프로젝트 추가</a>', html)
+            self.assertIn(f'href="/runs/{run}"', html)
+        self.assertIn('<a class="ov-add" href="/?manage=1">프로젝트 추가</a>', html)
 
     def test_the_last_success_is_the_newest_attempt_when_that_one_changed_the_files(self):
         self.ticking()
@@ -383,8 +383,8 @@ class OverviewTests(test_dashboard.DashboardFixture):
         row = self.page("/").split(">project</a>", 1)[1].split("</tr>", 1)[0]
         attempt, last = re.split(r"<td [^>]*>", row)[-2:]
         self.assertIn('<span class="verdict pass" title="방식: lockfile 반영, ', attempt)
-        self.assertIn(f'href="{S}/runs/{run}"', attempt)
-        self.assertIn(f'href="{S}/runs/{run}"', last)
+        self.assertIn(f'href="/runs/{run}"', attempt)
+        self.assertIn(f'href="/runs/{run}"', last)
         self.assertNotIn("없음", last)
 
     def test_a_narrow_overview_stacks_each_project_as_a_card(self):
@@ -477,8 +477,8 @@ class OverviewTests(test_dashboard.DashboardFixture):
             choose.return_value = ("cancelled", None)
             closed = self.pick()
             self.assertEqual((closed.status_code, closed.headers["location"]),
-                             (303, f"{S}/?manage=1"))  # fmt: skip
-            self.assertEqual(self.view(closed.headers["location"].removeprefix(S))[0],
+                             (303, "/?manage=1"))  # fmt: skip
+            self.assertEqual(self.view(closed.headers["location"])[0],
                              "projects.html")  # fmt: skip
             # A second dialog while one is open is refused, on a page of the management section.
             seen = []
@@ -489,7 +489,7 @@ class OverviewTests(test_dashboard.DashboardFixture):
                 return "cancelled", None
 
             choose.side_effect = open_dialog
-            self.assertEqual(self.pick().headers["location"], f"{S}/?manage=1")
+            self.assertEqual(self.pick().headers["location"], "/?manage=1")
             ((response, name, context),) = seen
             self.assertEqual((response.status_code, name, context["section"], context["reopen"]),
                              (409, "error.html", "manage", self.app.PICK_REOPEN))  # fmt: skip
@@ -500,9 +500,9 @@ class OverviewTests(test_dashboard.DashboardFixture):
             choose.return_value = ("chosen", str(folder))
             opened = self.pick()
             self.assertEqual((opened.status_code, opened.headers["location"]),
-                             (303, f"{S}/projects/2"))  # fmt: skip
+                             (303, "/projects/2"))  # fmt: skip
             choose.return_value = ("chosen", str(self.project))  # the first one again
-            self.assertEqual(self.pick().headers["location"], f"{S}/projects/1")
+            self.assertEqual(self.pick().headers["location"], "/projects/1")
         self.assertEqual(len(history.list_projects()), 2)
 
     def test_before_the_first_project_a_dialog_that_fails_ends_on_project_management(self):
@@ -523,25 +523,24 @@ class OverviewTests(test_dashboard.DashboardFixture):
             # Closing the dialog is no failure: the start page again.
             choose.return_value = ("cancelled", None)
             closed = self.pick()
-            self.assertEqual(self.view(closed.headers["location"].removeprefix(S))[0],
+            self.assertEqual(self.view(closed.headers["location"])[0],
                              "start.html")  # fmt: skip
             self.assertFalse(self.db.exists())
             # None of that registered anything: the next folder the dialog answers is the
             # first project of all, which ends on the overview.
             choose.return_value = ("chosen", str(self.project))
-            self.assertEqual(self.pick().headers["location"], f"{S}/")
+            self.assertEqual(self.pick().headers["location"], "/")
         self.assertEqual(self.view("/")[0], "overview.html")
 
     def reopened(self):
         """(template, context) of the first page of another run of the dashboard, with its own
-        session, on the same history."""
+        form value, at the same address and on the same history."""
         from starlette.testclient import TestClient
 
-        session = "another-synthetic-session-for-tests-9876543210"
-        client = TestClient(self.app.build_app(test_dashboard.PORT, session),
+        client = TestClient(self.app.build_app(test_dashboard.PORT, "another-run-9876543210"),
                             base_url=test_dashboard.BASE)  # fmt: skip
         self.addCleanup(client.close)
-        response, name, context = self.rendered(lambda: client.get(f"/s/{session}/"))
+        response, name, context = self.rendered(lambda: client.get("/"))
         self.assertEqual(response.status_code, 200)
         return name, context
 
@@ -567,7 +566,7 @@ class OverviewTests(test_dashboard.DashboardFixture):
             self.assertEqual(history.list_projects(), [])
             response = register(first)
             self.assertEqual((response.status_code, response.headers["location"]),
-                             (303, f"{S}/"))  # fmt: skip
+                             (303, "/"))  # fmt: skip
             # That address is the overview now, with the project and nothing inspected.
             name, context = self.view("/")
             self.assertEqual((name, context["section"]), ("overview.html", "overview"))
@@ -578,8 +577,8 @@ class OverviewTests(test_dashboard.DashboardFixture):
             self.assertEqual(context["chart"], [*CORE[:3], {**CORE[3], "count": 1}])
             # Only the first of all: the same folder again, and the next one, open their own
             # project as before.
-            self.assertEqual(register(first).headers["location"], f"{S}/projects/1")
-            self.assertEqual(register(second).headers["location"], f"{S}/projects/2")
+            self.assertEqual(register(first).headers["location"], "/projects/1")
+            self.assertEqual(register(second).headers["location"], "/projects/2")
             self.assertEqual([project["path"] for project in history.list_projects()],
                              [str(first.resolve()), str(second.resolve())])  # fmt: skip
             # It is the history that holds them: another run opens the overview too.
@@ -638,7 +637,7 @@ class OverviewTests(test_dashboard.DashboardFixture):
                 self.assertEqual(main(["dashboard", "--port", "0"]), 0)  # the foreground command
                 self.app.serve(0, background=background)  # as the background instance serves
             for url in (out.getvalue().splitlines()[0], background.publish.call_args.args[0]):
-                self.assertRegex(url, r"\Ahttp://127\.0\.0\.1:\d+/s/[A-Za-z0-9_-]{43}/\Z", count)
+                self.assertRegex(url, r"\Ahttp://127\.0\.0\.1:[1-9]\d*/\Z", count)
         self.assertEqual(set(hosts), {"127.0.0.1"})
         # The two stylesheets and the one script, each as what it is.
         self.assertEqual((self.app.STYLES, self.app.SCRIPT),
@@ -657,9 +656,10 @@ class OverviewTests(test_dashboard.DashboardFixture):
                 self.assertEqual(
                     (response.status_code, response.headers["content-type"], response.text),
                     (200, kind, f"/* {name} */"))  # fmt: skip
-                # Never read as anything else, and never from outside this run's address.
+                # Never read as anything else, and never loaded by a page of another site.
                 self.assertEqual(response.headers["x-content-type-options"], "nosniff")
-                self.assertEqual(self.client.get(f"/static/{name}").status_code, 403)
+                foreign = {"sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors"}
+                self.assertEqual(self.get(f"/static/{name}", headers=foreign).status_code, 403)
             # Any other name is no page at all: no file is looked for.
             for url in ("/static/secret.css", "/static/secret.js", "/static/",
                         "/static/overview.css/", "/static/app.js/", "/static/%2e%2e/outside.css",

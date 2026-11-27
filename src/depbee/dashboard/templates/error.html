@@ -7,5 +7,5 @@
 {# note: what to do next when nothing ran (app.stopped); the failed runs below were not stored. #}
 {% if note is not defined %}<p>이력에 기록하지 않았습니다.</p>{% elif note %}<p>{{ note }}</p>{% endif %}
 {# reopen: the words of a link (a GET) that opens project management as it is now. #}
-{% if reopen is defined %}<p><a href="{{ base }}/?manage=1">{{ reopen }}</a></p>{% endif %}
+{% if reopen is defined %}<p><a href="/?manage=1">{{ reopen }}</a></p>{% endif %}
 {% endblock %}

@@ -6,7 +6,7 @@
    lockfile entries, current candidates, stored runs). A preview sent from the packages view
    says what that view showed (back, app._back: kept and picked are that view's), so that the
    preview's page can lead back to it. #}
-{% set url = base ~ "/projects/" ~ project.id %}
+{% set url = "/projects/" ~ project.id %}
 <header class="project-head">
 <div class="head-line">
 <div class="head-name">
@@ -16,18 +16,18 @@
 {% if project.found %}
 <div class="head-actions">
 <form method="post" action="{{ url }}/previews" id="preview-project">
-<input type="hidden" name="session" value="{{ session }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
 {% if section == "packages" %}<input type="hidden" name="back" value="{{ kept }}{% if picked is not none %}item={{ picked.run_id }}.{{ picked.position }}{% endif %}">
 {% endif %}<button class="primary" type="submit" data-busy-label="업데이트 미리보기 중…" name="packages" value="">{{ "전체 업데이트 다시 미리보기(update)" if head.full else "전체 업데이트 미리보기(update)" }}</button>
 </form>
 <form method="post" action="{{ url }}/scans">
-<input type="hidden" name="session" value="{{ session }}"><button type="submit" data-busy-label="lockfile 변경 검사 중…">lockfile 변경 검사(scan)</button>
+<input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" data-busy-label="lockfile 변경 검사 중…">lockfile 변경 검사(scan)</button>
 </form>
 </div>
 {% endif %}
 </div>
 {% if not project.found %}
-<p class="error">프로젝트 폴더를 찾을 수 없습니다. 폴더를 원래 위치로 되돌리면 다시 읽습니다. 옮긴 폴더는 <a href="{{ base }}/?manage=1">프로젝트 관리</a>에서 새로 등록하세요. 지난 실행과 반영 기록은 <a href="{{ url }}/history">기록</a>에 그대로 있습니다.</p>
+<p class="error">프로젝트 폴더를 찾을 수 없습니다. 폴더를 원래 위치로 되돌리면 다시 읽습니다. 옮긴 폴더는 <a href="/?manage=1">프로젝트 관리</a>에서 새로 등록하세요. 지난 실행과 반영 기록은 <a href="{{ url }}/history">기록</a>에 그대로 있습니다.</p>
 {% endif %}
 <nav class="views" aria-label="{{ project.name }} 화면">
 {% for key, path, label in (("packages", "", "패키지"), ("updates", "/updates", "업데이트"), ("history", "/history", "기록")) %}

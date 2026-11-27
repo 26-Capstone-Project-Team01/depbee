@@ -8,6 +8,7 @@ npm or registry.
 
 import base64
 import contextlib
+import errno
 import importlib.machinery
 import importlib.metadata
 import importlib.util
@@ -16,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -48,10 +50,9 @@ WEB = all(importlib.util.find_spec(name) for name in ("starlette", "jinja2", "uv
 NO_WEB = "web extra ([web] and httpx2) not installed; the dashboard is not tested here"
 PORT = 48213
 BASE = f"http://127.0.0.1:{PORT}"
-SESSION = "synthetic-session-value-for-tests-only-0123456789"
-S = f"/s/{SESSION}"  # every page, form and link is under this prefix
-# The one script element a page has: the file under the session, never a script of the page's own.
-SCRIPT = f'<script src="{S}/static/app.js" defer></script>'
+CSRF = "synthetic-csrf-value-for-tests-only-0123456789"  # the hidden field of every form
+# The one script element a page has: the one file, never a script of the page's own.
+SCRIPT = '<script src="/static/app.js" defer></script>'
 WEB_MODULES = ("starlette", "jinja2", "uvicorn", "markupsafe")
 PREVIEW = {
     "targets": ["example"], "npm_version": "11.6.1", "package_json_sha256": "0" * 64,
@@ -132,7 +133,7 @@ def assert_one_script(case, html):
     case.assertEqual((html.count("<script"), html.count(SCRIPT)), (1, 1))
     elements = Elements(html).found
     case.assertEqual([attrs for tag, attrs in elements if tag == "script"],
-                     [{"src": f"{S}/static/app.js", "defer": None}])  # fmt: skip
+                     [{"src": "/static/app.js", "defer": None}])  # fmt: skip
     case.assertEqual([name for _, attrs in elements for name in attrs if name.startswith("on")],
                      [])  # fmt: skip
 
@@ -146,24 +147,27 @@ class DashboardFixture(FormatFixture):
         from depbee.dashboard import app
 
         self.app = app
-        self.client = TestClient(app.build_app(PORT, SESSION), base_url=BASE)
+        self.client = TestClient(app.build_app(PORT, CSRF), base_url=BASE)
         self.addCleanup(self.client.close)
         self.db = Path(os.environ["DEPBEE_HISTORY_DB"])
 
     def get(self, url, **kwargs):
-        return self.client.get(S + url, **kwargs)
+        return self.client.get(url, **kwargs)
 
     def page(self, url):
         response = self.get(url)
         self.assertEqual(response.status_code, 200, url)
         self.assertNotIn("set-cookie", response.headers)
-        # Every link, form and file of the dashboard keeps the session prefix; a link to a
-        # place of the page it is on (the skip link, the apply form) stays there.
+        # Every link, form and file of the dashboard is a path of this address: one slash,
+        # so never another host ("//host", or "/\\host" as a browser reads it), and never with
+        # the form's value in it. A link to a place of the page it is on (the skip link, the
+        # apply form) stays there.
         for target in re.findall(r'(?:href|action|src)="([^"]*)"', response.text):
             if not re.fullmatch(r"#[a-z]+", target) and not target.startswith(
                 "https://www.npmjs.com/package/"
             ):
-                self.assertTrue(target.startswith(S + "/"), target)
+                self.assertRegex(target, r"\A/(?![/\\])")
+                self.assertNotIn(CSRF, target)
         assert_one_script(self, response.text)
         return response.text
 
@@ -171,8 +175,8 @@ class DashboardFixture(FormatFixture):
         history.register_project(self.project)
         return history.record(kind, self.project, report, preview)
 
-    def form_session(self):
-        return re.search(r'name="session" value="([^"]+)"', self.page("/?manage=1")).group(1)
+    def form_csrf(self):
+        return re.search(r'name="csrf" value="([^"]+)"', self.page("/?manage=1")).group(1)
 
     def dialog(self, folder):
         """picker.choose replaced for the rest of the test: the dialog answers this folder. No
@@ -181,12 +185,12 @@ class DashboardFixture(FormatFixture):
         self.addCleanup(patcher.stop)
         return patcher.start()
 
-    def send_pick(self, session=SESSION, origin=BASE, **fields):
-        """The folder dialog's form, the one request that registers a project. session None:
-        the form without its session field."""
-        data = {**fields, **({"other": "1"} if session is None else {"session": session})}
+    def send_pick(self, csrf=CSRF, origin=BASE, **fields):
+        """The folder dialog's form, the one request that registers a project. csrf None:
+        the form without its csrf field."""
+        data = {**fields, **({"other": "1"} if csrf is None else {"csrf": csrf})}
         headers = {} if origin is None else {"origin": origin}
-        return self.client.post(S + "/projects/pick", data=data, headers=headers,
+        return self.client.post("/projects/pick", data=data, headers=headers,
                                 follow_redirects=False)  # fmt: skip
 
 
@@ -544,9 +548,9 @@ class PageTests(DashboardFixture):
         self.assertIn('form="preview-project" name="packages" value="example"', html)
         form = re.search(r'<form [^>]*id="preview-project"[^>]*>(.*?)</form>', html, re.S)
         self.assertIsNotNone(form)
-        self.assertIn(f'action="{S}/projects/1/previews"', form[0])
-        self.assertIn(f'<input type="hidden" name="session" value="{SESSION}">', form[1])
-        self.assertIn(f'<a href="{S}/projects/1">필터 초기화</a>', html)
+        self.assertIn('action="/projects/1/previews"', form[0])
+        self.assertIn(f'<input type="hidden" name="csrf" value="{CSRF}">', form[1])
+        self.assertIn('<a href="/projects/1">필터 초기화</a>', html)
         self.assertNotIn('<th scope="row">inner<span class="row-tags">', html)
         nested = self.page("/projects/1?scope=nested")
         self.assertIn('<th scope="row">inner<span class="row-tags">', nested)
@@ -636,7 +640,7 @@ class PageTests(DashboardFixture):
         # script-src 'self': the two documents (the console and the start page) name the one
         # script file, and no template holds a script or a handler of its own.
         self.assertEqual(re.findall(r"<script[^>]*>[^<]*", text),
-                         ['<script src="{{ base }}/static/app.js" defer>'] * 2)  # fmt: skip
+                         ['<script src="/static/app.js" defer>'] * 2)  # fmt: skip
         # By name: a folder lists its files in an order of its own (not by name on Linux).
         self.assertEqual(sorted(p.name for p in files if "<script" in p.read_text("utf-8")),
                          ["base.html", "start.html"])  # fmt: skip
@@ -665,7 +669,7 @@ class ConsoleTests(DashboardFixture):
         """(the rest of the link's opening tag after its title, cell, name, state) of a
         project's tab. The state is said for a screen reader; the counts follow it."""
         found = re.search(
-            rf'<a class="tab" href="{re.escape(S)}/projects/{project_id}" title="[^"]*"([^>]*)>'
+            rf'<a class="tab" href="/projects/{project_id}" title="[^"]*"([^>]*)>'
             r'<span class="cell (\w+)" aria-hidden="true"></span>'
             r'<span class="tab-name">([^<]*)</span>'
             r'<span class="visually-hidden">, ([^<]*)</span>',
@@ -692,11 +696,11 @@ class ConsoleTests(DashboardFixture):
         self.assertIn('<p class="rail-title">프로젝트 5개 · 조치 필요 3</p>', html)
         order = [
             int(i)
-            for i in re.findall(rf'<a class="tab" href="{re.escape(S)}/projects/(\d+)"', html)
+            for i in re.findall(r'<a class="tab" href="/projects/(\d+)"', html)
         ]
         self.assertEqual(order, [gone, flagged, held, fresh, passed])
         # Each line: the full path on hover, and the risk and hold counts of the newest run.
-        self.assertIn(f'href="{S}/projects/{flagged}" title="{self.project.resolve()}"', html)
+        self.assertIn(f'href="/projects/{flagged}" title="{self.project.resolve()}"', html)
         counts = dict(re.findall(r'/projects/(\d+)" title="[^"]*"[^>]*><span class="cell \w+" '
                                  r'aria-hidden="true"></span><span class="tab-name">[^<]*</span>'
                                  r'<span class="visually-hidden">[^<]*</span>'
@@ -754,17 +758,17 @@ class ConsoleTests(DashboardFixture):
             with self.subTest(status=status):
                 sql(self.db, "UPDATE runs SET status = ?", status)
                 html = self.page("/model")
-                order = re.findall(rf'<a class="tab" href="{re.escape(S)}/projects/(\d+)"', html)
+                order = re.findall(r'<a class="tab" href="/projects/(\d+)"', html)
                 self.assertEqual(order, [str(odd), str(fresh)])
                 self.assertEqual(
                     self.tab(html, odd)[1:], ("none", "project", "최근 실행 알 수 없음")
                 )
                 self.assertEqual(self.tab(html, fresh)[1:], ("none", "fresh", "실행 기록 없음"))
                 # The same mark, told apart in view by a word.
-                line = html.split(f'href="{S}/projects/{odd}"', 1)[1].split("</a>", 1)[0]
+                line = html.split(f'href="/projects/{odd}"', 1)[1].split("</a>", 1)[0]
                 self.assertIn('<span class="tab-count"><span class="n-unknown" aria-hidden="true">'
                               "알 수 없음</span></span>", line)  # fmt: skip
-                line = html.split(f'href="{S}/projects/{fresh}"', 1)[1].split("</a>", 1)[0]
+                line = html.split(f'href="/projects/{fresh}"', 1)[1].split("</a>", 1)[0]
                 self.assertIn('<span class="tab-count"><span class="n-none" aria-hidden="true">'
                               "미검사</span></span>", line)  # fmt: skip
 
@@ -778,8 +782,8 @@ class ConsoleTests(DashboardFixture):
             self.assertEqual([tag for tag, _ in body],
                              ["body", "main", "form", "input", "button", "p", "p"], url)  # fmt: skip
             self.assertEqual(body[0][1], {"class": "start"})
-            self.assertEqual(body[2][1], {"method": "post", "action": f"{S}/projects/pick"})
-            self.assertEqual(body[3][1], {"type": "hidden", "name": "session", "value": SESSION})
+            self.assertEqual(body[2][1], {"method": "post", "action": "/projects/pick"})
+            self.assertEqual(body[3][1], {"type": "hidden", "name": "csrf", "value": CSRF})
             self.assertEqual(body[4][1]["type"], "submit")
             self.assertEqual(body[4][1]["data-busy-label"], "폴더 선택 창을 확인하세요…")
             self.assertIn(">프로젝트 추가</button>", html)
@@ -793,8 +797,8 @@ class ConsoleTests(DashboardFixture):
                 self.assertNotIn(absent, html)
             self.assertIn("<title>프로젝트 추가 - depbee</title>", html)
         self.assertFalse(self.db.exists())  # looking creates no history
-        # The tab icon comes from under the session: a browser then never asks for /favicon.ico.
-        self.assertIn(f'<link rel="icon" type="image/svg+xml" href="{S}/static/icon.svg">', html)
+        # Every page names the tab icon: a browser then never asks for /favicon.ico.
+        self.assertIn('<link rel="icon" type="image/svg+xml" href="/static/icon.svg">', html)
         icon = self.get("/static/icon.svg")
         self.assertEqual((icon.status_code, icon.headers["content-type"]), (200, "image/svg+xml"))
         self.assertTrue(icon.text.startswith("<svg "))
@@ -804,17 +808,17 @@ class ConsoleTests(DashboardFixture):
         self.assertIn('<a class="skip" href="#main">본문으로 건너뛰기</a>', model)
         self.assertIn('<main id="main">', model)
         self.assertNotIn('<a class="tab" ', model)
-        self.assertIn(f'<a href="{S}/model" aria-current="page">모델 정보</a>', model)
+        self.assertIn('<a href="/model" aria-current="page">모델 정보</a>', model)
         self.assertNotIn(' aria-current="page">프로젝트 관리', model)
         # With a project the first page is the overview, and project management the place
         # where the next one is added, by the dialog alone.
         history.register_project(self.project)
         self.assertIn("<title>프로젝트 현황판 - depbee</title>", self.page("/"))
         manage = self.page("/?manage=1")
-        self.assertIn(f'<a class="tab manage" href="{S}/?manage=1" aria-current="page">프로젝트 관리</a>',
+        self.assertIn('<a class="tab manage" href="/?manage=1" aria-current="page">프로젝트 관리</a>',
                       manage)  # fmt: skip
-        self.assertIn(f'<form method="post" action="{S}/projects/pick">', manage)
-        self.assertNotIn(f'action="{S}/projects"', manage)
+        self.assertIn('<form method="post" action="/projects/pick">', manage)
+        self.assertNotIn('action="/projects"', manage)
         self.assertNotIn('name="path"', manage)
 
     def test_tabs_show_each_project_its_state_and_the_open_one(self):
@@ -850,8 +854,8 @@ class ConsoleTests(DashboardFixture):
             self.assertEqual(self.tab(html, passed)[0], "", view)
         html = self.page(f"/runs/{run}")
         self.assertEqual(self.tab(html, flagged)[0], ' aria-current="true"')
-        self.assertIn(f'<li><a href="{S}/projects/{flagged}">project</a></li>\n'
-                      f'<li><a href="{S}/projects/{flagged}/history">기록</a></li>\n'
+        self.assertIn(f'<li><a href="/projects/{flagged}">project</a></li>\n'
+                      f'<li><a href="/projects/{flagged}/history">기록</a></li>\n'
                       f'<li aria-current="page">실행 #{run}</li>', html)  # fmt: skip
 
     def test_same_folder_names_are_told_apart_by_their_parents(self):
@@ -889,7 +893,7 @@ class ConsoleTests(DashboardFixture):
                 head,
             )
             check = re.search(
-                rf'<form method="post" action="{S}/projects/{project}/previews" id="preview-project">(.*?)</form>',
+                rf'<form method="post" action="/projects/{project}/previews" id="preview-project">(.*?)</form>',
                 head,
                 re.S,
             )
@@ -897,7 +901,7 @@ class ConsoleTests(DashboardFixture):
             self.assertIn('name="packages" value="">전체 업데이트 미리보기(update)</button>', check[1])
             # Only a check sent from the packages view comes back to its list (app._back).
             self.assertEqual('name="back"' in check[1], view == "", view)
-            self.assertIn(f'<form method="post" action="{S}/projects/{project}/scans">', head)
+            self.assertIn(f'<form method="post" action="/projects/{project}/scans">', head)
             self.assertIn('data-busy-label="lockfile 변경 검사 중…">lockfile 변경 검사(scan)</button>', head)
             for label, count in (("패키지", entries), ("업데이트", 0), ("기록", 1)):
                 self.assertIn(f'{label}<span class="view-count">{count}</span></a>', head, view)
@@ -947,17 +951,17 @@ class ConsoleTests(DashboardFixture):
             for other, text in views.items():
                 current = ' aria-current="page"' if other == view else ""
                 self.assertIn(
-                    f'<a href="{S}/projects/{project}{other}"{current}>{text}<span class="view-count',
+                    f'<a href="/projects/{project}{other}"{current}>{text}<span class="view-count',
                     html,
                 )
             if view:  # the views take GET only
-                response = self.client.post(f"{S}/projects/{project}{view}",
-                                            data={"session": SESSION}, headers={"origin": BASE})  # fmt: skip
+                response = self.client.post(f"/projects/{project}{view}",
+                                            data={"csrf": CSRF}, headers={"origin": BASE})  # fmt: skip
                 self.assertEqual(response.status_code, 405)
         history_page = self.page(f"/projects/{project}/history")
         self.assertIn("기록된 반영이 없습니다.", history_page)
         self.assertIn("기록된 실행이 없습니다.", history_page)
-        self.assertIn(f'<a href="{S}/projects/{project}/updates">업데이트</a>', history_page)
+        self.assertIn(f'<a href="/projects/{project}/updates">업데이트</a>', history_page)
 
     def test_a_missing_folder_keeps_its_history_and_says_where_to_go(self):
         project = history.register_project(self.project)
@@ -967,8 +971,8 @@ class ConsoleTests(DashboardFixture):
         for view in ("", "/updates", "/history"):
             html = self.page(f"/projects/{project}{view}")
             self.assertIn('<p class="error">프로젝트 폴더를 찾을 수 없습니다.', html)
-            self.assertIn(f'<a href="{S}/?manage=1">프로젝트 관리</a>에서 새로 등록하세요.', html)
-            self.assertIn(f'<a href="{S}/projects/{project}/history">기록</a>에 그대로', html)
+            self.assertIn('<a href="/?manage=1">프로젝트 관리</a>에서 새로 등록하세요.', html)
+            self.assertIn(f'<a href="/projects/{project}/history">기록</a>에 그대로', html)
             for form in ("/previews", "/scans"):
                 self.assertNotIn(form, html)
             # No button but the rail's theme one and the question marks of the explanations.
@@ -976,7 +980,7 @@ class ConsoleTests(DashboardFixture):
                 html.count("<button"),
                 html.count('<button type="submit" name="theme"') + html.count('class="help"'),
             )
-        self.assertIn(f'<a href="{S}/runs/{run}">#{run}</a>', html)  # the history view
+        self.assertIn(f'<a href="/runs/{run}">#{run}</a>', html)  # the history view
         self.assertIn("찾을 수 없음. 폴더를 원래 위치로", self.page("/?manage=1"))
 
 
@@ -1024,8 +1028,7 @@ class CandidateTests(DashboardFixture):
         self.check()  # a current candidate: the inspector beside the list
         pages = {"unchecked": unchecked, "packages": self.page(self.packages),
                  "updates": self.page(self.updates), "history": self.page(f"{self.packages}/history")}  # fmt: skip
-        session = "주소에 이번 실행의 세션 값이 들어 있으니 다른 사람에게 보이지 않게 합니다."
-        always = (SAFETY_NOTE, session)
+        always = (SAFETY_NOTE, "이 PC의 다른 계정과 프로그램도 이 주소를 열 수 있습니다.")
         shown = {
             "unchecked": always + ("미리보기 전은 후보 0개와 다릅니다",),
             "packages": always + ("이 화면에서는 반영하지 않습니다.",),
@@ -1145,14 +1148,14 @@ class CandidateTests(DashboardFixture):
                       "</span>확인 필요</span>", candidate)  # fmt: skip
         self.assertIn(f'?item={run}.0#candidate-evidence"', candidate)
         # The report's own row is reached from the inspector, not from each row of the list.
-        self.assertNotIn(f'href="{S}/runs/{run}#r0"', html.split('<aside class="inspector"')[0])
+        self.assertNotIn(f'href="/runs/{run}#r0"', html.split('<aside class="inspector"')[0])
         for location in ("node_modules/other", "node_modules/example/node_modules/inner"):
             self.assertEqual(cells[location], '<span class="quiet">후보 없음</span>')
         self.assertNotIn("이 패키지 미리보기</button>", html)
         updates = self.page(self.updates)
         self.assertIn("지금의 package.json과 package-lock.json으로 만든 전체 업데이트 미리보기의 결과입니다. "
                       "바뀐 의존성 1개: 위험 1, 통과 0, 보류 0.", updates)  # fmt: skip
-        self.assertRegex(updates, rf'미리보기한 실행: <a href="{S}/runs/{run}">#{run}</a> '
+        self.assertRegex(updates, rf'미리보기한 실행: <a href="/runs/{run}">#{run}</a> '
                                   r"\(\d{4}-\d\d-\d\d \d\d:\d\d UTC, 전체\)</p>")  # fmt: skip
         for text in (
             '<th scope="row">example<span class="where">node_modules/example</span></th>',
@@ -1160,7 +1163,7 @@ class CandidateTests(DashboardFixture):
             " 1.2.0</td>",
             "<td>0.900 (기준 이상)</td>",
             "<li>synthetic evidence</li>",  # in the inspector, open on the first candidate
-            f'href="{S}/runs/{run}#r0">보고서에서 전체 근거 보기',
+            f'href="/runs/{run}#r0">보고서에서 전체 근거 보기',
             'href="https://www.npmjs.com/package/example" rel="noreferrer noopener">',
             "릴리스 노트와 변경 내역 원문은 depbee가 수집하지 않으므로",
         ):  # fmt: skip
@@ -1168,7 +1171,7 @@ class CandidateTests(DashboardFixture):
         self.assertIn('<section class="result flagged" id="r0">', self.page(f"/runs/{run}"))
         for view in (self.packages, self.updates):
             html = self.page(f"{view}?item={run}.0")
-            self.assertIn(f'href="{S}{view}?item={run}.0#candidate-evidence"', html)
+            self.assertIn(f'href="{view}?item={run}.0#candidate-evidence"', html)
             self.assertEqual(html.count('id="candidate-evidence" tabindex="-1"'), 1)
             panel = html.split('<aside class="inspector"', 1)[1].split("</aside>", 1)[0]
             self.assertIn("node_modules/example", panel)
@@ -1186,7 +1189,7 @@ class CandidateTests(DashboardFixture):
         self.assertEqual(cells["node_modules/other"], '<span class="quiet">후보 없음</span>')
         self.assertIn("미리보기 전", cells["node_modules/example/node_modules/inner"])
         updates = self.page(self.updates)
-        self.assertRegex(updates, rf'#{second}</a> \([^)]*, other\), <a href="{S}/runs/{first}">'
+        self.assertRegex(updates, rf'#{second}</a> \([^)]*, other\), <a href="/runs/{first}">'
                                   rf"#{first}</a> \([^)]*, example\)</p>")  # fmt: skip
         self.assertIn("바뀐 의존성 1개: 위험 1, 통과 0, 보류 0.", updates)
 
@@ -1212,7 +1215,7 @@ class CandidateTests(DashboardFixture):
                               "바뀌었습니다. 업데이트 미리보기를 다시 실행하세요.", html)  # fmt: skip
                 self.assert_unchecked(self.cells(html))
                 updates = self.page(self.updates)
-                self.assertRegex(updates, rf'마지막 미리보기\(실행 <a href="{S}/runs/{run}">'
+                self.assertRegex(updates, rf'마지막 미리보기\(실행 <a href="/runs/{run}">'
                                           rf"#{run}</a>, [^)]*\) 뒤에")  # fmt: skip
                 self.assertIn("그 결과는 현재 후보로 보지 않습니다.", updates)
                 self.assertNotIn('class="stack candidates"', updates)
@@ -1232,7 +1235,7 @@ class CandidateTests(DashboardFixture):
         self.assert_unchecked(self.cells())
         self.assertIn("아직 업데이트 미리보기를 실행하지 않았습니다.", self.page(self.updates))
         updates = self.page(f"/projects/{other_id}/updates")
-        self.assertIn(f'<a href="{S}/runs/{run}">#{run}</a>', updates)
+        self.assertIn(f'<a href="/runs/{run}">#{run}</a>', updates)
         self.assertIn("그 결과는 현재 후보로 보지 않습니다.", updates)
         self.assertNotIn("1.2.0", updates)
 
@@ -1257,13 +1260,13 @@ class CandidateTests(DashboardFixture):
                              apply=applied_document())  # fmt: skip
         self.write(self.head, self.new)  # what the apply wrote
         updates = self.page(self.updates)
-        self.assertRegex(updates, rf'실행 <a href="{S}/runs/{run}">#{run}</a>의 업데이트를 '
+        self.assertRegex(updates, rf'실행 <a href="/runs/{run}">#{run}</a>의 업데이트를 '
                                   r"[^<]* UTC에 반영했습니다. 반영한 뒤의 파일로는 아직")  # fmt: skip
         self.assertNotIn("그 결과는 현재 후보로 보지 않습니다.", updates)
         refused = history.record("update_preview", self.project, self.report, self.made_now(
             package_lock_sha256="3" * 64), apply=applied_document("refused", "project_changed"))  # fmt: skip
         updates = self.page(self.updates)
-        self.assertIn(f'<a href="{S}/runs/{refused}">#{refused}</a>', updates)
+        self.assertIn(f'<a href="/runs/{refused}">#{refused}</a>', updates)
         self.assertIn("그 결과는 현재 후보로 보지 않습니다.", updates)
 
     def test_added_and_removed_entries_and_a_later_check_of_one_of_them(self):
@@ -1295,7 +1298,7 @@ class CandidateTests(DashboardFixture):
         self.assertIn('<span class="quiet">새로 추가</span>', updates)
         self.assertNotIn('<span class="quiet">삭제</span>', updates)
         self.assertIn("전체 업데이트 미리보기의 결과입니다. 바뀐 의존성 1개: 위험 1, 통과 0, 보류 0.", updates)
-        self.assertRegex(updates, rf'#{later}</a> \([^)]*, other\), <a href="{S}/runs/{run}">'
+        self.assertRegex(updates, rf'#{later}</a> \([^)]*, other\), <a href="/runs/{run}">'
                                   rf"#{run}</a> \([^)]*, 전체\)</p>")  # fmt: skip
 
     def test_a_check_of_everything_stands_after_many_checks_of_other_packages(self):
@@ -1314,8 +1317,8 @@ class CandidateTests(DashboardFixture):
         self.assertIn('class="stack candidates"', updates)
         # Listed are the checks whose result is shown: the newest of other and the one of
         # everything, not the eleven checks of other that the newest one replaced.
-        self.assertRegex(updates, rf'미리보기한 실행: <a href="{S}/runs/{newest}">#{newest}</a> '
-                                  rf'\([^)]*, other\), <a href="{S}/runs/{everything}">'
+        self.assertRegex(updates, rf'미리보기한 실행: <a href="/runs/{newest}">#{newest}</a> '
+                                  rf'\([^)]*, other\), <a href="/runs/{everything}">'
                                   rf"#{everything}</a> \([^)]*, 전체\)</p>")  # fmt: skip
 
     def test_restored_files_have_their_candidates_again(self):
@@ -1474,7 +1477,7 @@ class CandidateTests(DashboardFixture):
         self.assertEqual(self.db.read_bytes(), before)  # looking does not upgrade the file
 
     def test_the_tabs_count_what_the_search_leaves_and_keep_it(self):
-        url = f"{S}{self.packages}"
+        url = f"{self.packages}"
 
         def listed(html):
             return [row[0] for row in package_rows(html)]
@@ -1584,7 +1587,7 @@ class SecurityTests(DashboardFixture):
     def test_host_must_be_this_address_and_port(self):
         for host in (f"127.0.0.1:{PORT + 1}", "127.0.0.1", f"localhost:{PORT}",
                      f"evil.test:{PORT}", ""):  # fmt: skip
-            for url in (S + "/", S + "/static/style.css", "/"):
+            for url in ("/", "/static/style.css", "/"):
                 with self.subTest(host=host, url=url):
                     response = self.client.get(url, headers={"host": host},
                                                follow_redirects=False)  # fmt: skip
@@ -1592,28 +1595,7 @@ class SecurityTests(DashboardFixture):
                     self.assert_headers(response)
                     self.assertNotIn("set-cookie", response.headers)
 
-    def test_every_request_needs_the_session_prefix(self):
-        wrong = SESSION[:-1] + ("A" if SESSION[-1] != "A" else "B")
-        urls = [*self.URLS, f"/login?token={SESSION}", f"/s/{wrong}/", f"/s/{SESSION}",
-                f"/s/{SESSION[:-1]}/", f"/s/{SESSION}x/", f"/s//{SESSION}/", f"/x/{SESSION}/",
-                f"/S/{SESSION}/", "/s/", "/s", f"/s/{wrong}/static/style.css",
-                f"/static/{SESSION}/style.css", f"/{SESSION}/", "/s/%C3%A9/"]  # fmt: skip
-        for url in urls:
-            with self.subTest(url=url):
-                response = self.client.get(url, follow_redirects=False)
-                self.assertEqual(response.status_code, 403)
-                self.assertEqual(response.text, self.app.SESSION_REFUSED)  # fixed, no path
-                self.assert_headers(response)
-                self.assertNotIn("set-cookie", response.headers)
-        # A cookie, even holding the session, is not a credential: the address is.
-        self.client.cookies.set(f"depbee_session_{PORT}", SESSION)
-        self.client.cookies.set("session", SESSION)
-        for url in ("/", "/model"):
-            self.assertEqual(self.client.get(url).status_code, 403, url)
-        self.client.cookies.clear()
-        self.assertEqual(self.client.get(S + "/", headers={"cookie": "x=1"}).status_code, 200)
-
-    def test_the_session_prefix_opens_every_page_without_cookies(self):
+    def test_every_page_opens_at_the_root_of_the_address_without_a_secret_or_a_cookie(self):
         self.record(self.scan_with(0.1))
         for url in self.URLS:
             response = self.get(url)
@@ -1622,16 +1604,125 @@ class SecurityTests(DashboardFixture):
             self.assertNotIn("set-cookie", response.headers)
             self.assertEqual(len(self.client.cookies), 0)
         html = self.page("/")
-        self.assertIn(f'<link rel="stylesheet" href="{S}/static/style.css">', html)
-        self.assertIn(f'href="{S}/projects/1"', html)
-        self.assertIn(f'href="{S}/static/overview.css"', html)
+        self.assertIn('<link rel="stylesheet" href="/static/style.css">', html)
+        self.assertIn('href="/projects/1"', html)
+        self.assertIn('href="/static/overview.css"', html)
         manage = self.page("/?manage=1")
-        self.assertIn(f'<form method="post" action="{S}/projects/pick">', manage)
-        self.assertIn(f'<input type="hidden" name="session" value="{SESSION}">', manage)
-        self.assertEqual(self.get("/login").status_code, 404)  # no login step any more
+        self.assertIn('<form method="post" action="/projects/pick">', manage)
+        # The form's value is in the hidden field of each form and nowhere else on a page.
+        field = f'<input type="hidden" name="csrf" value="{CSRF}">'
+        for page in (html, manage, self.page("/projects/1")):
+            self.assertEqual(page.count(CSRF), page.count(field))
+            self.assertEqual(page.count(field), len(re.findall(r'<form [^>]*method="post"', page)))
+        # A cookie is neither needed nor read.
+        self.assertEqual(self.client.get("/", headers={"cookie": "x=1"}).status_code, 200)
+
+    def test_no_login_and_no_address_of_an_earlier_kind_is_served(self):
+        # Nothing answers under a prefix: the address of a dashboard before this one (a session
+        # in its path) is not found like any other, and nothing redirects.
+        for url in ("/login", f"/login?token={CSRF}", f"/s/{CSRF}/", f"/s/{CSRF}/model",
+                    f"/s/{CSRF}/static/style.css", f"/{CSRF}/", "/s/", "/s", "/favicon.ico",
+                    "/model/", "/projects/1/", "/static/", f"/static/{CSRF}/style.css",
+                    "/control"):  # fmt: skip
+            with self.subTest(url=url):
+                response = self.client.get(url, follow_redirects=False)
+                self.assertEqual((response.status_code, response.text), (404, "Not Found"))
+                self.assert_headers(response)
+                self.assertNotIn("location", response.headers)
+                self.assertNotIn("set-cookie", response.headers)
+
+    def test_another_site_can_link_to_a_page_and_can_load_or_probe_nothing(self):
+        self.record(self.scan_with(0.1))
+        link = {"sec-fetch-mode": "navigate", "sec-fetch-dest": "document"}
+        # What a page of another site makes a browser ask for: a script, a frame, a fetch, an
+        # image, and a request that says no more than its site.
+        loads = ({"sec-fetch-mode": "no-cors", "sec-fetch-dest": "script"},
+                 {"sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe"},
+                 {"sec-fetch-mode": "cors", "sec-fetch-dest": "empty"},
+                 {"sec-fetch-mode": "no-cors", "sec-fetch-dest": "image"},
+                 {"sec-fetch-mode": "navigate"}, {"sec-fetch-dest": "document"}, {})  # fmt: skip
+        # Another port of 127.0.0.1 is the same site and another origin.
+        for site in ("cross-site", "same-site", "Cross-Site", "other", ""):
+            # A page that is there and one that is not get the same answer: nothing to probe.
+            for url in (*self.URLS, "/runs/999", "/nothing"):
+                for load in loads:
+                    with self.subTest(site=site, url=url, load=load):
+                        response = self.client.get(url, headers={"sec-fetch-site": site, **load})
+                        self.assertEqual((response.status_code, response.text),
+                                         (403, self.app.OTHER_SITE))  # fmt: skip
+                        self.assert_headers(response)
+            headers = {"sec-fetch-site": site, **link}
+            self.assertEqual(self.client.head("/", headers=headers).status_code, 403)
+            # One header that is not the dashboard's own is enough, whatever a second one says.
+            both = [("sec-fetch-site", "same-origin"), ("sec-fetch-site", site)]
+            self.assertEqual(self.client.get("/", headers=both).status_code, 403)
+            # A link on that site to a page here opens it: the address is one to keep.
+            for url in ("/", "/model", "/projects/1"):
+                self.assertEqual(self.client.get(url, headers=headers).status_code, 200, url)
+        # The dashboard's own pages and files, the address bar or a reload, and a client that is
+        # no browser (it says nothing).
+        own = ({"sec-fetch-site": "same-origin", "sec-fetch-mode": "no-cors",
+                "sec-fetch-dest": "style"}, {"sec-fetch-site": "SAME-ORIGIN"},
+               {"sec-fetch-site": "none", **link}, link, {})  # fmt: skip
+        for headers in own:
+            for url in self.URLS:
+                with self.subTest(headers=headers, url=url):
+                    self.assertEqual(self.client.get(url, headers=headers).status_code, 200)
+
+    def test_port_80_is_also_taken_as_a_browser_writes_it(self):
+        from starlette.testclient import TestClient
+
+        # No port is bound: the app is asked in this process.
+        client = TestClient(self.app.build_app(80, CSRF), base_url="http://127.0.0.1")
+        self.addCleanup(client.close)
+        self.dialog(str(self.project))
+
+        def post(host, origin):
+            return client.post("/projects/pick", data={"csrf": CSRF},
+                               headers={"host": host, "origin": origin},
+                               follow_redirects=False)  # fmt: skip
+
+        for host in ("127.0.0.1", "127.0.0.1:80"):
+            with self.subTest(host=host):
+                self.assertEqual(client.get("/", headers={"host": host}).status_code, 200)
+                self.assertEqual(post(host, f"http://{host}").status_code, 303)
+        for host in ("127.0.0.1:8080", "127.0.0.1:", "localhost", "localhost:80", "evil.test"):
+            with self.subTest(host=host):
+                self.assertEqual(client.get("/", headers={"host": host}).status_code, 400)
+                self.assertEqual(post("127.0.0.1", f"http://{host}").status_code, 403)
+        self.assertEqual(post("127.0.0.1", "https://127.0.0.1").status_code, 403)
+        # Any other port is written in full (test_host_must_be_this_address_and_port).
+        self.assertEqual(self.client.get("/", headers={"host": "127.0.0.1"}).status_code, 400)
+        refused = self.send_pick(origin="http://127.0.0.1")
+        self.assertEqual(refused.status_code, 403)
+
+    def test_a_form_of_a_page_opened_before_a_restart_is_refused_until_it_is_loaded_again(self):
+        from starlette.testclient import TestClient
+
+        kept = self.form_csrf()  # a tab left open
+        self.dialog(str(self.project))
+        # The next start: the same address, and a value of its own (serve() makes one).
+        restarted = TestClient(self.app.build_app(PORT, "the-value-of-the-next-start"),
+                               base_url=BASE)  # fmt: skip
+        self.addCleanup(restarted.close)
+
+        def post(value):
+            return restarted.post("/projects/pick", data={"csrf": value},
+                                  headers={"origin": BASE, "sec-fetch-site": "same-origin"},
+                                  follow_redirects=False)  # fmt: skip
+
+        refused = post(kept)
+        self.assertEqual((refused.status_code, refused.text), (403, self.app.FORM_REFUSED))
+        self.assert_headers(refused)
+        self.assertEqual(history.list_projects(), [])
+        # The same address, loaded again, has the form that is taken.
+        fresh = re.search(r'name="csrf" value="([^"]+)"', restarted.get("/").text)[1]
+        self.assertNotEqual(fresh, kept)
+        self.assertEqual(post(fresh).status_code, 303)
+        self.assertEqual(len(history.list_projects()), 1)
 
     def test_npm_links_send_no_referrer(self):
-        # The session is in the address; a link out must not carry it as a Referer.
+        # A link out says nothing of the page it is on.
         run = self.record(self.scan_with(0.9))
         html = self.page(f"/runs/{run}")
         links = re.findall(r"<a [^>]*>", html)
@@ -1640,13 +1731,13 @@ class SecurityTests(DashboardFixture):
         for link in npm:
             self.assertIn('rel="noreferrer noopener"', link)
 
-    def test_post_needs_the_form_session_and_origin(self):
-        form, choose = self.form_session(), self.dialog(str(self.project))
-        self.assertEqual(form, SESSION)
+    def test_post_needs_the_form_csrf_and_origin(self):
+        form, choose = self.form_csrf(), self.dialog(str(self.project))
+        self.assertEqual(form, CSRF)
         refused = {
-            "no form session": self.send_pick(None),
-            "wrong form session": self.send_pick(form[:-1] + ("A" if form[-1] != "A" else "B")),
-            "empty form session": self.send_pick(""),
+            "no form csrf": self.send_pick(None),
+            "wrong form csrf": self.send_pick(form[:-1] + ("A" if form[-1] != "A" else "B")),
+            "empty form csrf": self.send_pick(""),
             "no origin": self.send_pick(form, origin=None),
             "other port": self.send_pick(form, origin=f"http://127.0.0.1:{PORT + 1}"),
             "other host": self.send_pick(form, origin=f"http://localhost:{PORT}"),
@@ -1658,25 +1749,20 @@ class SecurityTests(DashboardFixture):
                 self.assertEqual(response.status_code, 403)
                 self.assert_headers(response)
                 self.assertNotIn("set-cookie", response.headers)
-        self.assertEqual(refused["wrong form session"].text, self.app.FORM_REFUSED)
-        self.assertEqual(history.list_projects(), [])
-        # Without the prefix the request never reaches the form.
-        response = self.client.post("/projects/pick", data={"session": form},
-                                    headers={"origin": BASE})  # fmt: skip
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(refused["wrong form csrf"].text, self.app.FORM_REFUSED)
         self.assertEqual(history.list_projects(), [])
         # GET never changes state: the form's route takes POST only.
         self.assertEqual(self.get("/projects/pick").status_code, 405)
         self.assertEqual(choose.call_count, 0)  # no refused request opens the dialog
 
     def test_a_post_that_the_browser_says_comes_from_elsewhere_is_refused(self):
-        form = self.form_session()
+        form = self.form_csrf()
         self.dialog(str(self.project))
 
         def post(*sites):
             """The registration form, sent with these Sec-Fetch-Site headers and its Origin."""
             headers = [("origin", BASE), *(("sec-fetch-site", site) for site in sites)]
-            return self.client.post(S + "/projects/pick", data={"session": form},
+            return self.client.post("/projects/pick", data={"csrf": form},
                                     headers=headers, follow_redirects=False)  # fmt: skip
 
         # Another port of 127.0.0.1 is the same site and another origin. One header that is
@@ -1695,32 +1781,34 @@ class SecurityTests(DashboardFixture):
                 response = post(*sites)
                 # The first of these registers the project; the others find it registered.
                 self.assertEqual((response.status_code, response.headers["location"]),
-                                 (303, S + ("/projects/1" if number else "/")))  # fmt: skip
-        # The header does not stand in for the Origin, and a page is opened from anywhere: its
-        # address holds the session.
-        refused = self.client.post(S + "/projects/pick", data={"session": form},
+                                 (303, ("/projects/1" if number else "/")))  # fmt: skip
+        # The header does not stand in for the Origin.
+        refused = self.client.post("/projects/pick", data={"csrf": form},
                                    headers={"sec-fetch-site": "same-origin"})  # fmt: skip
         self.assertEqual(refused.status_code, 403)
-        for url in ("/", "/static/app.js", "/projects/1"):
-            opened = self.client.get(S + url, headers={"sec-fetch-site": "cross-site"})
-            self.assertEqual(opened.status_code, 200, url)
+        # What links here from another site is a GET, never a form.
+        linked = self.client.post("/projects/pick", data={"csrf": form},
+                                  headers={"origin": BASE, "sec-fetch-site": "cross-site",
+                                           "sec-fetch-mode": "navigate",
+                                           "sec-fetch-dest": "document"})  # fmt: skip
+        self.assertEqual(linked.status_code, 403)
 
     def test_large_or_odd_bodies_are_refused(self):
-        form, choose = self.form_session(), self.dialog(str(self.project))
+        form, choose = self.form_csrf(), self.dialog(str(self.project))
         big = self.send_pick(form, other="a" * (self.app.MAX_BODY + 1))
         self.assertEqual(big.status_code, 413)
         self.assert_headers(big)
         fields = "&".join(f"f{i}=1" for i in range(self.app.MAX_FIELDS + 1))
-        response = self.client.post(S + "/projects/pick", content=f"session={form}&{fields}",
+        response = self.client.post("/projects/pick", content=f"csrf={form}&{fields}",
                                     headers={"origin": BASE, "content-type":
                                              "application/x-www-form-urlencoded"})  # fmt: skip
         self.assertEqual(response.status_code, 400)
-        response = self.client.post(S + "/projects/pick", content=json.dumps({"session": form}),
+        response = self.client.post("/projects/pick", content=json.dumps({"csrf": form}),
                                     headers={"origin": BASE, "content-type": "application/json"})  # fmt: skip
         self.assertEqual(response.status_code, 415)
         self.assertEqual((history.list_projects(), choose.call_count), ([], 0))
 
-    def test_server_settings_and_the_one_line_with_the_session(self):
+    def test_server_settings_and_the_address_line(self):
         from depbee.dashboard import app
 
         started = {}
@@ -1734,23 +1822,75 @@ class SecurityTests(DashboardFixture):
                 started["bound"] = sock.getsockname()
 
         out = io.StringIO()
-        with mock.patch.object(app.uvicorn, "Server", Server), contextlib.redirect_stdout(out):
+        with (
+            mock.patch.object(app.uvicorn, "Server", Server),
+            mock.patch.object(app, "build_app", wraps=app.build_app) as built,
+            contextlib.redirect_stdout(out),
+        ):
             app.serve(0)
+            app.serve(0)  # the next start
         config, (host, port) = started["config"], started["bound"]
         self.assertEqual((host, config.host, config.port), ("127.0.0.1", "127.0.0.1", port))
         self.assertNotEqual(port, 0)
         self.assertEqual((config.access_log, config.server_header, config.proxy_headers,
                           config.log_level, config.lifespan, config.ws),
                          (False, False, False, "warning", "off", "none"))  # fmt: skip
-        first, second = out.getvalue().splitlines()
-        self.assertRegex(first, rf"\Ahttp://127\.0\.0\.1:{port}/s/[A-Za-z0-9_-]{{43}}/\Z")
-        session = first.split("/")[4]
-        self.assertNotIn(session, second)
+        # The address is the port's and nothing else: the same at every start on that port.
+        lines = out.getvalue().splitlines()
+        self.assertRegex(lines[0], r"\Ahttp://127\.0\.0\.1:[1-9]\d*/\Z")
+        self.assertEqual(lines[1:], [app.STARTED, f"http://127.0.0.1:{port}/", app.STARTED])
+        # Each start has its own value for its forms, which no line holds.
+        first, second = (call.args[1] for call in built.call_args_list)
+        self.assertNotEqual(first, second)
+        for value in (first, second):
+            self.assertRegex(value, r"\A[A-Za-z0-9_-]{43}\Z")
+            self.assertNotIn(value, out.getvalue())
         code, err = None, io.StringIO()
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
             code = main(["dashboard", "--port", "70000"])
         self.assertEqual(code, 2)
         self.assertIn("--port must be between 0 and 65535", err.getvalue())
+
+    def test_a_port_that_cannot_be_bound_says_what_to_do_and_nothing_else_is_tried(self):
+        from depbee.dashboard import app
+
+        def advised(error, port):
+            self.assertIn(f"127.0.0.1:{port} could not be opened for the dashboard (", error)
+            self.assertIn("no other port was tried", error)
+            self.assertIn("depbee dashboard --status", error)
+            self.assertTrue(error.endswith("depbee dashboard --port PORT"), error)
+            self.assertTrue(error.isascii() and "\n" not in error, error)
+
+        Server = self.fake_server(AssertionError("served although the port was not bound"))
+        with socket.create_server(("127.0.0.1", 0)) as taken:  # another program's port
+            port = taken.getsockname()[1]
+            out, err = io.StringIO(), io.StringIO()
+            with (
+                mock.patch.object(app.uvicorn, "Server", Server),
+                contextlib.redirect_stdout(out),
+                contextlib.redirect_stderr(err),
+            ):
+                code = main(["dashboard", "--port", str(port)])
+            self.assertEqual((code, out.getvalue()), (2, ""))  # no address was printed
+            self.assertNotIn("Traceback", err.getvalue())
+            advised(json.loads(err.getvalue())["error"], port)
+            self.assertEqual(Server.bound, [])
+            # What holds the port was left as it was: it still takes a connection.
+            socket.create_connection(("127.0.0.1", port), timeout=5).close()
+            taken.accept()[0].close()
+        # A port the system keeps reserved has no owner to see, and Windows names either case
+        # either way (10013 WSAEACCES, 10048 WSAEADDRINUSE): one answer for every refusal.
+        for number in (errno.EADDRINUSE, errno.EACCES, 10013, 10048, None):
+            with self.subTest(errno=number):
+                refusal = OSError(number, "synthetic refusal with C:\\private text")
+                with (
+                    mock.patch.object(app.socket, "create_server", side_effect=refusal) as bind,
+                    self.assertRaises(GuardError) as caught,
+                ):
+                    app.serve(18765)
+                advised(str(caught.exception), 18765)
+                self.assertNotIn("private", str(caught.exception))
+                bind.assert_called_once_with(("127.0.0.1", 18765))  # no other port
 
     def fake_server(self, error):
         """A uvicorn.Server whose run() raises error; the sockets it got are kept in .bound."""
@@ -1785,7 +1925,7 @@ class SecurityTests(DashboardFixture):
             url = out.getvalue().splitlines()[0]
             self.assertTrue(url.endswith("/"))
         self.assertIn("프로젝트 등록", self.page("/?manage=1"))
-        self.assertIn(f'<a class="tab manage" href="{S}/?manage=1">프로젝트 관리</a>',
+        self.assertIn('<a class="tab manage" href="/?manage=1">프로젝트 관리</a>',
                       self.page(f"/projects/{project_id}"))  # fmt: skip
 
     def test_start_address_falls_back_to_project_list_on_unreadable_history(self):
@@ -1834,19 +1974,19 @@ class SecurityTests(DashboardFixture):
     def test_an_unexpected_error_is_a_fixed_500_with_the_headers(self):
         from starlette.testclient import TestClient
 
-        client = TestClient(self.app.build_app(PORT, SESSION), base_url=BASE,
+        client = TestClient(self.app.build_app(PORT, CSRF), base_url=BASE,
                             raise_server_exceptions=False)  # fmt: skip
         self.addCleanup(client.close)
         marker = "C:\\private\\folder\\history.sqlite3 synthetic-secret-0123456789"
         with mock.patch.object(history, "list_projects", side_effect=RuntimeError(marker)):
-            response = client.get(S + "/")
+            response = client.get("/")
         self.assertEqual(response.status_code, 500)
         self.assert_headers(response)
         self.assertEqual(
             response.text, "요청을 처리하지 못했습니다(이력 데이터베이스나 파일을 읽지 못함)."
         )
         exposed = response.text + "".join(f"{k}: {v}" for k, v in response.headers.items())
-        for secret in (marker, "private", "synthetic-secret", "RuntimeError", SESSION):
+        for secret in (marker, "private", "synthetic-secret", "RuntimeError", CSRF):
             self.assertNotIn(secret, exposed)
 
 
@@ -1935,16 +2075,16 @@ class RegistrationTests(DashboardFixture):
         self.write(other / "package-lock.json", self.new)
         choose = self.dialog(str(self.project))
         # The address a typed path was sent to is no address any more, with a path or without.
-        for fields in ({"session": SESSION, "path": str(other)}, {"session": SESSION}):
-            response = self.client.post(S + "/projects", data=fields, headers={"origin": BASE},
+        for fields in ({"csrf": CSRF, "path": str(other)}, {"csrf": CSRF}):
+            response = self.client.post("/projects", data=fields, headers={"origin": BASE},
                                         follow_redirects=False)  # fmt: skip
             self.assertEqual(response.status_code, 404)
         self.assertEqual(self.get("/projects").status_code, 404)
         self.assertEqual((choose.call_count, self.db.exists()), (0, False))
         # The dialog's form registers the folder the dialog answers, whatever path a request
-        # holds beside its session.
+        # holds beside its csrf value.
         response = self.send_pick(path=str(other), folder=str(other))
-        self.assertEqual((response.status_code, response.headers["location"]), (303, S + "/"))
+        self.assertEqual((response.status_code, response.headers["location"]), (303, "/"))
         choose.assert_called_once_with()
         self.assertEqual([project["path"] for project in history.list_projects()],
                          [str(self.project.resolve())])  # fmt: skip
@@ -1953,7 +2093,7 @@ class RegistrationTests(DashboardFixture):
                                             "/projects/1/updates", "/projects/1/history")]  # fmt: skip
         for html in pages:
             for absent in ('name="path"', 'type="file"', "webkitdirectory", "multipart",
-                           f'action="{S}/projects"', "직접 입력", "절대 경로"):  # fmt: skip
+                           'action="/projects"', "직접 입력", "절대 경로"):  # fmt: skip
                 self.assertNotIn(absent, html)
         # Project management names the two things a project's pages run, and their CLI commands.
         projects = pages[1]
@@ -2070,23 +2210,23 @@ class ScreenFixture(DashboardFixture):
         return {**self.document, "mode": mode, "confirmed": confirm,
                 "confirmation_required": required}  # fmt: skip
 
-    def check(self, packages="", session=SESSION, origin=BASE, project_id=None):
-        url = f"{S}/projects/{project_id or self.project_id}/previews"
+    def check(self, packages="", csrf=CSRF, origin=BASE, project_id=None):
+        url = f"/projects/{project_id or self.project_id}/previews"
         headers = {} if origin is None else {"origin": origin}
-        return self.client.post(url, data={"session": session, "packages": packages},
+        return self.client.post(url, data={"csrf": csrf, "packages": packages},
                                 headers=headers, follow_redirects=False)  # fmt: skip
 
     def preview_id(self, packages=""):
         response = self.check(packages)
         self.assertEqual(response.status_code, 303, response.text)
         location = response.headers["location"]
-        self.assertTrue(location.startswith(f"{S}/previews/"), location)
+        self.assertTrue(location.startswith("/previews/"), location)
         return location.rsplit("/", 1)[1]
 
-    def apply(self, preview_id, mode="lockfile", confirm=True, session=SESSION, origin=BASE):
-        data = {"session": session, "mode": mode, **({"confirm": "yes"} if confirm else {})}
+    def apply(self, preview_id, mode="lockfile", confirm=True, csrf=CSRF, origin=BASE):
+        data = {"csrf": csrf, "mode": mode, **({"confirm": "yes"} if confirm else {})}
         headers = {} if origin is None else {"origin": origin}
-        return self.client.post(f"{S}/previews/{preview_id}/apply", data=data, headers=headers,
+        return self.client.post(f"/previews/{preview_id}/apply", data=data, headers=headers,
                                 follow_redirects=False)  # fmt: skip
 
     def assert_form(self, html, present):
@@ -2099,7 +2239,7 @@ class ScreenFixture(DashboardFixture):
         there is a way on; it is not said to be a failed run."""
         self.assertEqual(response.status_code, status)
         self.assertIn(f'<p class="error">{message}</p>', response.text)
-        self.assertIn(f'<a class="tab" href="{S}/projects/{self.project_id}"', response.text)
+        self.assertIn(f'<a class="tab" href="/projects/{self.project_id}"', response.text)
         self.assertNotIn("이력에 기록하지 않았습니다.", response.text)
 
     def answer_errors(self):
@@ -2107,7 +2247,7 @@ class ScreenFixture(DashboardFixture):
         the exception in the test."""
         from starlette.testclient import TestClient
 
-        self.client = TestClient(self.app.build_app(PORT, SESSION), base_url=BASE,
+        self.client = TestClient(self.app.build_app(PORT, CSRF), base_url=BASE,
                                  raise_server_exceptions=False)  # fmt: skip
         self.addCleanup(self.client.close)
 
@@ -2140,7 +2280,7 @@ class ScreenFixture(DashboardFixture):
         main = main_of(html)
         self.assertEqual((html.count(self.app.RAIL_UNREAD), main.count(said)), (1, 1))
         self.assertNotIn("rail-title", html)
-        project = f"{S}/projects/{self.project_id}"
+        project = f"/projects/{self.project_id}"
         links = [attrs.get("href") for tag, attrs in Elements(main).found if tag == "a"]
         self.assertEqual(links[:2], [project, f"{project}/updates"])  # the trail
         # The rail's links: project management, then the projects, here the current one only.
@@ -2152,7 +2292,7 @@ class ScreenFixture(DashboardFixture):
         self.assertIn(self.project.name, words)
         self.assertIn(self.app.RAIL_UNREAD_STATE, words)  # the state a screen reader is told
         self.assertIn("알 수 없음", words)  # and the word in view
-        for absent in ("조치 필요", "미검사", "실행 기록 없음", f"{S}/runs/"):
+        for absent in ("조치 필요", "미검사", "실행 기록 없음", "/runs/"):
             self.assertNotIn(absent, html)
         return main.replace(said, "")
 
@@ -2161,12 +2301,12 @@ class UpdateCheckTests(ScreenFixture):
     def test_a_check_is_recorded_kept_in_memory_and_shown(self):
         from starlette.testclient import TestClient
 
-        client = TestClient(self.app.build_app(PORT, SESSION, model_dir=Path("m"),
+        client = TestClient(self.app.build_app(PORT, CSRF, model_dir=Path("m"),
                                                cache_dir=Path("c")), base_url=BASE)  # fmt: skip
         self.addCleanup(client.close)
         self.client = client
         project_page = self.page(f"/projects/{self.project_id}")
-        self.assertIn(f'action="{S}/projects/{self.project_id}/previews"', project_page)
+        self.assertIn(f'action="/projects/{self.project_id}/previews"', project_page)
         preview_id = self.preview_id("example  other\tthird")
         ((project, names, options),) = self.previewed
         self.assertEqual(project, Path(str(self.project.resolve())))  # the registered path
@@ -2179,7 +2319,7 @@ class UpdateCheckTests(ScreenFixture):
         self.assertEqual(stored["preview"]["targets"], ["example", "other", "third"])
         html = self.page(f"/previews/{preview_id}")
         self.assertIn("<li>대상: example, other, third</li>", html)
-        self.assertIn(f'<a href="{S}/runs/{run["id"]}">실행 #{run["id"]}</a>', html)
+        self.assertIn(f'<a href="/runs/{run["id"]}">실행 #{run["id"]}</a>', html)
         self.assertIn("검사 결과: ", html)  # the report, rendered as on the run page
         self.assertIn("반영은 한 미리보기에 한 번만 시도할 수 있습니다.", html)
         # How long the preview is kept is behind a question mark.
@@ -2199,8 +2339,9 @@ class UpdateCheckTests(ScreenFixture):
                 pass
 
         with mock.patch.object(self.app.uvicorn, "Server", Server),                 mock.patch.object(self.app, "build_app", wraps=self.app.build_app) as built,                 contextlib.redirect_stdout(io.StringIO()):  # fmt: skip
-            self.assertEqual(main(["dashboard", "--model-dir", "m", "--no-cache"]), 0)
-            self.assertEqual(main(["dashboard", "--cache-dir", "c"]), 0)
+            # --port 0: whatever holds the default port does not matter here.
+            self.assertEqual(main(["dashboard", "--port", "0", "--model-dir", "m", "--no-cache"]), 0)
+            self.assertEqual(main(["dashboard", "--port", "0", "--cache-dir", "c"]), 0)
         self.assertEqual([call.kwargs for call in built.call_args_list], [
             {"model_dir": Path("m"), "cache_dir": None, "no_cache": True},
             {"model_dir": None, "cache_dir": Path("c"), "no_cache": False}])  # fmt: skip
@@ -2253,7 +2394,7 @@ class UpdateCheckTests(ScreenFixture):
         # Nothing ran for them: no npm, no run, no preview to apply.
         self.assertEqual(self.preview_files.call_count, 0)
         self.assertEqual(history.list_runs(self.project_id), [])
-        self.assertNotIn(f"{S}/previews/", self.page(f"/projects/{self.project_id}/updates"))
+        self.assertNotIn("/previews/", self.page(f"/projects/{self.project_id}/updates"))
         # The empty field of the button that previews everything is everything, and blanks
         # around names are only what separates them.
         self.assertEqual(self.check("").status_code, 303)
@@ -2263,15 +2404,15 @@ class UpdateCheckTests(ScreenFixture):
         self.assertIn('<input id="packages" name="packages" type="text" maxlength="1024" required>',
                       self.page(f"/projects/{self.project_id}/updates"))  # fmt: skip
 
-    def test_form_session_origin_and_limits(self):
-        for response in (self.check(session="wrong"), self.check(origin=None),
+    def test_form_csrf_origin_and_limits(self):
+        for response in (self.check(csrf="wrong"), self.check(origin=None),
                          self.check(origin=f"http://127.0.0.1:{PORT + 1}")):  # fmt: skip
             self.assertEqual(response.status_code, 403)
         too_long = self.check("a" * (self.app.MAX_TARGETS + 1))
         self.assertEqual(too_long.status_code, 400)
         self.assertIn(self.app.TARGETS_TOO_LONG, too_long.text)
-        url = f"{S}/projects/{self.project_id}/previews"
-        two = self.client.post(url, content=f"session={SESSION}&packages=a&packages=b",
+        url = f"/projects/{self.project_id}/previews"
+        two = self.client.post(url, content=f"csrf={CSRF}&packages=a&packages=b",
                                headers={"origin": BASE, "content-type":
                                         "application/x-www-form-urlencoded"})  # fmt: skip
         self.assertEqual(two.status_code, 400)
@@ -2316,7 +2457,7 @@ class UpdateCheckTests(ScreenFixture):
             preview_id = self.preview_id()
         html = self.page(f"/previews/{preview_id}")
         self.assertIn(self.app.PREVIEW_NOT_RECORDED, html)
-        self.assertNotIn(f"{S}/runs/", html)
+        self.assertNotIn("/runs/", html)
         response = self.apply(preview_id)
         self.assertEqual(response.status_code, 200)
         self.assertIn(self.app.PREVIEW_NOT_RECORDED, response.text)
@@ -2348,19 +2489,19 @@ class HeldPreviewTests(ScreenFixture):
         preview_id = self.preview_id("example")
         (run,) = history.list_runs(self.project_id)
         html = self.page(self.updates)
-        self.assertRegex(html, rf'<li><a href="{S}/previews/{preview_id}">[^<]* UTC 미리보기 검토·반영'
+        self.assertRegex(html, rf'<li><a href="/previews/{preview_id}">[^<]* UTC 미리보기 검토·반영'
                                rf'</a> \(실행 #{run["id"]}\)')  # fmt: skip
         self.assertIn("<li>대상: example</li>", html)
         self.assertNotIn("반영을 시도하면 거부됩니다", html)
         # The recorded check is the current candidate, linked to its report.
-        self.assertIn(f'href="{S}/runs/{run["id"]}#r0"', html)
-        self.assertIn(f'href="{S}/runs/{run["id"]}#r0"', self.page(f"/projects/{self.project_id}"))
+        self.assertIn(f'href="/runs/{run["id"]}#r0"', html)
+        self.assertIn(f'href="/runs/{run["id"]}#r0"', self.page(f"/projects/{self.project_id}"))
         self.assertNotIn(preview_id, self.page(f"/projects/{other_id}/updates"))
         # Files changed after the preview: it stays listed, said to be refused if applied.
         before = self.head.read_bytes()
         self.head.write_bytes(before + b"\n")
         html = self.page(self.updates)
-        self.assertIn(f'href="{S}/previews/{preview_id}"', html)
+        self.assertIn(f'href="/previews/{preview_id}"', html)
         self.assertIn("반영을 시도하면 거부됩니다. 업데이트 미리보기를 다시 실행하세요.", html)
         self.assertNotIn(f"/runs/{run['id']}#r0", html)
         self.head.write_bytes(before)
@@ -2372,10 +2513,10 @@ class HeldPreviewTests(ScreenFixture):
             preview_id = self.preview_id()
         html = self.page(self.updates)
         self.assertRegex(
-            html, rf'<a href="{S}/previews/{preview_id}">[^<]* UTC 미리보기 검토·반영</a>\n'
+            html, rf'<a href="/previews/{preview_id}">[^<]* UTC 미리보기 검토·반영</a>\n'
         )
         self.assertIn("<li>대상: package.json 범위 안의 전체 의존성</li>", html)
-        self.assertNotIn(f"{S}/runs/", html)
+        self.assertNotIn("/runs/", html)
         self.assertIn("아직 업데이트 미리보기를 실행하지 않았습니다.", html)  # nothing stored to show
 
 
@@ -2426,7 +2567,7 @@ class PreviewOpensTests(ScreenFixture):
         """A client of another run of the dashboard on the same history: it holds no preview."""
         from starlette.testclient import TestClient
 
-        client = TestClient(self.app.build_app(PORT, SESSION), base_url=BASE)
+        client = TestClient(self.app.build_app(PORT, CSRF), base_url=BASE)
         self.addCleanup(client.close)
         return client
 
@@ -2437,10 +2578,10 @@ class PreviewOpensTests(ScreenFixture):
         for view in ("", "/updates", "/history"):
             html = self.page(self.packages + view)
             form = re.search(r'<form [^>]*id="preview-project"[^>]*>(.*?)</form>', html, re.S)[1]
-            # The session and the button's own field; the packages view also says what it
+            # The csrf value and the button's own field; the packages view also says what it
             # shows, for the way back from the preview's page (three fields, within MAX_FIELDS).
             self.assertEqual(re.findall(r'<input [^>]*name="(\w+)"', form),
-                             ["session"] if view else ["session", "back"], view)  # fmt: skip
+                             ["csrf"] if view else ["csrf", "back"], view)  # fmt: skip
             self.assertIn('<button class="primary" type="submit" data-busy-label="업데이트 미리보기 '
                           '중…" name="packages" value="">전체 업데이트 미리보기(update)</button>',
                           form)  # fmt: skip
@@ -2454,12 +2595,12 @@ class PreviewOpensTests(ScreenFixture):
         for fields in ({}, {"packages": "example"}, {"back": ""}, {"back": "q=ex&item=1.0"}):
             with self.subTest(fields=fields):
                 response = self.client.post(
-                    f"{S}{self.packages}/previews",
-                    data={"session": SESSION, "packages": "", **fields},
+                    f"{self.packages}/previews",
+                    data={"csrf": CSRF, "packages": "", **fields},
                     headers={"origin": BASE}, follow_redirects=False)  # fmt: skip
                 self.assertEqual(response.status_code, 303, response.text)
                 self.assertRegex(response.headers["location"],
-                                 rf"\A{re.escape(S)}/previews/[A-Za-z0-9_-]+(\?back=[^&#]*)?\Z")  # fmt: skip
+                                 r"\A/previews/[A-Za-z0-9_-]+(\?back=[^&#]*)?\Z")  # fmt: skip
                 self.assertEqual("back" in fields, "?back=" in response.headers["location"])
         # Four previews are held and recorded; none of them wrote a file or applied anything.
         self.assertEqual((len(self.previewed), len(history.list_runs(self.project_id))), (4, 4))
@@ -2500,11 +2641,11 @@ class PreviewOpensTests(ScreenFixture):
                         gate.index(">고른 방식으로 프로젝트에 반영</button>"))  # fmt: skip
         self.assert_form(html, True)
         # Leaving is a link: nothing is applied, and the preview waits where the views list it.
-        self.assertIn(f'<p><a class="action" href="{S}{self.packages}/updates">반영하지 않고 업데이트 '
+        self.assertIn(f'<p><a class="action" href="{self.packages}/updates">반영하지 않고 업데이트 '
                       "화면으로</a></p>", gate)  # fmt: skip
         updates = self.page(f"{self.packages}/updates")
         self.assertIn('<h2 id="previews-title">검토·반영할 미리보기</h2>', updates)
-        self.assertRegex(updates, rf'<li><a href="{S}/previews/{preview_id}">[^<]* UTC 미리보기 '
+        self.assertRegex(updates, rf'<li><a href="/previews/{preview_id}">[^<]* UTC 미리보기 '
                                   r"검토·반영</a>")  # fmt: skip
         self.assertIn("열기만 해서는 아무것도 바꾸지 않습니다.", updates)
         self.page(f"/previews/{preview_id}")  # still held
@@ -2513,20 +2654,20 @@ class PreviewOpensTests(ScreenFixture):
 
     def send(self, back, packages=""):
         """The packages view's preview form: back is the view it was sent from (a list is the
-        field given more than once). The address it ends on, without the session prefix."""
-        fields = [("session", SESSION), ("packages", packages),
+        field given more than once). The address it ends on."""
+        fields = [("csrf", CSRF), ("packages", packages),
                   *(("back", value) for value in ([back] if isinstance(back, str) else back))]  # fmt: skip
-        response = self.client.post(f"{S}{self.packages}/previews", content=urlencode(fields),
+        response = self.client.post(f"{self.packages}/previews", content=urlencode(fields),
                                     headers={"origin": BASE, "content-type":
                                              "application/x-www-form-urlencoded"},
                                     follow_redirects=False)  # fmt: skip
         self.assertEqual(response.status_code, 303, response.text)
-        return response.headers["location"].removeprefix(S)
+        return response.headers["location"]
 
     def way_out(self, html):
         """(the words, the address) of the preview page's link that leaves without applying."""
         found = re.search(r'<p><a class="action" href="([^"]*)">(반영하지 않고 [^<]*)</a></p>', html)
-        return found[2], unescape(found[1]).removeprefix(S)
+        return found[2], unescape(found[1])
 
     def test_a_preview_sent_from_the_packages_view_leads_back_to_what_that_view_showed(self):
         self.returns("example")
@@ -2547,12 +2688,12 @@ class PreviewOpensTests(ScreenFixture):
                 # The apply form keeps it: a refused apply shows the page with the same way out.
                 action = unescape(re.search(r'<form method="post" action="([^"]+/apply[^"]*)">',
                                             html)[1])  # fmt: skip
-                self.assertEqual(action.removeprefix(S), url.replace("?", "/apply?"))
+                self.assertEqual(action, url.replace("?", "/apply?"))
         # The address is always this project's packages view, built from what that view reads
         # of the value and never from its text: what the view would refuse, a value that is no
         # query of it, or a value given twice is the view without a filter.
         hostile = ("scope=evil&q=x", "q=" + "x" * 215, "show=evil&q=x", "q=a&q=b", "//evil.test/x",
-                   "https://evil.test/?q=x", f"../../{SESSION}/model", "item=" + "9" * 41,
+                   "https://evil.test/?q=x", f"../../{CSRF}/model", "item=" + "9" * 41,
                    "item=1.0&item=2.0", 'item=1.0"><script>alert(1)</script>', "item=-1.0",
                    "item=1", ["q=ex", "only=1"])  # fmt: skip
         for back in hostile:
@@ -2572,7 +2713,7 @@ class PreviewOpensTests(ScreenFixture):
         self.assertEqual(self.way_out(self.page(preview)),
                          ("반영하지 않고 업데이트 화면으로", f"{self.packages}/updates"))  # fmt: skip
         # A refused apply (no way chosen) shows the page again with the same way out.
-        refused = self.client.post(f"{S}{preview}/apply?back=q%3Dex", data={"session": SESSION},
+        refused = self.client.post(f"{preview}/apply?back=q%3Dex", data={"csrf": CSRF},
                                    headers={"origin": BASE})  # fmt: skip
         self.assertEqual(refused.status_code, 400)
         self.assertEqual(self.way_out(refused.text)[1], f"{self.packages}?q=ex")
@@ -2596,7 +2737,7 @@ class PreviewOpensTests(ScreenFixture):
                                   html)[1])  # fmt: skip
         self.assertEqual(parse_qs(urlsplit(link).query),
                          {"back": [f"q=oth&scope=direct&item={run}.1"]})  # fmt: skip
-        review = self.page(link.removeprefix(S))
+        review = self.page(link)
         self.assertEqual(self.way_out(review), (
             "반영하지 않고 패키지 목록으로", f"{self.packages}?q=oth&scope=direct&item={run}.1"))  # fmt: skip
         back = self.page(self.way_out(review)[1])
@@ -2606,14 +2747,14 @@ class PreviewOpensTests(ScreenFixture):
         link = re.search(r'<p class="inspect-apply"><a class="action" href="([^"]+)">',
                          self.page(f"{self.packages}/updates"))[1]  # fmt: skip
         self.assertNotIn("?", link)
-        self.assertEqual(self.way_out(self.page(link.removeprefix(S)))[1],
+        self.assertEqual(self.way_out(self.page(link))[1],
                          f"{self.packages}/updates")  # fmt: skip
         self.assertEqual(self.apply_preview.call_count, 0)
 
     def test_a_candidate_links_the_preview_it_came_from_while_it_is_held(self):
         self.returns("example", "other")
         preview_id = self.preview_id()
-        link = f'<p class="inspect-apply"><a class="action" href="{S}/previews/{preview_id}'
+        link = f'<p class="inspect-apply"><a class="action" href="/previews/{preview_id}'
         again = "반영하려면 업데이트 미리보기를 다시 실행합니다."
         missing = "이 후보를 반영하려면 위에서 업데이트 미리보기를 다시 실행합니다."
         for view in ("", "/updates"):
@@ -2624,7 +2765,7 @@ class PreviewOpensTests(ScreenFixture):
             self.assertIn(link, top)
             self.assertIn(">이 후보의 미리보기 검토·반영</a></p>", top)
             self.assertNotIn(again, top)
-            self.assertEqual(html.count(f'href="{S}/previews/{preview_id}'),
+            self.assertEqual(html.count(f'href="/previews/{preview_id}'),
                              2 if view else 1, view)  # fmt: skip
             self.assertNotIn(missing, html)
         self.assertIn("후보를 고르면 반영 여부와 검사 근거를 이 화면에서 보고, 그 후보의 미리보기에서 "
@@ -2632,14 +2773,14 @@ class PreviewOpensTests(ScreenFixture):
         # Another run of the dashboard has the candidates (the history) and no preview: the
         # views say that a preview is run again, and the packages view has its button.
         client = self.another_run()
-        packages = client.get(S + self.packages).text
+        packages = client.get(self.packages).text
         self.assertIn(">example</strong>", packages)
         self.assertNotIn("/previews/" + preview_id, packages)
         self.assertNotIn("inspect-apply", packages)
         self.assertIn(again, self.top(packages))
         self.assertIn('name="packages" value="example">이 패키지 업데이트 미리보기(update)</button>',
                       packages)  # fmt: skip
-        updates = client.get(f"{S}{self.packages}/updates").text
+        updates = client.get(f"{self.packages}/updates").text
         self.assertIn(missing, updates)
         self.assertNotIn("검토·반영할 미리보기", updates)
         # A preview made after the files changed is listed as one that would be refused, and is
@@ -2723,7 +2864,7 @@ class PreviewOpensTests(ScreenFixture):
             "preview": self.page(f"/previews/{preview_id}"), "manage": self.page("/?manage=1"),
             "overview": self.page("/"), "model": self.page("/model"),
             "run": self.page(f"/runs/{scan}"),
-            "restarted": self.another_run().get(S + self.packages).text,
+            "restarted": self.another_run().get(self.packages).text,
         }  # fmt: skip
         found = {}
         for name, html in pages.items():
@@ -2765,21 +2906,21 @@ class ScanScreenTests(ScreenFixture):
         self.scanned.append((project, base_lock, options))
         return self.report
 
-    def scan(self, session=SESSION, origin=BASE, project_id=None):
+    def scan(self, csrf=CSRF, origin=BASE, project_id=None):
         headers = {} if origin is None else {"origin": origin}
-        return self.client.post(f"{S}/projects/{project_id or self.project_id}/scans",
-                                data={"session": session}, headers=headers,
+        return self.client.post(f"/projects/{project_id or self.project_id}/scans",
+                                data={"csrf": csrf}, headers=headers,
                                 follow_redirects=False)  # fmt: skip
 
     def test_a_scan_against_head_with_extraction_is_recorded_and_shown(self):
         from starlette.testclient import TestClient
 
         self.client = TestClient(self.app.build_app(
-            PORT, SESSION, model_dir=Path("m"), cache_dir=Path("c"),
+            PORT, CSRF, model_dir=Path("m"), cache_dir=Path("c"),
             known_malicious_dir=Path("k")), base_url=BASE)  # fmt: skip
         self.addCleanup(self.client.close)
         project_page = self.page(f"/projects/{self.project_id}/updates")
-        self.assertIn(f'action="{S}/projects/{self.project_id}/scans"', project_page)
+        self.assertIn(f'action="/projects/{self.project_id}/scans"', project_page)
         self.assertIn("Git HEAD", project_page)
         with mock.patch.object(history, "record", wraps=history.record) as record:
             response = self.scan()
@@ -2793,7 +2934,7 @@ class ScanScreenTests(ScreenFixture):
         record.assert_called_once_with("scan", project, self.report, None, base_ref=None,
                                        base_lock=False)  # fmt: skip
         (run,) = history.list_runs(self.project_id)
-        self.assertEqual(response.headers["location"], f"{S}/runs/{run['id']}")
+        self.assertEqual(response.headers["location"], f"/runs/{run['id']}")
         stored = history.get_run(run["id"])
         self.assertEqual((stored["kind"], stored["base_ref"], stored["base_lock"]),
                          ("scan", None, False))  # fmt: skip
@@ -2810,8 +2951,8 @@ class ScanScreenTests(ScreenFixture):
                 self.assertEqual(response.status_code, 200)
                 self.assertIn(self.app.SCAN_NOT_RECORDED, response.text)
                 self.assertIn("검사 결과: ", response.text)
-                self.assertNotIn(f"{S}/runs/", response.text)
-                self.assertIn(f'href="{S}/projects/{self.project_id}"', response.text)
+                self.assertNotIn("/runs/", response.text)
+                self.assertIn(f'href="/projects/{self.project_id}"', response.text)
         self.assertEqual(history.list_runs(self.project_id), [])
 
     def test_a_scan_is_shown_when_the_history_breaks_while_it_runs(self):
@@ -2849,7 +2990,7 @@ class ScanScreenTests(ScreenFixture):
         response = self.scan()
         (run,) = history.list_runs(self.project_id)
         self.assertEqual((response.status_code, response.headers["location"]),
-                         (303, f"{S}/runs/{run['id']}"))  # fmt: skip
+                         (303, f"/runs/{run['id']}"))  # fmt: skip
         history_file = self.db.read_bytes()
         self.db.write_bytes(NO_HISTORY)
         self.assert_fixed_500(self.get(f"/runs/{run['id']}"))
@@ -2898,8 +3039,8 @@ class ScanScreenTests(ScreenFixture):
         self.assertNotIn("/scans", project_page)
         self.assertEqual(self.scan_project.call_count, 0)
 
-    def test_form_session_and_origin(self):
-        for response in (self.scan(session="wrong"), self.scan(origin=None),
+    def test_form_csrf_and_origin(self):
+        for response in (self.scan(csrf="wrong"), self.scan(origin=None),
                          self.scan(origin=f"http://127.0.0.1:{PORT + 1}")):  # fmt: skip
             self.assertEqual(response.status_code, 403)
         self.assertEqual(self.get(f"/projects/{self.project_id}/scans").status_code, 405)
@@ -3001,7 +3142,7 @@ class ApplyScreenTests(ScreenFixture):
                 response = self.apply(preview_id, mode=mode)
                 self.assertEqual(response.status_code, 400)
                 self.assertIn(self.app.CHOOSE_MODE, response.text)
-        self.assertEqual(self.apply(preview_id, session="wrong").status_code, 403)
+        self.assertEqual(self.apply(preview_id, csrf="wrong").status_code, 403)
         self.assertEqual(self.apply(preview_id, origin=None).status_code, 403)
         self.assertEqual(self.apply_preview.call_count, 0)
         self.page(f"/previews/{preview_id}")  # still there
@@ -3039,7 +3180,7 @@ class ApplyScreenTests(ScreenFixture):
         self.assertIn(service.RESTORE_NOTICE, html)
         self.assertIn("확인이 필요한 항목 1개(대시보드에서 확인함):", html)
         self.assertNotIn("--confirm-warnings", html)
-        self.assertIn(f'<a href="{S}/runs/{run["id"]}">실행 #{run["id"]}</a>에 반영 기록', html)
+        self.assertIn(f'<a href="/runs/{run["id"]}">실행 #{run["id"]}</a>에 반영 기록', html)
         # The preview is gone: a reload or a resent form applies nothing again.
         self.assertEqual(self.get(f"/previews/{preview_id}").status_code, 404)
         self.assert_stopped(self.apply(preview_id, mode="install"), 404, self.app.PREVIEW_GONE)
@@ -3055,7 +3196,7 @@ class ApplyScreenTests(ScreenFixture):
         project_page = self.page(f"/projects/{self.project_id}/history")
         self.assertIn("<td>설치까지(npm ci --ignore-scripts)</td>\n<td>반영함</td>\n<td>-</td>\n"
                       f"<td>예</td>\n<td>{BACKUP}</td>\n<td>0</td>", project_page)  # fmt: skip
-        self.assertIn(f'<a href="{S}/runs/{run["id"]}">#{run["id"]}</a>', project_page)
+        self.assertIn(f'<a href="/runs/{run["id"]}">#{run["id"]}</a>', project_page)
 
     def test_a_failed_apply_record_still_shows_the_result_and_backup(self):
         preview_id = self.preview_id()
@@ -3103,7 +3244,7 @@ class ApplyScreenTests(ScreenFixture):
         self.assertIn(f"원본 백업: {BACKUP}", response.text)
         self.assertNotIn(self.app.APPLY_NOT_RECORDED, response.text)
         # The run is stored, so its link is a true one.
-        self.assertIn(f'<a href="{S}/runs/{run["id"]}">실행 #{run["id"]}</a>에 반영 기록',
+        self.assertIn(f'<a href="/runs/{run["id"]}">실행 #{run["id"]}</a>에 반영 기록',
                       response.text)  # fmt: skip
         (stored,) = history.list_applies(self.project_id)
         self.assertEqual((stored["run_id"], stored["backup"]), (run["id"], BACKUP))
@@ -3245,10 +3386,10 @@ class EndToEndTests(ApplyFixture):
         from depbee.dashboard import app
 
         self.app = app
-        self.client = TestClient(app.build_app(PORT, SESSION, model_dir=self.root), base_url=BASE)
+        self.client = TestClient(app.build_app(PORT, CSRF, model_dir=self.root), base_url=BASE)
         self.addCleanup(self.client.close)
         self.project_id = history.register_project(self.upd)
-        self.views = f"{S}/projects/{self.project_id}"
+        self.views = f"/projects/{self.project_id}"
 
     def look(self, url):
         response = self.client.get(url)
@@ -3270,7 +3411,7 @@ class EndToEndTests(ApplyFixture):
         response = self.client.post(action, data={**hidden, "packages": "", **fields},
                                     headers={"origin": BASE})  # fmt: skip
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertRegex(response.url.path, rf"\A{re.escape(S)}/previews/[A-Za-z0-9_-]+\Z")
+        self.assertRegex(response.url.path, r"\A/previews/[A-Za-z0-9_-]+\Z")
         return response.text
 
     def send_apply(self, html, **fields):
@@ -3284,13 +3425,13 @@ class EndToEndTests(ApplyFixture):
         with mock.patch.object(service, "preview_files") as preview, \
                 mock.patch.object(service, "apply_preview") as apply, \
                 mock.patch.object(service, "scan_project") as scan:  # fmt: skip
-            for url in ("/", "/?manage=1", "/model", self.views.removeprefix(S),
-                        f"{self.views.removeprefix(S)}/updates",
-                        f"{self.views.removeprefix(S)}/history", f"/runs/{run}"):  # fmt: skip
-                self.look(S + url)
+            for url in ("/", "/?manage=1", "/model", self.views,
+                        f"{self.views}/updates",
+                        f"{self.views}/history", f"/runs/{run}"):  # fmt: skip
+                self.look(url)
             # The addresses that change something answer a GET with nothing done.
-            for url in (f"{self.views}/previews", f"{self.views}/scans", f"{S}/previews/x/apply",
-                        f"{S}/projects/pick"):  # fmt: skip
+            for url in (f"{self.views}/previews", f"{self.views}/scans", "/previews/x/apply",
+                        "/projects/pick"):  # fmt: skip
                 self.assertEqual(self.client.get(url).status_code, 405, url)
             self.assertEqual((preview.call_count, apply.call_count, scan.call_count), (0, 0, 0))
         self.assert_unchanged()
@@ -3380,10 +3521,10 @@ class EndToEndTests(ApplyFixture):
         self.assertNotRegex(page, r'<form method="post" action="[^"]+/apply')
         self.assertIn("반영하지 않고 패키지 목록으로", page)  # the way out is still there
         # A request made by hand, confirmation and all, is refused by the service's gate.
-        preview_id = re.search(rf'href="{re.escape(S)}/previews/([A-Za-z0-9_-]+)"',
+        preview_id = re.search(r'href="/previews/([A-Za-z0-9_-]+)"',
                                self.look(f"{self.views}/updates"))[1]  # fmt: skip
-        forced = self.client.post(f"{S}/previews/{preview_id}/apply",
-                                  data={"session": SESSION, "mode": "lockfile", "confirm": "yes"},
+        forced = self.client.post(f"/previews/{preview_id}/apply",
+                                  data={"csrf": CSRF, "mode": "lockfile", "confirm": "yes"},
                                   headers={"origin": BASE})  # fmt: skip
         self.assertEqual(forced.status_code, 200)
         self.assertIn("업데이트 반영: 반영하지 않음", forced.text)

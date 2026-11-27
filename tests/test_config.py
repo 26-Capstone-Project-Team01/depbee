@@ -635,7 +635,7 @@ class SharedFolderTests(Fixture):
         notice = cli.SHARED_FOLDER.format(folder=self.user) + "\n"
         self.assertEqual(self.on_terminal("setup"), (0, shown, notice))
         self.assertEqual(run_cli("setup"), (0, shown, ""))  # captured output is as it was
-        state = {"url": "http://127.0.0.1:8123/s/" + "s" * 43 + "/"}
+        state = {"url": "http://127.0.0.1:18765/"}
         with mock.patch("depbee.dashboard.lifecycle.start", return_value=(state, True)):
             started = (0, f"{state['url']}\n{cli.BACKGROUND_STARTED}\n")
             self.assertEqual(self.on_terminal("dashboard", "--background"), (*started, notice))

@@ -23,7 +23,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from test_dashboard import BASE, PORT, SESSION, DashboardFixture, S
+from test_dashboard import BASE, CSRF, PORT, DashboardFixture
 from test_workflow import Fixture
 
 from depbee import cli, history
@@ -31,7 +31,7 @@ from depbee.cli import main
 from depbee.dashboard import lifecycle, picker
 
 TOKEN = "synthetic-control-token-for-tests-only"
-ADDRESS = re.compile(r"http://127\.0\.0\.1:(\d+)/s/([A-Za-z0-9_-]{43})/")
+ADDRESS = re.compile(r"http://127\.0\.0\.1:(\d+)/$", re.M)
 
 
 def wait_for(condition, seconds=30):
@@ -120,7 +120,7 @@ class StopRouteTests(DashboardFixture):
         from starlette.testclient import TestClient
 
         self.asked = []  # filled: the server has been asked to end
-        app = self.app.build_app(PORT, SESSION, lambda: bool(self.asked))
+        app = self.app.build_app(PORT, CSRF, lambda: bool(self.asked))
         self.client = TestClient(app, base_url=BASE)
         self.addCleanup(self.client.close)
         patcher = mock.patch.object(picker, "choose", return_value=("chosen", str(self.project)))
@@ -128,8 +128,8 @@ class StopRouteTests(DashboardFixture):
         self.addCleanup(patcher.stop)
         self.before = sorted(self.root.rglob("*"))
 
-    def pick(self, session=SESSION):
-        return self.client.post(S + "/projects/pick", data={"session": session},
+    def pick(self, csrf=CSRF):
+        return self.client.post("/projects/pick", data={"csrf": csrf},
                                 headers={"origin": BASE}, follow_redirects=False)  # fmt: skip
 
     def assert_stopped(self, response):
@@ -145,7 +145,7 @@ class StopRouteTests(DashboardFixture):
         response = self.pick()
         # The first project of all: registered, and the overview is where it is shown.
         self.assertEqual((response.status_code, response.headers["location"]),
-                         (303, S + "/"))  # fmt: skip
+                         (303, "/"))  # fmt: skip
         self.assertEqual([project["id"] for project in history.list_projects()], [1])
         ((watched,), options) = self.choose.call_args
         self.assertEqual((watched(), options), (False, {}))
@@ -156,8 +156,8 @@ class StopRouteTests(DashboardFixture):
         self.asked.append(True)
         self.assert_stopped(self.pick())
         self.assertEqual(self.choose.call_count, 0)
-        # The form is still checked first: a request without the session learns nothing.
-        self.assertEqual(self.pick(session="wrong").status_code, 403)
+        # The form is still checked first: a request without its value learns nothing.
+        self.assertEqual(self.pick(csrf="wrong").status_code, 403)
 
     def test_whatever_the_dialog_answers_after_the_stop_nothing_is_registered(self):
         answers = [("chosen", str(self.project)), ("cancelled", None), ("unavailable", None),
@@ -184,7 +184,7 @@ class SecondRequestTests(DashboardFixture):
     """A second dialog request while the first dialog is open (409): how its page leads on."""
 
     def pick(self):
-        return self.client.post(S + "/projects/pick", data={"session": SESSION},
+        return self.client.post("/projects/pick", data={"csrf": CSRF},
                                 headers={"origin": BASE}, follow_redirects=False)  # fmt: skip
 
     def test_the_page_links_to_project_management_instead_of_a_second_post(self):
@@ -197,24 +197,24 @@ class SecondRequestTests(DashboardFixture):
 
         with mock.patch.object(picker, "choose", side_effect=open_dialog) as choose:
             first = self.pick()
-        self.assertEqual(first.headers["location"], S + "/")  # the first one registers
+        self.assertEqual(first.headers["location"], "/")  # the first one registers
         self.assertEqual(choose.call_count, 1)
         again = seen["again"]
         self.assertEqual(again.status_code, 409)
         html = again.text
         # The page was made before the folder was chosen and stays as it is: the project is not
         # on it, and its words promise neither a tab nor ask to send the request again.
-        self.assertNotIn(f'href="{S}/projects/1"', html)
+        self.assertNotIn('href="/projects/1"', html)
         self.assertIn("이 화면은 저절로 바뀌지 않으니", html)
         self.assertIn("새로 고치면 폴더 선택 요청을 다시 보내게 됩니다", html)
         for promise in ("탭이 생", "다시 시도"):
             self.assertNotIn(promise, html)
         # The way on is a link, which is a GET: the page has no form that could post again.
         self.assertEqual(self.app.PICK_REOPEN, "프로젝트 관리 다시 열기")
-        self.assertIn(f'<p><a href="{S}/?manage=1">{self.app.PICK_REOPEN}</a></p>', html)
+        self.assertIn(f'<p><a href="/?manage=1">{self.app.PICK_REOPEN}</a></p>', html)
         self.assertNotIn("<form", html)
         # Where the link leads, the registration of the first request is there to see.
-        self.assertIn(f'href="{S}/projects/1"', self.page("/"))
+        self.assertIn('href="/projects/1"', self.page("/"))
         self.assertEqual(len(history.list_projects()), 1)
 
 
@@ -238,13 +238,12 @@ class ServerStopTests(DashboardFixture):
         self.addCleanup(patcher.stop)
 
     def start(self, run, address):
-        """run() in a thread: the thread, and the port and session of the session address that
-        address() gives once it is there."""
+        """run() in a thread: the thread, and the port of the address that address() gives
+        once it is there."""
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
         self.addCleanup(self.end, thread)
-        port, session = ADDRESS.match(wait_for(address) or "").groups()
-        return thread, int(port), session
+        return thread, int(ADDRESS.match(wait_for(address) or "")[1])
 
     def end(self, thread):
         for server in self.servers:  # only after a failure: each test ends its server itself
@@ -266,16 +265,25 @@ class ServerStopTests(DashboardFixture):
 
         return self.start(run, lambda: (lifecycle._read(self.folder) or {}).get("url"))
 
-    def post_pick(self, port, session):
-        """Send the dialog's form as the management page does, in a thread: the thread, and a
-        dict that gets the answer's status and text."""
+    def post_pick(self, port):
+        """Send the dialog's form as the first page has it (its hidden value is read from that
+        page, as a browser has it), in a thread: the thread, and a dict that gets the answer's
+        status and text."""
         answer = {}
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
+        try:
+            connection.request("GET", "/")
+            page = connection.getresponse().read().decode("utf-8")
+        finally:
+            connection.close()
+        self.assertIn('<form method="post" action="/projects/pick">', page)
+        csrf = re.search(r'name="csrf" value="([A-Za-z0-9_-]{43})"', page)[1]
 
         def post():
             connection = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
             try:
                 connection.request(
-                    "POST", f"/s/{session}/projects/pick", f"session={session}",
+                    "POST", "/projects/pick", f"csrf={csrf}",
                     {"origin": f"http://127.0.0.1:{port}",
                      "content-type": "application/x-www-form-urlencoded"},
                 )  # fmt: skip
@@ -301,8 +309,8 @@ class ServerStopTests(DashboardFixture):
     def test_the_stop_command_ends_a_server_whose_dialog_is_open(self):
         marker = self.root / "dialog-open"
         stand_in(self, waiting(marker))
-        server, port, session = self.background()
-        request, answer = self.post_pick(port, session)
+        server, port = self.background()
+        request, answer = self.post_pick(port)
         self.assertTrue(wait_for(marker.exists), "the dialog's child did not start")
         # The command itself: it has the request taken and then waits, STOP_SECONDS at most,
         # for the instance's lock. A server that waited for the dialog made it fail (exit 2).
@@ -318,7 +326,7 @@ class ServerStopTests(DashboardFixture):
 
     def test_a_stop_taken_before_the_dialog_starts_leaves_no_child(self):
         stand_in(self, answering(self.project))
-        server, port, session = self.background()
+        server, port = self.background()
         state, choose, taken = lifecycle._read(self.folder), picker.choose, []
 
         def stop_first(stopping):
@@ -328,13 +336,13 @@ class ServerStopTests(DashboardFixture):
             return choose(stopping)
 
         with mock.patch.object(picker, "choose", stop_first):
-            request, answer = self.post_pick(port, session)
+            request, answer = self.post_pick(port)
             self.assert_ended(server, request, answer)
         self.assertEqual((taken, self.children), ([True, True], []))
 
     def test_an_answer_that_comes_back_after_the_stop_is_not_registered(self):
         stand_in(self, answering(self.project))  # a folder that would be registered
-        server, port, session = self.background()
+        server, port = self.background()
         state, choose, seen = lifecycle._read(self.folder), picker.choose, []
 
         def answer_then_stop(stopping):
@@ -344,7 +352,7 @@ class ServerStopTests(DashboardFixture):
             return seen[0]
 
         with mock.patch.object(picker, "choose", answer_then_stop):
-            request, answer = self.post_pick(port, session)
+            request, answer = self.post_pick(port)
             self.assert_ended(server, request, answer)
         self.assertEqual(seen, [("chosen", str(self.project)), True])
         (child,) = self.children
@@ -357,11 +365,11 @@ class ServerStopTests(DashboardFixture):
         marker, out = self.root / "dialog-open", io.StringIO()
         stand_in(self, waiting(marker))
         with contextlib.redirect_stdout(out):  # the two lines of a foreground start
-            server, port, session = self.start(
+            server, port = self.start(
                 lambda: self.app.serve(0),
                 lambda: out.getvalue().count("\n") == 2 and out.getvalue(),
             )
-        request, answer = self.post_pick(port, session)
+        request, answer = self.post_pick(port)
         self.assertTrue(wait_for(marker.exists), "the dialog's child did not start")
         (running,) = self.servers
         running.handle_exit(signal.SIGINT, None)

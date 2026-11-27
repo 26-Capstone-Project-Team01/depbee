@@ -9,7 +9,7 @@ Every page but the first is one console: the registered projects are tabs (_tabs
 project has three views, its packages, its update candidates and its history. A candidate is
 only ever a stored update preview of that project made from the files as they are now
 (_update_state); a GET reads files and the history and never runs npm or reaches the network.
-The session's first page is the overview of the registered projects (_portfolio, _chart), and
+The console's first page is the overview of the registered projects (_portfolio, _chart), and
 the management page when the address asks for it (?manage=1). While no project is registered it
 is the start page instead: one button that adds the first one, and nothing else. Registering
 that first project comes back to the overview (enroll); a later one opens its own project.
@@ -24,10 +24,16 @@ command (check_command). An update preview always opens its own page, where it i
 applied; one sent from the packages view carries that view's search, filter and open candidate
 to the page's way back (_back).
 
-The pages work without a script. The one script (static/app.js, from under the session like the
-stylesheets) only marks a button whose request is running and stops a second request meanwhile.
+The pages work without a script. The one script (static/app.js) only marks a button whose
+request is running and stops a second request meanwhile.
+
+The address is the same at every start, http://127.0.0.1:<port>/, and holds nothing secret:
+whoever can reach this computer's 127.0.0.1 (its other accounts and programs) can open the
+pages, and there is no login. What is refused is a browser acting for another site (Guard), and
+a form of an earlier run (build_app's csrf).
 """
 
+import errno
 import hashlib
 import hmac
 import importlib.resources
@@ -177,8 +183,8 @@ SCRIPT = "app.js"
 # The two bundled fonts (scripts/build_dashboard_fonts.py), under static/fonts/, each on its own
 # route like the stylesheets: the licences and the coverage list beside them are not served.
 FONTS = ("NotoSansKR-depbee.woff2", "JetBrainsMono-depbee.woff2")
-# The tab icon, the brand's hexagon cell. Served under the session like the stylesheet: without
-# it a browser asks for /favicon.ico, which has no session and is a 403 in its console.
+# The tab icon, the brand's hexagon cell: every page names it, so a browser never asks for
+# /favicon.ico, which is not served and would be a 404 in its console.
 ICON = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#f4b10b" '
     'stroke="#18202b" d="M8 1l6 3.5v7L8 15l-6-3.5v-7z"/></svg>'
@@ -209,7 +215,7 @@ THEME_WORDS = {
 }
 THEME_FAILED_TITLE = "화면 테마를 저장하지 못했습니다"
 THEME_FAILED = "설정 폴더에 쓸 수 없어 지금 화면 테마를 그대로 둡니다."
-# The pages of the console a GET opens (under the session): where the theme form may go back to.
+# The pages of the console a GET opens: where the theme form may go back to.
 PAGES = re.compile(
     r"/(?:|model|projects/[0-9]+(?:/updates|/history)?|runs/[0-9]+|previews/[A-Za-z0-9_-]+)"
 )
@@ -251,12 +257,21 @@ PICK_OPEN_NOTE = (
 PICK_REOPEN = "프로젝트 관리 다시 열기"
 PICK_STOPPED = (
     "대시보드를 종료하는 중이어서 폴더 선택을 취소했고 프로젝트를 등록하지 않았습니다. 대시보드를 "
-    "다시 시작한 뒤 새 주소에서 다시 선택하세요."
+    "다시 시작한 뒤 화면을 새로 열고 다시 선택하세요."
 )
-SESSION_REFUSED = (
-    "세션 주소가 맞지 않습니다. depbee dashboard가 이번 실행에서 출력한 주소로 여세요."
+OTHER_SITE = "다른 출처의 요청은 받지 않습니다."
+FORM_REFUSED = (
+    "이 화면의 폼 값이 지금 실행 중인 대시보드의 것이 아닙니다(대시보드를 다시 시작하기 전에 연 "
+    "화면). 대시보드 주소를 다시 열어 화면을 새로 받은 뒤 다시 시도하세요."
 )
-FORM_REFUSED = "폼의 세션 값이 맞지 않습니다. 화면을 새로 열고 다시 시도하세요."
+# serve(): the port could not be bound. {error} is the system's name of the reason.
+PORT_REFUSED = (
+    "127.0.0.1:{port} could not be opened for the dashboard ({error}): another program is "
+    "listening there, or the operating system keeps the port reserved. Nothing was stopped and "
+    "no other port was tried. depbee dashboard --status shows the background dashboard if one "
+    "runs (it does not see a dashboard started in a terminal, or any other program). To use "
+    "another port, run depbee dashboard --port PORT"
+)
 BUSY = (
     "다른 lockfile 변경 검사, 업데이트 미리보기나 반영이 실행 중입니다. 끝난 뒤 다시 시도하세요."
 )
@@ -346,17 +361,24 @@ def _text(status: int, text: str) -> Response:
 
 
 class Guard:
-    """Wraps the whole app. Every request: exactly one Host header equal to 127.0.0.1:<port>
-    (any case), else 400; a path under /s/<session>/ with this run's session (compared with
-    hmac.compare_digest), else 403; a request other than GET or HEAD also needs Origin exactly
-    http://127.0.0.1:<port> and, when the browser says where the request comes from
-    (Sec-Fetch-Site), one of OWN_SITES, else 403 (the form handlers check the form's session
-    field). The app sees the path without the /s/<session> prefix. Cookies are neither read nor
-    set. Every response, errors included, gets SECURITY_HEADERS."""
+    """Wraps the whole app: what keeps a browser from acting here for another site. It tells no
+    user from another, and neither does anything else: the address holds no secret.
 
-    def __init__(self, app, port: int, session: str):
-        self.app, self.session = app, session.encode()
-        self.host, self.origin = f"{HOST}:{port}".encode(), f"http://{HOST}:{port}".encode()
+    Every request: exactly one Host header equal to 127.0.0.1:<port> (any case), else 400, so a
+    name that another site points at 127.0.0.1 is not answered. When the browser says where the
+    request comes from (Sec-Fetch-Site) and that is not one of OWN_SITES, only a link's own
+    request is answered (a GET that opens the page as the document of a tab), else 403: another
+    site can send the user here, and can neither load nor probe anything. A request other than
+    GET or HEAD needs one of OWN_SITES there and Origin exactly http://127.0.0.1:<port>, else
+    403 (the form handlers then check the form's csrf field). On port 80 a browser writes
+    neither port, so both are also taken without it. Cookies are neither read nor set. Every
+    response, errors included, gets SECURITY_HEADERS."""
+
+    def __init__(self, app, port: int):
+        self.app = app
+        ends = (f":{port}", "") if port == 80 else (f":{port}",)
+        self.hosts = [f"{HOST}{end}".encode() for end in ends]
+        self.origins = [f"http://{HOST}{end}".encode() for end in ends]
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":  # no websockets; lifespan is off
@@ -367,44 +389,49 @@ class Guard:
                 message = {**message, "headers": [*message.get("headers", []), *SECURITY_HEADERS]}
             await send(message)
 
-        refused, path = self.refused(scope)
+        refused = self.refused(scope)
         if refused is not None:
             await _text(*refused)(scope, receive, secured)
             return
-        await self.app({**scope, "path": path}, receive, secured)
+        await self.app(scope, receive, secured)
 
-    def refused(self, scope) -> tuple[tuple[int, str] | None, str]:
-        """(status and fixed text, or None) and the path after /s/<session>."""
+    def refused(self, scope) -> tuple[int, str] | None:
+        """The status and fixed text of a request that is not answered, or None."""
         headers = scope["headers"]  # ASGI header names are lowercase
-        hosts = [value for name, value in headers if name == b"host"]
-        if len(hosts) != 1 or hosts[0].lower() != self.host:
-            return (400, "잘못된 Host 헤더입니다."), ""
-        parts = scope["path"].split("/", 3)  # "", "s", session, rest
-        given = parts[2].encode("utf-8", "replace") if len(parts) == 4 else b""
-        if parts[:2] != ["", "s"] or not hmac.compare_digest(given, self.session):
-            return (403, SESSION_REFUSED), ""
-        if scope["method"] not in ("GET", "HEAD"):
-            sites = [value.lower() for name, value in headers if name == b"sec-fetch-site"]
-            if [v for n, v in headers if n == b"origin"] != [self.origin] or any(
-                site not in OWN_SITES for site in sites
-            ):
-                return (403, "다른 출처의 요청은 받지 않습니다."), ""
-        return None, "/" + parts[3]
+
+        def sent(wanted: bytes) -> list[bytes]:
+            return [value.lower() for name, value in headers if name == wanted]
+
+        hosts = sent(b"host")
+        if len(hosts) != 1 or hosts[0] not in self.hosts:
+            return 400, "잘못된 Host 헤더입니다."
+        foreign = any(site not in OWN_SITES for site in sent(b"sec-fetch-site"))
+        if scope["method"] in ("GET", "HEAD"):
+            link = (scope["method"], sent(b"sec-fetch-mode"), sent(b"sec-fetch-dest")) == (
+                "GET", [b"navigate"], [b"document"],
+            )  # fmt: skip
+            return (403, OTHER_SITE) if foreign and not link else None
+        origins = [value for name, value in headers if name == b"origin"]
+        if foreign or len(origins) != 1 or origins[0] not in self.origins:
+            return 403, OTHER_SITE
+        return None
 
 
 def build_app(
-    port: int, session: str, stopping=None, *, model_dir: Path | None = None,
+    port: int, csrf: str, stopping=None, *, model_dir: Path | None = None,
     cache_dir: Path | None = None, no_cache: bool = False,
     known_malicious_dir: Path | None = None,
 ):  # fmt: skip
-    """The guarded ASGI app for 127.0.0.1:port; session is the value in the address printed at
-    start (/s/<session>/), which every link, redirect and form carries. model_dir, cache_dir,
-    no_cache, known_malicious_dir: for update previews, as in depbee update.
+    """The guarded ASGI app for 127.0.0.1:port, whose pages are at the root of that address.
+    csrf is this run's value in the hidden field of every form (serve() makes a new one at each
+    start): a form is taken only with it, so not one made by another site, which cannot read a
+    page, and not one of a page opened before a restart, until that page is loaded again. It is
+    never in an address, and it is no login. model_dir, cache_dir, no_cache,
+    known_malicious_dir: for update previews, as in depbee update.
 
     stopping: a function that says whether the server of this app has been asked to end
     (serve() gives its server's own flag). From then on the folder dialog is not opened, an open
     one is closed, and neither registers a folder. None: nothing ends the app."""
-    base = f"/s/{session}"
     scan_options = {"model_dir": model_dir, "cache_dir": cache_dir, "no_cache": no_cache}
     if known_malicious_dir is not None:  # else the options stay as before (the service's default)
         scan_options["known_malicious_dir"] = known_malicious_dir
@@ -418,9 +445,9 @@ def build_app(
         tabs = _tabs(project) if tabs is None else tabs
         chosen = theme.load()
         query = urlencode(request.query_params.multi_items())
-        back = base + request.url.path + (f"?{query}" if query else "")
+        back = request.url.path + (f"?{query}" if query else "")
         html = ENV.get_template(name).render(
-            safety_note=SAFETY_NOTE, base=base, session=session, tabs=tabs, section=section,
+            safety_note=SAFETY_NOTE, csrf=csrf, tabs=tabs, section=section,
             project=next((tab for tab in tabs if tab["current"]), None), rail=_rail(tabs),
             attention=sum(tab["cell"] in RAIL_ORDER[:3] for tab in tabs),
             theme=chosen, theme_next=theme.next_of(chosen), theme_words=THEME_WORDS,
@@ -451,7 +478,7 @@ def build_app(
         return page(request, name, status, section="updates", tabs=tabs, **context)
 
     async def read_form(request: Request) -> dict | Response:
-        """The urlencoded form whose session field is this run's session, or the refusal."""
+        """The urlencoded form whose csrf field is this run's value, or the refusal."""
         kind = request.headers.get("content-type", "").split(";")[0].strip().lower()
         if kind != "application/x-www-form-urlencoded":
             return _text(415, "폼(application/x-www-form-urlencoded)만 받습니다.")
@@ -461,8 +488,8 @@ def build_app(
                             max_num_fields=MAX_FIELDS, errors="strict")  # fmt: skip
         except ValueError:  # also UnicodeError
             return _text(400, "폼을 읽을 수 없습니다.")
-        given = form.get("session", [])
-        if len(given) != 1 or not hmac.compare_digest(given[0].encode(), session.encode()):
+        given = form.get("csrf", [])
+        if len(given) != 1 or not hmac.compare_digest(given[0].encode(), csrf.encode()):
             return _text(403, FORM_REFUSED)
         return form
 
@@ -474,7 +501,7 @@ def build_app(
                     pick_seconds=picker.PICK_SECONDS, switch_keys=SWITCH_KEYS)  # fmt: skip
 
     def home(request: Request) -> Response:
-        """The session's first page. While no project is registered it is the start page,
+        """The console's first page. While no project is registered it is the start page,
         whatever the address asks for: one button that sends the form of pick, and no console
         around it. From then on it is the overview of the registered projects, and the
         management page when the address asks for it (?manage=1): a closed folder dialog and
@@ -499,7 +526,7 @@ def build_app(
             return projects(request, 400, REGISTER_ERRORS[problem])
         first = not history.list_projects()
         project_id = history.register_project(Path(path))
-        return RedirectResponse(f"{base}/" if first else f"{base}/projects/{project_id}", 303)
+        return RedirectResponse("/" if first else f"/projects/{project_id}", 303)
 
     picking = threading.Lock()  # one folder dialog at a time; pages stay open meanwhile
     # What picker.choose is given to watch: nothing in an app without a server that ends.
@@ -510,7 +537,7 @@ def build_app(
 
     async def pick(request: Request) -> Response:
         """Open the desktop's folder dialog (POST from the start or the management page) and
-        register the folder chosen there: the form carries the session and no path, so the
+        register the folder chosen there: the form carries its csrf value and no path, so the
         only path ever registered is the one the dialog's child process answers. The dialog
         runs in that child, which a worker thread waits for (picker.choose). Closing it
         registers nothing, and so does a dialog that cannot be shown or is still open at its
@@ -535,7 +562,7 @@ def build_app(
         if outcome == "stopped" or ending():
             return _text(503, PICK_STOPPED)
         if outcome == "cancelled":
-            return RedirectResponse(f"{base}/?manage=1", 303)
+            return RedirectResponse("/?manage=1", 303)
         if outcome != "chosen":
             return projects(request, 503, PICK_ERRORS[outcome])
         return enroll(request, folder)
@@ -723,7 +750,7 @@ def build_app(
             previews.popitem(last=False)
         back = _back(form.get("back", []))
         carried = "" if back is None else "?" + urlencode({"back": back})
-        return RedirectResponse(f"{base}/previews/{preview_id}{carried}", 303)
+        return RedirectResponse(f"/previews/{preview_id}{carried}", 303)
 
     async def scan(request: Request) -> Response:
         """Scan a registered project's uncommitted lockfile change against Git HEAD, as depbee
@@ -750,7 +777,7 @@ def build_app(
         if run_id is None:  # the result is not hidden when it could not be recorded
             return finished(request, "scanned.html", found, not_recorded=SCAN_NOT_RECORDED,
                             **_report(report))  # fmt: skip
-        return RedirectResponse(f"{base}/runs/{run_id}", 303)
+        return RedirectResponse(f"/runs/{run_id}", 303)
 
     def show_preview(request: Request) -> Response:
         preview_id = request.path_params["preview_id"]
@@ -823,7 +850,7 @@ def build_app(
         except (OSError, GuardError, RuntimeError):
             return page(request, "error.html", 503, title=THEME_FAILED_TITLE,
                         message=THEME_FAILED, note="")  # fmt: skip
-        return RedirectResponse(_way_back(base, back[0] if back else ""), 303)
+        return RedirectResponse(_way_back(back[0] if back else ""), 303)
 
     def asset(name: str, media_type: str):
         """The handler of one file of static/ (STYLES, SCRIPT, fonts/ FONTS): the file is the
@@ -869,8 +896,8 @@ def build_app(
         exception_handlers={Exception: failed},
         max_body_size=MAX_BODY,
     )
-    app.router.redirect_slashes = False  # its redirect would drop the /s/<session> prefix
-    return Guard(app, port, session)
+    app.router.redirect_slashes = False  # one address per page, and no redirect to a full URL
+    return Guard(app, port)
 
 
 def _found(path: str) -> bool:
@@ -908,16 +935,14 @@ def _registration_problem(text: str) -> str | None:
     return None
 
 
-def _way_back(base: str, given: str) -> str:
+def _way_back(given: str) -> str:
     """The address the theme form goes back to: given, when it is a page of this console that a
-    GET opens (PAGES under base, with the query it had), else the console's first page. Never
-    another site, another session, a form's own address or a file."""
-    home = f"{base}/"
+    GET opens (PAGES, with the query it had), else the console's first page. Never another site
+    (a page's address starts with one slash, so "//host" is none), a form's own address or a
+    file."""
     if len(unquote(given)) > MAX_BACK or not given.isprintable() or "\\" in given or "#" in given:
-        return home
-    if not given.startswith(home):
-        return home
-    return given if PAGES.fullmatch(given[len(base) :].partition("?")[0]) else home
+        return "/"
+    return given if PAGES.fullmatch(given.partition("?")[0]) else "/"
 
 
 def _project(project_id: int) -> dict | None:
@@ -1811,9 +1836,12 @@ def serve(
     port: int, *, model_dir: Path | None = None, cache_dir: Path | None = None,
     no_cache: bool = False, known_malicious_dir: Path | None = None, background=None,
 ) -> None:  # fmt: skip
-    """Bind 127.0.0.1:port (0 picks a free one), print the session address once and serve until
-    Ctrl+C, which ends with one line and no traceback. The session is in the address line only:
-    no access log, and errors never quote requests.
+    """Bind 127.0.0.1:port (0 picks a free one), print the address once and serve until Ctrl+C,
+    which ends with one line and no traceback. No access log, and errors never quote requests.
+
+    A port that cannot be bound is a GuardError that says what to do (PORT_REFUSED): the port
+    asked for is the address the user keeps, so no other one is tried, and whatever holds it is
+    left alone.
 
     background (lifecycle.Instance): serve as the background instance instead. The address is
     not printed but published in the instance's state file once the port is bound, and the
@@ -1827,11 +1855,15 @@ def serve(
         raise GuardError("--port must be between 0 and 65535")
     # Only when given, so that build_app is called as before without an index.
     known = {"known_malicious_dir": known_malicious_dir} if known_malicious_dir else {}
-    sock = socket.create_server((HOST, port))
+    try:
+        sock = socket.create_server((HOST, port))
+    except OSError as exc:
+        error = errno.errorcode.get(exc.errno, "the system refused it")
+        raise GuardError(PORT_REFUSED.format(port=port, error=error)) from exc
     try:
         actual = sock.getsockname()[1]
-        session = secrets.token_urlsafe(32)
-        app = build_app(actual, session, lambda: server.should_exit, model_dir=model_dir,
+        csrf = secrets.token_urlsafe(32)  # of this process: a form of an earlier run is refused
+        app = build_app(actual, csrf, lambda: server.should_exit, model_dir=model_dir,
                         cache_dir=cache_dir, no_cache=no_cache, **known)  # fmt: skip
         if background is not None:
             app = background.control(app, lambda: setattr(server, "should_exit", True))
@@ -1841,8 +1873,8 @@ def serve(
             ws="none",
         )  # fmt: skip
         server = uvicorn.Server(config)
-        # The session's first page, whatever is registered: it reads the history when opened.
-        url = f"http://{HOST}:{actual}/s/{session}/"
+        # The console's first page, whatever is registered: it reads the history when opened.
+        url = f"http://{HOST}:{actual}/"
         if background is None:
             print(url, flush=True)
             print(STARTED, flush=True)

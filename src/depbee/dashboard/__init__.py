@@ -1,6 +1,10 @@
 """Local dashboard (`depbee dashboard`, SVC-07): registered projects, their dependencies, stored
 scan and update-preview reports, and update previews and applies, on 127.0.0.1 only.
 
+Its address is http://127.0.0.1:DEFAULT_PORT/ unless another port is asked for: the same after
+every restart, with no login, secret path or cookie. Whoever can reach 127.0.0.1 on this PC can
+use it while it runs.
+
 Verdicts, reasons and exit codes are shown as stored and never recomputed; the wording comes
 from depbee.cli. Update previews and applies go through depbee.service (preview_files,
 update_gate, apply_preview), which alone decides what may be applied. The web libraries (extra
@@ -8,12 +12,15 @@ update_gate, apply_preview), which alone decides what may be applied. The web li
 """
 
 import importlib
-import importlib.metadata
 import importlib.util
 import sys
 from pathlib import Path
 
 from ..contracts import GuardError
+
+#: The port when none is given: of `depbee dashboard`, with or without --background, of serve()
+#: and of lifecycle.start(). 0 asks the system for a free port instead.
+DEFAULT_PORT = 18765
 
 #: The web extra of pyproject.toml (the tests keep the two equal) by the name each is imported
 #: under: what serve() tells a depbee without them to install.
@@ -27,6 +34,8 @@ WEB = {
 def _recorded(name: str) -> bool:
     """Whether this Python's install records hold a distribution of that name, its module there
     or not. pip goes by that record: a plain install is then not sure to bring the module back."""
+    import importlib.metadata  # here: the CLI imports this module for DEFAULT_PORT on every run
+
     try:
         importlib.metadata.distribution(name)
     except importlib.metadata.PackageNotFoundError:
@@ -66,10 +75,11 @@ def _without_web(exc: ImportError) -> str:
 
 
 def serve(
-    port: int = 0, *, model_dir: Path | None = None, cache_dir: Path | None = None,
+    port: int = DEFAULT_PORT, *, model_dir: Path | None = None, cache_dir: Path | None = None,
     no_cache: bool = False, known_malicious_dir: Path | None = None, background=None,
 ) -> None:  # fmt: skip
-    """Serve the dashboard on 127.0.0.1:port (0: a free port) until interrupted.
+    """Serve the dashboard on 127.0.0.1:port (0: a free port) until interrupted. A port that
+    cannot be bound is an error: no other port is tried.
     model_dir, cache_dir, no_cache, known_malicious_dir: for update previews, as in depbee
     update. background: the lifecycle.Instance to serve as (depbee
     dashboard --background)."""

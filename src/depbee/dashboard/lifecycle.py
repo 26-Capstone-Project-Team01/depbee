@@ -18,6 +18,11 @@ file, and a file left behind is removed only by a caller that holds it (_sweep),
 found an old file never removes the one a new instance has written meanwhile. A stop waits for
 the instance that took its request: once the lock belongs to a newer instance, it is done.
 
+The address is the root of the port, http://127.0.0.1:<port>/, and the port is DEFAULT_PORT
+unless another is asked for. A port that cannot be bound is the child's error, which start()
+reports: no other port is tried, and whatever listens there is left alone. The token proves which
+process a stop or status request reaches. It keeps nobody on this PC out of the dashboard.
+
 Standard library only: the child imports the web libraries through dashboard.serve().
 """
 
@@ -37,6 +42,7 @@ from pathlib import Path
 
 from .. import config
 from ..contracts import GuardError, parse_json
+from . import DEFAULT_PORT
 
 HOST = "127.0.0.1"  # the only address ever contacted, whatever a state file says
 STATE, LOCK, LOG = "dashboard.json", "dashboard.lock", "dashboard.log"
@@ -48,8 +54,11 @@ CONTROL_SECONDS = 3  # one control request
 LOCK_SECONDS = 2  # the child's wait for the lock, which a status check holds for an instant
 ALREADY = 3  # the child's exit code when another instance keeps the lock
 MAX_STATE = 4096  # bytes of a state file
-# The address app.serve() publishes: this dashboard on HOST, session and path of URL-safe text.
-_URL = re.compile(r"http://127\.0\.0\.1:(\d+)/s/[A-Za-z0-9_-]+/[A-Za-z0-9_/-]*")
+# The address in a state file: the root of the port on HOST, which app.serve() publishes, or
+# what the version before published (a session of URL-safe text and a path). An instance that
+# version started still serves at that address and takes the same control requests, so its file
+# is read until it ends, to show, reuse and stop it.
+_URL = re.compile(r"http://127\.0\.0\.1:(\d+)/(?:s/[A-Za-z0-9_-]+/[A-Za-z0-9_/-]*)?")
 _TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
 # These may be relative; the child, which runs in the settings folder, gets them as the
 # absolute paths they mean where the user started it.
@@ -280,12 +289,13 @@ def _failure(folder: Path, code: int, since: float) -> str:
 
 
 def start(
-    port: int = 0, *, model_dir: Path | None = None, cache_dir: Path | None = None,
+    port: int = DEFAULT_PORT, *, model_dir: Path | None = None, cache_dir: Path | None = None,
     no_cache: bool = False, known_malicious_dir: Path | None = None,
 ) -> tuple[dict, bool]:  # fmt: skip
     """Make sure a background instance runs: (its state, whether this call started it).
 
-    If one already answers, nothing is started and its options stay as they are. Otherwise a
+    If one already answers, nothing is started and its options stay as they are, the port
+    included: the state returned is that instance's, with its own address. Otherwise a
     detached child is created (no console window on Windows, its own session elsewhere, so it
     outlives this terminal) and this waits until a state file is there and the server behind it
     has proved its token. Only then is the address returned. It is the child's if the token is

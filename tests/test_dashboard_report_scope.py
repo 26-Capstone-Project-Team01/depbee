@@ -10,7 +10,7 @@ TestClient; no server, Git, npm or registry.
 
 from unittest import mock
 
-from test_dashboard import BASE, SESSION, S, ScreenFixture
+from test_dashboard import BASE, CSRF, ScreenFixture
 from test_workflow import package
 
 from depbee import history, service
@@ -68,8 +68,8 @@ class ScopeNoteTests(ScreenFixture):
         self.report = self.scanned(removed=("gone",))  # what the fixture's preview returns
         with mock.patch.object(service, "scan_project", return_value=self.report), \
              mock.patch.object(history, "record", return_value=None):  # fmt: skip
-            unrecorded = self.client.post(f"{S}/projects/{self.project_id}/scans",
-                                          data={"session": SESSION}, headers={"origin": BASE})  # fmt: skip
+            unrecorded = self.client.post(f"/projects/{self.project_id}/scans",
+                                          data={"csrf": CSRF}, headers={"origin": BASE})  # fmt: skip
         self.assertEqual(unrecorded.status_code, 200)
         self.assert_note(unrecorded.text, REMOVALS)
         self.assert_note(self.page(f"/previews/{self.preview_id()}"), REMOVALS)
