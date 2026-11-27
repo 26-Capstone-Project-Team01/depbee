@@ -4,13 +4,28 @@ or an analyzer that is not the unchanged Git install of pyproject.toml's pin fai
 
     python -I .github/scripts/check_lodash_report.py FILE [ANALYZER_FILES_SHA256]
 
-FILE is a depbee report, or JSON that holds one under "report" (depbee update, the MCP tools).
+FILE is a depbee report, or JSON that holds one under "report" (depbee update, the MCP tools,
+a dashboard run as history.get_run gives it).
 ANALYZER_FILES_SHA256 is the digest that the depbee which made the report gives its own installed
 analyzer (files_sha256 of extractor._installed_identity). With it, the report must name it.
+
+    python -I .github/scripts/check_lodash_report.py --compare NAME=FILE NAME=FILE [...]
+        [ANALYZER_FILES_SHA256]
+
+Each FILE is checked as above, and the reports of the entry points named must then say the same
+about the update in every field: the request and its change, the model, the index, the analyzer
+(version, commit and digest of its installed files), the features, the score and its
+explanation, every rule's result and evidence, and the verdicts. Values must have the same
+type and be equal. Only the floats the model computed (the score, the contributions, their
+remaining sum and the base value) may differ, by a relative 1e-12, which is what a math
+library can move between hosts. Only what belongs to one run or host is left out: the times,
+the cache hit and the Python that ran the analyzer. A difference ends with exit code 1 and one
+line per field, which names the field and every source's value.
 """
 
 import hashlib
 import json
+import math
 import re
 import sys
 import tomllib
@@ -24,7 +39,7 @@ RULE_IDS = ["R_download_exec", "R_secret_send", "R_ci_secret_send", "R_install_r
             "R_remote_admin_auth_override", "R_diff_obfuscation"]  # fmt: skip
 
 
-def main(file: str, analyzer_files: str | None = None) -> None:
+def main(file: str, analyzer_files: str | None = None) -> dict:
     data = json.loads(Path(file).read_bytes())
     report = data.get("report", data)
     manifest = (ASSETS / "model" / "manifest.json").read_bytes()
@@ -71,7 +86,98 @@ def main(file: str, analyzer_files: str | None = None) -> None:
     assert analyzer_files in (None, files), f"{files}, not the installed {analyzer_files}"
     print(f"{file}: lodash 4.17.20 to 4.17.21 passed, model {report['model_id']}, "
           f"index {known['list_as_of']}, analyzer {analyzer['commit']} (files {files[:12]})")  # fmt: skip
+    return report
+
+
+def left_out(path: tuple) -> bool:
+    """Whether the value at this path belongs to one run or one host and not to the update: the
+    times, the cache hit and the Python that ran the analyzer. A path is the keys and list
+    positions from the report down to the value, so a feature of the same name is compared."""
+    match path:
+        case (("elapsed_seconds",) | ("results", int(), "elapsed_seconds" | "cache_hit")
+              | ("provenance", "feature_extractor", "python")):  # fmt: skip
+            return True
+    return False
+
+
+def computed(path: tuple) -> bool:
+    """Whether the model computed the value at this path in floating point: the score, a
+    feature's contribution, the sum of the other contributions and the base value."""
+    match path:
+        case (("results", int(), "score")
+              | ("results", int(), "explanation", int(), "contribution")
+              | ("results", int(), "explanation_rest", "others_sum" | "base_value")):  # fmt: skip
+            return True
+    return False
+
+
+ABSENT = type("Absent", (), {"__repr__": lambda self: "absent"})()
+
+
+def semantics(report: dict) -> dict:
+    """{path: (name, value)} for every value of a report that is not left_out. The name is for
+    a message: a list item by its position, a rule check by its rule ID."""
+    said = {}
+
+    def walk(value: object, path: tuple, name: str) -> None:
+        if isinstance(value, dict) and value:
+            for key, inner in value.items():
+                if not left_out((*path, key)):
+                    walk(inner, (*path, key), f"{name}.{key}" if name else key)
+        elif isinstance(value, list) and value:
+            for index, inner in enumerate(value):
+                item = inner.get("rule_id", index) if isinstance(inner, dict) else index
+                walk(inner, (*path, index), f"{name}[{item}]")
+        else:
+            said[path] = (name, value)
+
+    walk(report, (), "")
+    return said
+
+
+def same(path: tuple, one: object, other: object) -> bool:
+    """Whether two sources say the same at a path: the same type and value. Only two floats
+    that the model computed may differ, and only as far as the math library under LightGBM
+    can move their last digits between supported hosts. Everything else is read from the
+    lockfile, the registry or a manifest, or counted, and is the same everywhere."""
+    if computed(path) and type(one) is type(other) is float:
+        return math.isclose(one, other, rel_tol=1e-12, abs_tol=0.0)
+    return type(one) is type(other) and one == other
+
+
+def compare(*arguments: str) -> None:
+    """NAME=FILE of two or more entry points, then optionally ANALYZER_FILES_SHA256 for all."""
+    named = [argument.split("=", 1) for argument in arguments if "=" in argument]
+    (analyzer_files,) = [argument for argument in arguments if "=" not in argument] or [None]
+    names = [name for name, _ in named]
+    assert len(set(names)) == len(names) >= 2, f"two or more NAME=FILE, each name once: {names}"
+    said = {name: semantics(main(file, analyzer_files)) for name, file in named}
+    paths = {}  # each path's name for a message, in the order the sources give them
+    for name in names:
+        for path, (field, _) in said[name].items():
+            paths.setdefault(path, field)
+
+    def value(name: str, path: tuple) -> object:
+        return said[name].get(path, (None, ABSENT))[1]
+
+    differences = [
+        f"{field} differs: " + ", ".join(f"{name}={value(name, path)!r}" for name in names)
+        for path, field in paths.items()
+        if not all(same(path, value(names[0], path), value(name, path)) for name in names)
+    ]
+    if differences:
+        raise SystemExit("\n".join(["report parity failed", *differences]))
+    print(f"{len(names)} reports say the same ({', '.join(names)}): score "
+          f"{value(names[0], ('results', 0, 'score'))!r}, threshold "
+          f"{value(names[0], ('threshold',))!r}, exit code {value(names[0], ('exit_code',))}, "
+          f"{len(paths)} fields compared")  # fmt: skip
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:])
+    # Every check here is an assert statement, which python -O would skip.
+    if not __debug__:
+        raise SystemExit("run without -O: the checks are assert statements")
+    if sys.argv[1:2] == ["--compare"]:
+        compare(*sys.argv[2:])
+    else:
+        main(*sys.argv[1:])

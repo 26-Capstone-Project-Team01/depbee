@@ -175,7 +175,24 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24.11.0'
-      - name: Check the action report and preview the same update with the host npm
+      # The same update through three more entry points of the depbee installed above: the CLI
+      # scan, the MCP server over stdio and the dashboard's own server (its scan form, then the
+      # run it recorded). They share one cache folder, so the tarballs are downloaded once more.
+      - name: Scan the same update through the CLI, MCP stdio and the dashboard
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          (cd "$RUNNER_TEMP" && python -I -m pip install --disable-pip-version-check --no-input \
+            "$GITHUB_WORKSPACE[mcp,web]")
+          python -I .github/scripts/capture_entry_reports.py examples/lodash-update \
+            "$RUNNER_TEMP/entries"
+      # The last command compares five reports: every value must be the same in all of them
+      # (request, model, index, analyzer, features, score, each rule's result, the verdicts)
+      # except the times, the cache hits and the analyzer's Python. On a pull request "action"
+      # is the action's own scan. On a push it is the scan of the step above that runs the
+      # action's commands, which the action only judged and published: a push compares no scan
+      # that the action itself started.
+      - name: Check the action report, preview the same update with the host npm and compare
         shell: bash
         run: |
           files="$(python -I -c \
@@ -184,7 +201,8 @@ jobs:
           project="$(mktemp -d "$RUNNER_TEMP/preview.XXXXXX")"
           cp examples/lodash-update/package.json "$project/"
           git show HEAD:examples/lodash-update/package-lock.json > "$project/package-lock.json"
-          python -I -m depbee update --project "$project" --format json > "$project/preview.json"
+          python -I -m depbee update --project "$project" --format json \
+            --cache-dir "$RUNNER_TEMP/entries/home/.cache/depbee" > "$project/preview.json"
           python -I .github/scripts/check_lodash_report.py "$project/preview.json" "$files"
           python -I - "$project/preview.json" <<'PY'
           import hashlib
@@ -197,3 +215,8 @@ jobs:
           updated = Path("examples/lodash-updated/package-lock.json").read_bytes()
           assert preview["new_package_lock_sha256"] == hashlib.sha256(updated).hexdigest()
           PY
+          action=("$RUNNER_TEMP"/depbee.*/report.json)
+          entries="$RUNNER_TEMP/entries"
+          python -I .github/scripts/check_lodash_report.py --compare \
+            "action=${action[0]}" "update=$project/preview.json" "cli=$entries/cli.json" \
+            "mcp=$entries/mcp.json" "dashboard=$entries/dashboard.json" "$files"
