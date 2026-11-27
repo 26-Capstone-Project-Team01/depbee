@@ -1,7 +1,8 @@
 """The dashboard's theme as the user chose it on the rail (docs/dashboard-design.md): the system's,
-light or dark. Saved in the user's settings folder (config.user_dir()), not in the browser: the
-dashboard takes a free port at each start, and a browser keeps what a page stores for one port
-only. A file of its own, beside config.json and the background dashboard's files (lifecycle:
+light or dark. Saved in the user's settings folder (config.user_dir()), not in the browser: a
+page is drawn with it from the start, without a script, and a browser keeps what a page stores
+for one port only, so a dashboard started on another port (--port) would not have it. A file of
+its own, beside config.json and the background dashboard's files (lifecycle:
 dashboard.json, .lock and .log), so that a broken one never touches what the service or the
 background dashboard reads. Whatever cannot be read is the system's theme, and reading never
 waits: a page is drawn with it."""

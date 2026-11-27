@@ -1,4 +1,4 @@
-/* The overview, the session's first page once a project is registered: a chart of how many
+/* The overview, the console's first page once a project is registered: a chart of how many
    projects are in each state, one hexagon a project, then a ledger with one row per project, its
    newest run and its newest apply attempt. Every selector starts at .overview; the shell, the
    status cell (.cell), the chip (.verdict), the focus ring and the tokens are style.css's.

@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from test_cache import EXTRACTOR, Model
-from test_dashboard import BASE, PORT, SESSION, ScreenFixture
+from test_dashboard import BASE, CSRF, PORT, ScreenFixture
 from test_extract import FakeBackend, packument
 from test_known_malicious import AS_OF, record, semver, snapshot
 from test_mcp import NO_SDK, SDK, MCPFixture, entry
@@ -363,8 +363,9 @@ class DashboardOptionTests(Fixture):
         with mock.patch.object(app.uvicorn, "Server", Server), \
                 mock.patch.object(app, "build_app", wraps=app.build_app) as built, \
                 contextlib.redirect_stdout(io.StringIO()):  # fmt: skip
-            self.assertEqual(main(["dashboard", "--known-malicious-dir", "km"]), 0)
-            self.assertEqual(main(["dashboard"]), 0)
+            # --port 0: whatever holds the default port does not matter here.
+            self.assertEqual(main(["dashboard", "--port", "0", "--known-malicious-dir", "km"]), 0)
+            self.assertEqual(main(["dashboard", "--port", "0"]), 0)
         self.assertEqual([call.kwargs for call in built.call_args_list], [
             {"model_dir": None, "cache_dir": None, "no_cache": False,
              "known_malicious_dir": Path("km")},
@@ -375,7 +376,7 @@ class DashboardPreviewTests(ScreenFixture):
     def test_update_check_gets_the_index(self):
         from starlette.testclient import TestClient
 
-        app = self.app.build_app(PORT, SESSION, known_malicious_dir=Path("km"))
+        app = self.app.build_app(PORT, CSRF, known_malicious_dir=Path("km"))
         self.client = TestClient(app, base_url=BASE)
         self.addCleanup(self.client.close)
         self.preview_id("example")

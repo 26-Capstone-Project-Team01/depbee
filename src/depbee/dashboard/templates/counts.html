@@ -6,7 +6,7 @@
 <tbody>
 {% for run in runs %}
 <tr{% if run.preview %} class="preview"{% endif %}>
-<td><a href="{{ base }}/runs/{{ run.id }}">#{{ run.id }}</a></td>
+<td><a href="/runs/{{ run.id }}">#{{ run.id }}</a></td>
 <td>{{ run.kind }}</td>
 <td>{{ run.created_at|when }}</td>
 <td>{{ run.status }}{% if run.exit_code is not none %} ({{ run.exit_code }}){% endif %}</td>

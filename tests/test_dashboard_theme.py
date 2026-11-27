@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from test_dashboard import BASE, NO_WEB, SESSION, WEB, DashboardFixture, S
+from test_dashboard import BASE, CSRF, NO_WEB, PORT, WEB, DashboardFixture
 
 from depbee import history
 
@@ -309,10 +309,11 @@ class ThemeChoiceTests(unittest.TestCase):
 
 
 class ThemeRouteTests(DashboardFixture):
-    """The rail's theme form: a POST with the session that saves the choice and comes back."""
+    """The rail's theme form: a POST with the form's value that saves the choice and comes
+    back."""
 
-    def choose(self, value, back, session=SESSION, origin=BASE):
-        return self.client.post(S + "/theme", data={"session": session, "theme": value, "back": back},
+    def choose(self, value, back, csrf=CSRF, origin=BASE):
+        return self.client.post("/theme", data={"csrf": csrf, "theme": value, "back": back},
                                 headers={"origin": origin}, follow_redirects=False)  # fmt: skip
 
     def stored(self):
@@ -322,7 +323,7 @@ class ThemeRouteTests(DashboardFixture):
     def form(self, html):
         """The theme form's fields and its button's value and words, or None."""
         match = re.search(
-            rf'<form class="theme" method="post" action="{S}/theme">(.*?)</form>', html, re.S
+            r'<form class="theme" method="post" action="/theme">(.*?)</form>', html, re.S
         )
         if not match:
             return None
@@ -339,16 +340,16 @@ class ThemeRouteTests(DashboardFixture):
         html = self.page("/model")
         self.assertIn('<html lang="ko">', html)
         fields, value, words = self.form(html)
-        self.assertEqual(fields, {"session": SESSION, "back": f"{S}/model"})
+        self.assertEqual(fields, {"csrf": CSRF, "back": "/model"})
         self.assertEqual(value, "light")
         self.assertTrue(words.startswith("화면: 시스템 설정"), words)
-        self.assertEqual(self.form(self.page("/?manage=1"))[0]["back"], f"{S}/?manage=1")
+        self.assertEqual(self.form(self.page("/?manage=1"))[0]["back"], "/?manage=1")
 
     def test_the_chosen_theme_is_on_every_page(self):
         history.register_project(self.project)
-        response = self.choose("dark", f"{S}/?manage=1")
+        response = self.choose("dark", "/?manage=1")
         self.assertEqual(
-            (response.status_code, response.headers["location"]), (303, f"{S}/?manage=1")
+            (response.status_code, response.headers["location"]), (303, "/?manage=1")
         )
         self.assertEqual(self.stored(), "dark")
         html = self.page("/model")
@@ -356,49 +357,53 @@ class ThemeRouteTests(DashboardFixture):
         self.assertEqual(self.form(html)[1:], ("system", "화면: 어둡게. 시스템 설정 따르기"))
 
     def test_a_way_back_outside_the_console_goes_home(self):
+        # Another host is "//host" to a browser, and so is "/\host": the address of a page
+        # starts with one slash, and has neither a backslash nor an encoded one in its path.
         for back in ("https://evil.example/", "//evil.example/x", "/s/other-session/model",
-                     f"{S}/previews/1/apply", f"{S}/theme", f"{S}/projects", "", f"{S}",
-                     f"{S}/model\r\nX-Test: 1", f"{S}\\model", f"{S}//evil.example",
-                     f"{S}/../model", f"{S}/static/style.css"):  # fmt: skip
+                     "/previews/1/apply", "/theme", "/projects", "", "model",
+                     "/model\r\nX-Test: 1", "\\model", "//evil.example", "///evil.example",
+                     "/\\evil.example", "/\\/evil.example", "/%2F%2Fevil.example", "/%5Cevil.example",
+                     f"//127.0.0.1:{PORT}/model", "http:/model", "/model/", "/model//evil.example",
+                     "/../model", "/static/style.css"):  # fmt: skip
             response = self.choose("light", back)
             self.assertEqual(
-                (response.status_code, response.headers["location"]), (303, f"{S}/"), back
+                (response.status_code, response.headers["location"]), (303, "/"), back
             )
-        response = self.choose("light", f"{S}/projects/1/updates?item=3.2")
-        self.assertEqual(response.headers["location"], f"{S}/projects/1/updates?item=3.2")
+        response = self.choose("light", "/projects/1/updates?item=3.2")
+        self.assertEqual(response.headers["location"], "/projects/1/updates?item=3.2")
         # A "//" in the query is part of a search, not a way out of the console; one in the path
         # or a digit that is not ASCII is not a page of it.
-        response = self.choose("light", f"{S}/projects/1?q=a//b")
-        self.assertEqual(response.headers["location"], f"{S}/projects/1?q=a//b")
-        for back in (f"{S}/projects//1", f"{S}/projects/１"):
-            self.assertEqual(self.choose("light", back).headers["location"], f"{S}/", back)
+        response = self.choose("light", "/projects/1?q=a//b")
+        self.assertEqual(response.headers["location"], "/projects/1?q=a//b")
+        for back in ("/projects//1", "/projects/１"):
+            self.assertEqual(self.choose("light", back).headers["location"], "/", back)
 
     def test_the_way_back_keeps_the_pages_query(self):
         history.register_project(self.project)
         html = self.page("/projects/1?q=ex&item=3.0")
-        self.assertEqual(self.form(html)[0]["back"], f"{S}/projects/1?q=ex&amp;item=3.0")
+        self.assertEqual(self.form(html)[0]["back"], "/projects/1?q=ex&amp;item=3.0")
 
     def test_the_way_back_takes_ascii_digits_and_long_encoded_pages(self):
-        response = self.choose("light", f"{S}/projects/\uff11")
-        self.assertEqual(response.headers["location"], f"{S}/")
+        response = self.choose("light", "/projects/\uff11")
+        self.assertEqual(response.headers["location"], "/")
         query = "%ED%95%9C" * 220  # 220 Hangul syllables, percent-encoded
-        response = self.choose("light", f"{S}/projects/1?q={query}")
-        self.assertEqual(response.headers["location"], f"{S}/projects/1?q={query}")
-        response = self.choose("light", f"{S}/projects/1?q=" + "a" * 2100)
-        self.assertEqual(response.headers["location"], f"{S}/")
+        response = self.choose("light", f"/projects/1?q={query}")
+        self.assertEqual(response.headers["location"], f"/projects/1?q={query}")
+        response = self.choose("light", "/projects/1?q=" + "a" * 2100)
+        self.assertEqual(response.headers["location"], "/")
 
-    def test_a_wrong_theme_or_session_changes_nothing(self):
-        self.assertEqual(self.choose("blue", f"{S}/model").status_code, 400)
-        self.assertEqual(self.choose("dark", f"{S}/model", session="wrong").status_code, 403)
+    def test_a_wrong_theme_or_csrf_changes_nothing(self):
+        self.assertEqual(self.choose("blue", "/model").status_code, 400)
+        self.assertEqual(self.choose("dark", "/model", csrf="wrong").status_code, 403)
         self.assertEqual(
-            self.choose("dark", f"{S}/model", origin="http://evil.example").status_code, 403
+            self.choose("dark", "/model", origin="http://evil.example").status_code, 403
         )
         self.assertIsNone(self.stored())
 
     def test_a_theme_that_cannot_be_saved_keeps_the_current_one(self):
         history.register_project(self.project)
         with mock.patch("depbee.dashboard.theme.save", side_effect=OSError("denied")):
-            response = self.choose("dark", f"{S}/model")
+            response = self.choose("dark", "/model")
         self.assertEqual(response.status_code, 503)
         self.assertIn("화면 테마를 저장하지 못했습니다", response.text)
         self.assertIsNone(self.form(response.text))
@@ -412,7 +417,7 @@ class ThemeRouteTests(DashboardFixture):
         self.assertIsNone(self.form(response.text))
 
     def test_the_start_page_keeps_its_one_button(self):
-        self.choose("dark", f"{S}/")
+        self.choose("dark", "/")
         html = self.page("/")
         self.assertIn('<html lang="ko" data-theme="dark">', html)
         self.assertIsNone(self.form(html))

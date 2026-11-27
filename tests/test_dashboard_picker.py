@@ -21,10 +21,9 @@ from unittest import mock
 
 from test_dashboard import (
     BASE,
+    CSRF,
     PORT,
-    SESSION,
     DashboardFixture,
-    S,
     assert_one_script,
     project_head,
 )
@@ -33,9 +32,9 @@ from test_workflow import Fixture
 from depbee import history
 from depbee.dashboard import picker
 
-PICK_FORM = f'<form method="post" action="{S}/projects/pick">'
+PICK_FORM = '<form method="post" action="/projects/pick">'
 # What a page with a way to type a path, or to upload a folder, would hold.
-TYPED = ('name="path"', f'action="{S}/projects"', "직접 입력", "입력하세요", 'type="file"',
+TYPED = ('name="path"', 'action="/projects"', "직접 입력", "입력하세요", 'type="file"',
          "webkitdirectory", "multipart", "enctype")  # fmt: skip
 
 
@@ -60,9 +59,9 @@ class PickRouteTests(DashboardFixture):
         self.choose = patcher.start()
         self.addCleanup(patcher.stop)
 
-    def pick(self, session=SESSION, origin=BASE, client=None):
+    def pick(self, csrf=CSRF, origin=BASE, client=None):
         headers = {} if origin is None else {"origin": origin}
-        return (client or self.client).post(S + "/projects/pick", data={"session": session},
+        return (client or self.client).post("/projects/pick", data={"csrf": csrf},
                                             headers=headers, follow_redirects=False)  # fmt: skip
 
     def files(self):
@@ -79,7 +78,7 @@ class PickRouteTests(DashboardFixture):
         # Before the first project the dialog's form is all there is (the start page): the same
         # address and the same field as project management's.
         html = self.page("/")
-        self.assertIn(f'{PICK_FORM}\n<input type="hidden" name="session" value="{SESSION}">\n'
+        self.assertIn(f'{PICK_FORM}\n<input type="hidden" name="csrf" value="{CSRF}">\n'
                       '<button type="submit" ', html)  # fmt: skip
         self.assertEqual((html.count("<form "), html.count("<button ")), (1, 1))
         for absent in (*TYPED, "<details"):
@@ -91,7 +90,7 @@ class PickRouteTests(DashboardFixture):
         self.assertNotIn("등록한 프로젝트가 없습니다.", html)
         button = ('<button class="primary" type="submit" aria-describedby="pick-hint" '
                   'data-busy-label="폴더 선택 창을 확인하세요…">프로젝트 폴더 선택</button>')  # fmt: skip
-        self.assertIn(f'{PICK_FORM}\n<input type="hidden" name="session" value="{SESSION}">\n'
+        self.assertIn(f'{PICK_FORM}\n<input type="hidden" name="csrf" value="{CSRF}">\n'
                       f"{button}\n</form>", html)  # fmt: skip
         add = html.split('<section class="add"', 1)[1].split("</section>", 1)[0]
         self.assertEqual((add.count("<form "), add.count("<input "), add.count("<button ")),
@@ -118,32 +117,32 @@ class PickRouteTests(DashboardFixture):
         response = self.pick()
         # The first project of all: registered, and the overview is where the button ends.
         self.assertEqual((response.status_code, response.headers["location"]),
-                         (303, S + "/"))  # fmt: skip
+                         (303, "/"))  # fmt: skip
         self.choose.assert_called_once_with()
         (project,) = history.list_projects()
         self.assertEqual(project["path"], str(self.project.resolve()))
         overview = self.page("/")
         self.assertIn("<title>프로젝트 현황판 - depbee</title>", overview)
-        self.assertIn(f'<a class="ov-name" href="{S}/projects/1" title="project">project</a>', overview)
+        self.assertIn('<a class="ov-name" href="/projects/1" title="project">project</a>', overview)
         self.assertEqual(project_head(self.page("/projects/1"))[::2],
                          ("project", str(self.project.resolve())))  # fmt: skip
         # The same folder again opens the first registration.
         self.choose.return_value = ("chosen", str(self.project) + os.sep)
-        self.assertEqual(self.pick().headers["location"], S + "/projects/1")
+        self.assertEqual(self.pick().headers["location"], "/projects/1")
         self.assertEqual(len(history.list_projects()), 1)
         # A folder chosen from project management once a project is there opens its own project.
         second = self.root / "second"
         second.mkdir()
         (second / "package-lock.json").write_bytes(self.head.read_bytes())
         self.choose.return_value = ("chosen", str(second))
-        self.assertEqual(self.pick().headers["location"], S + "/projects/2")
+        self.assertEqual(self.pick().headers["location"], "/projects/2")
         self.assertEqual(len(history.list_projects()), 2)
 
     def test_closing_the_dialog_registers_and_writes_nothing(self):
         before = self.files()
         response = self.pick()
         self.assertEqual(
-            (response.status_code, response.headers["location"]), (303, S + "/?manage=1")
+            (response.status_code, response.headers["location"]), (303, "/?manage=1")
         )
         self.assert_nothing_registered(before)
         # With nothing registered that address is the start page again: the button, no message.
@@ -153,7 +152,7 @@ class PickRouteTests(DashboardFixture):
         self.assertNotIn('role="alert"', html)
         # With a project it is project management: the same button, and no message.
         history.register_project(self.project)
-        self.assertEqual(self.pick().headers["location"], S + "/?manage=1")
+        self.assertEqual(self.pick().headers["location"], "/?manage=1")
         html = self.page("/?manage=1")
         self.assertIn(PICK_FORM, html)
         self.assertNotIn('role="alert"', html)
@@ -190,7 +189,7 @@ class PickRouteTests(DashboardFixture):
         second.mkdir()
         (second / "package-lock.json").write_bytes(self.head.read_bytes())
         self.choose.return_value = ("chosen", str(second))
-        self.assertEqual(self.pick().headers["location"], S + "/projects/2")
+        self.assertEqual(self.pick().headers["location"], "/projects/2")
 
     def test_a_chosen_folder_is_checked_before_it_is_registered(self):
         (self.root / "lock-dir" / "package-lock.json").mkdir(parents=True)
@@ -239,14 +238,14 @@ class PickRouteTests(DashboardFixture):
             return "cancelled", None
 
         self.choose.side_effect = open_dialog
-        self.assertEqual(self.pick().headers["location"], S + "/?manage=1")
+        self.assertEqual(self.pick().headers["location"], "/?manage=1")
         self.assertEqual(self.choose.call_count, 1)  # the second request opened no dialog
         again = seen["again"]
         self.assertEqual(again.status_code, 409)
         self.assertIn(f"<h1>{self.app.PICK_OPEN_TITLE}</h1>", again.text)
         self.assertIn(f'<p class="error">{self.app.PICK_OPEN}</p>', again.text)
         self.assertIn(f"<p>{self.app.PICK_OPEN_NOTE}</p>", again.text)
-        self.assertIn(f'<a class="tab manage" href="{S}/?manage=1" aria-current="page">프로젝트 관리</a>',
+        self.assertIn('<a class="tab manage" href="/?manage=1" aria-current="page">프로젝트 관리</a>',
                       again.text)  # fmt: skip
         self.assertNotIn("이력에 기록하지 않았습니다.", again.text)
         self.assertEqual(seen["page"].status_code, 200)
@@ -257,7 +256,7 @@ class PickRouteTests(DashboardFixture):
     def test_a_failed_dialog_leaves_the_next_one_free(self):
         from starlette.testclient import TestClient
 
-        client = TestClient(self.app.build_app(PORT, SESSION), base_url=BASE,
+        client = TestClient(self.app.build_app(PORT, CSRF), base_url=BASE,
                             raise_server_exceptions=False)  # fmt: skip
         self.addCleanup(client.close)
         self.choose.side_effect = RuntimeError("C:\\private synthetic-secret-0123456789")
@@ -268,24 +267,25 @@ class PickRouteTests(DashboardFixture):
         self.assertEqual(self.pick(client=client).status_code, 303)
         self.assertEqual(history.list_projects(), [])
 
-    def test_the_dialog_needs_the_form_session_and_origin(self):
-        url = S + "/projects/pick"
+    def test_the_dialog_needs_the_form_csrf_and_origin(self):
+        url = "/projects/pick"
         form = {"content-type": "application/x-www-form-urlencoded"}
         refused = {
-            "wrong form session": (self.pick(session="wrong"), 403),
-            "empty form session": (self.pick(session=""), 403),
-            "no form session": (self.client.post(url, content="x=1",
+            "wrong form csrf": (self.pick(csrf="wrong"), 403),
+            "empty form csrf": (self.pick(csrf=""), 403),
+            "no form csrf": (self.client.post(url, content="x=1",
                                                  headers={"origin": BASE, **form}), 403),
             "no origin": (self.pick(origin=None), 403),
             "other port": (self.pick(origin=f"http://127.0.0.1:{PORT + 1}"), 403),
             "other host": (self.pick(origin=f"http://localhost:{PORT}"), 403),
             "null origin": (self.pick(origin="null"), 403),
-            "no session prefix": (self.client.post("/projects/pick", data={"session": SESSION},
-                                                   headers={"origin": BASE}), 403),
-            "other host header": (self.client.post(url, data={"session": SESSION},
+            "another site": (self.client.post(url, data={"csrf": CSRF},
+                                              headers={"origin": BASE,
+                                                       "sec-fetch-site": "cross-site"}), 403),
+            "other host header": (self.client.post(url, data={"csrf": CSRF},
                                                    headers={"origin": BASE,
                                                             "host": f"localhost:{PORT}"}), 400),
-            "json": (self.client.post(url, content=json.dumps({"session": SESSION}),
+            "json": (self.client.post(url, content=json.dumps({"csrf": CSRF}),
                                       headers={"origin": BASE,
                                                "content-type": "application/json"}), 415),
             "get": (self.get("/projects/pick"), 405),
@@ -305,7 +305,7 @@ class PickedFolderTests(DashboardFixture):
 
     def pick(self, source):
         with mock.patch.object(picker, "_SCRIPT", stand_in(self.root, source)):
-            return self.client.post(S + "/projects/pick", data={"session": SESSION},
+            return self.client.post("/projects/pick", data={"csrf": CSRF},
                                     headers={"origin": BASE}, follow_redirects=False)  # fmt: skip
 
     def test_the_answer_of_a_child_process_is_registered(self):
@@ -314,7 +314,7 @@ class PickedFolderTests(DashboardFixture):
         self.write(folder / "package-lock.json", self.new)
         response = self.pick(answering(str(folder)))
         self.assertEqual((response.status_code, response.headers["location"]),
-                         (303, S + "/"))  # fmt: skip
+                         (303, "/"))  # fmt: skip
         (project,) = history.list_projects()
         self.assertEqual(project["path"], str(folder.resolve()))
         html = self.page("/projects/1")

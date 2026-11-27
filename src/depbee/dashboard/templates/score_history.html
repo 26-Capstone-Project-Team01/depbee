@@ -31,7 +31,7 @@
 <thead><tr><th scope="col">실행</th><th scope="col">모델</th><th scope="col">점수 산출 항목</th><th scope="col">최고 점수</th></tr></thead>
 <tbody>{% for entry in score_history %}
 <tr>
-<th scope="row"><a href="{{ base }}/runs/{{ entry.id }}">#{{ entry.id }}</a> <span class="quiet">{{ entry.created_at|when }}</span></th>
+<th scope="row"><a href="/runs/{{ entry.id }}">#{{ entry.id }}</a> <span class="quiet">{{ entry.created_at|when }}</span></th>
 <td data-label="모델">{{ entry.model_id or '기록 없음' }}</td>
 <td data-label="점수 산출 항목">{{ entry.scored_count }}개</td>
 <td data-label="최고 점수">{% if entry.peak_score is not none %}

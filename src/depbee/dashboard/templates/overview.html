@@ -12,7 +12,7 @@
 <div class="overview">
 <div class="ov-head">
 <h1 class="ov-title" id="overview-title">프로젝트 현황판</h1>
-<a class="ov-add" href="{{ base }}/?manage=1">프로젝트 추가</a>
+<a class="ov-add" href="/?manage=1">프로젝트 추가</a>
 </div>
 <section class="ov-chart" aria-labelledby="chart-title">
 <h2 id="chart-title">프로젝트 {{ portfolio|length }}개의 최근 검사 상태</h2>
@@ -37,10 +37,10 @@
 {% set about = (why ~ " " ~ stored)|trim %}
 <tr class="ov-row" role="row">
 <th class="ov-project" role="rowheader" scope="row">
-<a class="ov-name" href="{{ base }}/projects/{{ row.id }}" title="{{ row.name }}">{{ row.name }}</a>
+<a class="ov-name" href="/projects/{{ row.id }}" title="{{ row.name }}">{{ row.name }}</a>
 <span class="ov-path" title="{{ row.path }}">{{ row.path|short }}</span>
 </th>
-<td class="ov-rec" role="cell"><span class="ov-kind">최근 검사</span><span class="verdict {{ row.cell }}"{% if about %} title="{{ about }}"{% endif %}><span class="cell {{ row.cell }}" aria-hidden="true"></span>{{ row.label }}</span>{% if about %}<span class="visually-hidden">, {{ about }}</span>{% endif %}{% if run %} <a href="{{ base }}/runs/{{ run.id }}"><span class="visually-hidden">{{ row.name }} 최근 검사 </span>보고서 #{{ run.id }}</a>{% endif %}</td>
+<td class="ov-rec" role="cell"><span class="ov-kind">최근 검사</span><span class="verdict {{ row.cell }}"{% if about %} title="{{ about }}"{% endif %}><span class="cell {{ row.cell }}" aria-hidden="true"></span>{{ row.label }}</span>{% if about %}<span class="visually-hidden">, {{ about }}</span>{% endif %}{% if run %} <a href="/runs/{{ run.id }}"><span class="visually-hidden">{{ row.name }} 최근 검사 </span>보고서 #{{ run.id }}</a>{% endif %}</td>
 <td class="ov-num" role="cell"><span class="ov-kind">위험</span>{% if run %}<span{% if run.counts.flagged %} class="ov-n-risk"{% endif %}>{{ run.counts.flagged }}</span>{% else %}-{% endif %}</td>
 <td class="ov-num" role="cell"><span class="ov-kind">보류</span>{% if run %}<span{% if run.counts.incomplete %} class="ov-n-hold"{% endif %}>{{ run.counts.incomplete }}</span>{% else %}-{% endif %}</td>
 <td class="ov-time" role="cell"><span class="ov-kind">검사 시각</span>{% if run %}<time datetime="{{ run.created_at }}">{{ run.created_at|when }}</time>{% else %}-{% endif %}</td>
@@ -48,9 +48,9 @@
    stored reason of one that changed nothing, and apart from it the last one that did (the
    newest attempt itself when it did). #}
 {% set attempt = row.attempt %}
-<td class="ov-apply" role="cell"><span class="ov-kind">최근 반영 시도</span>{% if attempt %}{% set said = (attempt.reason if attempt.reason is not none else "방식: " ~ attempt.mode) ~ ", " ~ attempt.created_at|when %}<span class="verdict {{ attempt.cell }}" title="{{ said }}"><span class="cell {{ attempt.cell }}" aria-hidden="true"></span>{{ attempt.outcome }}</span><span class="visually-hidden">, {{ said }}</span> <a href="{{ base }}/runs/{{ attempt.run_id }}"><span class="visually-hidden">{{ row.name }} 최근 반영 시도 </span>보고서 #{{ attempt.run_id }}</a>{% else %}<span class="quiet">없음</span>{% endif %}</td>
+<td class="ov-apply" role="cell"><span class="ov-kind">최근 반영 시도</span>{% if attempt %}{% set said = (attempt.reason if attempt.reason is not none else "방식: " ~ attempt.mode) ~ ", " ~ attempt.created_at|when %}<span class="verdict {{ attempt.cell }}" title="{{ said }}"><span class="cell {{ attempt.cell }}" aria-hidden="true"></span>{{ attempt.outcome }}</span><span class="visually-hidden">, {{ said }}</span> <a href="/runs/{{ attempt.run_id }}"><span class="visually-hidden">{{ row.name }} 최근 반영 시도 </span>보고서 #{{ attempt.run_id }}</a>{% else %}<span class="quiet">없음</span>{% endif %}</td>
 {% set last = row.success or (attempt if attempt and attempt.applied else none) %}
-<td class="ov-apply" role="cell"><span class="ov-kind">마지막 성공 반영</span>{% if last %}<time datetime="{{ last.created_at }}">{{ last.created_at|when }}</time> <a href="{{ base }}/runs/{{ last.run_id }}"><span class="visually-hidden">{{ row.name }} 마지막 성공 반영 </span>보고서 #{{ last.run_id }}</a>{% else %}<span class="quiet">없음</span>{% endif %}</td>
+<td class="ov-apply" role="cell"><span class="ov-kind">마지막 성공 반영</span>{% if last %}<time datetime="{{ last.created_at }}">{{ last.created_at|when }}</time> <a href="/runs/{{ last.run_id }}"><span class="visually-hidden">{{ row.name }} 마지막 성공 반영 </span>보고서 #{{ last.run_id }}</a>{% else %}<span class="quiet">없음</span>{% endif %}</td>
 </tr>
 {% endfor %}
 </tbody>

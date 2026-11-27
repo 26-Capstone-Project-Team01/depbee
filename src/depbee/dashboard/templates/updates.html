@@ -2,7 +2,7 @@
 {% block title %}{{ project.name }} 업데이트 - depbee{% endblock %}
 {% block shell %}{% if project.found %} class="split"{% endif %}{% endblock %}
 {% block main %}
-{% set url = base ~ "/projects/" ~ project.id %}
+{% set url = "/projects/" ~ project.id %}
 {# selected: the candidate the view opens (app._selected), one of state.rows. #}
 {% set picked = selected if selected is defined and selected else none %}
 {% set pick = url ~ "/updates?item=" %}
@@ -17,7 +17,7 @@
 <details class="named">
 <summary>패키지를 지정해 업데이트</summary>
 <form method="post" action="{{ url }}/previews">
-<input type="hidden" name="session" value="{{ session }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
 <label for="packages">package.json에 선언된 패키지 이름(공백으로 구분)</label>
 <div class="field">
 <input id="packages" name="packages" type="text" maxlength="{{ max_targets }}" required>
@@ -36,7 +36,7 @@
 <div class="help-pop" id="help-held" popover><p>미리보기는 이 대시보드 프로세스 메모리에만 있어 대시보드를 끄면 사라집니다.</p></div>
 <ul class="previews">
 {% for kept in previews %}
-<li><a href="{{ base }}/previews/{{ kept.id }}">{{ kept.created_at|when }} 미리보기 검토·반영</a>{% if kept.run_id is not none %} (실행 #{{ kept.run_id }}){% endif %}
+<li><a href="/previews/{{ kept.id }}">{{ kept.created_at|when }} 미리보기 검토·반영</a>{% if kept.run_id is not none %} (실행 #{{ kept.run_id }}){% endif %}
 <ul>
 {% for line in kept.lines %}<li>{{ line }}</li>
 {% endfor %}</ul>
@@ -58,7 +58,7 @@
 {# A candidate is applied from the preview it came from, which only this process holds. #}
 {% if state.rows and not previews|selectattr("current")|list %}<p class="note">이 후보를 반영하려면 위에서 업데이트 미리보기를 다시 실행합니다. 대시보드를 다시 시작했거나 CLI로 만든 미리보기는 여기에 남아 있지 않습니다.</p>
 {% endif %}
-<p class="note">미리보기한 실행: {% for check in state.checks %}<a href="{{ base }}/runs/{{ check.id }}">#{{ check.id }}</a> ({{ check.created_at|when }}, {{ "전체" if check.targets is none else check.targets }}){% if not loop.last %}, {% endif %}{% endfor %}</p>
+<p class="note">미리보기한 실행: {% for check in state.checks %}<a href="/runs/{{ check.id }}">#{{ check.id }}</a> ({{ check.created_at|when }}, {{ "전체" if check.targets is none else check.targets }}){% if not loop.last %}, {% endif %}{% endfor %}</p>
 {% if state.rows %}
 {# The candidates by whether each could be applied (app._grouped), what needs a look first; in a
    group, the report's order. A row: the package, the versions, the stored verdict with its
@@ -93,9 +93,9 @@
 {% elif not state.readable %}
 <p class="empty">package.json이나 package-lock.json을 읽을 수 없어 지금 파일의 업데이트 후보를 알 수 없습니다.</p>
 {% elif state.last and applied_at %}
-<p class="empty">실행 <a href="{{ base }}/runs/{{ state.last.id }}">#{{ state.last.id }}</a>의 업데이트를 {{ applied_at|when }}에 반영했습니다. 반영한 뒤의 파일로는 아직 업데이트 미리보기를 실행하지 않았습니다.</p>
+<p class="empty">실행 <a href="/runs/{{ state.last.id }}">#{{ state.last.id }}</a>의 업데이트를 {{ applied_at|when }}에 반영했습니다. 반영한 뒤의 파일로는 아직 업데이트 미리보기를 실행하지 않았습니다.</p>
 {% elif state.last %}
-<p class="empty">지금 파일로 만든 업데이트 미리보기가 없습니다. 마지막 미리보기(실행 <a href="{{ base }}/runs/{{ state.last.id }}">#{{ state.last.id }}</a>, {{ state.last.created_at|when }}) 뒤에 package.json이나 package-lock.json이 바뀌어, 그 결과는 현재 후보로 보지 않습니다.</p>
+<p class="empty">지금 파일로 만든 업데이트 미리보기가 없습니다. 마지막 미리보기(실행 <a href="/runs/{{ state.last.id }}">#{{ state.last.id }}</a>, {{ state.last.created_at|when }}) 뒤에 package.json이나 package-lock.json이 바뀌어, 그 결과는 현재 후보로 보지 않습니다.</p>
 {% else %}
 <p class="empty">아직 업데이트 미리보기를 실행하지 않았습니다. 위에서 실행하면 변경을 검토하고 반영하는 화면이 열리고, 후보 버전과 검사 근거가 여기에도 나옵니다.</p>
 {% endif %}

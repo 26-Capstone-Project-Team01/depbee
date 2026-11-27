@@ -2,7 +2,7 @@
 {% block title %}{{ project.name }} 패키지 - depbee{% endblock %}
 {% block shell %}{% if project.found and not problem %} class="split"{% endif %}{% endblock %}
 {% block main %}
-{% set url = base ~ "/projects/" ~ project.id %}
+{% set url = "/projects/" ~ project.id %}
 {# selected: the candidate the view opens (app.project), one of the rows listed here. A pick
    keeps the search, the kind and the tab (show), the name percent-encoded, and names its item
    last. search: the search and the kind alone, what each tab's own link keeps; a tab and the

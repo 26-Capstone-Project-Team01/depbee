@@ -14,6 +14,7 @@ check_lodash_report.py --compare reads the three files. Needs the extract, mcp a
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.parse
@@ -46,22 +47,27 @@ def ask_dashboard(project: Path, cache: Path, env: dict) -> dict:
 
     history.register_project(project)
     (registered,) = history.list_projects()
-    server = subprocess.Popen([*DEPBEE, "dashboard", "--cache-dir", str(cache)], env=env,
-                              stdout=subprocess.PIPE, text=True)  # fmt: skip
+    # --port 0: a free port, whatever listens on the default one where this runs.
+    server = subprocess.Popen([*DEPBEE, "dashboard", "--port", "0", "--cache-dir", str(cache)],
+                              env=env, stdout=subprocess.PIPE, text=True)  # fmt: skip
     try:
-        url = server.stdout.readline().strip()  # http://127.0.0.1:<port>/s/<session>/
-        assert url.endswith("/"), "the dashboard did not start"
-        origin, session = url.split("/s/")[0], url.split("/")[-2]
+        url = server.stdout.readline().strip()  # http://127.0.0.1:<port>/
+        assert re.fullmatch(r"http://127\.0\.0\.1:\d+/", url), "the dashboard did not start"
+        origin = url[:-1]
         direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never a proxy
-
-        def post(to: str, **form: str) -> str:
-            """The address the form's answer led to (urllib follows the 303 with a GET)."""
-            body = urllib.parse.urlencode({"session": session, **form}).encode("ascii")
-            request = urllib.request.Request(url + to, body, {"Origin": origin})
-            with direct.open(request, timeout=900) as response:
-                return response.url
-
-        landed = post(f"projects/{registered['id']}/scans")
+        opened = f"/projects/{registered['id']}"
+        # The project's page as a browser opens it: its scan form, with the hidden fields the
+        # server wrote there for this run (a form is not taken without them).
+        with direct.open(origin + opened, timeout=60) as response:
+            page = response.read().decode("utf-8")
+        (form,) = re.findall(rf'<form method="post" action="{opened}/scans">(.*?)</form>', page, re.S)
+        fields = dict(re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', form))
+        assert fields.get("csrf"), "the scan form has no csrf field"
+        # The form's answer leads to the run (urllib follows the 303 with a GET).
+        body = urllib.parse.urlencode(fields).encode("ascii")
+        request = urllib.request.Request(f"{origin}{opened}/scans", body, {"Origin": origin})
+        with direct.open(request, timeout=900) as response:
+            landed = response.url
         # Any other address is a page that shows a result the history did not keep.
         return history.get_run(int(landed.rpartition("/runs/")[2]))
     finally:

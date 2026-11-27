@@ -2,8 +2,8 @@
 {% if project is not none %}
 <nav class="trail" aria-label="이동 경로">
 <ol>
-<li><a href="{{ base }}/projects/{{ project.id }}">{{ project.name }}</a></li>
-<li><a href="{{ base }}/projects/{{ project.id }}/{{ section }}">{{ "기록" if section == "history" else "업데이트" }}</a></li>
+<li><a href="/projects/{{ project.id }}">{{ project.name }}</a></li>
+<li><a href="/projects/{{ project.id }}/{{ section }}">{{ "기록" if section == "history" else "업데이트" }}</a></li>
 <li aria-current="page">{{ here }}</li>
 </ol>
 </nav>

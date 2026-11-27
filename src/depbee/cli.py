@@ -223,7 +223,9 @@ BACKGROUND_UNRESPONSIVE = (
     "백그라운드 대시보드 프로세스가 있지만 응답하지 않습니다(시작 중이거나, 하던 작업을 "
     "마치고 종료하는 중). 잠시 뒤 다시 확인하세요."
 )
-BACKGROUND_STOPPED = "백그라운드 대시보드를 종료했습니다. 이전 주소는 더 이상 열리지 않습니다."
+BACKGROUND_STOPPED = (
+    "백그라운드 대시보드를 종료했습니다. 다시 시작할 때까지 그 주소는 열리지 않습니다."
+)
 # depbee setup (config, service.setup_assets, service.active_assets).
 ASSET_NAMES = {"model_dir": "모델", "known_malicious_dir": "기지 악성 색인"}
 # What an asset's version is: the model's model_id, the index's list_as_of.
@@ -263,7 +265,7 @@ SETUP_NOT_INSTALLED = (
 SHARED_FOLDER = (
     "주의: 사용자 설정 폴더({folder})는 이 PC의 다른 계정도 열 수 있습니다(Users, Everyone 같은 "
     "그룹에 권한이 있음). 이 폴더에는 신뢰하는 자산 경로(config.json)와 백그라운드 대시보드의 "
-    "세션 주소·제어 값(dashboard.json)이 있습니다. 폴더 권한에서 그 그룹을 빼거나, 아직 없는 "
+    "주소·제어 값(dashboard.json)이 있습니다. 폴더 권한에서 그 그룹을 빼거나, 아직 없는 "
     "경로를 DEPBEE_CONFIG_DIR로 지정해 depbee가 본인 전용 폴더를 만들게 하세요."
 )
 # Run by the Python that runs this depbee, started in no particular folder: 0 if what it
@@ -466,9 +468,14 @@ def _parser() -> argparse.ArgumentParser:
         "and recorded reports, update previews and applies (needs .[web]; previews also need "
         "Node.js with npm and .[extract])",
     )
+    from .dashboard import DEFAULT_PORT  # no web library is imported with it
+
+    # No default here: _dashboard() tells a port that was given from one that was not.
     dashboard.add_argument(
-        "--port", type=int, default=0, help="Port on 127.0.0.1 (default 0: a free port)"
-    )
+        "--port", type=int,
+        help=f"Port on 127.0.0.1 (default {DEFAULT_PORT}, so that the address stays "
+        f"http://127.0.0.1:{DEFAULT_PORT}/ after a restart; 0: a free port)",
+    )  # fmt: skip
     _asset_arguments(dashboard)
     _cache_arguments(dashboard)
     mode = dashboard.add_mutually_exclusive_group()
@@ -1258,20 +1265,21 @@ def _dashboard(args: argparse.Namespace) -> int:
     """depbee dashboard: serve here until Ctrl+C, or start, show or stop the background one."""
     options = {"model_dir": args.model_dir, "cache_dir": args.cache_dir,
                "no_cache": args.no_cache, "known_malicious_dir": args.known_malicious_dir}  # fmt: skip
-    if not (args.background or args.status or args.stop):
-        from .dashboard import serve
+    from .dashboard import DEFAULT_PORT, serve
 
-        serve(args.port, **options)
+    port = DEFAULT_PORT if args.port is None else args.port
+    if not (args.background or args.status or args.stop):
+        serve(port, **options)
         return 0
     from .dashboard import lifecycle
 
     if args.background:
-        state, started = lifecycle.start(args.port, **options)
+        state, started = lifecycle.start(port, **options)
         print(state["url"])
         print(BACKGROUND_STARTED if started else BACKGROUND_RUNNING)
         _warn_shared(config.user_dir())
         return 0
-    if args.port or any(options.values()):
+    if args.port is not None or any(options.values()):
         raise GuardError("--status and --stop take no other option")
     if args.stop:
         print(BACKGROUND_STOPPED if lifecycle.stop() else BACKGROUND_NONE)

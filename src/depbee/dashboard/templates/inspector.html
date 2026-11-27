@@ -6,7 +6,7 @@
    address opens it under the row on a narrow screen and brings the row beside it on a wide one.
    With no candidate to open it says what would be here. Nothing is applied here: the top links
    the preview this candidate came from while this process still holds it, the page where it is
-   reviewed and applied, and says how to get one otherwise. Needs base, session, url, pick (the
+   reviewed and applied, and says how to get one otherwise. Needs csrf, url, pick (the
    address of a pick up to the item's value), section, project, state, previews and, on the
    packages view, targets and kept (the view's search and filter): from there the way to a
    preview says what the view showed, so that the preview's page leads back to it (app._back). #}
@@ -41,7 +41,7 @@
 {% if picked.rules.cell == "none" %}<p class="note">정적 규칙: 실행하지 않은 것은 통과가 아닙니다.</p>{% endif %}
 {% if picked.score_raw is none and picked.status != "removed" %}<p class="note">ML 점수: 점수가 없는 것은 0점이 아닙니다.</p>{% endif %}
 <p class="note">이 화면에서는 반영하지 않습니다. {% if held.id is none %}반영하려면 업데이트 미리보기를 다시 실행합니다. {% endif %}<button type="button" class="help" popovertarget="help-apply" aria-label="반영은 어디서 하나요"><span aria-hidden="true">?</span></button></p>
-{% if held.id is not none %}<p class="inspect-apply"><a class="action" href="{{ base }}/previews/{{ held.id }}{% if from_here is not none %}?back={{ from_here|urlencode }}{% endif %}">이 후보의 미리보기 검토·반영</a></p>{% endif %}
+{% if held.id is not none %}<p class="inspect-apply"><a class="action" href="/previews/{{ held.id }}{% if from_here is not none %}?back={{ from_here|urlencode }}{% endif %}">이 후보의 미리보기 검토·반영</a></p>{% endif %}
 <div class="help-pop" id="help-apply" popover><p>반영 여부는 이 후보 하나를 본 결과이고, 실제 반영은 미리보기 화면에서 그 미리보기의 전체 결과로 정합니다. 미리보기는 대시보드를 끄면 사라지므로, 없으면 업데이트 미리보기를 다시 실행합니다.</p></div>
 {# The check of one version is the CLI's alone (app.check_command): the line to run, in view,
    and no button. #}
@@ -109,16 +109,16 @@
 {% if picked.reason is not none %}<dt>이유</dt><dd>{{ picked.reason }}</dd>{% endif %}
 {% if picked.detail is not none %}<dt>상세</dt><dd>{{ picked.detail }}</dd>{% endif %}
 {% if picked.alternative is not none %}<dt>대안(안전 보증 아님)</dt><dd>{{ picked.alternative[0] }} ({{ picked.alternative[1] }})</dd>{% endif %}
-<dt>미리보기한 실행</dt><dd><a href="{{ base }}/runs/{{ picked.run_id }}">#{{ picked.run_id }}</a></dd>
+<dt>미리보기한 실행</dt><dd><a href="/runs/{{ picked.run_id }}">#{{ picked.run_id }}</a></dd>
 </dl>
 </section>
 <ul class="inspect-actions">
-<li><a class="action" href="{{ base }}/runs/{{ picked.run_id }}#r{{ picked.position }}">보고서에서 전체 근거 보기<span class="visually-hidden"> {{ picked.package }}</span></a></li>
+<li><a class="action" href="/runs/{{ picked.run_id }}#r{{ picked.position }}">보고서에서 전체 근거 보기<span class="visually-hidden"> {{ picked.package }}</span></a></li>
 {% if picked.npm is not none %}<li><a class="action" href="{{ picked.npm }}" rel="noreferrer noopener">npm 페이지 열기<span class="visually-hidden"> {{ picked.package }}</span></a></li>{% endif %}
 {% if section == "packages" %}
 {# Without a held preview (the top links one), a new preview of this package alone. #}
 {% if held.id is none and picked.package in targets and picked.location == "node_modules/" ~ picked.package %}<li><form method="post" action="{{ url }}/previews">
-<input type="hidden" name="session" value="{{ session }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
 <input type="hidden" name="back" value="{{ from_here }}">
 <button type="submit" data-busy-label="업데이트 미리보기 중…" name="packages" value="{{ picked.package }}">이 패키지 업데이트 미리보기(update)</button>
 </form></li>{% endif %}

@@ -11,8 +11,8 @@
 <h2 id="register">프로젝트 등록</h2>
 <p class="lead">{% if not tabs %}등록한 프로젝트가 없습니다. {% endif %}package-lock.json이 있는 npm 프로젝트 폴더를 고르면 업로드 없이 바로 등록하고 {% if tabs %}그 프로젝트를{% else %}현황판을{% endif %} 엽니다.</p>
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
-<form method="post" action="{{ base }}/projects/pick">
-<input type="hidden" name="session" value="{{ session }}">
+<form method="post" action="/projects/pick">
+<input type="hidden" name="csrf" value="{{ csrf }}">
 <button class="primary" type="submit" aria-describedby="pick-hint" data-busy-label="폴더 선택 창을 확인하세요…">프로젝트 폴더 선택</button>
 </form>
 <p class="note" id="pick-hint">이 PC의 폴더 선택 창에서 고르고, 고른 폴더의 파일을 읽습니다. 창은 {{ pick_seconds }}초 뒤 닫히며, 보이지 않거나 키보드 입력을 받지 않으면 {{ switch_keys }}으로 전환하세요. 창을 닫거나 시간이 지나면 등록하지 않으며 이 버튼으로 다시 고릅니다.</p>
@@ -23,7 +23,7 @@
 <h2 id="registered">등록한 프로젝트 {{ tabs|length }}개</h2>
 <ul class="projects">
 {% for project in tabs %}
-{% set url = base ~ "/projects/" ~ project.id %}
+{% set url = "/projects/" ~ project.id %}
 <li>
 <h3><span class="cell {{ project.cell }}" aria-hidden="true"></span><a href="{{ url }}">{{ project.name }}</a> <span class="project-state">{{ project.state }}</span></h3>
 <p class="path">{{ project.path }}</p>
@@ -31,7 +31,7 @@
 {% if project.runs %}
 {% set latest = project.runs[0] %}
 <dl class="latest">
-<div><dt>최근 실행</dt><dd><a href="{{ base }}/runs/{{ latest.id }}">#{{ latest.id }}</a> {{ latest.kind }}, {{ latest.created_at|when }}</dd></div>
+<div><dt>최근 실행</dt><dd><a href="/runs/{{ latest.id }}">#{{ latest.id }}</a> {{ latest.kind }}, {{ latest.created_at|when }}</dd></div>
 <div><dt>결과</dt><dd>{{ latest.status }}</dd></div>
 <div><dt>위험</dt><dd>{{ latest.counts.flagged }}</dd></div>
 <div><dt>보류</dt><dd>{{ latest.counts.incomplete }}</dd></div>
