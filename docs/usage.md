@@ -173,6 +173,30 @@ python scripts/build_known_malicious_index.py C:/path/to/all.zip models/known-ma
 - 2026-10 스냅샷 기준 `index.json`은 약 15 MB이고, 만드는 데 약 23초, 읽고 검사하는 데 1~2초가 걸립니다. 오래 떠 있는 `mcp`·`dashboard`는 같은 파일이면(경로, 크기, 수정 시각, 두 파일의 SHA-256) 검사한 색인을 다시 씁니다.
 - 색인 형식은 [연결 규약](contracts.md) 4절에 있습니다.
 
+### 판정표로 색인 확인하기
+
+유지보수자용 오프라인 확인입니다. depbee와 따로 OSV 원본 기록을 보고 쓴 판정표(CSV)를 색인 폴더에 재생해, 표의 모든 `이름@버전`에서 적중 여부와 적중한 기록 전부의 `advisory_id`·`match_kind`가 표와 정확히 같은지 봅니다. 네트워크를 쓰지 않고 파일을 만들지 않습니다.
+
+```powershell
+python scripts/replay_known_malicious_table.py table.csv src/depbee/assets/index --snapshot-sha256 <표를 쓸 때 본 all.zip의 SHA-256>
+```
+
+- `--snapshot-sha256`은 표를 쓸 때 본 `all.zip`의 SHA-256입니다. 색인의 `snapshot_sha256`과 다르면 비교하지 않고 끝납니다. `index.json`의 SHA-256인 `list_sha256`과는 다른 값입니다.
+- 표는 UTF-8 CSV이고(BOM 허용) 첫 줄은 정확히 `package,expected,advisory_id,match_kind`입니다.
+- `package`는 `이름@버전`입니다(`@scope/name@1.2.3`, 마지막 `@`에서 나눔). 이름은 depbee가 받는 npm 이름이어야 하고 대소문자를 그대로 대조합니다. 버전은 엄격한 SemVer 2.0이며 build metadata(`+...`)는 쓸 수 있고 대조에서 무시됩니다.
+- `expected`가 `hit`이면 `advisory_id`와 `match_kind`(`listed_version` 또는 `affected_range`)를 모두 적습니다. 한 버전에 기록이 여러 개 걸리면 기록마다 한 줄씩 적고, 그 줄들의 집합이 실제 적중과 정확히 같아야 합니다.
+- `expected`가 `not_hit`이면 `advisory_id`와 `match_kind`를 비우고, 그 `이름@버전`의 줄은 그 하나뿐이어야 합니다.
+
+```csv
+package,expected,advisory_id,match_kind
+example-pkg@1.0.1,hit,MAL-0000-0001,listed_version
+example-pkg@1.0.1,hit,MAL-0000-0002,affected_range
+example-pkg@1.0.0,not_hit,,
+```
+
+- 종료 코드 0은 표의 모든 건이 같다는 뜻입니다. 1은 다른 건이 있다는 뜻이고 그 건의 기대값(`expected`)과 실제값(`actual`)을 출력합니다. 2는 비교하지 못했다는 뜻입니다: 표를 읽을 수 없거나, UTF-8이 아니거나, 첫 줄·칸 수·값이 위 형식과 다르거나, 줄이 없거나, 같은 줄이 두 번 있거나, 같은 `이름@버전`의 줄이 서로 어긋나거나(`hit`과 `not_hit`, 같은 기록에 다른 `match_kind`), 색인을 읽을 수 없거나, 스냅샷이 다를 때입니다.
+- 서로 다른 `이름@버전`이 20개보다 적으면 결과 줄에 `partial`이 붙습니다. 이 재생은 표에 적힌 건만 확인하므로, 건수가 적거나 정해 둔 유형(명시 버전 적중과 같은 패키지의 정상 버전, 유한 범위 안과 밖, 모든 버전 기록, 철회 기록, `0.0.1-security`, scoped 이름, prerelease, GHSA에만 있는 패키지)이 빠진 표가 통과한 것은 부분 확인입니다. 종료 코드가 0이어도 판정표 전체 대조를 마친 것으로 보지 않습니다.
+
 ## 업데이트 미리보기 (`depbee update`)
 
 `depbee update`는 npm이 지금 프로젝트에 `npm update`를 하면 바뀔 lockfile을 임시 폴더에서 계산하고, 그 변경을 `scan --extract`와 같은 방식으로 검사합니다. 미리보기만 하며 프로젝트의 파일은 아무것도 바꾸지 않습니다. 검사한 결과를 프로젝트에 반영하려면 `--apply`를 줍니다([업데이트 반영](#업데이트-반영-depbee-update---apply)).
@@ -452,6 +476,7 @@ src/depbee/
   dashboard/lifecycle.py  # 백그라운드 대시보드의 시작·상태·종료(잠금, 상태 파일, 제어 요청)
 scripts/write_manifest.py # 모델 파일로 manifest.json 생성
 scripts/build_known_malicious_index.py # OSV npm all.zip으로 기지 악성 색인 폴더 생성
+scripts/replay_known_malicious_table.py # 판정표(CSV)를 색인에 재생해 적중 결과 대조
 tests/                    # 합성 자료를 이용한 회귀·모델 연동 테스트
 examples/                 # 실행 가능한 명령에 사용할 lockfile: 합성 예시와 lodash 4.17.20 → 4.17.21의 실제 변경
 docs/                     # 구조·연결 규약·CI 설계·개발 순서
