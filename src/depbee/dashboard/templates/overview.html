@@ -32,7 +32,7 @@
 {% set run = row.run %}
 {# Why the state is not the stored result, and that result: the chip's title, and the same
    words for a screen reader. #}
-{% set why = {"gone": "폴더를 찾을 수 없습니다." ~ (" 지난 기록은 그대로 열립니다." if run else ""), "stale": "이 미리보기 뒤에 package.json이나 package-lock.json이 바뀌어 지금 파일의 결과가 아닙니다.", "none": "검사나 업데이트 확인 기록이 없습니다."}.get(row.state, "") %}
+{% set why = {"gone": "폴더를 찾을 수 없습니다." ~ (" 지난 기록은 그대로 열립니다." if run else ""), "stale": "이 미리보기 뒤에 package.json이나 package-lock.json이 바뀌어 지금 파일의 결과가 아닙니다.", "none": "lockfile 변경 검사나 업데이트 미리보기 기록이 없습니다."}.get(row.state, "") %}
 {% set stored = (run.kind ~ (": " ~ run.status if row.state in ("stale", "gone", "unknown") else "")) if run else "" %}
 {% set about = (why ~ " " ~ stored)|trim %}
 <tr class="ov-row" role="row">

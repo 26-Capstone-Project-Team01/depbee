@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}검사 결과 - depbee{% endblock %}
+{% block title %}lockfile 변경 검사 결과 - depbee{% endblock %}
 {% block main %}
 {% with here = "검사 결과" %}{% include "trail.html" %}{% endwith %}
-<h1>검사(scan) 결과</h1>
+<h1>lockfile 변경 검사(scan) 결과</h1>
 <p class="error">{{ not_recorded }}</p>
 {% include "report.html" %}
 {% endblock %}

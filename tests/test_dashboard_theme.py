@@ -373,9 +373,9 @@ class ThemeRouteTests(DashboardFixture):
         for back in (f"{S}/projects//1", f"{S}/projects/１"):
             self.assertEqual(self.choose("light", back).headers["location"], f"{S}/", back)
 
-    def test_the_way_back_drops_a_checks_one_time_return(self):
+    def test_the_way_back_keeps_the_pages_query(self):
         history.register_project(self.project)
-        html = self.page("/projects/1?q=ex&checked=3&item=3.0")
+        html = self.page("/projects/1?q=ex&item=3.0")
         self.assertEqual(self.form(html)[0]["back"], f"{S}/projects/1?q=ex&amp;item=3.0")
 
     def test_the_way_back_takes_ascii_digits_and_long_encoded_pages(self):
@@ -406,7 +406,8 @@ class ThemeRouteTests(DashboardFixture):
 
     def test_a_page_that_answers_a_post_has_no_theme_form(self):
         history.register_project(self.project)
-        response = self.post("relative/folder", session=SESSION)
+        self.dialog("relative/folder")  # a folder the registration refuses
+        response = self.send_pick()
         self.assertEqual(response.status_code, 400)
         self.assertIsNone(self.form(response.text))
 

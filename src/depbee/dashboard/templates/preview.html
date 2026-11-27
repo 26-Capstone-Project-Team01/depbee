@@ -11,12 +11,16 @@
 </ul>
 {% if run_id is not none %}<p>이력: <a href="{{ base }}/runs/{{ run_id }}">실행 #{{ run_id }}</a></p>{% endif %}
 {% if not_recorded %}<p class="warning">{{ not_recorded }}</p>{% endif %}
+{# Worded for every preview: one that is refused or changes nothing has no way to choose. #}
+<p>프로젝트 파일은 아직 그대로입니다. 아래 검사 결과와 <a href="#apply">업데이트 반영</a> 가능 여부를 확인하세요.</p>
 <p class="note">반영은 한 미리보기에 한 번만 시도할 수 있습니다. <button type="button" class="help" popovertarget="help-kept" aria-label="미리보기는 언제 사라지나요"><span aria-hidden="true">?</span></button></p>
 <div class="help-pop" id="help-kept" popover><p>이 미리보기(새 lockfile)는 대시보드 프로세스 메모리에만 있습니다. 대시보드를 끄거나 다시 시작하면, 또는 새 미리보기가 쌓여 오래된 것부터 지워지면 사라집니다.</p></div>
 </section>
 {% include "report.html" %}
-<section class="gate" aria-labelledby="gate-title">
-<h2 id="gate-title">업데이트 반영</h2>
+{# The one place an update is applied: a POST of this form, as depbee update --apply does. The
+   two ways are the CLI's own (--apply lockfile, --apply install). #}
+<section class="gate" id="apply" aria-labelledby="gate-title">
+<h2 id="gate-title">업데이트 반영(update --apply)</h2>
 {% if blocked %}
 <p class="error">반영할 수 없습니다: {{ blocked_reason }}. 확인으로도 바꿀 수 없습니다.</p>
 <p>기지 악성 기록 일치로 거부한 항목 {{ blocked|length }}개:</p>
@@ -36,19 +40,20 @@
 </ul>
 </div>
 {% endif %}
-<form method="post" action="{{ base }}/previews/{{ preview_id }}/apply">
+<form method="post" action="{{ base }}/previews/{{ preview_id }}/apply{{ carried }}">
 <input type="hidden" name="session" value="{{ session }}">
 <fieldset>
 <legend>반영 방식</legend>
 {% for mode, label in modes %}
-<p><input type="radio" id="mode-{{ mode }}" name="mode" value="{{ mode }}"{% if mode == "install" and npmrc %} disabled{% endif %}{% if loop.first %} checked{% endif %}> <label for="mode-{{ mode }}">{{ label }}</label></p>
+<p><input type="radio" id="mode-{{ mode }}" name="mode" value="{{ mode }}"{% if mode == "install" and npmrc %} disabled{% endif %}{% if loop.first %} checked{% endif %}> <label for="mode-{{ mode }}">{{ label }} <code>--apply {{ mode }}</code></label></p>
 {% endfor %}
 </fieldset>
 {% if npmrc %}<p class="warning">{{ npmrc }}</p>{% endif %}
 {% if required %}
 <p><input type="checkbox" id="confirm" name="confirm" value="yes" required> <label for="confirm">위 {{ required|length }}개 항목을 검토했고 진행합니다.</label></p>
 {% endif %}
-<button type="submit" data-busy-label="반영 중…">반영</button>
+<p class="warning">아래 버튼을 누르면 프로젝트의 package-lock.json을(npm이 바꿨으면 package.json도) 실제로 바꿉니다. 누르기 전에는 아무것도 바꾸지 않습니다.</p>
+<button type="submit" data-busy-label="반영 중…">고른 방식으로 프로젝트에 반영</button>
 </form>
 <ul class="note">
 <li>반영 직전에 package.json·package-lock.json이 이 미리보기 때와 같은지, 반영할 lockfile이 검사한 것과 같은지 다시 확인하고, 다르면 아무것도 바꾸지 않습니다.</li>
@@ -57,5 +62,9 @@
 <li>기지 악성 기록 일치는 언제나 거부합니다. 반영이 끝날 때까지 이 화면이 기다립니다.</li>
 </ul>
 {% endif %}
+{# The way out without applying: the packages view as it was when the preview was sent from it
+   (back, app._back: its search, filter and open candidate), else the updates view. A link:
+   nothing is applied and the preview stays held. #}
+{% if project is not none %}<p>{% if back is not none %}<a class="action" href="{{ base }}/projects/{{ project.id }}{% if back %}?{{ back }}{% endif %}">반영하지 않고 패키지 목록으로</a>{% else %}<a class="action" href="{{ base }}/projects/{{ project.id }}/updates">반영하지 않고 업데이트 화면으로</a>{% endif %}</p>{% endif %}
 </section>
 {% endblock %}

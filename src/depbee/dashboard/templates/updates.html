@@ -9,36 +9,38 @@
 {% set shown = namespace(inspector=false) %}
 {% include "project_head.html" %}
 <div class="bench">
-{# The named check, folded until opened; the head has the check of everything and the scan. #}
+{# The preview of named packages, folded until opened; the head has the preview of everything
+   and the scan. What each of them runs, and the check they do not run, is behind the question
+   mark, each with its CLI command. #}
 <div class="action-line">
 {% if project.found %}
 <details class="named">
-<summary>지정한 패키지 확인</summary>
+<summary>패키지를 지정해 업데이트</summary>
 <form method="post" action="{{ url }}/previews">
 <input type="hidden" name="session" value="{{ session }}">
-<label for="packages">패키지 이름 (공백으로 구분)</label>
+<label for="packages">package.json에 선언된 패키지 이름(공백으로 구분)</label>
 <div class="field">
 <input id="packages" name="packages" type="text" maxlength="{{ max_targets }}" required>
-<button type="submit" data-busy-label="후보 확인 중…">지정한 패키지 확인</button>
+<button type="submit" data-busy-label="업데이트 미리보기 중…">지정한 패키지 업데이트 미리보기(update)</button>
 </div>
 </form>
 </details>
-{% else %}<p>프로젝트 폴더를 찾을 수 없어 업데이트를 확인할 수 없습니다. 커밋하지 않은 변경도 검사할 수 없습니다.</p>{% endif %}
-<button type="button" class="help" popovertarget="help-check" aria-label="확인과 검사가 하는 일"><span aria-hidden="true">?</span></button>
+{% else %}<p>프로젝트 폴더를 찾을 수 없어 업데이트를 미리보기할 수 없습니다. lockfile 변경도 검사할 수 없습니다.</p>{% endif %}
+<button type="button" class="help" popovertarget="help-run" aria-label="이 화면이 실행하는 것과 같은 CLI 명령"><span aria-hidden="true">?</span></button>
 </div>
-<div class="help-pop" id="help-check" popover><p>업데이트 확인은 임시 사본에서 설치 스크립트를 끈 채 업데이트를 계산하고, 바뀌는 버전을 검사합니다. 결과를 검토하고 반영하기 전까지 프로젝트 파일은 그대로입니다. 확인은 몇 초에서 수십 초 걸리며 한 번에 한 요청만 실행합니다. 지정한 패키지 확인은 지정한 이름을 업데이트 대상으로 삼고, 그 결과 바뀌는 의존성을 검사합니다(함께 바뀐 하위 의존성 포함).</p><p>검사만은 현재 lockfile과 Git HEAD의 차이를 검사합니다. 프로젝트 파일은 그대로 두며, 모델이 없으면 ML 판정을 보류합니다.</p></div>
+<div class="help-pop" id="help-run" popover><p>업데이트 미리보기(update)는 프로젝트 폴더에서 실행하는 <code>depbee update</code>와 같습니다. 임시 사본에서 설치 스크립트를 끈 채 package.json 범위 안의 업데이트를 계산하고 바뀌는 버전을 검사합니다. 패키지를 지정하면 <code>depbee update 이름</code>처럼 그 이름만 업데이트 대상으로 삼습니다(함께 바뀌는 하위 의존성 포함). 몇 초에서 수십 초 걸리고 한 번에 한 요청만 실행하며, 프로젝트 파일은 바꾸지 않습니다. 끝나면 열리는 미리보기 화면에서 변경을 검토한 뒤 반영합니다. 반영은 <code>depbee update --apply lockfile</code>(lockfile 반영)이나 <code>depbee update --apply install</code>(설치까지)과 같습니다.</p><p>lockfile 변경 검사(scan)는 <code>depbee scan . --extract</code>와 같이 지금 package-lock.json과 Git HEAD의 차이를 검사합니다. 프로젝트 파일은 그대로 두며, 모델이 없으면 ML 판정을 보류합니다.</p><p>패키지 한 버전만 검사하는 check는 대시보드에서 실행하지 않습니다. 터미널에서 <code>depbee check 이름@버전</code>(예: <code>depbee check lodash@4.17.21</code>)을 실행합니다. lockfile 없이 그 버전 하나만 읽어 검사하며 프로젝트 파일과 이력을 바꾸지 않습니다.</p></div>
 {% if previews %}
 <section class="held" aria-labelledby="previews-title">
-<div class="titled"><h2 id="previews-title">열려 있는 미리보기</h2> <button type="button" class="help" popovertarget="help-held" aria-label="미리보기가 남아 있는 동안"><span aria-hidden="true">?</span></button></div>
-<p>반영은 미리보기 화면에서 합니다.</p>
+<div class="titled"><h2 id="previews-title">검토·반영할 미리보기</h2> <button type="button" class="help" popovertarget="help-held" aria-label="미리보기가 남아 있는 동안"><span aria-hidden="true">?</span></button></div>
+<p>미리보기를 열어 변경을 검토하고 lockfile 반영이나 설치까지를 고릅니다. 열기만 해서는 아무것도 바꾸지 않습니다.</p>
 <div class="help-pop" id="help-held" popover><p>미리보기는 이 대시보드 프로세스 메모리에만 있어 대시보드를 끄면 사라집니다.</p></div>
 <ul class="previews">
 {% for kept in previews %}
-<li><a href="{{ base }}/previews/{{ kept.id }}">{{ kept.created_at|when }} 미리보기 열기</a>{% if kept.run_id is not none %} (실행 #{{ kept.run_id }}){% endif %}
+<li><a href="{{ base }}/previews/{{ kept.id }}">{{ kept.created_at|when }} 미리보기 검토·반영</a>{% if kept.run_id is not none %} (실행 #{{ kept.run_id }}){% endif %}
 <ul>
 {% for line in kept.lines %}<li>{{ line }}</li>
 {% endfor %}</ul>
-{% if not kept.current %}<p class="warning">이 미리보기 뒤에 package.json이나 package-lock.json이 바뀌어 반영을 시도하면 거부됩니다. 업데이트 확인을 다시 실행하세요.</p>{% endif %}
+{% if not kept.current %}<p class="warning">이 미리보기 뒤에 package.json이나 package-lock.json이 바뀌어 반영을 시도하면 거부됩니다. 업데이트 미리보기를 다시 실행하세요.</p>{% endif %}
 </li>
 {% endfor %}
 </ul>
@@ -49,11 +51,14 @@
 {% if state.checks %}
 {# Only a check of everything is evidence that nothing else would change. #}
 {% if state.full %}
-<p class="state">지금의 package.json과 package-lock.json으로 확인한 결과입니다. {% if state.summary %}{{ state.summary }}.{% else %}바뀌는 항목이 없었습니다.{% endif %}</p>
+<p class="state">지금의 package.json과 package-lock.json으로 만든 전체 업데이트 미리보기의 결과입니다. {% if state.summary %}{{ state.summary }}.{% else %}바뀌는 항목이 없었습니다.{% endif %}</p>
 {% else %}
-<p class="state">지금의 package.json과 package-lock.json으로 일부 패키지만 확인한 결과입니다. {% if state.summary %}{{ state.summary }}.{% else %}확인한 패키지에는 업데이트 후보가 없었습니다.{% endif %} 나머지 패키지는 미확인이며 위의 업데이트 후보 확인으로 확인합니다.</p>
+<p class="state">지금의 package.json과 package-lock.json으로 지정한 패키지만 미리보기한 결과입니다. {% if state.summary %}{{ state.summary }}.{% else %}그 패키지에는 업데이트 후보가 없었습니다.{% endif %} 나머지 패키지는 미리보기 전이며 위의 전체 업데이트 미리보기로 봅니다.</p>
 {% endif %}
-<p class="note">확인한 실행: {% for check in state.checks %}<a href="{{ base }}/runs/{{ check.id }}">#{{ check.id }}</a> ({{ check.created_at|when }}, {{ "전체" if check.targets is none else check.targets }}){% if not loop.last %}, {% endif %}{% endfor %}</p>
+{# A candidate is applied from the preview it came from, which only this process holds. #}
+{% if state.rows and not previews|selectattr("current")|list %}<p class="note">이 후보를 반영하려면 위에서 업데이트 미리보기를 다시 실행합니다. 대시보드를 다시 시작했거나 CLI로 만든 미리보기는 여기에 남아 있지 않습니다.</p>
+{% endif %}
+<p class="note">미리보기한 실행: {% for check in state.checks %}<a href="{{ base }}/runs/{{ check.id }}">#{{ check.id }}</a> ({{ check.created_at|when }}, {{ "전체" if check.targets is none else check.targets }}){% if not loop.last %}, {% endif %}{% endfor %}</p>
 {% if state.rows %}
 {# The candidates by whether each could be applied (app._grouped), what needs a look first; in a
    group, the report's order. A row: the package, the versions, the stored verdict with its
@@ -88,11 +93,11 @@
 {% elif not state.readable %}
 <p class="empty">package.json이나 package-lock.json을 읽을 수 없어 지금 파일의 업데이트 후보를 알 수 없습니다.</p>
 {% elif state.last and applied_at %}
-<p class="empty">실행 <a href="{{ base }}/runs/{{ state.last.id }}">#{{ state.last.id }}</a>의 업데이트를 {{ applied_at|when }}에 반영했습니다. 반영한 뒤의 파일로는 아직 확인하지 않았습니다.</p>
+<p class="empty">실행 <a href="{{ base }}/runs/{{ state.last.id }}">#{{ state.last.id }}</a>의 업데이트를 {{ applied_at|when }}에 반영했습니다. 반영한 뒤의 파일로는 아직 업데이트 미리보기를 실행하지 않았습니다.</p>
 {% elif state.last %}
-<p class="empty">지금 파일로 확인한 결과가 없습니다. 마지막 업데이트 확인(실행 <a href="{{ base }}/runs/{{ state.last.id }}">#{{ state.last.id }}</a>, {{ state.last.created_at|when }}) 뒤에 package.json이나 package-lock.json이 바뀌어, 그 결과는 현재 후보로 보지 않습니다.</p>
+<p class="empty">지금 파일로 만든 업데이트 미리보기가 없습니다. 마지막 미리보기(실행 <a href="{{ base }}/runs/{{ state.last.id }}">#{{ state.last.id }}</a>, {{ state.last.created_at|when }}) 뒤에 package.json이나 package-lock.json이 바뀌어, 그 결과는 현재 후보로 보지 않습니다.</p>
 {% else %}
-<p class="empty">아직 업데이트를 확인하지 않았습니다. 위에서 확인하면 후보 버전과 검사 근거가 여기에 나옵니다.</p>
+<p class="empty">아직 업데이트 미리보기를 실행하지 않았습니다. 위에서 실행하면 변경을 검토하고 반영하는 화면이 열리고, 후보 버전과 검사 근거가 여기에도 나옵니다.</p>
 {% endif %}
 </section>
 {% if project.found and not shown.inspector %}

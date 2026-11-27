@@ -2,7 +2,7 @@
 {% block title %}오류 - depbee{% endblock %}
 {% block main %}
 {% with here = "오류" %}{% include "trail.html" %}{% endwith %}
-<h1>{{ title|default("업데이트 확인·반영 오류") }}</h1>
+<h1>{{ title|default("업데이트 미리보기·반영 오류") }}</h1>
 <p class="error">{{ message }}</p>
 {# note: what to do next when nothing ran (app.stopped); the failed runs below were not stored. #}
 {% if note is not defined %}<p>이력에 기록하지 않았습니다.</p>{% elif note %}<p>{{ note }}</p>{% endif %}

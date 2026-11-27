@@ -9,8 +9,8 @@ The child gets nothing from the server: no arguments, no input and no module pat
 file under -I -B and imports the standard library only, so neither the session nor a project
 folder's code reaches it, and it writes nothing but its answer, into a pipe: one line of ASCII
 JSON, {"folder": the absolute path, or null when the dialog was closed without a choice}. That
-path is an input like a typed one: the caller checks it as it checks those. Nothing here
-registers, reads or writes a project. Standard library only.
+path is an input and the only one a project is registered from: the caller checks it before
+it registers it. Nothing here registers, reads or writes a project. Standard library only.
 """
 
 import json

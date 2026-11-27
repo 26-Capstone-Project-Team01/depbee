@@ -1,9 +1,11 @@
 {# The head of a project's three views, on one line: its name with the state of its newest run
    and its folder (cut to its last folders, whole on hover), and on the right the two things to
-   do: check the updates, or scan what is not committed. Under it the links between the views,
-   each with how many it holds (app._head: lockfile entries, current candidates, stored runs).
-   The check sent from the packages view comes back to its list (back, app._back); kept and
-   picked are that view's. #}
+   do, each named with its CLI command: preview the update of everything (depbee update), which
+   opens the page where it is reviewed and applied, or scan the lockfile's uncommitted change
+   (depbee scan). Under it the links between the views, each with how many it holds (app._head:
+   lockfile entries, current candidates, stored runs). A preview sent from the packages view
+   says what that view showed (back, app._back: kept and picked are that view's), so that the
+   preview's page can lead back to it. #}
 {% set url = base ~ "/projects/" ~ project.id %}
 <header class="project-head">
 <div class="head-line">
@@ -16,10 +18,10 @@
 <form method="post" action="{{ url }}/previews" id="preview-project">
 <input type="hidden" name="session" value="{{ session }}">
 {% if section == "packages" %}<input type="hidden" name="back" value="{{ kept }}{% if picked is not none %}item={{ picked.run_id }}.{{ picked.position }}{% endif %}">
-{% endif %}<button class="primary" type="submit" data-busy-label="후보 확인 중…" name="packages" value="">{{ "업데이트 후보 다시 확인" if head.full else "업데이트 후보 확인" }}</button>
+{% endif %}<button class="primary" type="submit" data-busy-label="업데이트 미리보기 중…" name="packages" value="">{{ "전체 업데이트 다시 미리보기(update)" if head.full else "전체 업데이트 미리보기(update)" }}</button>
 </form>
 <form method="post" action="{{ url }}/scans">
-<input type="hidden" name="session" value="{{ session }}"><button type="submit" data-busy-label="검사 중…">검사만</button>
+<input type="hidden" name="session" value="{{ session }}"><button type="submit" data-busy-label="lockfile 변경 검사 중…">lockfile 변경 검사(scan)</button>
 </form>
 </div>
 {% endif %}

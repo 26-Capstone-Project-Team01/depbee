@@ -344,22 +344,22 @@ class OverviewTests(test_dashboard.DashboardFixture):
         time = r"2026-11-21 00:\d\d UTC"
         found = cells("project")
         self.assertEqual(len(found), 6)
-        self.assertRegex(found[0], rf"^최근 검사 위험, 검사\(scan\) project 최근 검사 보고서 #{scan}$")
+        self.assertRegex(found[0], rf"^최근 검사 위험, lockfile 변경 검사\(scan\) project 최근 검사 보고서 #{scan}$")
         self.assertEqual(found[1:3], ["위험 1", "보류 0"])
         self.assertRegex(found[3], rf"^검사 시각 {time}$")
         self.assertEqual(found[4:], ["최근 반영 시도 없음", "마지막 성공 반영 없음"])
-        self.assertEqual(cells("fresh"), ["최근 검사 미검사, 검사나 업데이트 확인 기록이 없습니다.",
+        self.assertEqual(cells("fresh"), ["최근 검사 미검사, lockfile 변경 검사나 업데이트 미리보기 기록이 없습니다.",
                                           "위험 -", "보류 -", "검사 시각 -", "최근 반영 시도 없음",
                                           "마지막 성공 반영 없음"])  # fmt: skip
         # Why a state is not the stored result: in the chip's title and for a screen reader,
         # with the stored result spelled out.
         moved = "이 미리보기 뒤에 package.json이나 package-lock.json이 바뀌어 지금 파일의 결과가 아닙니다."
         found = cells("moved")
-        self.assertRegex(found[0], rf"^최근 검사 파일 바뀜, {re.escape(moved)} 업데이트 미리보기: 통과 "
+        self.assertRegex(found[0], rf"^최근 검사 파일 바뀜, {re.escape(moved)} 업데이트 미리보기\(update\): 통과 "
                                    rf"moved 최근 검사 보고서 #{stale}$")  # fmt: skip
-        self.assertIn(f'<span class="verdict stale" title="{moved} 업데이트 미리보기: 통과">', html)
+        self.assertIn(f'<span class="verdict stale" title="{moved} 업데이트 미리보기(update): 통과">', html)
         self.assertEqual(found[1:3], ["위험 0", "보류 0"])
-        gone = "폴더를 찾을 수 없습니다. 지난 기록은 그대로 열립니다. 업데이트 미리보기: 위험 판정 있음"
+        gone = "폴더를 찾을 수 없습니다. 지난 기록은 그대로 열립니다. 업데이트 미리보기(update): 위험 판정 있음"
         found = cells("gone")
         self.assertRegex(found[0], rf"^최근 검사 폴더 없음, {re.escape(gone)} gone 최근 검사 보고서 #{refused}$")
         self.assertIn(f'<span class="verdict gone" title="{gone}">', html)
@@ -463,14 +463,14 @@ class OverviewTests(test_dashboard.DashboardFixture):
 
         def assert_managed(rendered, status, error):
             response, name, context = rendered
-            self.assertEqual(
-                (response.status_code, name, context["section"], context["error"],
-                 context["manual"]), (status, "projects.html", "manage", error, True))  # fmt: skip
+            self.assertEqual((response.status_code, name, context["section"], context["error"]),
+                             (status, "projects.html", "manage", error))  # fmt: skip
+            # Nothing of a typed path is given to the page any more.
+            self.assertFalse({"typed", "manual"} & set(context))
 
-        missing = str(self.root / "missing")  # a typed path that is refused
-        assert_managed(self.rendered(lambda: self.post(missing, SESSION)), 400,
-                       self.app.REGISTER_ERRORS["folder"])  # fmt: skip
         with mock.patch.object(test_dashboard_picker.picker, "choose") as choose:
+            choose.return_value = ("chosen", str(self.root / "missing"))  # a refused folder
+            assert_managed(self.rendered(self.pick), 400, self.app.REGISTER_ERRORS["folder"])
             for outcome in ("unavailable", "timeout"):
                 choose.return_value = (outcome, None)
                 assert_managed(self.rendered(self.pick), 503, self.app.PICK_ERRORS[outcome])
@@ -501,22 +501,21 @@ class OverviewTests(test_dashboard.DashboardFixture):
             opened = self.pick()
             self.assertEqual((opened.status_code, opened.headers["location"]),
                              (303, f"{S}/projects/2"))  # fmt: skip
-        self.assertEqual(self.post(str(self.project), SESSION).headers["location"],
-                         f"{S}/projects/1")  # fmt: skip
+            choose.return_value = ("chosen", str(self.project))  # the first one again
+            self.assertEqual(self.pick().headers["location"], f"{S}/projects/1")
         self.assertEqual(len(history.list_projects()), 2)
 
-    def test_before_the_first_project_a_dialog_that_fails_opens_the_typed_path(self):
+    def test_before_the_first_project_a_dialog_that_fails_ends_on_project_management(self):
         # The start page has the dialog's button alone. A dialog that cannot be used, and a
-        # folder that is refused, end on project management with the typed path, not on the
-        # start page: there the user would have no other way to register.
+        # folder that is refused, end on project management, which says why above the same
+        # button: on the start page the user would not know that nothing was registered.
         self.assertEqual(self.view("/")[0], "start.html")
         with mock.patch.object(test_dashboard_picker.picker, "choose") as choose:
             for outcome in ("unavailable", "timeout"):
                 choose.return_value = (outcome, None)
                 response, name, context = self.rendered(self.pick)
-                self.assertEqual((response.status_code, name, context["tabs"], context["manual"],
-                                  context["error"]),
-                                 (503, "projects.html", [], True, self.app.PICK_ERRORS[outcome]))  # fmt: skip
+                self.assertEqual((response.status_code, name, context["tabs"], context["error"]),
+                                 (503, "projects.html", [], self.app.PICK_ERRORS[outcome]))  # fmt: skip
             choose.return_value = ("chosen", str(self.root / "missing"))
             response, name, context = self.rendered(self.pick)
             self.assertEqual((response.status_code, name, context["error"]),
@@ -527,9 +526,10 @@ class OverviewTests(test_dashboard.DashboardFixture):
             self.assertEqual(self.view(closed.headers["location"].removeprefix(S))[0],
                              "start.html")  # fmt: skip
             self.assertFalse(self.db.exists())
-            # None of that registered anything: the typed path of that page then registers the
-            # first project of all, which ends on the overview as the dialog's would.
-            self.assertEqual(self.post(str(self.project), SESSION).headers["location"], f"{S}/")
+            # None of that registered anything: the next folder the dialog answers is the
+            # first project of all, which ends on the overview.
+            choose.return_value = ("chosen", str(self.project))
+            self.assertEqual(self.pick().headers["location"], f"{S}/")
         self.assertEqual(self.view("/")[0], "overview.html")
 
     def reopened(self):
@@ -545,53 +545,47 @@ class OverviewTests(test_dashboard.DashboardFixture):
         self.assertEqual(response.status_code, 200)
         return name, context
 
-    def test_the_first_project_of_all_opens_the_overview_whichever_way_it_was_given(self):
+    def test_the_first_project_of_all_opens_the_overview(self):
         first, second = self.root / "first", self.root / "second"
         for folder in (first, second):
             folder.mkdir(parents=True)
             (folder / "package-lock.json").write_bytes(self.head.read_bytes())
 
-        def dialog(folder):
-            choose.return_value = ("chosen", str(folder))
-            return self.pick()
-
-        def typed(folder):
-            return self.post(str(folder), SESSION)
-
         with mock.patch.object(test_dashboard_picker.picker, "choose") as choose:
-            for register in (dialog, typed):
-                with self.subTest(way=register.__name__):
-                    self.assertEqual(self.view("/")[0], "start.html")
-                    # What registers nothing leaves the next folder the first: a closed dialog,
-                    # one that cannot be used, and a folder that is refused.
-                    if register is dialog:
-                        for outcome, status in (("cancelled", 303), ("unavailable", 503)):
-                            choose.return_value = (outcome, None)
-                            self.assertEqual(self.pick().status_code, status)
-                    self.assertEqual(typed(self.root / "missing").status_code, 400)
-                    self.assertEqual(history.list_projects(), [])
-                    response = register(first)
-                    self.assertEqual((response.status_code, response.headers["location"]),
-                                     (303, f"{S}/"))  # fmt: skip
-                    # That address is the overview now, with the project and nothing inspected.
-                    name, context = self.view("/")
-                    self.assertEqual((name, context["section"]), ("overview.html", "overview"))
-                    self.assertEqual(context["portfolio"], [{
-                        "id": 1, "name": "first", "path": str(first.resolve()), "found": True,
-                        "state": "none", "cell": "none", "label": "미검사", "run": None,
-                        "attempt": None, "success": None}])  # fmt: skip
-                    self.assertEqual(context["chart"], [*CORE[:3], {**CORE[3], "count": 1}])
-                    # Only the first of all: the same folder again, and the next one, open
-                    # their own project as before.
-                    self.assertEqual(register(first).headers["location"], f"{S}/projects/1")
-                    self.assertEqual(register(second).headers["location"], f"{S}/projects/2")
-                    self.assertEqual([project["path"] for project in history.list_projects()],
-                                     [str(first.resolve()), str(second.resolve())])  # fmt: skip
-                    # It is the history that holds them: another run opens the overview too.
-                    name, context = self.reopened()
-                    self.assertEqual((name, [row["name"] for row in context["portfolio"]]),
-                                     ("overview.html", ["first", "second"]))  # fmt: skip
-                history.db_path().unlink()  # the next way starts without a project
+
+            def register(folder):
+                choose.return_value = ("chosen", str(folder))
+                return self.pick()
+
+            self.assertEqual(self.view("/")[0], "start.html")
+            # What registers nothing leaves the next folder the first: a closed dialog, one
+            # that cannot be used, and a folder that is refused.
+            for outcome, status in (("cancelled", 303), ("unavailable", 503)):
+                choose.return_value = (outcome, None)
+                self.assertEqual(self.pick().status_code, status)
+            self.assertEqual(register(self.root / "missing").status_code, 400)
+            self.assertEqual(history.list_projects(), [])
+            response = register(first)
+            self.assertEqual((response.status_code, response.headers["location"]),
+                             (303, f"{S}/"))  # fmt: skip
+            # That address is the overview now, with the project and nothing inspected.
+            name, context = self.view("/")
+            self.assertEqual((name, context["section"]), ("overview.html", "overview"))
+            self.assertEqual(context["portfolio"], [{
+                "id": 1, "name": "first", "path": str(first.resolve()), "found": True,
+                "state": "none", "cell": "none", "label": "미검사", "run": None,
+                "attempt": None, "success": None}])  # fmt: skip
+            self.assertEqual(context["chart"], [*CORE[:3], {**CORE[3], "count": 1}])
+            # Only the first of all: the same folder again, and the next one, open their own
+            # project as before.
+            self.assertEqual(register(first).headers["location"], f"{S}/projects/1")
+            self.assertEqual(register(second).headers["location"], f"{S}/projects/2")
+            self.assertEqual([project["path"] for project in history.list_projects()],
+                             [str(first.resolve()), str(second.resolve())])  # fmt: skip
+            # It is the history that holds them: another run opens the overview too.
+            name, context = self.reopened()
+            self.assertEqual((name, [row["name"] for row in context["portfolio"]]),
+                             ("overview.html", ["first", "second"]))  # fmt: skip
 
     def test_a_history_file_of_an_older_format_is_shown_as_it_is(self):
         history.register_project(self.project)
