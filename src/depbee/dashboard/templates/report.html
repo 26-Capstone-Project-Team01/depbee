@@ -18,6 +18,11 @@
 {% if not package_input %}<li class="n-removed">삭제 <b>{{ counts.removed }}</b></li>
 {% endif %}</ul>
 </div>
+{# A lockfile report whose results are all removals, or that has none: no incoming version was
+   checked, whatever the result says. Worded from the counts alone; this template does not know
+   what the lockfile was compared with (Git HEAD, another ref, a file, an update preview). #}
+{% if not package_input and counts.removed == counts.all %}<p class="note"><strong>새로 검사한 버전 없음:</strong> {% if counts.all %}삭제만 있어 새로 들어오는 버전이 없습니다.{% else %}바뀐 의존성이 없어 검사할 것이 없습니다.{% endif %}</p>
+{% endif %}
 <ul class="meta">
 {% if model_id %}<li>모델: {{ model_id }}, 판정 기준 점수 {{ threshold|plain }}</li>{% else %}<li>모델: 기록 없음</li>{% endif %}
 {% for line in setup %}<li>{{ line }}</li>
