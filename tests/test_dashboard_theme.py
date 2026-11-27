@@ -108,6 +108,21 @@ class ThemeTokenTests(unittest.TestCase):
                         ratio = contrast(resolved(values, text), resolved(values, ground))
                         self.assertGreaterEqual(ratio, floor, f"{theme}: {text} on {ground}")
 
+    def test_the_theme_button_drawn_is_the_one_for_the_other_theme(self):
+        # A page writes both buttons (ThemeRouteTests). Light is what a page has unless the
+        # dark tokens apply, so the button to light is drawn exactly where they do: under the
+        # system's dark setting unless light is chosen, and where dark is chosen.
+        css = strip_comments(self.css)
+        self.assertRegex(css, r"(?m)^\.theme \.to-light \{ display: none; \}$")
+        system = r'(?m)^  :root:not\(\[data-theme="light"\]\) \.theme \.to-%s \{ display: %s; \}$'
+        chosen = r'(?m)^:root\[data-theme="dark"\] \.theme \.to-%s \{ display: %s; \}$'
+        for rule in (system, chosen):
+            self.assertRegex(css, rule % ("light", "inline-flex"))
+            self.assertRegex(css, rule % ("dark", "none"))
+        media = css[css.index(".theme .to-light { display: none; }") :]
+        self.assertRegex(media, r'\A[^\n]*\n@media \(prefers-color-scheme: dark\) \{\n'
+                                r'  :root:not\(\[data-theme="light"\]\) \.theme \.to-light')  # fmt: skip
+
     def test_no_colour_outside_the_tokens(self):
         for name in ("style.css", "overview.css"):
             css = strip_comments((STATIC / name).read_text("utf-8"))
@@ -285,11 +300,13 @@ class ThemeChoiceTests(unittest.TestCase):
             os.mkfifo(self.file)
             self.assertEqual(self.theme.load(), "system")
 
-    def test_each_press_moves_to_the_next_theme(self):
+    def test_what_an_earlier_button_saved_is_still_a_theme(self):
+        # The rail's button chooses light or dark. "system", which the button of an earlier
+        # depbee could also save, is still read as that.
         self.assertEqual(self.theme.THEMES, ("system", "light", "dark"))
-        self.assertEqual(
-            [self.theme.next_of(v) for v in self.theme.THEMES], ["light", "dark", "system"]
-        )
+        self.theme.save("system")
+        self.assertEqual(json.loads(self.file.read_text("utf-8")), {"theme": "system"})
+        self.assertEqual(self.theme.load(), "system")
 
     def test_what_was_saved_is_loaded(self):
         self.assertEqual(self.theme.load(), "system")
@@ -321,7 +338,8 @@ class ThemeRouteTests(DashboardFixture):
         return json.loads(path.read_text("utf-8"))["theme"] if path.exists() else None
 
     def form(self, html):
-        """The theme form's fields and its button's value and words, or None."""
+        """The theme form's fields and its buttons, each as (value, class, name, title, what
+        is inside it), or None."""
         match = re.search(
             r'<form class="theme" method="post" action="/theme">(.*?)</form>', html, re.S
         )
@@ -330,20 +348,36 @@ class ThemeRouteTests(DashboardFixture):
         fields = dict(
             re.findall(r'<input type="hidden" name="(\w+)" value="([^"]*)">', match.group(1))
         )
-        button = re.search(
-            r'<button type="submit" name="theme" value="(\w+)">(.*?)</button>', match.group(1), re.S
-        )
-        return fields, button.group(1), re.sub(r"<[^>]+>", "", button.group(2))
+        buttons = re.findall(
+            r'<button type="submit" name="theme" value="(\w+)" class="([\w-]+)" '
+            r'aria-label="([^"]+)" title="([^"]+)">(.*?)</button>', match.group(1), re.S
+        )  # fmt: skip
+        return fields, buttons
 
-    def test_a_page_offers_the_next_theme_and_comes_back_to_itself(self):
+    # The two buttons every page writes: the stylesheet draws the one for the theme the page
+    # does not have (ThemeTokenTests).
+    BUTTONS = [("dark", "to-dark", "어두운 화면으로 바꾸기"),
+               ("light", "to-light", "밝은 화면으로 바꾸기")]  # fmt: skip
+
+    def assert_buttons(self, html):
+        fields, buttons = self.form(html)
+        self.assertEqual([button[:3] for button in buttons], self.BUTTONS)
+        for _, _, name, title, inside in buttons:
+            # An icon alone: drawn, hidden from a screen reader, and named in words.
+            self.assertEqual(title, name)
+            self.assertRegex(inside, r'(?s)\A<svg viewBox="0 0 24 24" aria-hidden="true">.*</svg>\Z')
+        self.assertEqual(html.count('name="theme"'), 2)
+        return fields
+
+    def test_a_page_offers_both_themes_and_comes_back_to_itself(self):
         history.register_project(self.project)
         html = self.page("/model")
-        self.assertIn('<html lang="ko">', html)
-        fields, value, words = self.form(html)
-        self.assertEqual(fields, {"csrf": CSRF, "back": "/model"})
-        self.assertEqual(value, "light")
-        self.assertTrue(words.startswith("화면: 시스템 설정"), words)
+        self.assertIn('<html lang="ko">', html)  # nothing chosen: the system's
+        self.assertEqual(self.assert_buttons(html), {"csrf": CSRF, "back": "/model"})
         self.assertEqual(self.form(self.page("/?manage=1"))[0]["back"], "/?manage=1")
+        # The form stands at the rail's foot, after the menu and before the projects.
+        self.assertLess(html.index('<nav class="aux"'), html.index('<div class="rail-foot">'))
+        self.assertLess(html.index('<form class="theme"'), html.index('<nav class="tabs"'))
 
     def test_the_chosen_theme_is_on_every_page(self):
         history.register_project(self.project)
@@ -354,7 +388,15 @@ class ThemeRouteTests(DashboardFixture):
         self.assertEqual(self.stored(), "dark")
         html = self.page("/model")
         self.assertIn('<html lang="ko" data-theme="dark">', html)
-        self.assertEqual(self.form(html)[1:], ("system", "화면: 어둡게. 시스템 설정 따르기"))
+        self.assert_buttons(html)
+        self.assertEqual(self.choose("light", "/model").status_code, 303)
+        self.assertIn('<html lang="ko" data-theme="light">', self.page("/model"))
+        # The system's theme, saved by an earlier depbee or sent by a form kept from one, is
+        # still a choice: the page then follows the system again.
+        self.assertEqual(self.choose("system", "/model").status_code, 303)
+        self.assertEqual(self.stored(), "system")
+        self.assert_buttons(html := self.page("/model"))
+        self.assertIn('<html lang="ko">', html)
 
     def test_a_way_back_outside_the_console_goes_home(self):
         # Another host is "//host" to a browser, and so is "/\host": the address of a page
@@ -420,8 +462,11 @@ class ThemeRouteTests(DashboardFixture):
         self.choose("dark", "/")
         html = self.page("/")
         self.assertIn('<html lang="ko" data-theme="dark">', html)
-        self.assertIsNone(self.form(html))
-        self.assertEqual(html.count("<button"), 1)
+        # The one button of the page is the one that adds a project; the theme is at the
+        # page's bottom left as on every page, and comes back here.
+        main, foot = html.split("</main>", 1)
+        self.assertEqual(main.count("<button"), 1)
+        self.assertEqual(self.assert_buttons(foot), {"csrf": CSRF, "back": "/"})
 
 
 if __name__ == "__main__":

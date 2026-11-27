@@ -382,6 +382,7 @@ class DashboardPreviewTests(ScreenFixture):
         self.preview_id("example")
         ((_, names, options),) = self.previewed
         self.assertEqual(names, ["example"])
+        self.assertTrue(callable(options.pop("progress")))  # the analyzer's report, for its page
         self.assertEqual(options, {"model_dir": None, "cache_dir": None, "no_cache": False,
                                    "known_malicious_dir": Path("km")})  # fmt: skip
 

@@ -240,17 +240,18 @@ fieldset { max-width: 46rem; margin: 1rem 0; padding: .4rem 1rem; border: 1px so
 .field { display: flex; flex-wrap: wrap; gap: .5rem; max-width: 46rem; margin-top: .25rem; }
 .field input { flex: 1 1 11rem; width: auto; min-width: 0; }
 
-/* Before the first project: the whole page is honey and holds one button. */
+/* Before the first project: the whole page is honey and holds one button, with the theme and
+   the question mark at its bottom left as on the rail. */
 body.start { display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; min-height: 100vh; min-height: 100dvh; background: var(--honey); color: var(--on-honey); }
 /* grid-column: the shell's wide layout puts every main in its second column, beside the rail. */
 .start main { display: grid; grid-column: 1; place-items: center; width: 100%; max-width: none; padding: 1.5rem; }
-.start form { width: min(100%, 22rem); }
-.start button { gap: .9rem; width: 100%; min-height: 4.5rem; padding: 1rem 1.5rem; border: 0; border-radius: .5rem; background: var(--rail-bg); color: var(--rail-ink); font-size: 1.375rem; font-weight: 800; letter-spacing: -.02em; }
-.start button:hover { background: var(--rail-current); }
+.start main form { width: min(100%, 22rem); }
+.start main button { gap: .9rem; width: 100%; min-height: 4.5rem; padding: 1rem 1.5rem; border: 0; border-radius: .5rem; background: var(--rail-bg); color: var(--rail-ink); font-size: 1.375rem; font-weight: 800; letter-spacing: -.02em; }
+.start main button:hover { background: var(--rail-current); }
 /* A plus, drawn: the button's name stays its text. */
-.start button::before { content: ""; flex: none; width: 1.1rem; height: 1.1rem; background: linear-gradient(currentColor, currentColor) 50% / 100% 3px no-repeat, linear-gradient(currentColor, currentColor) 50% / 3px 100% no-repeat; }
-.start button[aria-busy=true]::before { width: 1.1rem; height: 1.1rem; border-width: 3px; }
-.start button[aria-disabled=true] { background: var(--rail-current); color: var(--rail-ink); }
+.start main button::before { content: ""; flex: none; width: 1.1rem; height: 1.1rem; background: linear-gradient(currentColor, currentColor) 50% / 100% 3px no-repeat, linear-gradient(currentColor, currentColor) 50% / 3px 100% no-repeat; }
+.start main button[aria-busy=true]::before { width: 1.1rem; height: 1.1rem; border-width: 3px; }
+.start main button[aria-disabled=true] { background: var(--rail-current); color: var(--rail-ink); }
 /* On honey the honey band of the ring is lost: a paper band takes its place. */
 .start :focus-visible { outline-color: var(--rail-bg); outline-offset: 5px; box-shadow: 0 0 0 5px var(--rail-ink); }
 
@@ -280,11 +281,48 @@ body.start { display: grid; grid-template-columns: minmax(0, 1fr); place-items: 
 .titled { display: flex; align-items: center; gap: .25rem; }
 .titled h2 { margin: 0; }
 
-/* The theme button: quiet on the rail, a target a finger can hit. */
-.theme { margin: 0; }
-.theme button { min-height: 2.75rem; padding: .3rem .7rem; border-color: var(--rail-line); background: transparent; color: var(--rail-ink); font-size: .8125rem; font-weight: 600; }
-.theme button:hover { border-color: var(--rail-muted); background: var(--rail-current); }
-.theme button[aria-disabled=true] { border-color: var(--rail-line); background: transparent; color: var(--rail-muted); }
+/* The rail's icons: the way home, the theme and the question mark. Each is a target a finger can
+   hit around a sign drawn in the rail's ink, and has its name in words (base.html). */
+.home svg, .theme svg { display: block; width: 1.25rem; height: 1.25rem; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.aux .home { justify-content: center; width: 2.75rem; padding: 0; }
+/* The rail's foot: the theme and the question mark. On the bar it is always the right end of a
+   row, so that the bubble, which opens leftwards from it, stays inside the page: the end of the
+   open project's row on a narrow page (order: drawn after the projects, which take the room that
+   is left), the end of the menu's row from 46rem. On the rail it stands at the bottom left
+   (below, at 80rem). */
+.rail-foot { display: flex; align-items: center; gap: .25rem; order: 1; margin-left: auto; }
+.theme { display: flex; margin: 0; }
+.theme button, .rail-help .help { width: 2.75rem; height: 2.75rem; min-height: 0; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--rail-ink); }
+.theme button:hover, .rail-help .help:hover { border: 0; background: var(--rail-current); color: var(--rail-ink); }
+.theme button[aria-disabled=true] { background: transparent; color: var(--rail-muted); }
+/* One theme button is drawn: the one that turns the page to the theme it does not have now, the
+   system's while nothing is chosen. The conditions are those of the dark tokens above. */
+.theme .to-light { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .theme .to-light { display: inline-flex; }
+  :root:not([data-theme="light"]) .theme .to-dark { display: none; }
+}
+:root[data-theme="dark"] .theme .to-light { display: inline-flex; }
+:root[data-theme="dark"] .theme .to-dark { display: none; }
+/* The question mark's bubble: what a verdict does not promise and who can open this address.
+   It shows while the pointer or the focus is on the question mark or on the bubble itself, which
+   touches the button so that the pointer can move onto it; Escape puts it away (app.js adds
+   shut). On the bar it opens under the button, kept inside the page's width. */
+.rail-help { position: relative; display: flex; }
+.bubble { display: none; position: absolute; top: 100%; right: 0; z-index: 3; width: min(21rem, calc(100vw - 1.5rem)); padding: .8rem 1rem .85rem; border: 1px solid var(--line-2); border-radius: 8px; background: var(--sheet); color: var(--ink); box-shadow: var(--shadow-pop); font-size: .875rem; line-height: 1.55; }
+.rail-help:hover .bubble, .rail-help:focus-within .bubble { display: block; }
+.rail-help.shut .bubble { display: none; }
+.bubble p { max-width: none; margin: 0; }
+.bubble p:first-child { font-weight: 700; }
+.bubble p + p { margin-top: .45rem; color: var(--muted); }
+/* On the page before the first project the foot is the page's bottom left, in ink on honey,
+   and the bubble opens above the question mark. */
+.start .rail-foot { position: fixed; bottom: .75rem; left: .75rem; margin: 0; padding: 0; background: none; }
+.start .theme button, .start .rail-help .help { color: var(--on-honey); }
+.start .theme button:hover, .start .rail-help .help:hover { background: var(--honey-strong); color: var(--on-honey); }
+.start .theme button[aria-disabled=true] { background: transparent; color: var(--on-honey); opacity: .55; }
+.start .rail-help { position: static; }
+.start .bubble { position: absolute; top: auto; right: auto; bottom: 100%; left: 0; }
 .tabs { flex: 1 1 15rem; min-width: 0; }
 .tabs ul { display: flex; gap: .25rem; max-width: none; margin: 0; padding: 0; list-style: none; }
 .tabs li { display: none; min-width: 0; }
@@ -310,9 +348,6 @@ body.start { display: grid; grid-template-columns: minmax(0, 1fr); place-items: 
 /* Project management is where a project is added: a drawn plus, the link's name stays its text. */
 .aux .manage::before { content: ""; width: .7rem; height: .7rem; background: linear-gradient(currentColor, currentColor) 50% / 100% 2px no-repeat, linear-gradient(currentColor, currentColor) 50% / 2px 100% no-repeat; }
 main { max-width: 104rem; padding: 1rem .75rem 1.5rem; }
-footer { padding: .9rem .75rem 1.5rem; border-top: 1px solid var(--line); }
-footer p { margin: 0; }
-footer .note { max-width: none; }
 
 /* The head of a project's views, and the way back from a page under them. */
 .project-head { margin-bottom: 1rem; }
@@ -369,6 +404,32 @@ footer .note { max-width: none; }
 .search-box::after { content: ""; position: absolute; top: 50%; left: 1.35rem; width: .4rem; height: 2px; margin-top: .25rem; background: var(--muted); transform: rotate(45deg); pointer-events: none; }
 .state { max-width: none; margin: .75rem 0 0; padding: .55rem .8rem; border-left: 3px solid var(--ink); background: var(--head); font-size: .9375rem; }
 .filter-summary { font-size: .875rem; }
+/* The direct and indirect split above the packages list (dep_split.html): two keys over the two
+   ends of one bar. Direct is solid ink and indirect is hatched, in the key's swatch and in the
+   bar, so the two differ without colour and in both themes. The bar's own ground is the hatch;
+   the direct share is drawn over it. A key is a link that lists its kind alone: honey under an
+   ink border while it does, as every picked thing is. */
+.dep-split { margin-top: .6rem; }
+.dep-keys { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: .5rem; }
+.dep-key { display: flex; flex-wrap: wrap; align-items: baseline; align-content: flex-start; gap: .1rem .4rem; min-height: 2.75rem; padding: .3rem .5rem; border: 1px solid transparent; border-radius: 6px; text-decoration: none; }
+.dep-key.nested { justify-content: flex-end; text-align: right; }
+a.dep-key:hover { border-color: var(--line-2); background: var(--hover); }
+a.dep-key .dep-name { text-decoration: underline; text-underline-offset: .2em; }
+.dep-key[aria-current] { border-color: var(--ink); background: var(--honey-wash); }
+.dep-swatch { align-self: center; flex: none; width: .75rem; height: .75rem; border: 1.5px solid var(--ink); border-radius: 2px; background: var(--ink); }
+.nested .dep-swatch { background: repeating-linear-gradient(-45deg, var(--ink) 0 1.5px, var(--sheet) 1.5px 4px); }
+.dep-name { font-size: .9375rem; font-weight: 700; }
+.dep-count { font: 800 1.25rem/1.1 var(--mono); font-variant-numeric: tabular-nums; }
+.dep-unit { margin-left: .1em; font: 700 .875rem/1 var(--sans); }
+.dep-share { color: var(--muted); font: 700 .8125rem/1 var(--mono); font-variant-numeric: tabular-nums; }
+.dep-means { flex-basis: 100%; color: var(--muted); font-size: .8125rem; }
+.dep-bar { display: block; width: 100%; height: .875rem; margin-top: .25rem; border: 1.5px solid var(--ink); border-radius: 3px; background: repeating-linear-gradient(-45deg, var(--muted) 0 1.5px, var(--sheet) 1.5px 6px); color: var(--ink); }
+.dep-bar .direct { fill: currentColor; }
+.dep-bar .gap { fill: var(--sheet); }
+.dep-split.none .dep-bar { border-style: dashed; border-color: var(--muted); background: none; }
+/* The line under the bar and its question mark, which keeps its size without making the line taller. */
+.dep-basis { display: flex; align-items: flex-start; justify-content: space-between; gap: .5rem; max-width: none; margin: .35rem 0 0; }
+.dep-basis .help { flex: none; margin: -.65rem -.5rem -.65rem 0; }
 .reading { max-width: none; }
 .reading .note { max-width: 46rem; }
 
@@ -538,6 +599,19 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 .latest dd { font-weight: 700; }
 .project-links { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; max-width: none; margin: .7rem 0 0; }
 .project-links .note { margin-left: auto; }
+/* Taking a project off the list stands apart from the ways into it, at the card's end: a quiet
+   link to the page that asks first (unregister.html), where the button is in the risk colour. */
+.project-links .unregister { display: inline-flex; align-items: center; min-height: 2.75rem; padding-inline: .4rem; color: var(--muted); font-size: .875rem; font-weight: 600; }
+.project-links .unregister:hover { color: var(--risk); }
+.done { max-width: 46rem; margin: 1rem 0 0; padding: .65rem .9rem .65rem 1.1rem; border-left: 5px solid var(--pass); background: var(--pass-wash); }
+.unregister-sheet { max-width: 46rem; margin-top: 1rem; }
+.unregister-sheet h2 { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .55rem; margin: 0 0 .2rem; --ground: var(--sheet); }
+.unregister-sheet h3 { margin: 1.1rem 0 .2rem; color: var(--muted); font-size: .875rem; }
+.unregister-sheet ul { margin: 0; padding-left: 1.1rem; }
+.unregister-sheet li + li { margin-top: .3rem; }
+.unregister-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1.2rem 0 0; }
+.unregister-actions button { border-color: var(--risk); color: var(--risk); white-space: normal; }
+.unregister-actions button:hover { border-color: var(--risk); background: var(--risk-wash); }
 
 /* The model page: what decides a verdict first, then what identifies the model. */
 .model-sheet { padding: 1rem 1.1rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow); }
@@ -626,7 +700,6 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 }
 @media (min-width: 46rem) {
   main { padding: 1.5rem 1.5rem 2rem; }
-  footer { padding-inline: 1.5rem; }
   .masthead { padding-inline: 1.5rem; }
   .views a { flex: none; padding-inline: .5rem; }
   .aux a { padding-inline: .7rem; font-size: .875rem; }
@@ -645,6 +718,7 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
    (app.js). With JavaScript off the row wraps: a browser leaves a focused link whose edge shows
    where it is, and the page leaves room for the ring of a link it scrolls to. */
 @media (min-width: 46rem) and (max-width: 79.99rem) {
+  .rail-foot { order: 0; }
   .tabs { flex-basis: 100%; }
   .tabs ul { margin: -.375rem; padding: .375rem; overflow-x: auto; scroll-padding-inline: .5rem; }
   /* A project is one line here, its name cut at 10rem: a line that may wrap is only as wide as
@@ -665,7 +739,7 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 /* Wide: the inspector is a panel beside the list, and its cell under the picked row has no
    height, so that the address of a pick brings that row into view. */
 @media (min-width: 64rem) {
-  body.split main, body.split footer { padding-right: calc(var(--inspect) + 1.5rem); }
+  body.split main { padding-right: calc(var(--inspect) + 1.5rem); }
   #candidate-evidence, #picked { scroll-margin-top: 35vh; }
   #candidate-evidence:focus-visible { outline: 0; box-shadow: none; }
   .inspector { position: fixed; top: 0; right: 0; bottom: 0; z-index: 2; width: var(--inspect); margin: 0; padding: 1.1rem 1.25rem 2rem; overflow-y: auto; overscroll-behavior: contain; border-width: 3px 0 0 1px; }
@@ -676,12 +750,20 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
 }
 /* Widest: the bar becomes the rail, with every project listed under the brand. */
 @media (min-width: 80rem) {
-  body { display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); grid-template-rows: 1fr auto; }
-  .masthead { position: sticky; top: 0; grid-row: 1 / span 2; flex-flow: column nowrap; align-items: stretch; gap: 0; height: 100vh; padding: 1.1rem .75rem 1rem; overflow-y: auto; border-right: 1px solid var(--rail-line); border-bottom: 0; scroll-padding-block: 1rem; }
+  body { display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); }
+  /* The foot stays at the rail's bottom however long the list is; a project scrolled to for the
+     focus stops above it (scroll-padding). */
+  .masthead { position: sticky; top: 0; flex-flow: column nowrap; align-items: stretch; gap: 0; height: 100vh; padding: 1.1rem .75rem 0; overflow-y: auto; border-right: 1px solid var(--rail-line); border-bottom: 0; scroll-padding-block: 1rem 4.75rem; }
   .brand, .aux { flex: none; }
-  .theme { margin: 0 .35rem 1rem; }
-  .theme button { width: 100%; justify-content: flex-start; }
-  .brand { flex-wrap: wrap; gap: .1rem .6rem; padding: 0 .35rem 1.1rem; }
+  /* Home stands beside the brand, at the rail's top right. */
+  .brand { flex-wrap: wrap; gap: .1rem .6rem; padding: 0 3rem 1.1rem .35rem; }
+  .aux .home { position: absolute; top: 1.1rem; right: .75rem; }
+  .aux .home[aria-current] { box-shadow: inset 0 -3px 0 var(--honey); }
+  /* Written before the projects, drawn after them: the bottom left of the page. */
+  .rail-foot { position: sticky; bottom: 0; order: 1; margin: auto 0 0; padding: .5rem 0 .75rem; background: var(--rail-bg); }
+  /* The bubble opens over the page, above the question mark: fixed, so that the rail, which
+     scrolls, does not cut it. Its left is where the button is. */
+  .bubble { position: fixed; top: auto; right: auto; bottom: 3.5rem; }
   .wordmark { font-size: 1.375rem; }
   .brand-note { display: block; flex-basis: 100%; color: var(--rail-muted); font-size: .8125rem; }
   .rail-title { display: block; margin: 0 .35rem .35rem; color: var(--rail-muted); font-size: .8125rem; font-weight: 600; }
@@ -692,7 +774,7 @@ ul.detectors { margin: .3rem 0 0; padding: 0; color: var(--muted); font-size: .8
   .tab[aria-current], .aux a[aria-current] { box-shadow: inset 4px 0 0 var(--honey); }
   .aux { flex-direction: column; margin: 0 0 .9rem; padding-bottom: .9rem; border-bottom: 1px solid var(--rail-line); }
   .aux a { padding-left: .8rem; }
-  main, footer { grid-column: 2; }
+  main { grid-column: 2; }
 }
 @media (prefers-reduced-motion: no-preference) {
   html { scroll-behavior: smooth; }

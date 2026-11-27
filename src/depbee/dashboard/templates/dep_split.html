@@ -1,0 +1,31 @@
+{# How many of the installed lockfile entries are direct and how many indirect, above the packages
+   list (project.html). direct_count and nested_count count every entry of package-lock.json
+   (app.project), whatever the search, the kind or the tab leave in the list. One entry is one
+   installed location, so a package installed in two places counts twice; the line under the bar
+   says so. Each key is a link that lists that kind alone (scope) and keeps the search, the tab
+   and the open candidate; the kind listed now is marked (aria-current) and its link lists every
+   kind again. A kind with none is words, not a link.
+   The bar repeats the two counts for the eye only: the direct share is drawn solid and the rest
+   is the bar's hatched ground (style.css), so the two differ without colour. A share too thin
+   to see is drawn at 2%; the words say "1% 미만". With no entry the bar is an empty dashed box
+   and the line says the lockfile was read: a lockfile that cannot be read never gets here,
+   project.html says so in place of a count. #}
+{% set total = direct_count + nested_count %}
+{% set share = direct_count * 100 / total if total else 0 %}
+{% set drawn = ([[share, 2]|max, 98]|min) if direct_count and nested_count else share %}
+{% set whole = share|round|int %}
+{% set shares = ("1% 미만", "99% 초과") if 0 < share < 1 else ("99% 초과", "1% 미만") if 99 < share < 100 else (whole ~ "%", (100 - whole) ~ "%") %}
+{% set before = "q=" ~ query|urlencode ~ "&" if query else "" %}
+{% set after = ("show=" ~ show ~ "&" if show != "all" else "") ~ open_item %}
+<div class="dep-split{% if not total %} none{% endif %}" role="group" aria-label="직접 의존성과 간접 의존성 수">
+<div class="dep-keys">
+{% for kind, label, means, count, part in (("direct", "직접 의존성", "package.json에 선언한 패키지", direct_count, shares[0]), ("nested", "간접 의존성", "다른 패키지가 필요로 해서 설치된 패키지", nested_count, shares[1])) %}
+{% set on = scope == kind %}
+{% set target = before ~ ("" if on else "scope=" ~ kind ~ "&") ~ after %}
+{% set tag = "a" if count or on else "span" %}
+<{{ tag }} class="dep-key {{ kind }}"{% if tag == "a" %} href="{{ url }}{% if target %}?{{ target[:-1] }}{% endif %}"{% if on %} aria-current="true"{% endif %}{% endif %}><span class="dep-swatch" aria-hidden="true"></span><span class="dep-name">{{ label }}</span> <strong class="dep-count">{{ count }}<span class="dep-unit">개</span></strong>{% if total %} <span class="dep-share">{{ part }}</span>{% endif %} <span class="dep-means">{{ means }}</span>{% if tag == "a" %}<span class="visually-hidden">. {{ "지금 이 종류만 보는 중입니다. 누르면 모든 종류를 봅니다" if on else "이 종류만 보기" }}</span>{% endif %}</{{ tag }}>
+{% endfor %}
+</div>
+<svg class="dep-bar" aria-hidden="true">{% if direct_count %}<rect class="direct" width="{{ drawn|round(2) }}%" height="100%"/>{% if nested_count %}<rect class="gap" x="{{ drawn|round(2) }}%" width="2" height="100%"/>{% endif %}{% endif %}</svg>
+<p class="note dep-basis"><span>{% if total %}package-lock.json의 설치 위치 {{ total }}곳을 셉니다. 같은 패키지가 여러 위치에 설치되면 위치마다 세고, node_modules 바로 아래에 놓여도 선언하지 않았으면 간접 의존성입니다.{% else %}package-lock.json을 읽었고 설치 위치가 0곳입니다.{% endif %}</span> <button type="button" class="help" popovertarget="help-reading" aria-label="종류와 후보 표시 읽는 법"><span aria-hidden="true">?</span></button></p>
+</div>

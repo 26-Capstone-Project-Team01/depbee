@@ -1,5 +1,7 @@
-"""The dashboard's theme as the user chose it on the rail (docs/dashboard-design.md): the system's,
-light or dark. Saved in the user's settings folder (config.user_dir()), not in the browser: a
+"""The dashboard's theme (docs/dashboard-design.md): the system's until the user chooses light or
+dark with the rail's button, which turns the page to the one it does not have. A saved "system"
+(an earlier depbee's button could choose it) is still read as that. Saved in the user's settings
+folder (config.user_dir()), not in the browser: a
 page is drawn with it from the start, without a script, and a browser keeps what a page stores
 for one port only, so a dashboard started on another port (--port) would not have it. A file of
 its own, beside config.json and the background dashboard's files (lifecycle:
@@ -17,11 +19,6 @@ from ..contracts import GuardError
 THEMES = ("system", "light", "dark")
 FILE = "dashboard-theme.json"
 MAX_BYTES = 4096
-
-
-def next_of(value: str) -> str:
-    """The theme one press of the rail's button moves to: system, light, dark, then system."""
-    return THEMES[(THEMES.index(value) + 1) % len(THEMES)]
 
 
 def load() -> str:

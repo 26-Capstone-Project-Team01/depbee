@@ -5,7 +5,7 @@
 <p class="lead">저장된 실행의 보고서에 있는 값만 보입니다(모델마다 가장 최근 실행 기준).</p>
 <p class="note">{{ limits }}</p>
 {% if not models %}
-<p class="empty">저장된 실행이 없습니다. 등록한 프로젝트에서 lockfile 변경 검사나 업데이트 미리보기를 실행하면 그 보고서의 모델 정보가 여기에 나옵니다.</p>
+<p class="empty">저장된 실행이 없습니다. 등록한 프로젝트에서 lockfile 변경 검사나 업데이트 검사를 실행하면 그 보고서의 모델 정보가 여기에 나옵니다.</p>
 {% endif %}
 {% for model in models %}
 {# What decides a verdict first, then how often and when it was used, then what identifies it. #}

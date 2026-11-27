@@ -8,8 +8,9 @@
 <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
 <script src="/static/app.js" defer></script>
 </head>
-{# The page before the first project (app.home): the one thing to do here, and nothing around
-   it. The button sends the same form as project management's, the one entry for choosing a
+{# The page before the first project (app.home): the one thing to do here, and around it only
+   what every page of the console has at its bottom left, the theme and the question mark
+   (foot.html). The button sends the same form as project management's, the one entry for choosing a
    folder (app.pick), so whatever chooses the folder behind that address answers here too. A
    closed dialog comes back to this page; one that cannot be used ends on project management,
    which says why beside the same button. #}
@@ -21,6 +22,9 @@
 </form>
 <p class="visually-hidden" id="start-hint">package-lock.json이 있는 npm 프로젝트 폴더를 이 PC에서 고릅니다.</p>
 </main>
+<div class="rail-foot">
+{% include "foot.html" %}
+</div>
 <p class="visually-hidden" id="live" role="status" aria-live="polite"></p>
 </body>
 </html>

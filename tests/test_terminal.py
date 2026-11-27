@@ -7,6 +7,7 @@ a StringIO whose isatty() says yes; no console is opened here.
 
 import contextlib
 import copy
+import importlib.util
 import io
 import json
 import os
@@ -22,6 +23,7 @@ from depbee import __version__, terminal
 from depbee.cli import _print_markdown, _print_text, main
 from depbee.pipeline import scan
 
+WEB = all(importlib.util.find_spec(name) for name in ("starlette", "jinja2", "uvicorn"))
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 PREVIEW = {
     "targets": None, "npm_version": "11.6.1", "package_json_sha256": "0" * 64,
@@ -284,6 +286,164 @@ class NextStepTests(FormatFixture):
                 self.assertEqual(joined, " ".join(steps))
         with mock.patch("shutil.get_terminal_size", return_value=os.terminal_size((10, 24))):
             self.assertEqual(terminal.bullets(["x" * 30]), ["  - " + "x" * 30])  # left whole
+
+
+URL = "http://127.0.0.1:18765/"
+
+
+def launched(kind, columns=100, colors=True, drawn=False, url=URL):
+    """terminal.launch() on a terminal of that width: (what it wrote, the waits it made)."""
+    stream, waits = Terminal(), []
+    size = os.terminal_size((columns, 24))
+    with mock.patch.object(terminal, "_colors", return_value=colors), \
+            mock.patch.object(terminal, "_line_drawing", return_value=drawn), \
+            mock.patch("shutil.get_terminal_size", return_value=size):  # fmt: skip
+        terminal.launch(stream, kind, url, pause=waits.append)
+    return stream.getvalue(), waits
+
+
+class LaunchTests(unittest.TestCase):
+    """The dashboard's start on an interactive terminal (terminal.launch) and who calls it."""
+
+    def test_the_bee_flies_to_the_address_and_what_stays_is_the_plain_screen(self):
+        moving, waits = launched("foreground")
+        still, none = launched("foreground", colors=False)
+        self.assertEqual((waits, none), ([terminal.FLIGHT_SECONDS] * 7, []))
+        self.assertNotIn("\r", still)
+        self.assertNotIn("\x1b", still)
+        # Every frame is one line as wide as the box, rewritten in place; the last one stays.
+        before, *frames = ANSI.sub("", moving).split("\r")
+        self.assertEqual(len(frames), 8)
+        last, after = frames[-1].split("\n", 1)
+        self.assertEqual(f"{before}{last}\n{after}", still)
+        top = before.splitlines()[-1]
+        self.assertEqual({len(frame) for frame in [*frames[:-1], last]}, {len(top)})
+        at = [frame.index(terminal.MARK) for frame in [*frames[:-1], last]]
+        self.assertEqual(at, sorted(set(at)))  # only ever toward the address
+        self.assertEqual(last, f"  |  {'- ' * 7}{terminal.MARK}  {URL}  |")
+        # The address is whole and once on the screen that stays, in the box.
+        lines = still.splitlines()
+        box = lines.index(last)
+        self.assertEqual((still.count(URL), lines[box - 1], lines[box + 1]),
+                         (1, top, top))  # fmt: skip
+        self.assertEqual(lines[1], f"  {terminal.LAUNCH_TITLE}")
+
+    def test_each_start_says_its_own_steps_and_what_to_do_next(self):
+        for kind, has, lacks in (
+            ("foreground", ("포트 열기  127.0.0.1:18765", "Ctrl+C"), ("--stop", "--status")),
+            ("started", ("터미널을 닫아도 계속 실행", "--status", "--stop"), ("Ctrl+C",)),
+            ("running", ("이미 백그라운드에서 실행 중", "--stop"), ("Ctrl+C", "--status")),
+        ):
+            with self.subTest(kind=kind):
+                out, _ = launched(kind, colors=False)
+                steps, notes = terminal.LAUNCH[kind]
+                marks = [line for line in out.splitlines() if line.startswith("  *  ")]
+                self.assertEqual([line.split()[1] for line in marks],
+                                 [label.split()[0] for label, _ in steps])  # fmt: skip
+                self.assertEqual(out.splitlines()[-len(notes) :], [f"  - {n}" for n in notes])
+                for word in has:
+                    self.assertIn(word, out)
+                for word in (*lacks, "PID", chr(0x2014)):  # no process ID, no em dash
+                    self.assertNotIn(word, out)
+                # Nothing but the address is a number of its own: no version, no process ID.
+                self.assertEqual(re.findall(r"\d+", out.replace("127.0.0.1:18765", "")), [])
+
+    def test_a_narrow_terminal_gets_no_flight_then_no_box_and_steps_under_their_names(self):
+        wide = len(f"  |  {'- ' * 7}{terminal.MARK}  {URL}  |")
+        for columns, flies, boxed in ((wide + 1, True, True), (wide, False, True),
+                                      (32, False, True), (31, False, False)):  # fmt: skip
+            with self.subTest(columns=columns):
+                out, waits = launched("started", columns=columns)
+                text = ANSI.sub("", out)
+                self.assertEqual((bool(waits), "\r" in out), (flies, flies))
+                self.assertEqual(f"  +{'-' * 27}+" in text or flies, boxed)
+                self.assertEqual(f"  {terminal.MARK}  {terminal.LAUNCH_TITLE}" in text, not flies)
+                self.assertIn(URL, text)
+                shown = text.split("\r")[-1] if flies else text
+                for line in shown.splitlines():
+                    self.assertLess(terminal._width(line), columns, line)
+        stacked = ANSI.sub("", launched("started", columns=40)[0]).splitlines()
+        self.assertEqual(stacked[3:9], [
+            "  *  실행 여부 확인", "  |  실행 중인 대시보드 없음",
+            "  *  백그라운드 시작", "  |  터미널을 닫아도 계속 실행",
+            "  *  응답 확인", "     준비 완료",
+        ])  # fmt: skip
+
+    def test_line_characters_only_where_each_is_one_column(self):
+        out, _ = launched("foreground", colors=False, drawn=True)
+        lines = out.splitlines()
+        top = next(line for line in lines if line.startswith("  ┌"))
+        middle, bottom = lines[lines.index(top) + 1], lines[lines.index(top) + 2]
+        self.assertEqual((top[-1], middle[2], middle[-1], bottom[2], bottom[-1]),
+                         ("┐", "│", "│", "└", "┘"))  # fmt: skip
+        self.assertEqual(len({len(top), len(middle), len(bottom)}), 1)
+        self.assertIn("  ◆  포트 열기", out)
+
+        class Utf8(Terminal):
+            encoding = "utf-8"
+
+        class Korean(Terminal):
+            encoding = "cp949"
+
+        for name, environ, stream, drawn in (
+            ("posix", {}, Utf8(), True), ("posix", {}, Korean(), False),
+            ("posix", {}, Terminal(), False),  # a stream that names no encoding
+            ("nt", {}, Utf8(), False),  # a console window: a Korean font draws them wide
+            ("nt", {"WT_SESSION": "1"}, Utf8(), True), ("nt", {"TERM_PROGRAM": "vscode"}, Utf8(), True),
+        ):  # fmt: skip
+            with self.subTest(name=name, environ=environ, stream=type(stream).__name__), \
+                    mock.patch.object(terminal.os, "name", name), \
+                    mock.patch.dict(os.environ, environ, clear=True):  # fmt: skip
+                self.assertIs(terminal._line_drawing(stream), drawn)
+
+    def test_a_background_start_is_drawn_on_a_terminal_and_plain_in_a_pipe(self):
+        from depbee import cli
+        from depbee.dashboard import lifecycle
+
+        for started, kind, plain in ((True, "started", cli.BACKGROUND_STARTED),
+                                     (False, "running", cli.BACKGROUND_RUNNING)):  # fmt: skip
+            with self.subTest(started=started), \
+                    mock.patch.object(lifecycle, "start", return_value=({"url": URL}, started)), \
+                    mock.patch.object(cli, "_warn_shared"), \
+                    mock.patch.object(terminal.time, "sleep"):  # fmt: skip
+                code, out, err = run(["dashboard", "--background"], Terminal(), colors=False)
+                self.assertEqual((code, err, out), (0, "", launched(kind, colors=False)[0]))
+                code, out, err = run(["dashboard", "--background"], io.StringIO())
+                self.assertEqual((code, out, err), (0, f"{URL}\n{plain}\n", ""))
+
+    @unittest.skipUnless(WEB, "web extra ([web]) not installed; serve() is not tested here")
+    def test_a_foreground_start_is_drawn_on_a_terminal_and_ctrl_c_ends_it_in_one_line(self):
+        from depbee.dashboard import app
+
+        class Server:
+            def __init__(self, config):
+                self.port = config.port
+
+            def run(self, sockets):
+                raise KeyboardInterrupt
+
+        for stream in (Terminal(), io.StringIO()):
+            with self.subTest(stream=type(stream).__name__), \
+                    mock.patch.object(app.uvicorn, "Server", Server), \
+                    mock.patch.object(app, "build_app"), \
+                    mock.patch.object(terminal, "_colors", return_value=False), \
+                    mock.patch("shutil.get_terminal_size", return_value=os.terminal_size((100, 24))), \
+                    contextlib.redirect_stdout(stream):  # fmt: skip
+                app.serve(0)
+            out = stream.getvalue()
+            url = re.search(r"http://127\.0\.0\.1:\d+/", out)[0]
+            if stream.isatty():
+                self.assertEqual(
+                    out, launched("foreground", colors=False, url=url)[0] + app.STOPPED + "\n"
+                )
+            else:
+                self.assertEqual(out, f"{url}\n{app.STARTED}\n{app.STOPPED}\n")
+        # Ctrl+C while the start is being drawn ends the same way.
+        with mock.patch.object(app.uvicorn, "Server", Server), mock.patch.object(app, "build_app"), \
+                mock.patch.object(terminal, "launch", side_effect=KeyboardInterrupt), \
+                contextlib.redirect_stdout(Terminal()) as out:  # fmt: skip
+            app.serve(0)
+        self.assertEqual(out.getvalue(), app.STOPPED + "\n")
 
 
 if __name__ == "__main__":

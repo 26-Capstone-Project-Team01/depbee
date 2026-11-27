@@ -15,12 +15,15 @@ import importlib.util
 import io
 import json
 import os
+import queue
 import re
 import shutil
 import socket
 import sqlite3
 import subprocess
 import sys
+import threading
+import time
 import tomllib
 import types
 import unittest
@@ -497,7 +500,7 @@ class PageTests(DashboardFixture):
         self.assertIn("<li>대상: example</li>", text)
         self.assertIn("npm 11.6.1, package.json 변경 없음, lockfile에서 바뀐 항목 1개", text)
         self.assertIn("미리보기만 했고 프로젝트 파일은 아무것도 바꾸지 않았습니다.", text)
-        self.assertIn("업데이트 미리보기", self.page("/"))
+        self.assertIn("업데이트 검사(update)", self.page("/"))
 
     def test_older_report_and_rule_failures(self):
         text = self.page(f"/runs/{self.record(older(self.scan_with(0.9)))}")
@@ -528,8 +531,9 @@ class PageTests(DashboardFixture):
         self.save_locks()
         history.register_project(self.project)
         text = self.page("/projects/1")
-        self.assertIn("직접 1개, 중첩 1개.", text)
-        self.assertIn(("inner", "중첩", "", "node_modules/example/node_modules/inner", "2.0.0"),
+        # The direct and the indirect count of the split above the list (dep_split.html).
+        self.assertEqual(re.findall(r'<strong class="dep-count">(\d+)<', text), ["1", "1"])
+        self.assertIn(("inner", "간접 의존성", "", "node_modules/example/node_modules/inner", "2.0.0"),
                       [row[:5] for row in package_rows(text)])  # fmt: skip
         for url in ("/projects/2", "/projects/2/updates", "/projects/2/history", "/runs/1",
                     f"/runs/{2**70}", f"/projects/{2**70}/history"):  # fmt: skip
@@ -576,21 +580,21 @@ class PageTests(DashboardFixture):
         # Each row's kind beside its name, with the name it is declared under.
         kinds = {location: (kind, alias) for _, kind, alias, location, _, _ in package_rows(html)}
         self.assertEqual(kinds, {
-            "node_modules/example": ("직접 일반", ""),
+            "node_modules/example": ("직접 의존성 일반", ""),
             # Declared under another name than the package's own; the spec is not read.
-            "node_modules/alias": ("직접 일반", "alias"),
-            "node_modules/both": ("직접 개발, 피어", ""),  # declared twice
-            "node_modules/opt": ("직접 선택", ""),
-            "node_modules/peer": ("직접 피어", ""),
-            "node_modules/example/node_modules/both": ("중첩", ""),  # another copy of a name
-            "node_modules/hoisted": ("중첩", ""),  # at the top, but no root declaration
+            "node_modules/alias": ("직접 의존성 일반", "alias"),
+            "node_modules/both": ("직접 의존성 개발, 피어", ""),  # declared twice
+            "node_modules/opt": ("직접 의존성 선택", ""),
+            "node_modules/peer": ("직접 의존성 피어", ""),
+            "node_modules/example/node_modules/both": ("간접 의존성", ""),  # another copy of a name
+            "node_modules/hoisted": ("간접 의존성", ""),  # at the top, but no root declaration
         })  # fmt: skip
-        self.assertIn(("real-name", "직접 일반", "alias", "node_modules/alias", "5.0.0"),
+        self.assertIn(("real-name", "직접 의존성 일반", "alias", "node_modules/alias", "5.0.0"),
                       [row[:5] for row in package_rows(html)])  # fmt: skip
         self.assertIn("dependencies·devDependencies·optionalDependencies·peerDependencies", html)
         self.assertNotIn("npm:real-name@5", html)
         nested = self.page("/projects/1?scope=nested")
-        self.assertEqual({row[1] for row in package_rows(nested)}, {"중첩"})
+        self.assertEqual({row[1] for row in package_rows(nested)}, {"간접 의존성"})
 
     def test_missing_dependency_name_keeps_project_accessible(self):
         history.register_project(self.project)
@@ -610,17 +614,19 @@ class PageTests(DashboardFixture):
         package_dir = Path(self.app.__file__).parent
         static = package_dir / "static"
         self.assertEqual(sorted(p.relative_to(static).as_posix() for p in static.rglob("*") if p.is_file()), [
-            "app.js", "fonts/JetBrainsMono-depbee.woff2", "fonts/NotoSansKR-depbee.woff2",
+            "app.js", "check.css", "fonts/JetBrainsMono-depbee.woff2",
+            "fonts/NotoSansKR-depbee.woff2",
             "fonts/OFL-JetBrainsMono.txt", "fonts/OFL-NotoSansKR.txt", "fonts/coverage.txt",
             "overview.css", "style.css"])  # fmt: skip
         files = [*package_dir.glob("templates/*.html"),
                  *(p for p in static.glob("*") if p.is_file())]  # fmt: skip
         self.assertEqual(sorted(p.name for p in files), [
-            "app.js", "applied.html", "apply_lines.html", "base.html", "counts.html",
-            "error.html", "history.html", "inspector.html", "model.html",
+            "app.js", "applied.html", "apply_lines.html", "base.html", "check.css",
+            "check.html", "confirm.html", "counts.html", "dep_split.html", "error.html", "foot.html", "history.html", "inspector.html", "model.html",
             "overview.css", "overview.html", "preview.html", "project.html",
             "project_head.html", "projects.html", "report.html", "run.html", "scanned.html",
-            "score_history.html", "start.html", "style.css", "trail.html", "updates.html"])  # fmt: skip
+            "score_history.html", "start.html", "style.css", "trail.html", "unregister.html",
+            "updates.html"])  # fmt: skip
         for path in files:
             self.assertIsNone(re.search(r"https?:|//", path.read_text("utf-8")), path.name)
         # The bundled fonts, their licences and the list of what they cover; nothing else.
@@ -645,10 +651,14 @@ class PageTests(DashboardFixture):
         self.assertEqual(sorted(p.name for p in files if "<script" in p.read_text("utf-8")),
                          ["base.html", "start.html"])  # fmt: skip
         self.assertIsNone(re.search(r"\son[a-z]+=|javascript:", text))
-        # The script sends no request, reads no answer and writes no markup: a form is still
-        # the browser's own, so every check of a request holds with the script as without it.
+        # The script writes no markup and sends nothing but what a form or an address of the
+        # page it is on would send: the form that asks for an update check's confirmation, and
+        # a running check's own address, read again. A form is still the browser's own, so
+        # every check of a request holds with the script as without it.
         script = (package_dir / "static" / self.app.SCRIPT).read_text("utf-8")
-        for refused in ("fetch", "XMLHttpRequest", "sendBeacon", "WebSocket", "EventSource",
+        self.assertEqual(re.findall(r"fetch\(([^)]*)\)", script),
+                         ["form.action, { method: 'POST', body }", "location.href"])  # fmt: skip
+        for refused in ("XMLHttpRequest", "sendBeacon", "WebSocket", "EventSource",
                         "eval", "Function(", "innerHTML", "outerHTML", "insertAdjacent",
                         "document.write", "import", "cookie", "localStorage", "sessionStorage",
                         ".submit(", ".click("):  # fmt: skip
@@ -778,7 +788,13 @@ class ConsoleTests(DashboardFixture):
             elements = Elements(html).found
             body = elements[[tag for tag, _ in elements].index("body") :]
             # One form with one button, and nothing of the console around it: no bar, no
-            # heading, no count, no chart, no footer, no link.
+            # heading, no count, no chart, no link. After it only what every page has at
+            # its bottom left, the theme and the question mark (test_dashboard_shell).
+            foot = [tag for tag, _ in body].index("div")
+            self.assertEqual(body[foot][1], {"class": "rail-foot"})
+            self.assertEqual(body[-1], ("p", {"class": "visually-hidden", "id": "live",
+                                              "role": "status", "aria-live": "polite"}))  # fmt: skip
+            body = [*body[:foot], body[-1]]
             self.assertEqual([tag for tag, _ in body],
                              ["body", "main", "form", "input", "button", "p", "p"], url)  # fmt: skip
             self.assertEqual(body[0][1], {"class": "start"})
@@ -793,7 +809,7 @@ class ConsoleTests(DashboardFixture):
                              ["visually-hidden"] * 2)  # fmt: skip
             self.assertEqual(body[4][1]["aria-describedby"], body[5][1]["id"])
             self.assertIn("npm 프로젝트 폴더를 이 PC에서 고릅니다.", html)
-            for absent in ("등록한 프로젝트", "프로젝트 0개", SAFETY_NOTE.replace("'", "&#39;")):
+            for absent in ("등록한 프로젝트", "프로젝트 0개", "<header", "<nav", "<h1", "<a "):
                 self.assertNotIn(absent, html)
             self.assertIn("<title>프로젝트 추가 - depbee</title>", html)
         self.assertFalse(self.db.exists())  # looking creates no history
@@ -898,7 +914,7 @@ class ConsoleTests(DashboardFixture):
                 re.S,
             )
             self.assertIsNotNone(check, view)
-            self.assertIn('name="packages" value="">전체 업데이트 미리보기(update)</button>', check[1])
+            self.assertIn('name="packages" value="">전체 업데이트 검사(update)</button>', check[1])
             # Only a check sent from the packages view comes back to its list (app._back).
             self.assertEqual('name="back"' in check[1], view == "", view)
             self.assertIn(f'<form method="post" action="/projects/{project}/scans">', head)
@@ -1028,17 +1044,17 @@ class CandidateTests(DashboardFixture):
         self.check()  # a current candidate: the inspector beside the list
         pages = {"unchecked": unchecked, "packages": self.page(self.packages),
                  "updates": self.page(self.updates), "history": self.page(f"{self.packages}/history")}  # fmt: skip
-        always = (SAFETY_NOTE, "이 PC의 다른 계정과 프로그램도 이 주소를 열 수 있습니다.")
+        # What a verdict does not promise is the bubble of the rail's question mark, on every
+        # page (test_dashboard_shell); the sentences below are about one page's own content.
         shown = {
-            "unchecked": always + ("미리보기 전은 후보 0개와 다릅니다",),
-            "packages": always + ("이 화면에서는 반영하지 않습니다.",),
-            "updates": always, "history": always,
+            "unchecked": ("검사 전은 후보 0개와 다릅니다",),
+            "packages": ("이 화면에서는 반영하지 않습니다.",),
+            "updates": (), "history": (),
         }  # fmt: skip
         for name, html in pages.items():
             popovers = re.findall(
                 r'<div class="help-pop" id="([\w-]+)" popover>(.*?)</div>', html, re.S
             )
-            self.assertTrue(popovers, name)
             ids = re.findall(r'\sid="([^"]+)"', html)
             self.assertEqual(len(ids), len(set(ids)), name)
             targets = re.findall(r'<button type="button" class="help" popovertarget="([\w-]+)" '
@@ -1056,7 +1072,7 @@ class CandidateTests(DashboardFixture):
                 self.assertIn(" ".join(sentence.split()), visible, name)
             # Every safety sentence a page holds at all is in view, never behind a question mark.
             for sentence in ("실행하지 않은 것은 통과가 아닙니다.", "점수가 없는 것은 0점이 아닙니다.",
-                             "이 화면에서는 반영하지 않습니다.", "미리보기 전은 후보 0개와 다릅니다"):  # fmt: skip
+                             "이 화면에서는 반영하지 않습니다.", "검사 전은 후보 0개와 다릅니다"):  # fmt: skip
                 if sentence in unescape(html):
                     self.assertIn(sentence, visible, name)
         self.assertIn("실행하지 않은 것은 통과가 아닙니다.", unescape(pages["packages"]))
@@ -1066,16 +1082,14 @@ class CandidateTests(DashboardFixture):
         # A question mark takes its whole 44px: nothing next to it lies over its lower part.
         rule = re.search(r"^\.help \{([^}]*)\}", css, re.M).group(1)
         self.assertNotRegex(rule, r"margin[^;]*-")
-        # The footer's sentence is as wide as the footer.
-        self.assertRegex(css, r"(?m)^footer \.note \{[^}]*max-width: none")
 
     def test_how_long_a_check_takes_is_behind_a_question_mark(self):
         unchecked = self.page(self.packages)
         self.assertNotIn('후보 옆의 "근거"', unchecked)
         self.assertIn("보고서에서 전체 근거 보기", unchecked)
-        self.assertIn("미리보기 전은 후보 0개와 다릅니다.", unchecked)
+        self.assertIn("검사 전은 후보 0개와 다릅니다.", unchecked)
         self.assertRegex(unchecked, r'(?s)<div class="help-pop" id="[\w-]+" popover>'
-                                    r"(?:(?!</div>).)*미리보기는 몇 초에서 수십 초 걸리고")  # fmt: skip
+                                    r"(?:(?!</div>).)*검사는 대상을 확인한 뒤에 시작하고")  # fmt: skip
         # The buttons each page names are the ones its head has.
         self.assertNotIn("업데이트 후보 확인", self.page(f"{self.packages}/history"))
 
@@ -1087,7 +1101,7 @@ class CandidateTests(DashboardFixture):
         finally:
             moved.rename(self.project)
         self.assertIn("기록된 실행이 없습니다.", history_html)
-        self.assertNotIn('위의 "전체 업데이트 미리보기', history_html)
+        self.assertNotIn('위의 "전체 업데이트 검사', history_html)
         self.assertNotIn("미리보기에서 반영하면", history_html)
         self.assertIn("기록된 반영이 없습니다.", history_html)
         self.assertNotIn('id="preview-project"', history_html)
@@ -1107,10 +1121,10 @@ class CandidateTests(DashboardFixture):
     def assert_unchecked(self, cells):
         for name in ("example", "other"):
             self.assertIn(f'form="preview-project" name="packages" value="{name}" '
-                          f'aria-label="이 패키지 미리보기: {name} 업데이트(update)">'
-                          "이 패키지 미리보기</button>",
+                          f'aria-label="이 패키지 업데이트 검사: {name}(update)">'
+                          "이 패키지 업데이트 검사</button>",
                           cells[f"node_modules/{name}"])  # fmt: skip
-        self.assertIn("</span>미리보기 전</span>", cells["node_modules/example/node_modules/inner"])
+        self.assertIn("</span>검사 전</span>", cells["node_modules/example/node_modules/inner"])
         self.assertNotIn("후보 없음", "".join(cells.values()))
         self.assertNotIn("1.2.0", "".join(cells.values()))
 
@@ -1121,10 +1135,10 @@ class CandidateTests(DashboardFixture):
         for patcher in services:
             self.addCleanup(patcher.stop)
         html = self.page(self.packages)
-        self.assertIn("아직 업데이트 미리보기를 실행하지 않았습니다.", html)
+        self.assertIn("아직 업데이트 검사를 실행하지 않았습니다.", html)
         self.assert_unchecked(self.cells(html))
         updates = self.page(self.updates)
-        self.assertIn("아직 업데이트 미리보기를 실행하지 않았습니다.", updates)
+        self.assertIn("아직 업데이트 검사를 실행하지 않았습니다.", updates)
         self.assertNotIn('class="stack candidates"', updates)
         self.assertNotIn("검토·반영할 미리보기", updates)
         for view in ("/history", "?q=example&scope=direct"):
@@ -1137,7 +1151,7 @@ class CandidateTests(DashboardFixture):
     def test_a_check_of_everything_shows_its_candidates_and_covers_the_rest(self):
         run = self.check(targets=None)
         html = self.page(self.packages)
-        self.assertIn("전체 업데이트 미리보기에서 후보 1개를 찾았습니다.", html)
+        self.assertIn("전체 업데이트 검사에서 후보 1개를 찾았습니다.", html)
         cells = self.cells(html)
         candidate = cells["node_modules/example"]
         self.assertIn('<span class="visually-hidden">: example, node_modules/example, 후보 버전 1.2.0, '
@@ -1151,14 +1165,15 @@ class CandidateTests(DashboardFixture):
         self.assertNotIn(f'href="/runs/{run}#r0"', html.split('<aside class="inspector"')[0])
         for location in ("node_modules/other", "node_modules/example/node_modules/inner"):
             self.assertEqual(cells[location], '<span class="quiet">후보 없음</span>')
-        self.assertNotIn("이 패키지 미리보기</button>", html)
+        self.assertNotIn("이 패키지 업데이트 검사</button>", html)
         updates = self.page(self.updates)
-        self.assertIn("지금의 package.json과 package-lock.json으로 만든 전체 업데이트 미리보기의 결과입니다. "
+        self.assertIn("지금의 package.json과 package-lock.json으로 실행한 전체 업데이트 검사의 결과입니다. "
                       "바뀐 의존성 1개: 위험 1, 통과 0, 보류 0.", updates)  # fmt: skip
         self.assertRegex(updates, rf'미리보기한 실행: <a href="/runs/{run}">#{run}</a> '
                                   r"\(\d{4}-\d\d-\d\d \d\d:\d\d UTC, 전체\)</p>")  # fmt: skip
         for text in (
-            '<th scope="row">example<span class="where">node_modules/example</span></th>',
+            '<th scope="row">example<span class="row-tags"> 직접 의존성</span>'
+            '<span class="where">node_modules/example</span></th>',
             '<td>1.1.0 <span aria-hidden="true">→</span><span class="visually-hidden">에서</span>'
             " 1.2.0</td>",
             "<td>0.900 (기준 이상)</td>",
@@ -1181,13 +1196,13 @@ class CandidateTests(DashboardFixture):
         first = self.check(targets=["example"])
         cells = self.cells()
         self.assertIn("후보 버전 1.2.0,", cells["node_modules/example"])
-        self.assertIn("이 패키지 미리보기</button>", cells["node_modules/other"])  # no preview yet
-        self.assertIn("미리보기 전", cells["node_modules/example/node_modules/inner"])
+        self.assertIn("이 패키지 업데이트 검사</button>", cells["node_modules/other"])  # no preview yet
+        self.assertIn("검사 전", cells["node_modules/example/node_modules/inner"])
         second = self.check(self.nothing(), targets=["other"], changed_count=0)
         cells = self.cells()
         self.assertIn("후보 버전 1.2.0,", cells["node_modules/example"])  # the older check stands
         self.assertEqual(cells["node_modules/other"], '<span class="quiet">후보 없음</span>')
-        self.assertIn("미리보기 전", cells["node_modules/example/node_modules/inner"])
+        self.assertIn("검사 전", cells["node_modules/example/node_modules/inner"])
         updates = self.page(self.updates)
         self.assertRegex(updates, rf'#{second}</a> \([^)]*, other\), <a href="/runs/{first}">'
                                   rf"#{first}</a> \([^)]*, example\)</p>")  # fmt: skip
@@ -1198,9 +1213,9 @@ class CandidateTests(DashboardFixture):
         self.check(self.nothing(), targets=None, changed_count=0)  # later: nothing would change
         html = self.page(self.packages)
         self.assertEqual(set(self.cells(html).values()), {'<span class="quiet">후보 없음</span>'})
-        self.assertRegex(html, r"\d\d:\d\d UTC의 전체 업데이트 미리보기에서 바뀌는 항목이 없었습니다.")
+        self.assertRegex(html, r"\d\d:\d\d UTC의 전체 업데이트 검사에서 바뀌는 항목이 없었습니다.")
         updates = self.page(self.updates)
-        self.assertIn("전체 업데이트 미리보기의 결과입니다. 바뀌는 항목이 없었습니다.", updates)
+        self.assertIn("전체 업데이트 검사의 결과입니다. 바뀌는 항목이 없었습니다.", updates)
         self.assertNotIn('class="stack candidates"', updates)
 
     def test_results_of_changed_files_are_not_current_candidates(self):
@@ -1211,11 +1226,11 @@ class CandidateTests(DashboardFixture):
                 before = changed.read_bytes()
                 changed.write_bytes(before + b"\n")
                 html = self.page(self.packages)
-                self.assertIn("마지막 업데이트 미리보기 뒤에 package.json이나 package-lock.json이 "
-                              "바뀌었습니다. 업데이트 미리보기를 다시 실행하세요.", html)  # fmt: skip
+                self.assertIn("마지막 업데이트 검사 뒤에 package.json이나 package-lock.json이 "
+                              "바뀌었습니다. 업데이트 검사를 다시 실행하세요.", html)  # fmt: skip
                 self.assert_unchecked(self.cells(html))
                 updates = self.page(self.updates)
-                self.assertRegex(updates, rf'마지막 미리보기\(실행 <a href="/runs/{run}">'
+                self.assertRegex(updates, rf'마지막 검사\(실행 <a href="/runs/{run}">'
                                           rf"#{run}</a>, [^)]*\) 뒤에")  # fmt: skip
                 self.assertIn("그 결과는 현재 후보로 보지 않습니다.", updates)
                 self.assertNotIn('class="stack candidates"', updates)
@@ -1233,7 +1248,7 @@ class CandidateTests(DashboardFixture):
         # A run of the other project that names this project's files.
         run = self.check(project=other, targets=None)
         self.assert_unchecked(self.cells())
-        self.assertIn("아직 업데이트 미리보기를 실행하지 않았습니다.", self.page(self.updates))
+        self.assertIn("아직 업데이트 검사를 실행하지 않았습니다.", self.page(self.updates))
         updates = self.page(f"/projects/{other_id}/updates")
         self.assertIn(f'<a href="/runs/{run}">#{run}</a>', updates)
         self.assertIn("그 결과는 현재 후보로 보지 않습니다.", updates)
@@ -1297,7 +1312,7 @@ class CandidateTests(DashboardFixture):
         updates = self.page(self.updates)
         self.assertIn('<span class="quiet">새로 추가</span>', updates)
         self.assertNotIn('<span class="quiet">삭제</span>', updates)
-        self.assertIn("전체 업데이트 미리보기의 결과입니다. 바뀐 의존성 1개: 위험 1, 통과 0, 보류 0.", updates)
+        self.assertIn("전체 업데이트 검사의 결과입니다. 바뀐 의존성 1개: 위험 1, 통과 0, 보류 0.", updates)
         self.assertRegex(updates, rf'#{later}</a> \([^)]*, other\), <a href="/runs/{run}">'
                                   rf"#{run}</a> \([^)]*, 전체\)</p>")  # fmt: skip
 
@@ -1306,14 +1321,14 @@ class CandidateTests(DashboardFixture):
         for _ in range(12):  # more than any window of recent previews
             newest = self.check(self.nothing(), targets=["other"], changed_count=0)
         html = self.page(self.packages)
-        self.assertIn("전체 업데이트 미리보기에서 후보 1개를 찾았습니다.", html)
+        self.assertIn("전체 업데이트 검사에서 후보 1개를 찾았습니다.", html)
         cells = self.cells(html)
         self.assertIn("후보 버전 1.2.0,", cells["node_modules/example"])
         self.assertIn(f'?item={everything}.0#candidate-evidence"', cells["node_modules/example"])
         for location in ("node_modules/other", "node_modules/example/node_modules/inner"):
             self.assertEqual(cells[location], '<span class="quiet">후보 없음</span>')
         updates = self.page(self.updates)
-        self.assertIn("전체 업데이트 미리보기의 결과입니다. 바뀐 의존성 1개: 위험 1, 통과 0, 보류 0.", updates)
+        self.assertIn("전체 업데이트 검사의 결과입니다. 바뀐 의존성 1개: 위험 1, 통과 0, 보류 0.", updates)
         self.assertIn('class="stack candidates"', updates)
         # Listed are the checks whose result is shown: the newest of other and the one of
         # everything, not the eleven checks of other that the newest one replaced.
@@ -1328,33 +1343,33 @@ class CandidateTests(DashboardFixture):
         for _ in range(12):  # checked there: nothing would change
             self.check(self.nothing(), targets=None, changed_count=0)
         html = self.page(self.packages)
-        self.assertRegex(html, r"\d\d:\d\d UTC의 전체 업데이트 미리보기에서 바뀌는 항목이 없었습니다.")
+        self.assertRegex(html, r"\d\d:\d\d UTC의 전체 업데이트 검사에서 바뀌는 항목이 없었습니다.")
         self.assertNotIn("1.2.0", "".join(self.cells(html).values()))
         self.head.write_bytes(original)  # the same bytes as when the first check ran
         self.assertIn("후보 버전 1.2.0,", self.cells()["node_modules/example"])
         updates = self.page(self.updates)
-        self.assertIn("전체 업데이트 미리보기의 결과입니다. 바뀐 의존성 1개: 위험 1, 통과 0, 보류 0.", updates)
+        self.assertIn("전체 업데이트 검사의 결과입니다. 바뀐 의존성 1개: 위험 1, 통과 0, 보류 0.", updates)
         self.assertNotIn("그 결과는 현재 후보로 보지 않습니다.", updates)
 
     def test_checks_of_named_packages_never_say_that_nothing_changes(self):
         self.check(self.nothing(), targets=["other"], changed_count=0)
         html, updates = self.page(self.packages), self.page(self.updates)
-        self.assertIn("지정한 패키지만 미리보기했고 그 패키지에는 업데이트 후보가 없었습니다. 나머지 "
-                      "패키지는 미리보기 전입니다.", html)  # fmt: skip
+        self.assertIn("지정한 패키지만 검사했고 그 패키지에는 업데이트 후보가 없었습니다. 나머지 "
+                      "패키지는 검사 전입니다.", html)  # fmt: skip
         cells = self.cells(html)
         self.assertEqual(cells["node_modules/other"], '<span class="quiet">후보 없음</span>')
-        self.assertIn("이 패키지 미리보기</button>", cells["node_modules/example"])
-        self.assertIn("미리보기 전", cells["node_modules/example/node_modules/inner"])
-        self.assertIn("지정한 패키지만 미리보기한 결과입니다. 그 패키지에는 업데이트 후보가 "
-                      "없었습니다. 나머지 패키지는 미리보기 전이며", updates)  # fmt: skip
+        self.assertIn("이 패키지 업데이트 검사</button>", cells["node_modules/example"])
+        self.assertIn("검사 전", cells["node_modules/example/node_modules/inner"])
+        self.assertIn("지정한 패키지만 검사한 결과입니다. 그 패키지에는 업데이트 후보가 "
+                      "없었습니다. 나머지 패키지는 검사 전이며", updates)  # fmt: skip
         self.assertNotIn('class="stack candidates"', updates)
         for page in (html, updates):  # only a check of everything is evidence of that
             self.assertNotIn("바뀌는 항목이 없었습니다", page)
         self.check(targets=["example"])  # a candidate, still not a check of everything
-        self.assertIn("지정한 패키지만 미리보기했고 업데이트 후보 1개를 찾았습니다. 나머지 패키지는 "
-                      "미리보기 전입니다.", self.page(self.packages))  # fmt: skip
-        self.assertIn("지정한 패키지만 미리보기한 결과입니다. 바뀐 의존성 1개: 위험 1, 통과 0, 보류 0. "
-                      "나머지 패키지는 미리보기 전이며", self.page(self.updates))  # fmt: skip
+        self.assertIn("지정한 패키지만 검사했고 업데이트 후보 1개를 찾았습니다. 나머지 패키지는 "
+                      "검사 전입니다.", self.page(self.packages))  # fmt: skip
+        self.assertIn("지정한 패키지만 검사한 결과입니다. 바뀐 의존성 1개: 위험 1, 통과 0, 보류 0. "
+                      "나머지 패키지는 검사 전이며", self.page(self.updates))  # fmt: skip
 
     def test_projects_with_the_same_files_keep_their_own_candidates(self):
         twin = self.root / "twin"
@@ -1365,10 +1380,10 @@ class CandidateTests(DashboardFixture):
         mine = self.check(targets=None)
         # The same two hashes, but the check was made in the other project.
         self.assertIn(
-            "아직 업데이트 미리보기를 실행하지 않았습니다.", self.page(f"/projects/{twin_id}")
+            "아직 업데이트 검사를 실행하지 않았습니다.", self.page(f"/projects/{twin_id}")
         )
         theirs = self.check(self.nothing(), project=twin, targets=None, changed_count=0)
-        self.assertIn("미리보기에서 바뀌는 항목이 없었습니다.", self.page(f"/projects/{twin_id}"))
+        self.assertIn("검사에서 바뀌는 항목이 없었습니다.", self.page(f"/projects/{twin_id}"))
         self.assertNotIn(f"/runs/{mine}", self.page(f"/projects/{twin_id}/updates"))
         self.assertIn(f'?item={mine}.0#candidate-evidence"', self.cells()["node_modules/example"])
         self.assertNotIn(f"/runs/{theirs}", self.page(self.updates))
@@ -1494,9 +1509,9 @@ class CandidateTests(DashboardFixture):
         self.assertEqual(tabs(html), [
             (f'a href="{url}" aria-current="true"', "전체", "3"),
             ('span class="filter-off"', "후보", "0"),
-            (f'a href="{url}?show=unchecked"', "미리보기 전", "3"),
+            (f'a href="{url}?show=unchecked"', "검사 전", "3"),
             ('span class="filter-off"', "후보 없음", "0")])  # fmt: skip
-        self.assertIn("미리보기 전은 후보 0개와 다릅니다.", html)
+        self.assertIn("검사 전은 후보 0개와 다릅니다.", html)
         # A tab the address names that holds nothing, and the old filter, list everything.
         for address in ("?show=candidates", "?only=1", "?only=0"):
             self.assertEqual(
@@ -1510,7 +1525,7 @@ class CandidateTests(DashboardFixture):
         self.assertEqual(tabs(html), [
             (f'a href="{url}?q=e&amp;scope=direct{item}" aria-current="true"', "전체", "2"),
             (f'a href="{url}?q=e&amp;scope=direct&amp;show=candidates{item}"', "후보", "1"),
-            ('span class="filter-off"', "미리보기 전", "0"),
+            ('span class="filter-off"', "검사 전", "0"),
             (f'a href="{url}?q=e&amp;scope=direct&amp;show=none{item}"', "후보 없음", "1")])  # fmt: skip
         self.assertEqual(listed(html), ["example", "other"])
         self.assertNotIn('name="show"', html)
@@ -1523,7 +1538,7 @@ class CandidateTests(DashboardFixture):
         )
         self.assertIn('<input type="hidden" name="show" value="candidates">', on)
         self.assertIn('name="q" maxlength="214" value="e"', on)
-        self.assertIn('<option value="direct" selected>직접</option>', on)
+        self.assertIn('<option value="direct" selected>직접 의존성</option>', on)
         self.assertIn(f'검색 결과 <strong>1개</strong>. <a href="{url}">필터 초기화</a>', on)
         self.assertEqual(listed(on), ["example"])
         self.assertIn(f'href="{url}?q=e&amp;scope=direct&amp;show=candidates&amp;item={run}.0'
@@ -1537,7 +1552,7 @@ class CandidateTests(DashboardFixture):
         self.check(self.nothing(), targets=None, changed_count=0)
         html = self.page(f"{self.packages}?show=candidates")
         self.assertIn("바뀌는 항목이 없었습니다. 후보 0개입니다.", html)
-        self.assertNotIn("미리보기 전은 후보 0개와 다릅니다.", html)
+        self.assertNotIn("검사 전은 후보 0개와 다릅니다.", html)
         self.assertEqual(listed(html), ["example", "inner", "other"])
         for address in ("?show=evil", "?show=", "?show=none&show=none", "?show=none&show=all"):
             self.assertEqual(self.get(self.packages + address).status_code, 400, address)
@@ -1559,7 +1574,7 @@ class CandidateTests(DashboardFixture):
                 self.assertIn(
                     f"후보 버전 {shown}, 검사 근거 열기</span>", packages
                 )  # the candidate
-                self.assertIn(f'<th scope="row">{shown}<span class="where">', updates)
+                self.assertIn(f'<th scope="row">{shown}<span class="row-tags">', updates)
                 self.assertIn(f"<li>{shown}</li>", updates)
                 self.assertIn(f", {shown})", updates)  # the check's target
 
@@ -1574,9 +1589,11 @@ class SecurityTests(DashboardFixture):
         self.assertEqual(headers["content-security-policy"], self.app.CSP)
         # Each source list is 'self' or 'none' alone: no inline script or style, no eval, no
         # other host. script-src 'self' is the one file of static/, font-src 'self' the two
-        # bundled fonts.
+        # bundled fonts, connect-src 'self' that script reading the dashboard's own pages (an
+        # update check's confirmation and progress).
         self.assertEqual(sorted(headers["content-security-policy"].split("; ")), [
-            "base-uri 'none'", "default-src 'none'", "font-src 'self'", "form-action 'self'",
+            "base-uri 'none'", "connect-src 'self'", "default-src 'none'", "font-src 'self'",
+            "form-action 'self'",
             "frame-ancestors 'none'", "img-src 'self'", "script-src 'self'",
             "style-src 'self'"])  # fmt: skip
         self.assertEqual(headers["x-content-type-options"], "nosniff")
@@ -2007,7 +2024,8 @@ class EscapeTests(DashboardFixture):
             shown += [(text, named), (text, nested)]
         self.save_locks()
         html = self.page("/projects/1")
-        self.assertIn(f"직접 0개, 중첩 {len(shown) + 1}개.", html)
+        self.assertEqual(re.findall(r'<strong class="dep-count">(\d+)<', html),
+                         ["0", str(len(shown) + 1)])  # fmt: skip
         for name, location in shown:
             with self.subTest(name=name):
                 # Present, as _clean then HTML escaping made it: the row was really rendered.
@@ -2097,9 +2115,9 @@ class RegistrationTests(DashboardFixture):
                 self.assertNotIn(absent, html)
         # Project management names the two things a project's pages run, and their CLI commands.
         projects = pages[1]
-        self.assertIn('등록한 뒤 프로젝트 화면에서 "전체 업데이트 미리보기(update)"나 "lockfile 변경 '
+        self.assertIn('등록한 뒤 프로젝트 화면에서 "전체 업데이트 검사(update)"나 "lockfile 변경 '
                       '검사(scan)"를 실행합니다.', projects)  # fmt: skip
-        self.assertIn('기록된 실행이 없습니다. 프로젝트 화면에서 "전체 업데이트 미리보기(update)"나',
+        self.assertIn('기록된 실행이 없습니다. 프로젝트 화면에서 "전체 업데이트 검사(update)"나',
                       projects)  # fmt: skip
         self.assertIn("CLI로 실행한 depbee update·depbee scan도 기록됩니다.", projects)
 
@@ -2173,6 +2191,46 @@ FIXED_500 = "요청을 처리하지 못했습니다(이력 데이터베이스나
 NO_HISTORY = b"synthetic bytes that are no history database"  # in place of the history file
 
 
+RUNNING = 'id="check-progress"'  # only the page of an update check that still runs has it
+
+
+def check_ended(case, preview_id):
+    """The page of an update check once its thread has ended: its preview, or why it failed.
+    While the check runs, its page is the one with the progress."""
+    deadline = time.monotonic() + 60
+    while RUNNING in (response := case.client.get(f"/previews/{preview_id}")).text:
+        case.assertLess(time.monotonic(), deadline, "the update check did not end")
+        time.sleep(0.01)
+    return response
+
+
+def confirm_check(case, html):
+    """Send the form of an update check's confirmation as its start button sends it (the
+    fields the page gives it and nothing else) and wait for the check to end: the address the
+    browser is sent to at once, the check's own."""
+    found = re.search(r'<section class="confirm-check" id="confirm-check".*?'
+                      r'<form method="post" action="([^"]+)">(.*?)</form>', html, re.S)  # fmt: skip
+    case.assertIsNotNone(found, html)
+    fields = dict(re.findall(r'<input type="hidden" name="(\w+)" value="([^"]*)">', found[2]))
+    button = re.search(r'<button class="primary" type="submit" name="(\w+)" value="(\w+)">',
+                       found[2])  # fmt: skip
+    data = {**{name: unescape(value) for name, value in fields.items()}, button[1]: button[2]}
+    response = case.client.post(unescape(found[1]), data=data, headers={"origin": BASE},
+                                follow_redirects=False)  # fmt: skip
+    case.assertEqual(response.status_code, 303, response.text)
+    location = response.headers["location"]
+    check_ended(case, location.rsplit("/", 1)[1].partition("?")[0])
+    return location
+
+
+def settle_checks():
+    """Wait for the update checks that still run in their threads: a test's files go only
+    after the last of them has ended."""
+    for thread in threading.enumerate():
+        if thread.name == "depbee-update-check":
+            thread.join(60)
+
+
 def main_of(html):
     """The main element of a page: everything but the rail and the footer."""
     return re.search(r'<main id="main">.*</main>', html, re.S).group()
@@ -2183,6 +2241,7 @@ class ScreenFixture(DashboardFixture):
 
     def setUp(self):
         super().setUp()
+        self.addCleanup(settle_checks)
         self.project_id = history.register_project(self.project)
         self.report = self.scan_with(0.1)  # not flagged; known malicious list not connected
         self.npmrc, self.targets = False, None
@@ -2210,18 +2269,32 @@ class ScreenFixture(DashboardFixture):
         return {**self.document, "mode": mode, "confirmed": confirm,
                 "confirmation_required": required}  # fmt: skip
 
-    def check(self, packages="", csrf=CSRF, origin=BASE, project_id=None):
+    def check(self, packages="", csrf=CSRF, origin=BASE, project_id=None, confirm=True,
+              **fields):  # fmt: skip
+        """The update check's form as its confirmation sends it, which starts the check.
+        confirm False: as a page's button sends it, which only asks for the confirmation."""
         url = f"/projects/{project_id or self.project_id}/previews"
         headers = {} if origin is None else {"origin": origin}
-        return self.client.post(url, data={"csrf": csrf, "packages": packages},
-                                headers=headers, follow_redirects=False)  # fmt: skip
+        data = {"csrf": csrf, "packages": packages, **fields,
+                **({"confirm": "yes"} if confirm else {})}  # fmt: skip
+        return self.client.post(url, data=data, headers=headers, follow_redirects=False)
 
-    def preview_id(self, packages=""):
-        response = self.check(packages)
+    def ended(self, preview_id):
+        return check_ended(self, preview_id)
+
+    def started(self, packages="", **fields):
+        """The id of a confirmed update check, as its answer names it at once."""
+        response = self.check(packages, **fields)
         self.assertEqual(response.status_code, 303, response.text)
         location = response.headers["location"]
         self.assertTrue(location.startswith("/previews/"), location)
-        return location.rsplit("/", 1)[1]
+        return location.rsplit("/", 1)[1].split("?")[0]
+
+    def preview_id(self, packages=""):
+        """The id of a confirmed update check that has ended."""
+        preview_id = self.started(packages)
+        self.ended(preview_id)
+        return preview_id
 
     def apply(self, preview_id, mode="lockfile", confirm=True, csrf=CSRF, origin=BASE):
         data = {"csrf": csrf, "mode": mode, **({"confirm": "yes"} if confirm else {})}
@@ -2311,6 +2384,7 @@ class UpdateCheckTests(ScreenFixture):
         ((project, names, options),) = self.previewed
         self.assertEqual(project, Path(str(self.project.resolve())))  # the registered path
         self.assertEqual(names, ["example", "other", "third"])
+        self.assertTrue(callable(options.pop("progress")))  # the analyzer's report, for its page
         self.assertEqual(options, {"model_dir": Path("m"), "cache_dir": Path("c"),
                                    "no_cache": False})  # fmt: skip
         (run,) = history.list_runs(self.project_id)
@@ -2353,24 +2427,44 @@ class UpdateCheckTests(ScreenFixture):
         node = "node.exe not found on PATH (the current directory is not used)"
         hostile = '<script>alert(1)</script> "quoted" \u202e'
         secret = "C:\\private\\folder synthetic-secret-0123456789"
+        # An error no handler names (a bug in the service) ends the check too: it never
+        # stays the running one.
         cases = [
-            (GuardError(extract), 400, extract.replace('"', "&#34;")),
-            (GuardError(node), 400, node),
-            (GuardError(hostile), 400, "&lt;script&gt;alert(1)&lt;/script&gt; &#34;quoted&#34; \\u202e"),
-            (ValueError(secret), 400, self.app.PREVIEW_FAILED),
-            (OSError(secret), 400, self.app.PREVIEW_FAILED),
-            (RecursionError(secret), 400, self.app.PREVIEW_FAILED),
+            (GuardError(extract), extract.replace('"', "&#34;")),
+            (GuardError(node), node),
+            (GuardError(hostile), "&lt;script&gt;alert(1)&lt;/script&gt; &#34;quoted&#34; \\u202e"),
+            (ValueError(secret), self.app.PREVIEW_FAILED),
+            (OSError(secret), self.app.PREVIEW_FAILED),
+            (RecursionError(secret), self.app.PREVIEW_FAILED),
+            (KeyError(secret), self.app.PREVIEW_FAILED),
         ]  # fmt: skip
-        for error, status, shown in cases:
+        for error, shown in cases:
             with self.subTest(error=type(error).__name__, text=str(error)[:20]):
                 self.preview_files.side_effect = error
-                response = self.check("example")
-                self.assertEqual(response.status_code, status)
-                self.assertIn(shown, response.text)
-                self.assertIn("이력에 기록하지 않았습니다.", response.text)
-                for hidden in ("private", "synthetic-secret", "<script>", "\u202e"):
-                    self.assertNotIn(hidden, response.text)
+                # The check's own address says why it failed, and says it again when reloaded.
+                preview_id = self.started("example")
+                for response in (self.ended(preview_id), self.get(f"/previews/{preview_id}")):
+                    self.assertEqual(response.status_code, 200)
+                    self.assertIn("<h1>업데이트 검사 오류</h1>", response.text)
+                    self.assertIn(f'<p class="error" role="alert">{shown}</p>', response.text)
+                    self.assertIn("이력에 기록하지 않았습니다.", response.text)
+                    self.assertNotIn(RUNNING, response.text)
+                    for hidden in ("private", "synthetic-secret", "<script>", "\u202e"):
+                        self.assertNotIn(hidden, response.text)
+                # Nothing of it can be applied, and it is no preview of the updates view.
+                self.assert_stopped(self.apply(preview_id), 409, self.app.CHECK_UNFINISHED)
+                self.assertNotIn(f"/previews/{preview_id}",
+                                 self.page(f"/projects/{self.project_id}/updates"))  # fmt: skip
         self.assertEqual(history.list_runs(self.project_id), [])
+        self.assertEqual(self.apply_preview.call_count, 0)
+        # The failed check's page sends the same check again, which is confirmed again.
+        self.preview_files.side_effect = self.fake_preview
+        retry = re.search(r'<form method="post" action="([^"]+)">\s*<input type="hidden" name="csrf" '
+                          r'value="[^"]+">\s*<button type="submit" name="packages" value="example">'
+                          r"같은 대상으로 다시 검사</button>", response.text)  # fmt: skip
+        self.assertEqual(retry[1], f"/projects/{self.project_id}/previews")
+        self.assertIn('id="confirm-check"', self.check("example", confirm=False).text)
+        self.preview_id("example")  # and the lock is free for it
 
     def test_missing_or_unknown_projects_run_nothing(self):
         self.assertEqual(self.check(project_id=99).status_code, 404)
@@ -2381,7 +2475,7 @@ class UpdateCheckTests(ScreenFixture):
         self.assertEqual(response.status_code, 400)
         self.assertIn(self.app.PROJECT_MISSING, response.text)
         updates = self.page(f"/projects/{self.project_id}/updates")
-        self.assertIn("업데이트를 미리보기할 수 없습니다", updates)
+        self.assertIn("업데이트를 검사할 수 없습니다", updates)
         self.assertNotIn("/previews", updates + self.page(f"/projects/{self.project_id}"))
         self.assertEqual(self.preview_files.call_count, 0)
 
@@ -2397,8 +2491,8 @@ class UpdateCheckTests(ScreenFixture):
         self.assertNotIn("/previews/", self.page(f"/projects/{self.project_id}/updates"))
         # The empty field of the button that previews everything is everything, and blanks
         # around names are only what separates them.
-        self.assertEqual(self.check("").status_code, 303)
-        self.assertEqual(self.check("  example\t").status_code, 303)
+        self.preview_id("")
+        self.preview_id("  example\t")
         self.assertEqual([names for _, names, _ in self.previewed], [[], ["example"]])
         # The field for names asks for one.
         self.assertIn('<input id="packages" name="packages" type="text" maxlength="1024" required>',
@@ -2442,7 +2536,7 @@ class UpdateCheckTests(ScreenFixture):
         )[1]
         self.assertEqual(self.apply(preview_id).status_code, 200)
         self.assertEqual(seen["apply"].status_code, 409)
-        self.assertEqual(self.check().status_code, 303)  # free again
+        self.preview_id()  # free again
 
     def test_only_the_newest_previews_are_kept(self):
         ids = [self.preview_id() for _ in range(self.app.KEPT_PREVIEWS + 1)]
@@ -2462,6 +2556,386 @@ class UpdateCheckTests(ScreenFixture):
         self.assertEqual(response.status_code, 200)
         self.assertIn(self.app.PREVIEW_NOT_RECORDED, response.text)
         self.assertEqual(history.list_applies(self.project_id), [])
+
+
+class CheckFlowTests(ScreenFixture):
+    """An update check from its confirmation to its result. The project installs example and
+    other (direct), peer (direct, declared as a peer only) and inner (under example); the faked
+    preview names the project's two files as they are."""
+
+    def setUp(self):
+        super().setUp()
+        tree = lock()
+        tree["packages"][""]["peerDependencies"] = {"peer": "*"}
+        tree["packages"]["node_modules/peer"] = package()
+        self.manifest = self.project / "package.json"
+        self.manifest.write_text(json.dumps(tree["packages"][""]), encoding="utf-8")
+        self.write(self.head, tree)
+        self.updates = f"/projects/{self.project_id}/updates"
+        (self.row,) = self.report["results"]
+        self.new_lock = None  # the new lockfile's bytes, when a test gives them
+
+    def fake_preview(self, project, names, **options):
+        result, new_package, new_lock = super().fake_preview(project, names, **options)
+        result["preview"].update(package_json_sha256=sha(self.manifest.read_bytes()),
+                                 package_lock_sha256=sha(self.head.read_bytes()))  # fmt: skip
+        return result, new_package, self.new_lock or new_lock
+
+    def changes(self, changed):
+        """The faked preview's report: one result per location, with its two versions."""
+        self.report = {**self.report, "results": [
+            {**self.row, "package": location.rsplit("node_modules/", 1)[1], "location": location,
+             "before_version": before, "after_version": after}
+            for location, (before, after) in changed.items()]}  # fmt: skip
+
+    def lists(self, html):
+        """(the heading, the names) of each list of names on a confirmation."""
+        found = re.findall(r'<h2>([^<]*)</h2>\s*<ul class="target-list[^>]*>(.*?)</ul>', html, re.S)
+        return [(title, re.findall(r"<li>([^<]*)</li>", names)) for title, names in found]
+
+    def words(self, html):
+        return " ".join(unescape(re.sub(r"<[^>]+>", " ", html)).split())
+
+    def test_a_check_is_confirmed_first_with_what_npm_is_given_and_runs_nothing(self):
+        asked = self.check("example  nope other example peer lodash@4 ../x", confirm=False)
+        self.assertEqual(asked.status_code, 200)
+        assert_one_script(self, asked.text)
+        html = main_of(asked.text)
+        # What the npm call is given, and each name that was left out with its reason: one
+        # package.json does not declare, one it declares as a peer only, and text that is no name.
+        self.assertEqual(self.lists(html), [
+            ("npm에 넘길 대상: 직접 의존성 2개", ["example", "other"]),
+            ("대상에서 뺀 이름: package.json에 선언되지 않음 1개", ["nope"]),
+            ("대상에서 뺀 이름: 피어 의존성으로만 선언됨 1개", ["peer"]),
+            ("대상에서 뺀 입력: 패키지 이름이 아님 2개", ["lodash@4", "../x"]),
+        ])  # fmt: skip
+        self.assertIn("<code>npm update example other</code>", html)
+        self.assertIn("프로젝트 파일은 바꾸지 않습니다.", html)
+        self.assertIn("반영은 검사가 끝난 뒤 결과 화면에서 따로 고릅니다.", html)
+        # The way out is a link, and says that nothing runs.
+        self.assertIn(f'<a class="action" href="{self.updates}" data-cancel>취소하고 돌아가기</a>',
+                      html)  # fmt: skip
+        self.assertIn("취소하면 아무것도 실행하지 않습니다.", html)
+        # Nothing ran for it: no npm, no run, no check to open.
+        self.assertEqual((self.previewed, history.list_runs(self.project_id)), ([], []))
+        self.assertNotIn("/previews/", self.page(self.updates))
+        # Its own button starts the check of the targets alone.
+        self.assertIn('<input type="hidden" name="packages" value="example other">', html)
+        self.assertIn('<button class="primary" type="submit" name="confirm" value="yes">'
+                      "대상 2개만 업데이트 검사 시작</button>", html)  # fmt: skip
+        location = confirm_check(self, asked.text)
+        self.assertEqual([names for _, names, _ in self.previewed], [["example", "other"]])
+        self.assertIn("업데이트 검사 결과", self.page(location))
+        # Names of which none is a target cannot be started.
+        for names in ("nope", "peer", "lodash@4 nope"):
+            with self.subTest(names=names):
+                none = main_of(self.check(names, confirm=False).text)
+                self.assertIn("npm에 넘길 수 있는 대상이 없어 검사를 시작할 수 없습니다.", none)
+                self.assertNotIn('name="confirm"', none)
+                self.assertNotIn("<form", none)
+        self.assertEqual(len(self.previewed), 1)
+
+    def test_a_check_of_everything_is_confirmed_as_the_whole_lockfile(self):
+        asked = self.check("", confirm=False, back="q=ex&show=candidates")
+        html = main_of(asked.text)
+        # No name is given to npm: it goes through direct and indirect entries alike.
+        self.assertIn("<h2>npm에 넘길 대상: 이름 없음(lockfile 전체)</h2>", html)
+        self.assertIn("이름 없이 <code>npm update</code>를 실행합니다.", html)
+        self.assertEqual(self.lists(html), [
+            ("지금 lockfile의 직접 의존성 3개, 간접 의존성 1개", ["example", "other", "peer"])])  # fmt: skip
+        self.assertIn('<input type="hidden" name="packages" value="">', html)
+        self.assertIn(">전체 업데이트 검사 시작</button>", html)
+        # Asked from the packages view: cancelling goes back to what that view showed, and the
+        # check carries it to its page.
+        self.assertIn('<input type="hidden" name="back" value="q=ex&amp;show=candidates">', html)
+        self.assertIn(f'href="/projects/{self.project_id}?q=ex&amp;show=candidates" data-cancel>',
+                      html)  # fmt: skip
+        self.assertEqual(self.previewed, [])
+        location = confirm_check(self, asked.text)
+        self.assertEqual(location.partition("?")[2], urlencode({"back": "q=ex&show=candidates"}))
+        self.assertEqual([names for _, names, _ in self.previewed], [[]])
+
+    def test_a_running_check_shows_what_the_analyzer_reports_and_nothing_else(self):
+        proceed, reached = queue.Queue(), queue.Queue()
+
+        def during(project, names, **options):
+            # npm first: nothing is known of how many packages there are.
+            proceed.get(timeout=60)
+            for index, (name, version) in enumerate((("example", "1.2.0"), ("inner", "2.1.0")), 1):
+                options["progress"](index, 2, {"after": {"name": name, "version": version}})
+                reached.put(index)
+                proceed.get(timeout=60)
+            return self.fake_preview(project, names, **options)
+
+        self.preview_files.side_effect = during
+        preview_id = self.started("example")
+        url = f"/previews/{preview_id}"
+        try:
+            html = self.page(url)
+            self.assertIn("<h1>업데이트 검사 진행 중</h1>", html)
+            self.assertIn("요청한 대상: example", html)
+            self.assertIn("준비 중: npm이 새 lockfile을 계산하고 있습니다", html)
+            # No number, no bar and no clock before the analyzer reports one.
+            for absent in ("가운데", '<svg class="gauge"', "남은 시간 약", "%"):
+                self.assertNotIn(absent, main_of(html))
+            # Without the script the browser loads the page again; with it the script does.
+            self.assertIn('<noscript><meta http-equiv="refresh" content="3"></noscript>', html)
+            self.assertIn('<div id="check-progress" data-refresh="3">', html)
+            # The project's views lead back to it, and its preview is not one to apply yet.
+            updates = self.page(self.updates)
+            self.assertIn(f'<a href="{url}">진행 상황 보기</a>', updates)
+            self.assertNotIn("검토·반영할 미리보기", updates)
+            self.assert_stopped(self.apply(preview_id), 409, self.app.CHECK_UNFINISHED)
+            # The same check sent again opens the one that runs; another one is refused, and
+            # its confirmation says so instead of offering to start.
+            again = self.check("example")
+            self.assertEqual((again.status_code, again.headers["location"]), (303, url))
+            self.assert_stopped(self.check("other"), 409, self.app.BUSY)
+            waiting = main_of(self.check("other", confirm=False).text)
+            self.assertIn("다른 검사나 반영이 실행 중이라 지금은 시작할 수 없습니다.", waiting)
+            self.assertIn(f'<a href="{url}">실행 중인 업데이트 검사 보기</a>', waiting)
+            self.assertNotIn('name="confirm"', waiting)
+            # The analyzer starts its first package: none is done yet.
+            proceed.put(None)
+            self.assertEqual(reached.get(timeout=60), 1)
+            html = self.page(url)
+            self.assertIn("패키지 분석 중: 분석할 변경 2개 가운데 0개 완료", html)
+            self.assertIn("지금 분석하는 패키지: <strong>example</strong> 1.2.0", html)
+            self.assertIn('<rect class="fill" width="0" height="10"/>', html)
+            # Its second and last one: one is done, and the check is not said to be complete
+            # while that one is still analyzed.
+            proceed.put(None)
+            self.assertEqual(reached.get(timeout=60), 2)
+            html = self.page(url)
+            self.assertIn("패키지 분석 중: 분석할 변경 2개 가운데 1개 완료", html)
+            self.assertIn("지금 분석하는 패키지: <strong>inner</strong> 2.1.0", html)
+            self.assertIn('<rect class="fill" width="50" height="10"/>', html)
+            self.assertNotIn("가운데 2개 완료", html)
+            self.assertIn("삭제되는 항목, 분석하지 않고 보류하는 변경, 바뀌지 않는 설치 항목은 세지 "
+                          "않습니다.", html)  # fmt: skip
+            self.assertEqual(history.list_runs(self.project_id), [])
+        finally:
+            for _ in range(3):
+                proceed.put(None)  # the check ends whatever failed above
+        done = self.ended(preview_id)
+        self.assertIn("업데이트 검사 결과", done.text)
+        self.assertNotIn("http-equiv", done.text)
+        self.assertEqual(len(self.previewed), 1)  # the second request started no second check
+        self.assertEqual(len(history.list_runs(self.project_id)), 1)
+        self.assertNotIn("진행 상황 보기", self.page(self.updates))
+
+    def test_the_result_says_what_was_asked_next_to_what_the_lockfile_changes(self):
+        inner = "node_modules/example/node_modules/inner"
+        # Two names asked for: one changes, one stays, and an indirect entry moves with them.
+        self.changes({"node_modules/example": ("1.1.0", "1.2.0"), inner: ("2.0.0", "2.1.0")})
+        html = self.page(f"/previews/{self.preview_id('example other')}")
+        scope = self.words(html.split('<section class="scope"', 1)[1].split("</section>", 1)[0])
+        self.assertIn("요청한 직접 의존성 2개", scope)
+        self.assertIn("example : 1.1.0 → 에서 1.2.0", scope)
+        self.assertIn("other : 바뀌지 않음", scope)
+        self.assertIn("요청하지 않았지만 함께 바뀌는 항목 1개", scope)
+        self.assertIn(f"간접 의존성 inner {inner} : 2.0.0 → 에서 2.1.0", scope)
+        # The views say of each candidate which of the two it is.
+        updates = self.page(self.updates)
+        self.assertIn('<th scope="row">example<span class="row-tags"> 직접 의존성</span>', updates)
+        self.assertIn('<th scope="row">inner<span class="row-tags"> 간접 의존성</span>', updates)
+        self.assertIn('<strong>example</strong> <span class="row-tags">직접 의존성</span>', updates)
+        # Everything asked for: the changes by kind.
+        self.changes({"node_modules/example": ("1.1.0", "1.2.0"),
+                      "node_modules/other": ("1.0.0", "1.0.1"), inner: ("2.0.0", None)})  # fmt: skip
+        html = self.page(f"/previews/{self.preview_id()}")
+        scope = self.words(html.split('<section class="scope"', 1)[1].split("</section>", 1)[0])
+        self.assertIn("요청한 대상: 전체(이름 없이 npm update, lockfile의 직접·간접 의존성 모두).", scope)
+        self.assertIn("실제로 바뀌는 lockfile 항목 3개: 직접 의존성 2개, 간접 의존성 1개", scope)
+        self.assertIn(f"간접 의존성 inner {inner} : 2.0.0 → 에서 삭제", scope)
+        # Nothing changes: the target is said to stay, and there is nothing to apply.
+        self.changes({})
+        html = self.page(f"/previews/{self.preview_id('example')}")
+        scope = self.words(html.split('<section class="scope"', 1)[1].split("</section>", 1)[0])
+        self.assertIn("example : 바뀌지 않음", scope)
+        self.assertIn("실제 변경: lockfile에서 바뀌는 항목이 없습니다.", scope)
+        self.assertIn("lockfile에서 바뀐 항목이 없어 반영할 것이 없습니다.", html)
+        self.assert_form(html, False)
+        self.assertEqual(self.apply_preview.call_count, 0)
+
+    def scope_of(self, preview_id):
+        html = self.page(f"/previews/{preview_id}")
+        return self.words(html.split('<section class="scope"', 1)[1].split("</section>", 1)[0])
+
+    def test_the_confirmation_counts_declared_names_and_tells_an_empty_lockfile_from_an_unreadable_one(self):
+        # An alias and the package it stands for are two direct entries, each under the name
+        # the root declares.
+        tree = lock()
+        tree["packages"][""]["dependencies"]["alias"] = "npm:example@^1.0.0"
+        tree["packages"]["node_modules/alias"] = {**package("1.1.0"), "name": "example"}
+        self.write(self.head, tree)
+        html = main_of(self.check("", confirm=False).text)
+        self.assertEqual(self.lists(html), [
+            ("지금 lockfile의 직접 의존성 3개, 간접 의존성 1개", ["alias", "example", "other"])])  # fmt: skip
+        # A lockfile that installs nothing has 0 of each, which is not one that cannot be read.
+        self.write(self.head, {"lockfileVersion": 3, "packages": {"": {}}})
+        html = main_of(self.check("", confirm=False).text)
+        self.assertIn("<h2>지금 lockfile의 직접 의존성 0개, 간접 의존성 0개</h2>", html)
+        self.assertNotIn("읽지 못해", html)
+        self.assertIn(">전체 업데이트 검사 시작</button>", html)
+        self.head.write_text("{not a lockfile", encoding="utf-8")
+        html = main_of(self.check("", confirm=False).text)
+        self.assertIn("package-lock.json을 읽지 못해 항목 수를 표시하지 못했습니다", html)
+        self.assertNotIn("직접 의존성 0개", html)
+        self.assertEqual(self.previewed, [])
+
+    def test_a_name_is_a_peer_only_by_what_package_json_says_now(self):
+        # An older lockfile still declares gone, which package.json names in no field: it is
+        # not declared, and never said to be a peer.
+        tree = lock()
+        tree["packages"][""]["dependencies"]["gone"] = "^1.0.0"
+        tree["packages"][""]["peerDependencies"] = {"gone": "*", "peer": "*"}
+        tree["packages"]["node_modules/gone"] = package()
+        tree["packages"]["node_modules/peer"] = package()
+        self.write(self.head, tree)
+        html = main_of(self.check("gone peer", confirm=False).text)
+        self.assertEqual(self.lists(html), [
+            ("대상에서 뺀 이름: package.json에 선언되지 않음 1개", ["gone"]),
+            ("대상에서 뺀 이름: 피어 의존성으로만 선언됨 1개", ["peer"])])  # fmt: skip
+        self.assertNotIn('name="confirm"', html)
+
+    def test_direct_and_indirect_are_those_of_the_checked_files_whatever_the_files_say_later(self):
+        inner = "node_modules/example/node_modules/inner"
+        # package.json declares fresh, which the lockfile does not have yet: the update adds it
+        # as a direct dependency, which the new lockfile's root says as npm writes it. late is
+        # declared by the new lockfile's root alone.
+        root = json.loads(self.manifest.read_text("utf-8"))
+        root["dependencies"]["fresh"] = "^1.0.0"
+        self.manifest.write_text(json.dumps(root), encoding="utf-8")
+        self.new_lock = json.dumps({"lockfileVersion": 3, "packages": {
+            "": {"dependencies": {"fresh": "^1.0.0", "late": "^1.0.0"}}}}).encode()  # fmt: skip
+        self.changes({"node_modules/fresh": (None, "1.0.0"), "node_modules/late": (None, "1.0.0"),
+                      inner: ("2.0.0", "2.1.0")})  # fmt: skip
+        preview_id = self.preview_id()
+        said = self.scope_of(preview_id)
+        self.assertIn("실제로 바뀌는 lockfile 항목 3개: 직접 의존성 2개, 간접 의존성 1개", said)
+        self.assertIn("직접 의존성 fresh node_modules/fresh : 새로 추가 → 에서 1.0.0", said)
+        self.assertIn("직접 의존성 late node_modules/late : 새로 추가 → 에서 1.0.0", said)
+        self.assertIn(f"간접 의존성 inner {inner} : 2.0.0 → 에서 2.1.0", said)
+        # The files change after the check: its result says what it said.
+        self.manifest.write_text("{}", encoding="utf-8")
+        self.write(self.head, {"lockfileVersion": 3, "packages": {"": {}}})
+        self.assertEqual(self.scope_of(preview_id), said)
+
+    def test_what_stays_is_direct_by_the_new_lockfile_and_what_goes_by_the_old_one(self):
+        # The lockfile's root still declares former and gone, which package.json dropped; aka is
+        # another name for the package real. parent needs former, and has its own copies of aka
+        # and gone.
+        nested = "node_modules/parent/node_modules/"
+        declared = {"parent": "^1.0.0", "aka": "npm:real@^1.0.0"}
+        self.manifest.write_text(json.dumps({"dependencies": declared}), encoding="utf-8")
+        self.write(self.head, {"lockfileVersion": 3, "packages": {
+            "": {"dependencies": {**declared, "former": "^1.0.0", "gone": "^1.0.0"}},
+            "node_modules/aka": {**package(), "name": "real"},
+            **{f"node_modules/{name}": package() for name in ("parent", "former", "gone")},
+            **{nested + name: package("2.0.0") for name in ("aka", "gone")}}})  # fmt: skip
+        # The update's lockfile declares what package.json does. former stays at the top of
+        # node_modules for parent, and moves to a newer version.
+        self.new_lock = json.dumps({"lockfileVersion": 3, "packages": {
+            "": {"dependencies": declared}}}).encode()  # fmt: skip
+        self.changes({
+            "node_modules/parent": ("1.0.0", "1.1.0"), "node_modules/former": ("1.0.0", "1.2.0"),
+            "node_modules/aka": ("1.0.0", "1.1.0"), nested + "aka": ("2.0.0", "2.1.0"),
+            "node_modules/gone": ("1.0.0", None), nested + "gone": ("2.0.0", None),
+            "node_modules/added": (None, "1.0.0")})  # fmt: skip
+        for row in self.report["results"]:
+            if row["location"] == "node_modules/aka":
+                row["package"] = "real"
+            if row["after_version"] is None:
+                row["status"] = "removed"  # as the report says of an entry the update removes
+        preview_id = self.preview_id()
+        said = self.scope_of(preview_id)
+        self.assertIn("실제로 바뀌는 lockfile 항목 7개: 직접 의존성 3개, 간접 의존성 4개", said)
+        # What the new lockfile has, by its root: parent and the alias (under the name it is
+        # declared by) are direct; former is not declared any more, a copy of a declared name
+        # under another package never was, and neither was what the update adds for another.
+        self.assertIn("직접 의존성 parent node_modules/parent : 1.0.0 → 에서 1.1.0", said)
+        self.assertIn("직접 의존성 real node_modules/aka : 1.0.0 → 에서 1.1.0", said)
+        self.assertIn("간접 의존성 former node_modules/former : 1.0.0 → 에서 1.2.0", said)
+        self.assertIn(f"간접 의존성 aka {nested}aka : 2.0.0 → 에서 2.1.0", said)
+        self.assertIn("간접 의존성 added node_modules/added : 새로 추가 → 에서 1.0.0", said)
+        # What the update removes is in the old lockfile alone, whose root declared gone; the
+        # copy of it under parent was never declared.
+        self.assertIn("직접 의존성 gone node_modules/gone : 1.0.0 → 에서 삭제", said)
+        self.assertIn(f"간접 의존성 gone {nested}gone : 2.0.0 → 에서 삭제", said)
+        # Neither set is read again: the files as they are later change nothing of it.
+        self.manifest.write_text(json.dumps({"dependencies": {"former": "*"}}), encoding="utf-8")
+        self.write(self.head, {"lockfileVersion": 3, "packages": {"": {}}})
+        self.assertEqual(self.scope_of(preview_id), said)
+
+    def test_a_check_holds_its_project_and_frees_it_however_it_ends(self):
+        generation = history.list_projects()[0]["generation"]
+
+        def free():
+            """Nothing holds the project: the hold is there to take."""
+            history.hold_project(self.project_id, generation).release()
+
+        # While a dashboard of another process works on the project, no check starts here, and
+        # this process is not left busy.
+        with history.hold_project(self.project_id, generation):
+            self.assert_stopped(self.check("example"), 409, self.app.BUSY)
+        self.assertEqual(self.previewed, [])
+        # A check holds the project until it has ended.
+        seen = []
+
+        def during(project, names, **options):
+            try:
+                history.hold_project(self.project_id, generation).release()
+                seen.append("free")
+            except history.ProjectBusy:
+                seen.append("held")
+            return self.fake_preview(project, names, **options)
+
+        self.preview_files.side_effect = during
+        self.preview_id("example")
+        self.assertEqual(seen, ["held"])
+        free()
+        # One that fails frees it too.
+        self.preview_files.side_effect = GuardError("npm update failed with exit code 1")
+        self.assertIn("업데이트 검사 오류", self.ended(self.started("example")).text)
+        free()
+        self.preview_files.side_effect = self.fake_preview
+        # A check whose thread cannot start is no check: nothing is left running for a page to
+        # wait on, and the lock and the hold are free.
+        start = threading.Thread.start
+
+        def no_check(thread):
+            if thread.name == "depbee-update-check":
+                raise RuntimeError("can't start new thread")
+            return start(thread)
+
+        with mock.patch.object(threading.Thread, "start", no_check), \
+                self.assertRaises(RuntimeError):  # fmt: skip
+            self.check("example")
+        self.assertNotIn("진행 상황 보기", self.page(self.updates))
+        free()
+        self.preview_id("example")
+
+    def test_a_check_ends_with_the_registration_it_was_made_under(self):
+        first, second = self.preview_id("example"), self.preview_id("other")
+        self.assertIn(f"/previews/{first}", self.page(self.updates))
+        # A dashboard of another process takes the project off the list and registers its folder
+        # again: the same project, at another generation. What was checked before is of the
+        # registration that ended, and is neither shown nor applied.
+        self.assertTrue(history.unregister_project(self.project_id))
+        gone = self.get(f"/previews/{first}")
+        self.assertEqual(gone.status_code, 404)
+        self.assertIn(self.app.PREVIEW_GONE, gone.text)
+        self.assertEqual(history.register_project(self.project), self.project_id)
+        self.assertNotIn("/previews/", self.page(self.updates))
+        for response in (self.apply(second), self.get(f"/previews/{second}"), self.apply(first)):
+            self.assertEqual(response.status_code, 404)
+            self.assertIn(self.app.PREVIEW_GONE, response.text)
+        self.assertEqual(self.apply_preview.call_count, 0)
+        # A check of the project as it is registered now is its own.
+        third = self.preview_id("example")
+        self.assertEqual(self.apply(third).status_code, 200)
+        self.assertEqual(self.apply_preview.call_count, 1)
 
 
 class HeldPreviewTests(ScreenFixture):
@@ -2502,7 +2976,7 @@ class HeldPreviewTests(ScreenFixture):
         self.head.write_bytes(before + b"\n")
         html = self.page(self.updates)
         self.assertIn(f'href="/previews/{preview_id}"', html)
-        self.assertIn("반영을 시도하면 거부됩니다. 업데이트 미리보기를 다시 실행하세요.", html)
+        self.assertIn("반영을 시도하면 거부됩니다. 업데이트 검사를 다시 실행하세요.", html)
         self.assertNotIn(f"/runs/{run['id']}#r0", html)
         self.head.write_bytes(before)
         self.assertEqual(self.apply(preview_id).status_code, 200)
@@ -2517,7 +2991,7 @@ class HeldPreviewTests(ScreenFixture):
         )
         self.assertIn("<li>대상: package.json 범위 안의 전체 의존성</li>", html)
         self.assertNotIn("/runs/", html)
-        self.assertIn("아직 업데이트 미리보기를 실행하지 않았습니다.", html)  # nothing stored to show
+        self.assertIn("아직 업데이트 검사를 실행하지 않았습니다.", html)  # nothing stored to show
 
 
 class PreviewOpensTests(ScreenFixture):
@@ -2531,15 +3005,17 @@ class PreviewOpensTests(ScreenFixture):
     # What each button that starts a request is called, on the pages that have it: the Korean
     # words of what it runs, with the CLI command it stands for where it runs one.
     ACTING = {
-        "전체 업데이트 미리보기(update)": "업데이트 미리보기 중…",
-        "전체 업데이트 다시 미리보기(update)": "업데이트 미리보기 중…",
-        "이 패키지 미리보기": "업데이트 미리보기 중…",
-        "이 패키지 업데이트 미리보기(update)": "업데이트 미리보기 중…",
-        "지정한 패키지 업데이트 미리보기(update)": "업데이트 미리보기 중…",
         "lockfile 변경 검사(scan)": "lockfile 변경 검사 중…",
         "고른 방식으로 프로젝트에 반영": "반영 중…",
         "프로젝트 폴더 선택": "폴더 선택 창을 확인하세요…",
     }
+
+    # The buttons that ask for an update check. None is marked as running: each opens the
+    # confirmation first, and a confirmed check has a page of its own for its progress.
+    CHECKING = (
+        "전체 업데이트 검사(update)", "전체 업데이트 다시 검사(update)", "이 패키지 업데이트 검사",
+        "이 패키지 업데이트 검사(update)", "지정한 패키지 업데이트 검사(update)",
+    )  # fmt: skip
 
     def setUp(self):
         super().setUp()
@@ -2582,26 +3058,28 @@ class PreviewOpensTests(ScreenFixture):
             # shows, for the way back from the preview's page (three fields, within MAX_FIELDS).
             self.assertEqual(re.findall(r'<input [^>]*name="(\w+)"', form),
                              ["csrf"] if view else ["csrf", "back"], view)  # fmt: skip
-            self.assertIn('<button class="primary" type="submit" data-busy-label="업데이트 미리보기 '
-                          '중…" name="packages" value="">전체 업데이트 미리보기(update)</button>',
-                          form)  # fmt: skip
+            self.assertIn('<button class="primary" type="submit" name="packages" value="">'
+                          "전체 업데이트 검사(update)</button>", form)  # fmt: skip
         # A direct dependency's own button on the packages view belongs to the same form.
-        self.assertIn('<button type="submit" data-busy-label="업데이트 미리보기 중…" '
-                      'form="preview-project" name="packages" value="example" aria-label="이 패키지 '
-                      '미리보기: example 업데이트(update)">이 패키지 미리보기</button>',
-                      self.page(self.packages))  # fmt: skip
-        # Everything, one named package, and the same from the packages view: each ends on the
+        self.assertIn('<button type="submit" form="preview-project" name="packages" '
+                      'value="example" aria-label="이 패키지 업데이트 검사: example(update)">'
+                      "이 패키지 업데이트 검사</button>", self.page(self.packages))  # fmt: skip
+        # Everything, one named package, and the same from the packages view: each form answers
+        # with the confirmation and runs nothing, and the confirmation's own form ends on the
         # page of its preview.
         for fields in ({}, {"packages": "example"}, {"back": ""}, {"back": "q=ex&item=1.0"}):
             with self.subTest(fields=fields):
+                before = len(self.previewed)
                 response = self.client.post(
                     f"{self.packages}/previews",
                     data={"csrf": CSRF, "packages": "", **fields},
                     headers={"origin": BASE}, follow_redirects=False)  # fmt: skip
-                self.assertEqual(response.status_code, 303, response.text)
-                self.assertRegex(response.headers["location"],
-                                 r"\A/previews/[A-Za-z0-9_-]+(\?back=[^&#]*)?\Z")  # fmt: skip
-                self.assertEqual("back" in fields, "?back=" in response.headers["location"])
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(len(self.previewed), before)
+                location = confirm_check(self, response.text)
+                self.assertRegex(location, r"\A/previews/[A-Za-z0-9_-]+(\?back=[^&#]*)?\Z")
+                self.assertEqual("back" in fields, "?back=" in location)
+                self.assertEqual(len(self.previewed), before + 1)
         # Four previews are held and recorded; none of them wrote a file or applied anything.
         self.assertEqual((len(self.previewed), len(history.list_runs(self.project_id))), (4, 4))
         self.assertEqual(self.apply_preview.call_count, 0)
@@ -2609,7 +3087,7 @@ class PreviewOpensTests(ScreenFixture):
         for name, content in files.items():
             self.assertEqual((self.project / name).read_bytes(), content, name)
         # After a preview of everything the head's button says that it previews again.
-        self.assertIn('value="">전체 업데이트 다시 미리보기(update)</button>',
+        self.assertIn('value="">전체 업데이트 다시 검사(update)</button>',
                       self.page(self.packages))  # fmt: skip
         # A run named in the address once (checked) is no query of the view: nothing is said
         # or moved for it.
@@ -2623,7 +3101,8 @@ class PreviewOpensTests(ScreenFixture):
         preview_id = self.preview_id()
         html = self.page(f"/previews/{preview_id}")
         # What is still untouched, and the way down to where it is applied.
-        self.assertIn('<p>프로젝트 파일은 아직 그대로입니다. 아래 검사 결과와 <a href="#apply">'
+        self.assertIn('<p>프로젝트 파일은 아직 그대로입니다. 아래 요청한 대상과 실제 변경, 검사 결과와 '
+                      '<a href="#apply">'
                       "업데이트 반영</a> 가능 여부를 확인하세요.</p>", html)  # fmt: skip
         self.assertIn('<section class="gate" id="apply" aria-labelledby="gate-title">\n'
                       '<h2 id="gate-title">업데이트 반영(update --apply)</h2>', html)  # fmt: skip
@@ -2661,8 +3140,8 @@ class PreviewOpensTests(ScreenFixture):
                                     headers={"origin": BASE, "content-type":
                                              "application/x-www-form-urlencoded"},
                                     follow_redirects=False)  # fmt: skip
-        self.assertEqual(response.status_code, 303, response.text)
-        return response.headers["location"]
+        self.assertEqual(response.status_code, 200, response.text)
+        return confirm_check(self, response.text)  # the confirmation carries the view on
 
     def way_out(self, html):
         """(the words, the address) of the preview page's link that leaves without applying."""
@@ -2755,8 +3234,8 @@ class PreviewOpensTests(ScreenFixture):
         self.returns("example", "other")
         preview_id = self.preview_id()
         link = f'<p class="inspect-apply"><a class="action" href="/previews/{preview_id}'
-        again = "반영하려면 업데이트 미리보기를 다시 실행합니다."
-        missing = "이 후보를 반영하려면 위에서 업데이트 미리보기를 다시 실행합니다."
+        again = "반영하려면 업데이트 검사를 다시 실행합니다."
+        missing = "이 후보를 반영하려면 위에서 업데이트 검사를 다시 실행합니다."
         for view in ("", "/updates"):
             html = self.page(self.packages + view)
             top = self.top(html)
@@ -2778,7 +3257,7 @@ class PreviewOpensTests(ScreenFixture):
         self.assertNotIn("/previews/" + preview_id, packages)
         self.assertNotIn("inspect-apply", packages)
         self.assertIn(again, self.top(packages))
-        self.assertIn('name="packages" value="example">이 패키지 업데이트 미리보기(update)</button>',
+        self.assertIn('name="packages" value="example">이 패키지 업데이트 검사(update)</button>',
                       packages)  # fmt: skip
         updates = client.get(f"{self.packages}/updates").text
         self.assertIn(missing, updates)
@@ -2787,7 +3266,7 @@ class PreviewOpensTests(ScreenFixture):
         # no candidate's.
         self.head.write_bytes(self.head.read_bytes() + b"\n")
         html = self.page(f"{self.packages}/updates")
-        self.assertIn("반영을 시도하면 거부됩니다. 업데이트 미리보기를 다시 실행하세요.", html)
+        self.assertIn("반영을 시도하면 거부됩니다. 업데이트 검사를 다시 실행하세요.", html)
         self.assertNotIn("inspect-apply", html)
 
     def test_the_check_of_one_version_is_a_cli_line_and_never_run(self):
@@ -2808,7 +3287,7 @@ class PreviewOpensTests(ScreenFixture):
             self.assertEqual(re.findall(r"<code>([^<]*)</code>", idle), [
                 "depbee update", "depbee update 이름", "depbee scan . --extract",
                 "depbee check example@1.1.0"])  # fmt: skip
-            self.assertIn('직접 의존성 하나는 패키지 목록 그 행의 "이 패키지 미리보기"', unescape(idle))
+            self.assertIn('직접 의존성 하나는 패키지 목록 그 행의 "이 패키지 업데이트 검사"', unescape(idle))
         self.assertIsNone(self.app._check_example([]))
         self.write(self.head, {"lockfileVersion": 3, "packages": {"": {}}})
         self.assertIn("예: <code>depbee check 이름@버전</code></li>", self.page(self.packages))
@@ -2872,24 +3351,30 @@ class PreviewOpensTests(ScreenFixture):
                     r'<button [^>]*data-busy-label="([^"]+)"[^>]*>([^<]*)</button>', html):  # fmt: skip
                 self.assertEqual(self.ACTING.get(label), busy, (name, label))
                 found.setdefault(label, set()).add(name)
-            # Every other button is at once: the search, the theme and the question marks.
+            # Every other button is at once: the search, the theme, the question marks, and
+            # the buttons that ask for an update check, which open its confirmation.
             for button in re.findall(r"<button (?![^>]*data-busy-label)[^>]*>.*?</button>", html):
+                label = re.sub(r"<[^>]+>", "", button)
+                if label in self.CHECKING:
+                    found.setdefault(label, set()).add(name)
+                    continue
                 self.assertRegex(button, r'>검색</button>|name="theme"|class="help"', name)
             visible = unescape(re.sub(r"<[^>]+>", " ", html))
             for word in ("검사만", "후보 확인", "업데이트 확인", "패키지 확인", "후보 다시 확인",
                          "확인했습니다", "확인한 실행", "직접 입력", "미리보기 열기"):  # fmt: skip
                 self.assertNotIn(word, visible, name)
-        self.assertEqual(set(found), set(self.ACTING) - {"전체 업데이트 다시 미리보기(update)"})
-        self.assertEqual(found["이 패키지 업데이트 미리보기(update)"], {"restarted"})
+        self.assertEqual(set(found), {*self.ACTING, *self.CHECKING}
+                         - {"전체 업데이트 다시 검사(update)"})  # fmt: skip
+        self.assertEqual(found["이 패키지 업데이트 검사(update)"], {"restarted"})
         self.assertEqual(found["고른 방식으로 프로젝트에 반영"], {"preview"})
         # The packages view words a row that no preview covers as that, never as unchecked.
         tabs = packages.split('<nav class="filter-tabs"', 1)[1].split("</nav>", 1)[0]
-        self.assertEqual(re.findall(r">(전체|후보|미리보기 전|후보 없음|미확인) <", tabs),
-                         ["전체", "후보", "미리보기 전", "후보 없음"])  # fmt: skip
-        self.assertIn("</span>미리보기 전</span>", packages)
+        self.assertEqual(re.findall(r">(전체|후보|검사 전|후보 없음|미확인) <", tabs),
+                         ["전체", "후보", "검사 전", "후보 없음"])  # fmt: skip
+        self.assertIn("</span>검사 전</span>", packages)
         # A stored run is named by what ran, with its CLI command.
         self.assertIn("lockfile 변경 검사(scan)", pages["history"])
-        self.assertIn("업데이트 미리보기(update)", pages["history"])
+        self.assertIn("업데이트 검사(update)", pages["history"])
         # With the button's own field the head's form is within what a form may send.
         self.assertLess(2, self.app.MAX_FIELDS)
 
@@ -3362,8 +3847,8 @@ class UpdateEscapeTests(ScreenFixture):
                 for view in ("", "/updates", "/history"):
                     self.check_html(self.page(f"/projects/{self.project_id}{view}"))
                 self.preview_files.side_effect = GuardError(f"{text} is not a dependency")
-                response = self.check()  # the name is in the service's message
-                self.assertEqual(response.status_code, 400)
+                response = self.ended(self.started())  # the name is in the service's message
+                self.assertEqual(response.status_code, 200)
                 self.check_html(response.text)
                 self.assertIn(escape(_clean(f"{text} is not a dependency")), response.text)
                 self.preview_files.side_effect = self.fake_preview
@@ -3381,6 +3866,7 @@ class EndToEndTests(ApplyFixture):
 
     def setUp(self):
         super().setUp()
+        self.addCleanup(settle_checks)
         from starlette.testclient import TestClient
 
         from depbee.dashboard import app
@@ -3411,8 +3897,10 @@ class EndToEndTests(ApplyFixture):
         response = self.client.post(action, data={**hidden, "packages": "", **fields},
                                     headers={"origin": BASE})  # fmt: skip
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertRegex(response.url.path, r"\A/previews/[A-Za-z0-9_-]+\Z")
-        return response.text
+        self.assert_unchanged()  # the confirmation ran nothing
+        location = confirm_check(self, response.text)  # its own button; npm runs from here
+        self.assertRegex(location.partition("?")[0], r"\A/previews/[A-Za-z0-9_-]+\Z")
+        return self.look(location)
 
     def send_apply(self, html, **fields):
         """Send the preview page's apply form with these choices."""
@@ -3474,7 +3962,10 @@ class EndToEndTests(ApplyFixture):
         response = self.client.post(action, data={**hidden, "packages": "example"},
                                     headers={"origin": BASE})  # fmt: skip
         self.assertEqual(response.status_code, 200, response.text)
-        page = response.text
+        # The confirmation names what npm is handed and has run nothing; its button starts it.
+        self.assertIn("<code>npm update example</code>", response.text)
+        self.assert_unchanged()
+        page = self.look(confirm_check(self, response.text))
         self.assertIn("<li>대상: example</li>", page)
         self.assert_unchanged()
         self.assertEqual(self.ci_calls, [])
@@ -3539,7 +4030,7 @@ class EndToEndTests(ApplyFixture):
         edited = self.original["package-lock.json"] + b"\n"  # the user's own edit, meanwhile
         (self.upd / "package-lock.json").write_bytes(edited)
         # The views say so before anything is sent.
-        self.assertIn("반영을 시도하면 거부됩니다. 업데이트 미리보기를 다시 실행하세요.",
+        self.assertIn("반영을 시도하면 거부됩니다. 업데이트 검사를 다시 실행하세요.",
                       self.look(f"{self.views}/updates"))  # fmt: skip
         refused = self.send_apply(page, mode="install", confirm="yes")
         self.assertEqual(refused.status_code, 200)

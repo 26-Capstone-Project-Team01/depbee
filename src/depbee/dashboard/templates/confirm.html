@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}업데이트 검사 확인 - depbee{% endblock %}
+{% block main %}
+{# The confirmation of an update check, before npm runs (app.check_update, app._intended): what
+   the npm call is given as package.json says now, what was left out and why, and the form that
+   sends the same again as confirmed. Nothing has run when this is shown. The script shows the
+   section #confirm-check in a dialog over the page the check was asked from; without it this
+   page is the confirmation, and its way out is a link. back: the packages view it was asked
+   from (app._back), else the updates view. #}
+{% set url = "/projects/" ~ project.id %}
+{% if back is none %}{% set away = url ~ "/updates" %}{% elif back %}{% set away = url ~ "?" ~ back %}{% else %}{% set away = url %}{% endif %}
+{% set left_out = absent|length + unnameable|length + invalid|length %}
+{% with here = "업데이트 검사 확인" %}{% include "trail.html" %}{% endwith %}
+<section class="confirm-check" id="confirm-check" aria-labelledby="confirm-title">
+<h1 id="confirm-title" tabindex="-1">{% if everything %}전체 업데이트 검사를 시작할까요?{% else %}지정한 패키지의 업데이트 검사를 시작할까요?{% endif %}</h1>
+<p class="confirm-project"><strong>{{ project.name }}</strong> <span class="path" title="{{ project.path }}">{{ project.path|short }}</span></p>
+{% if everything %}
+<h2>npm에 넘길 대상: 이름 없음(lockfile 전체)</h2>
+<p>이름 없이 <code>npm update</code>를 실행합니다. npm은 package-lock.json의 항목 전체를 package.json과 각 패키지가 요구하는 범위 안에서 다시 계산하므로, 직접 의존성뿐 아니라 간접 의존성도 대상입니다.</p>
+{% if direct_names is not none %}
+<h2>지금 lockfile의 직접 의존성 {{ direct_names|length }}개, 간접 의존성 {{ indirect_count }}개</h2>
+{% if not direct_names and not indirect_count %}<p class="note">lockfile에 설치 항목이 없습니다. 검사를 시작해도 바뀔 항목이 없을 수 있습니다.</p>{% endif %}
+{% if direct_names %}
+<ul class="target-list" tabindex="0" aria-label="지금 lockfile의 직접 의존성">
+{% for name in direct_names %}<li>{{ name }}</li>
+{% endfor %}</ul>
+{% endif %}
+{% else %}
+<p class="warning">package-lock.json을 읽지 못해 항목 수를 표시하지 못했습니다(없거나, 지원하지 않는 형식이거나, 손상됨). 검사를 시작하면 오류를 그대로 보여 줍니다.</p>
+{% endif %}
+{% else %}
+<h2>npm에 넘길 대상: 직접 의존성 {{ targets|length }}개</h2>
+{% if targets %}
+<ul class="target-list" tabindex="0" aria-label="npm에 넘길 직접 의존성">
+{% for name in targets %}<li>{{ name }}</li>
+{% endfor %}</ul>
+<p><code>npm update {{ targets|join(" ") }}</code>를 실행합니다. npm은 이 이름의 패키지를 package.json 범위 안에서 다시 계산하고, 그 패키지가 필요로 하는 간접 의존성도 함께 다시 계산할 수 있습니다.</p>
+{% else %}
+<p class="error">입력한 이름 가운데 npm에 넘길 수 있는 대상이 없어 검사를 시작할 수 없습니다.</p>
+{% endif %}
+{% if absent %}
+<h2>대상에서 뺀 이름: package.json에 선언되지 않음 {{ absent|length }}개</h2>
+<ul class="target-list left-out">
+{% for name in absent %}<li>{{ name }}</li>
+{% endfor %}</ul>
+<p class="note">package.json에 선언한 직접 의존성만 이름으로 지정할 수 있습니다. 간접 의존성은 지정할 수 없고, 그것을 필요로 하는 직접 의존성이나 전체를 검사할 때 함께 다시 계산됩니다.</p>
+{% endif %}
+{% if unnameable %}
+<h2>대상에서 뺀 이름: 피어 의존성으로만 선언됨 {{ unnameable|length }}개</h2>
+<ul class="target-list left-out">
+{% for name in unnameable %}<li>{{ name }}</li>
+{% endfor %}</ul>
+<p class="note">package.json의 peerDependencies에만 선언되어 있고 dependencies·devDependencies·optionalDependencies에는 없어 이름으로 지정할 수 없습니다. 전체 업데이트 검사에서는 npm이 함께 다시 계산합니다.</p>
+{% endif %}
+{% if invalid %}
+<h2>대상에서 뺀 입력: 패키지 이름이 아님 {{ invalid|length }}개</h2>
+<ul class="target-list left-out">
+{% for name in invalid %}<li>{{ name }}</li>
+{% endfor %}</ul>
+<p class="note">버전이나 범위를 붙이지 않은 패키지 이름만 받습니다(예: lodash, @scope/name).</p>
+{% endif %}
+{% endif %}
+<ul class="confirm-facts">
+<li>임시 사본에서 설치 스크립트를 끈 채 lockfile만 계산하고, 바뀌는 버전을 받아 검사합니다. 프로젝트 파일은 바꾸지 않습니다.</li>
+<li>위는 npm에 요청하는 내용입니다. 실제로 바뀌는 항목은 npm이 정합니다. 대상이 그대로일 수도 있고, 요청하지 않은 간접 의존성이 함께 바뀔 수도 있습니다. 검사 결과에서 둘을 나눠 보여 줍니다.</li>
+<li>반영은 검사가 끝난 뒤 결과 화면에서 따로 고릅니다. 이 확인은 검사만 시작합니다.</li>
+</ul>
+{% if busy %}
+<p class="warning">다른 검사나 반영이 실행 중이라 지금은 시작할 수 없습니다. {% if underway %}<a href="/previews/{{ underway.id }}">실행 중인 업데이트 검사 보기</a>{% else %}끝난 뒤 다시 시도하세요.{% endif %}</p>
+{% endif %}
+<div class="confirm-actions">
+{% if sent is not none and not busy %}
+<form method="post" action="{{ url }}/previews">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="packages" value="{{ sent }}">
+{% if back is not none %}<input type="hidden" name="back" value="{{ back }}">
+{% endif %}<button class="primary" type="submit" name="confirm" value="yes">{% if everything %}전체 업데이트 검사 시작{% elif left_out %}대상 {{ targets|length }}개만 업데이트 검사 시작{% else %}업데이트 검사 시작{% endif %}</button>
+</form>
+{% endif %}
+<a class="action" href="{{ away }}" data-cancel>취소하고 돌아가기</a>
+</div>
+<p class="note">취소하면 아무것도 실행하지 않습니다.</p>
+</section>
+{% endblock %}
