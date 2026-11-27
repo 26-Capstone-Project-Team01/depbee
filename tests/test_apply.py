@@ -4,6 +4,7 @@ Synthetic projects only, inside each test run's folder; backups go next to the t
 DEPBEE_HISTORY_DB there.
 """
 
+import errno
 import hashlib
 import json
 import os
@@ -17,7 +18,7 @@ from test_update import ERROR_SECRET, UpdateFixture, sri
 from test_workflow import LINKS, reported
 
 from depbee import history, service
-from depbee.cli import CONFIRM_OPTION
+from depbee.cli import CONFIRM_OPTION, HISTORY_FAILED, OUTPUT_FAILED
 from depbee.contracts import GuardError
 from depbee.service import (
     LOCKFILE_NOTICE,
@@ -723,6 +724,27 @@ class CliTests(ApplyFixture):
         self.assertIn("needs --apply", json.loads(err)["error"])
         self.assert_npm_not_run()
 
+    def test_output_below_a_file_is_refused_before_npm_and_any_change(self):
+        taken = self.upd / "package.json"  # a file: no folder can be made below it
+        expected = str(NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(taken)))
+        for apply in ((), ("--apply", "lockfile"), ("--apply", "install", CONFIRM_OPTION)):
+            for tail in ("report.json", "missing/deep/report.json"):
+                with self.subTest(apply=apply, tail=tail):
+                    code, out, err = self.cli(*apply, "--output", str(taken / tail))
+                    self.assertEqual((code, out), (2, ""))
+                    self.assertEqual(json.loads(err)["error"], expected)
+                    self.assert_npm_not_run()
+                    self.assert_unchanged()
+
+    def test_output_in_missing_folders_is_written(self):
+        self.verdict([PASS], 0)
+        output = self.root / "new" / "deep" / "report.json"
+        code, out, err = self.cli("--apply", "lockfile", "--format", "json",
+                                  "--output", str(output))  # fmt: skip
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(output.read_bytes(), out.encode())
+        self.assert_applied(json.loads(out)["apply"])
+
 
 class HistoryTests(ApplyFixture):
     def test_unregistered_projects_are_not_recorded(self):
@@ -759,3 +781,76 @@ class HistoryTests(ApplyFixture):
         # Only hashes, never the new lockfile itself.
         self.assertNotIn(self.head.read_text(encoding="utf-8"), db.read_bytes().decode("latin-1"))
         self.assertEqual(sql(db, "PRAGMA user_version"), [(3,)])
+
+    def late(self, *args, parent=False):
+        """Run the CLI with an --output that is free at the start and taken while the preview
+        runs (self.verdict's during): by a file, or with parent by a file where its folder would
+        be made. Returns that file with the CLI's result."""
+        self.count = getattr(self, "count", 0) + 1
+        output = self.root / f"late{self.count}" / "report.json"
+        self.taken = output.parent if parent else output
+        if not parent:
+            output.parent.mkdir()
+        code, out, err = self.cli(*args, "--output", str(output))
+        self.assertEqual(self.taken.read_bytes(), b"keep")  # never overwritten
+        return self.taken, code, out, err
+
+    def test_a_late_output_failure_still_shows_and_records_the_apply(self):
+        project_id = history.register_project(self.upd)
+        self.verdict([PASS], 0, during=lambda: self.taken.write_bytes(b"keep"))
+        cases = [("text", False), ("json", False), ("markdown", False), ("json", True)]
+        for count, (fmt, parent) in enumerate(cases, 1):
+            with self.subTest(fmt=fmt, parent=parent):
+                for name, data in self.original.items():
+                    (self.upd / name).write_bytes(data)
+                shutil.rmtree(self.backups, ignore_errors=True)
+                self.calls.clear()
+                taken, code, out, err = self.late(
+                    "--apply", "lockfile", "--format", fmt, parent=parent
+                )
+                self.assertEqual(code, 2)
+                *_, notice, error = err.splitlines()
+                self.assertEqual(notice, OUTPUT_FAILED)
+                error = json.loads(error)
+                self.assertEqual((error["status"], error["exit_code"]), ("error", 2))
+                self.assertIn(repr(str(taken)), error["error"])
+                # One npm update, one changed lockfile with one backup, one history entry.
+                self.assertEqual([call["argv"][2] for call in self.calls], ["--version", "update"])
+                applies = history.list_applies(project_id)
+                self.assertEqual((len(applies), len(history.list_runs(project_id))), (count, count))
+                backup = self.assert_applied(applies[0]["apply"])
+                self.assertEqual(applies[0]["backup"], str(backup))
+                if fmt == "json":
+                    self.assertEqual(json.loads(out)["apply"], applies[0]["apply"])
+                else:
+                    self.assertIn("depbee 업데이트 반영: 반영함", out)
+                    self.assertIn("원본 백업: ", out)
+                    self.assertIn(backup.name, out)
+
+    def test_a_late_output_failure_with_a_refused_apply_or_a_failed_record(self):
+        project_id = history.register_project(self.upd)
+        # Refused (the fixture's FakePredictor flags the change, report exit code 1): still 2.
+        self.verdict(during=lambda: self.taken.write_bytes(b"keep"))
+        _, code, out, err = self.late("--apply", "lockfile")
+        self.assertEqual(code, 2)
+        self.assertIn("depbee 업데이트 반영: 반영하지 않음", out)
+        self.assertEqual(err.splitlines()[-2], OUTPUT_FAILED)
+        (apply,) = history.list_applies(project_id)
+        self.assertEqual(apply["outcome"], "refused")
+        self.assert_unchanged()
+        # The history fails as well: both lines, and the apply is still shown.
+        self.patch("depbee.history.record", side_effect=OSError("synthetic"))
+        _, code, out, err = self.late("--apply", "lockfile", CONFIRM_OPTION, "--format", "json")
+        self.assertEqual(code, 2)
+        self.assert_applied(json.loads(out)["apply"])
+        self.assertEqual(err.splitlines()[:2], [HISTORY_FAILED, OUTPUT_FAILED])
+        self.assertEqual(json.loads(err.splitlines()[2])["status"], "error")
+
+    def test_a_late_output_failure_of_a_preview_prints_and_records_nothing(self):
+        project_id = history.register_project(self.upd)
+        self.verdict([PASS], 0, during=lambda: self.taken.write_bytes(b"keep"))
+        _, code, out, err = self.late("--format", "json")
+        self.assertEqual((code, out), (2, ""))
+        self.assertEqual(json.loads(err)["status"], "error")  # the error alone, as before
+        self.assertEqual(history.list_runs(project_id), [])
+        self.assert_unchanged()

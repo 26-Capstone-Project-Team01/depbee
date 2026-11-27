@@ -191,6 +191,11 @@ GUARD_BACKUP = (
 HISTORY_FAILED = (
     "depbee: 이 검사 결과를 로컬 이력에 기록하지 못했습니다. 출력과 종료 코드는 그대로입니다."
 )
+# update --apply only, after its result is printed; the error JSON of the file follows it.
+OUTPUT_FAILED = (
+    "depbee: 업데이트 반영 결과를 --output 파일에 쓰지 못했습니다. 반영 결과는 출력에 있는 그대로이며, "
+    "다음 오류는 이 파일에 관한 것입니다."
+)
 WARNING = "경고:"  # starts the known malicious notice (_notices); _print_text colors by it
 # Colors of an apply outcome on an interactive terminal (terminal.painter tones).
 OUTCOME_TONES = {
@@ -1040,17 +1045,47 @@ def _apply_exit(report: dict, apply: dict) -> int:
     return report["exit_code"]
 
 
+def _check_output(output: Path) -> None:
+    """Refuse an --output that cannot be created, before any download, npm run or apply: a taken
+    path (the error text of _emit's "x" open) or one below something that is not a folder.
+    Missing folders pass: _emit makes them, and its "x" mode still guards against a file created
+    meanwhile."""
+    if os.path.lexists(output):
+        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(output))
+    for parent in output.parents:
+        if os.path.lexists(parent):
+            if not parent.is_dir():
+                raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(parent))
+            return
+
+
 def _emit(
     report: dict, args: argparse.Namespace, preview: dict | None = None, apply: dict | None = None
-) -> None:
+) -> OSError | None:
+    """Write --output, then print. With an apply, an --output that cannot be written is returned
+    instead of raised: what the apply did to the project is printed first, and the caller records
+    it before raising the error. Without one nothing was changed and nothing is printed."""
     data = report if preview is None else {"preview": preview, "report": report}
     if apply is not None:
         data["apply"] = apply
     payload = json.dumps(data, ensure_ascii=True, indent=2, allow_nan=False) + "\n"
+    failed = None
     if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        with args.output.open("x", encoding="utf-8", newline="\n") as stream:
-            stream.write(payload)
+        try:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            with args.output.open("x", encoding="utf-8", newline="\n") as stream:
+                stream.write(payload)
+        except OSError as exc:
+            if apply is None:
+                raise
+            failed = exc
+    _show(payload, report, args, preview, apply)
+    return failed
+
+
+def _show(
+    payload: str, report: dict, args: argparse.Namespace, preview: dict | None, apply: dict | None
+) -> None:
     if args.command == "plan" or args.format == "json":
         print(payload, end="")
         return
@@ -1352,10 +1387,8 @@ def main(argv: list[str] | None = None) -> int:
             return _setup(args)
         if args.command == "guard":
             return _guard_ci(args) if args.guard_command == "ci" else _guard_settings(args)
-        # Refuse a taken --output before any download or extraction; _emit's "x" mode still
-        # guards against a file created meanwhile. Same error text as that open().
-        if args.output is not None and args.output.exists():
-            raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(args.output))
+        if args.output is not None:
+            _check_output(args.output)
         if args.command == "plan":
             request = plan_project(args.project, args.base_lock, base_ref=args.base_ref)
             _emit(request, args)
@@ -1383,8 +1416,13 @@ def main(argv: list[str] | None = None) -> int:
                 result = apply_update(args.project, args.packages, mode=args.apply,
                                       confirm=args.confirm_warnings, **options)  # fmt: skip
             report, apply = result["report"], result.get("apply")
-            _emit(report, args, result["preview"], apply)
+            failed = _emit(report, args, result["preview"], apply)
             _record("update_preview", args, report, result["preview"], apply)
+            if failed is not None:  # the apply is printed and recorded; now the file's error
+                if hasattr(sys.stderr, "reconfigure"):
+                    sys.stderr.reconfigure(errors="backslashreplace")
+                print(OUTPUT_FAILED, file=sys.stderr)
+                raise failed
             return report["exit_code"] if apply is None else _apply_exit(report, apply)
         if args.command == "check":
             name, version = _split_package(args.package)
