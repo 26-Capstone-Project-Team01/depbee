@@ -20,12 +20,17 @@ child process) and by nothing else: no request carries a path to register.
 What a project's pages run is named as the CLI names it: a scan of the lockfile's change (depbee
 scan), and an update preview of everything or of named packages with its apply (depbee update).
 They never run a check, the CLI's lookup of one NAME@VERSION (depbee check): they only show that
-command (check_command). An update preview always opens its own page, where it is reviewed and
-applied; one sent from the packages view carries that view's search, filter and open candidate
-to the page's way back (_back).
+command (check_command). An update preview (worded "업데이트 검사" on the pages) is first
+confirmed: its form answers with what it would hand npm (_intended) and runs nothing until that
+is sent again as confirmed. It then runs in a thread of its own and has one address from its
+start, /previews/<id>: its progress while it runs (what the analyzer itself reports, package by
+package), why it failed, or the page where it is reviewed and applied. One sent from the packages
+view carries that view's search, filter and open candidate to the page's way back (_back).
 
-The pages work without a script. The one script (static/app.js) only marks a button whose
-request is running and stops a second request meanwhile.
+The pages work without a script. The one script (static/app.js) marks a button whose request is
+running and stops a second request meanwhile, shows the confirmation in a dialog over the page
+it was asked from, and reads a running check's page again in place; without it the confirmation
+is a page and the running check's page asks the browser to load it again (CHECK_REFRESH).
 
 The address is the same at every start, http://127.0.0.1:<port>/, and holds nothing secret:
 whoever can reach this computer's 127.0.0.1 (its other accounts and programs) can open the
@@ -59,7 +64,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route
 
-from .. import history, mcp, service
+from .. import history, mcp, service, terminal
 from ..actions import plain_number, score_text
 from ..cli import (
     APPLY_REASON_LABELS,
@@ -92,17 +97,18 @@ from ..cli import (
     _text_label,
     _unchecked,
 )
-from ..contracts import MAX_JSON_BYTES, GuardError, read_json
+from ..contracts import MAX_JSON_BYTES, GuardError, parse_json, read_json
 from ..inputs.npm import EXACT_VERSION, MAX_NAME_LENGTH, PACKAGE_NAME
 from ..inputs.npm_cli import DEPENDENCY_FIELDS, UPDATE_NAME
 from . import picker, theme
 
 HOST = "127.0.0.1"
 MAX_BODY = 16 * 1024  # bytes of a request body (Starlette answers 413 above it)
-MAX_FIELDS = 4  # form fields; the largest form (apply) has three
+MAX_FIELDS = 4  # form fields; the largest form (a confirmed update check) has four
 MAX_PATH = 1024  # characters of a chosen folder's path
 MAX_TARGETS = 1024  # characters of the update target names field
-KEPT_PREVIEWS = 10  # update previews kept in memory; the oldest is dropped first
+KEPT_PREVIEWS = 10  # update checks kept in memory, whatever their state; the oldest goes first
+CHECK_REFRESH = 3  # seconds between two reads of a running update check's page
 RECENT_RUNS = 10  # runs per project in the list's trend table
 MAX_ID = 2**63 - 1  # SQLite's largest integer; a larger id in a URL is simply not found
 # A candidate's key in an address (<run id>.<position>), as _back carries it.
@@ -178,7 +184,7 @@ NPM_PAGE = "https://www.npmjs.com/package/"
 SHELL_PLAIN = re.compile(r"(?:@[A-Za-z0-9][A-Za-z0-9._-]*/)?[A-Za-z0-9][A-Za-z0-9._-]*")
 # The stylesheets and the one script, each under its own route /static/<name>: nothing else of
 # static/ is served, and no file name is ever taken from a request.
-STYLES = ("style.css", "overview.css")
+STYLES = ("style.css", "overview.css", "check.css")
 SCRIPT = "app.js"
 # The two bundled fonts (scripts/build_dashboard_fonts.py), under static/fonts/, each on its own
 # route like the stylesheets: the licences and the coverage list beside them are not served.
@@ -191,9 +197,11 @@ ICON = (
 )
 # script-src 'self' is the one script file (SCRIPT): no inline script or handler ever runs.
 # font-src 'self' is the bundled fonts (FONTS): no font is loaded from elsewhere.
+# connect-src 'self' is that script reading this dashboard's own pages (an update check's
+# confirmation and its progress); Guard answers such a request only from the dashboard's own page.
 CSP = (
     "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; font-src 'self'; "
-    "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+    "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
 )
 # What a browser says of where a request comes from (Sec-Fetch-Site): the dashboard's own page,
 # or the user (the address bar, a reload). A browser that sends nothing is left to Origin.
@@ -205,20 +213,25 @@ SECURITY_HEADERS = [
     (b"referrer-policy", b"same-origin"),
     (b"cache-control", b"no-store"),
 ]
-KIND_LABELS = {"scan": "lockfile 변경 검사(scan)", "update_preview": "업데이트 미리보기(update)"}
-# The rail's theme button (theme.py): each theme as the button names it now, and as the words
-# that say what the next press does.
-THEME_WORDS = {
-    "system": ("시스템 설정", "시스템 설정 따르기"),
-    "light": ("밝게", "밝게 바꾸기"),
-    "dark": ("어둡게", "어둡게 바꾸기"),
-}
+KIND_LABELS = {"scan": "lockfile 변경 검사(scan)", "update_preview": "업데이트 검사(update)"}
 THEME_FAILED_TITLE = "화면 테마를 저장하지 못했습니다"
 THEME_FAILED = "설정 폴더에 쓸 수 없어 지금 화면 테마를 그대로 둡니다."
 # The pages of the console a GET opens: where the theme form may go back to.
 PAGES = re.compile(
-    r"/(?:|model|projects/[0-9]+(?:/updates|/history)?|runs/[0-9]+|previews/[A-Za-z0-9_-]+)"
+    r"/(?:|model|projects/[0-9]+(?:/updates|/history|/unregister)?|runs/[0-9]+"
+    r"|previews/[A-Za-z0-9_-]+)"
 )
+# Taking a project off the list (build_app's unregister): what the management page says once it
+# is done, and why it was not done while something runs.
+UNREGISTERED = (
+    "{name} 프로젝트의 등록을 해제했습니다. 프로젝트 폴더와 그 안의 파일, 저장된 검사 기록은 "
+    "그대로입니다."
+)
+UNREGISTER_BUSY_TITLE = "등록을 해제하지 않았습니다"
+UNREGISTER_BUSY = (
+    "lockfile 변경 검사, 업데이트 검사나 반영이 실행 중이어서 프로젝트 등록을 해제하지 않았습니다."
+)
+UNREGISTER_BUSY_NOTE = "실행 중인 작업이 끝난 뒤 프로젝트 관리에서 다시 시도하세요."
 MAX_BACK = 2048  # characters of the address the theme form goes back to, decoded
 MODEL_LIMITS = (
     "학습 데이터 버전과 공격 유형별 탐지율은 저장된 보고서에 출처가 없어 보이지 않습니다."
@@ -272,9 +285,7 @@ PORT_REFUSED = (
     "runs (it does not see a dashboard started in a terminal, or any other program). To use "
     "another port, run depbee dashboard --port PORT"
 )
-BUSY = (
-    "다른 lockfile 변경 검사, 업데이트 미리보기나 반영이 실행 중입니다. 끝난 뒤 다시 시도하세요."
-)
+BUSY = "다른 lockfile 변경 검사, 업데이트 검사나 반영이 실행 중입니다. 끝난 뒤 다시 시도하세요."
 BUSY_TITLE = "다른 작업이 실행 중입니다"
 BUSY_NOTE = (
     "먼저 보낸 작업은 계속 실행됩니다. 끝나면 그 결과를 프로젝트의 업데이트와 기록 화면에서 볼 수 "
@@ -282,11 +293,16 @@ BUSY_NOTE = (
 )
 PREVIEW_GONE = (
     "이 업데이트 미리보기가 없습니다(이미 반영을 시도했거나, 오래되어 지워졌거나, 대시보드를 다시 "
-    "시작함). 프로젝트 화면에서 업데이트 미리보기를 다시 실행하세요."
+    "시작함). 프로젝트 화면에서 업데이트 검사를 다시 실행하세요."
+)
+# A check that has not finished has nothing to apply yet (apply).
+CHECK_UNFINISHED = (
+    "이 업데이트 검사는 끝나지 않았거나 실패해서 반영할 미리보기가 없습니다. 검사 화면을 다시 열어 "
+    "상태를 확인하세요."
 )
 PREVIEW_GONE_TITLE = "미리보기가 없습니다"
 PROJECT_MISSING = "등록한 프로젝트 폴더를 찾을 수 없습니다."
-PREVIEW_FAILED = "업데이트 미리보기를 끝내지 못했습니다(파일이나 데이터를 읽거나 쓰지 못함)."
+PREVIEW_FAILED = "업데이트 검사를 끝내지 못했습니다(파일이나 데이터를 읽거나 쓰지 못함)."
 SCAN_TITLE = "lockfile 변경 검사 오류"  # error.html's heading for a scan (default: the update one)
 SCAN_FAILED = "lockfile 변경 검사를 끝내지 못했습니다(파일이나 데이터를 읽거나 쓰지 못함)."
 SCAN_NOT_RECORDED = (
@@ -296,8 +312,8 @@ SCAN_NOT_RECORDED = (
 APPLY_FAILED = "반영 중 예기치 않은 오류가 났습니다. 프로젝트 파일과 백업 폴더를 직접 확인하세요."
 TARGETS_TOO_LONG = f"대상 이름이 너무 깁니다({MAX_TARGETS}자 이하)."
 TARGETS_BLANK = (
-    "패키지 이름이 비어 있어 미리보기를 실행하지 않았습니다. 업데이트할 패키지 이름을 입력하거나, "
-    "전체를 보려면 전체 업데이트 미리보기를 누르세요."
+    "패키지 이름이 비어 있어 업데이트 검사를 실행하지 않았습니다. 검사할 패키지 이름을 입력하거나, "
+    "전체를 보려면 전체 업데이트 검사를 누르세요."
 )
 CHOOSE_MODE = "반영 방식(lockfile 반영 또는 설치까지)을 하나 고르세요."
 CONFIRM_NEEDED = "확인이 필요한 항목이 있습니다. 목록을 검토하고 확인란을 선택한 뒤 진행하세요."
@@ -325,7 +341,7 @@ DASHBOARD_REASONS = {
 }
 CONFIRMED_HERE = "대시보드에서 확인함"
 CONFIRMED_STORED = "확인함"
-RETRY_HERE = "업데이트 미리보기를 다시 실행하고 목록을 검토한 뒤 확인란을 선택해 반영합니다."
+RETRY_HERE = "업데이트 검사를 다시 실행하고 목록을 검토한 뒤 확인란을 선택해 반영합니다."
 
 
 def _finalize(value):
@@ -441,17 +457,15 @@ def build_app(
         """A page of the console. project: the registered project the page is about, shown as
         the open tab (the template gets its tab); section: the view the page belongs to
         (packages, updates, history; manage and model for the two pages outside a project).
-        The theme button on a GET page returns to that page. A POST has no return address."""
+        The theme buttons on a GET page return to that page. A POST has no return address."""
         tabs = _tabs(project) if tabs is None else tabs
-        chosen = theme.load()
         query = urlencode(request.query_params.multi_items())
         back = request.url.path + (f"?{query}" if query else "")
         html = ENV.get_template(name).render(
             safety_note=SAFETY_NOTE, csrf=csrf, tabs=tabs, section=section,
             project=next((tab for tab in tabs if tab["current"]), None), rail=_rail(tabs),
             attention=sum(tab["cell"] in RAIL_ORDER[:3] for tab in tabs),
-            theme=chosen, theme_next=theme.next_of(chosen), theme_words=THEME_WORDS,
-            theme_back=back if request.method == "GET" else None, **context,
+            theme=theme.load(), theme_back=back if request.method == "GET" else None, **context,
         )  # fmt: skip
         # _finalize has escaped lone surrogates; backslashreplace keeps any left from a 500.
         body = html.encode("utf-8", "backslashreplace")
@@ -493,12 +507,61 @@ def build_app(
             return _text(403, FORM_REFUSED)
         return form
 
-    def projects(request: Request, status: int = 200, error: str | None = None) -> Response:
-        """The management page. error: why the folder dialog registered nothing."""
+    def projects(request: Request, status: int = 200, error: str | None = None,
+                 notice: str | None = None) -> Response:  # fmt: skip
+        """The management page. error: why the folder dialog registered nothing. notice: what
+        was just done here (a project taken off the list)."""
         # The tabs are the list: each with its recent runs for the trend table.
         return page(request, "projects.html", status, section="manage",
-                    tabs=_tabs(None, RECENT_RUNS), error=error,
+                    tabs=_tabs(None, RECENT_RUNS), error=error, notice=notice,
                     pick_seconds=picker.PICK_SECONDS, switch_keys=SWITCH_KEYS)  # fmt: skip
+
+    async def unregister(request: Request) -> Response:
+        """Take one registered project off the list. A GET is the confirmation: the project by
+        its name and whole path, what stays and what stops, and the form that does it. Only
+        that form's POST, with its csrf value, unregisters (history.unregister_project): the
+        project's row is marked and nothing else, so its folder is neither read nor written and
+        the runs stored for it stay. The answer is the management page, which says so.
+
+        Nothing is unregistered while a check, a scan or an apply runs: here (busy, held for
+        the change), or on this project in a dashboard of another process, which holds the
+        project meanwhile (history.hold_project; unregister_project needs the same hold). So no
+        work ends on a project that left the list under it. The update checks of the project
+        that this process still holds are dropped with it; those another process holds are
+        refused by the project's generation, which the unregistration raised, also once the
+        folder is registered again. A form sent twice finds no project the second time."""
+        form = await read_form(request) if request.method == "POST" else {}
+        if isinstance(form, Response):
+            return form
+        tabs = _tabs(None)
+        project_id = request.path_params["project_id"]
+        target = next((tab for tab in tabs if tab["id"] == project_id), None)
+        if target is None:
+            return _text(404, "등록된 프로젝트가 아닙니다.")
+        if request.method != "POST":
+            return page(request, "unregister.html", section="manage", tabs=tabs, target=target,
+                        runs=history.count_runs(project_id))  # fmt: skip
+
+        def running() -> Response:
+            return page(request, "error.html", 409, section="manage", tabs=tabs,
+                        title=UNREGISTER_BUSY_TITLE, message=UNREGISTER_BUSY,
+                        note=UNREGISTER_BUSY_NOTE, reopen=PICK_REOPEN)  # fmt: skip
+
+        if not busy.acquire(blocking=False):
+            return running()
+        try:
+            try:
+                done = await run_in_threadpool(history.unregister_project, project_id)
+            except history.ProjectBusy:  # work of another process's dashboard on this project
+                return running()
+            if not done:
+                return _text(404, "등록된 프로젝트가 아닙니다.")
+            for preview_id, kept in list(previews.items()):
+                if kept["project_id"] == project_id:
+                    previews.pop(preview_id, None)
+        finally:
+            busy.release()
+        return projects(request, notice=UNREGISTERED.format(name=target["name"]))
 
     def home(request: Request) -> Response:
         """The console's first page. While no project is registered it is the start page,
@@ -567,6 +630,59 @@ def build_app(
             return projects(request, 503, PICK_ERRORS[outcome])
         return enroll(request, folder)
 
+    def kept_of(found: dict) -> list[tuple[str, dict]]:
+        """The update checks this process holds of the project as it is registered now, newest
+        first. One kept before the project left the list (its generation is not the project's
+        any more) is of a registration that ended, whoever ended it and whether or not the
+        folder is registered again: it is dropped here and never shown or applied. A copy: the
+        request handlers of other threads add and drop checks meanwhile."""
+        mine = []
+        for preview_id, kept in reversed(list(previews.items())):
+            if kept["project_id"] != found["id"]:
+                continue
+            if kept["generation"] != found["generation"]:
+                previews.pop(preview_id, None)
+                continue
+            mine.append((preview_id, kept))
+        return mine
+
+    def registered(preview_id: str, kept: dict) -> dict | None:
+        """The registered project a kept update check is of, None when the project left the
+        list since the check was asked for (kept_of): the check is dropped then."""
+        found = _project(kept["project_id"])
+        if found is not None and found["generation"] == kept["generation"]:
+            return found
+        previews.pop(preview_id, None)
+        return None
+
+    async def begin(project_id: int, generation: int) -> history.Hold | str:
+        """Take what one check, scan or apply runs under, without waiting: this process's one
+        lock (busy) and the project's hold among every dashboard on this history
+        (history.hold_project, at the generation the work was asked for). The hold to give
+        finish() when the work has ended; or why nothing may start, with nothing taken: "busy"
+        (other work here, or on this project in another process) or "gone" (the project is not
+        registered at that generation any more)."""
+        if not busy.acquire(blocking=False):
+            return "busy"
+        try:
+            return await run_in_threadpool(history.hold_project, project_id, generation)
+        except history.ProjectBusy:
+            busy.release()
+            return "busy"
+        except history.ProjectGone:
+            busy.release()
+            return "gone"
+        except BaseException:
+            busy.release()
+            raise
+
+    def finish(hold: history.Hold) -> None:
+        """Give back what begin() took, from whatever thread the work ended in."""
+        try:
+            hold.release()
+        finally:
+            busy.release()
+
     def held(found: dict, state: dict) -> list[dict]:
         """The update previews of the project that this process still holds, newest first: the
         only ones that can be applied. A copy: the request handlers of other threads add and
@@ -575,9 +691,17 @@ def build_app(
             {"id": preview_id, "run_id": kept["run_id"], "created_at": kept["created_at"],
              "lines": _preview_lines(kept["result"]["preview"], _clean)[:2],
              "current": _made_from(kept["result"]["preview"]) == state["now"]}
-            for preview_id, kept in reversed(list(previews.items()))
-            if kept["project_id"] == found["id"]
+            for preview_id, kept in kept_of(found) if kept["state"] == "done"
         ]  # fmt: skip
+
+    def underway(found: dict) -> dict | None:
+        """The update check of the project that runs now, as its views link it: a page that was
+        closed or left is found again while the check goes on."""
+        for preview_id, kept in kept_of(found):
+            if kept["state"] == "running":
+                return {"id": preview_id, "created_at": kept["created_at"],
+                        "names": ", ".join(kept["names"])}  # fmt: skip
+        return None
 
     def project(request: Request) -> Response:
         """The packages view: what package-lock.json installs, and for each entry the candidate
@@ -597,6 +721,7 @@ def build_app(
         dependencies, problem = _dependencies(found["path"])
         direct_count = sum(row["direct"] for row in dependencies)
         state = _update_state(found)
+        _mark_direct(state["rows"], _declared(found["path"], dependencies))
         candidates = {row["location"]: row for row in state["rows"]}
         listed = [
             {**row, "candidate": candidates.get(row["location"]),
@@ -620,7 +745,7 @@ def build_app(
                     query=query, scope=scope, show=show, counts=counts,
                     targets=targets, max_query=MAX_NAME_LENGTH, problem=problem, state=state,
                     selected=_selected(params, shown), previews=held(found, state),
-                    head=head)  # fmt: skip
+                    underway=underway(found), head=head)  # fmt: skip
 
     def updates(request: Request) -> Response:
         """The updates view: the named preview, the previews this process still holds (held),
@@ -639,12 +764,14 @@ def build_app(
             else None
         )
         dependencies, problem = _dependencies(found["path"])
+        _mark_direct(state["rows"], _declared(found["path"], dependencies))
         head = _head(found, dependencies, problem, state)
         groups = _grouped(state["rows"])
         shown = [row for group in groups for row in group["rows"]]
         return page(request, "updates.html", project=found, section="updates", state=state,
                     head=head, groups=groups, check_example=_check_example(dependencies),
                     previews=held(found, state), applied_at=applied_at, max_targets=MAX_TARGETS,
+                    underway=underway(found),
                     selected=_selected(request.query_params, shown))  # fmt: skip
 
     def project_history(request: Request) -> Response:
@@ -676,10 +803,22 @@ def build_app(
             **_report(stored["report"]),
         )  # fmt: skip
 
-    # Update previews of this process only, newest last: {id: project_id, run_id, result,
-    # new_package, new_lock, created_at}. The new file bytes never go to a file or the history.
+    # Update checks of this process only, newest last, each under the id of its address. Every
+    # one has project_id, names (the targets asked for; none: everything), created_at and state:
+    # "running" with progress (None until the analyzer starts its first package, then what it
+    # last reported: packages done, packages in all, the package it is on), "failed" with error
+    # (the message of its page), or "done" with run_id, result, new_package and new_lock, the
+    # preview that is reviewed and applied (created_at is then when it finished). The new file
+    # bytes never go to a file or the history. generation: the project's registration when the
+    # check was asked for (history.list_projects), which every later use of the check requires
+    # the project to still have (kept_of, registered, apply's hold). declared: the locations the
+    # project's files declared as direct when the check was asked for (_declared), and with a
+    # done check declared_new: those the root of its new lockfile declares (_lock_declared).
+    # Neither is ever read from the files as they are later (_scope uses the first for what
+    # the update removes and the second for the rest). At most KEPT_PREVIEWS are kept; the one
+    # that runs is the newest (busy), so it is never the one dropped.
     previews: OrderedDict[str, dict] = OrderedDict()
-    busy = threading.Lock()  # one preview or apply at a time; pages stay open meanwhile
+    busy = threading.Lock()  # one check, scan or apply at a time; pages stay open meanwhile
 
     def preview_page(request: Request, kept: dict, preview_id: str, status: int = 200,
                      error: str | None = None) -> Response:  # fmt: skip
@@ -693,7 +832,9 @@ def build_app(
         return page(
             request, "preview.html", status, preview_id=preview_id, error=error, back=back,
             carried="" if back is None else "?" + urlencode({"back": back}),
-            project=_project(kept["project_id"]), section="updates", created_at=kept["created_at"],
+            project=_project(kept["project_id"]), section="updates",
+            created_at=kept["created_at"],
+            scope=_scope(result, kept["declared"], kept["declared_new"]),
             run_id=kept["run_id"], not_recorded=PREVIEW_NOT_RECORDED if kept["run_id"] is None
             else None, lines=_preview_lines(result["preview"], _clean),
             blocked=[_apply_item(item, _clean, _text_label, threshold) for item in blocked],
@@ -704,11 +845,62 @@ def build_app(
             modes=list(MODE_LABELS.items()), **_report(result["report"]),
         )  # fmt: skip
 
+    def check_page(request: Request, kept: dict, preview_id: str, state: str) -> Response:
+        """The page of an update check that is running or failed, at the address its preview
+        will have. state: the check's state as the caller read it, once: its thread may end it
+        meanwhile. Running: what the analyzer last reported and nothing more, no estimate and no
+        clock; the page is read again every CHECK_REFRESH seconds (by the script in place, else
+        by the browser). Failed: why, and the same check to send again, which is confirmed
+        again."""
+        back = _back(request.query_params.getlist("back"))
+        progress = kept.get("progress")
+        done, total, name, version = progress or (0, None, None, None)
+        return page(
+            request, "check.html", project=_project(kept["project_id"]), section="updates",
+            preview_id=preview_id, state=state, names=kept["names"],
+            created_at=kept["created_at"], error=kept.get("error"), back=back,
+            carried="" if back is None else "?" + urlencode({"back": back}),
+            analyzing=progress is not None, done=done, total=total, current=name,
+            current_version=version, width=round(100 * done / total) if total else 0,
+            refresh=CHECK_REFRESH,
+        )  # fmt: skip
+
+    def work(job: dict, path: Path, names: list[str], hold: history.Hold) -> None:
+        """Run one update check to its end in its own thread and leave what came of it in job:
+        the preview, or the message of its failure. progress is the analyzer's own report before
+        each package (analysis.extractor): index - 1 packages are done by then. Whatever
+        happens the check stops being the running one, and the next one may start (finish)."""
+
+        def progress(index: int, total: int, change: dict) -> None:
+            after = change.get("after") or {}
+            job["progress"] = (index - 1, total, after.get("name"), after.get("version"))
+
+        try:
+            try:
+                outcome = _run_preview(path, names, {**scan_options, "progress": progress})
+            except Exception:  # nothing leaves a check running for ever
+                outcome = PREVIEW_FAILED
+            if isinstance(outcome, str):
+                job["error"] = outcome
+                job["state"] = "failed"
+            else:
+                result, new_package, new_lock, run_id = outcome
+                job.update(result=result, new_package=new_package, new_lock=new_lock,
+                           run_id=run_id, created_at=_now(),
+                           declared_new=_lock_declared(new_lock))  # fmt: skip
+                job["state"] = "done"  # last: a reader of a done check finds all of it
+        finally:
+            finish(hold)
+
     async def check_update(request: Request) -> Response:
-        """Preview an update of a registered project, of everything or of the names given, as
+        """Check an update of a registered project, of everything or of the names given, as
         depbee update does without --apply (POST from its pages). Nothing of the project is
-        written. Whatever page sent it, the answer opens the preview's own page: the one place
-        where it is reviewed and, by a second POST, applied."""
+        written. The form as the pages send it runs nothing: its answer is the confirmation,
+        what npm would be handed as package.json says now (_intended), with the form that sends
+        the same again as confirmed. Only that one starts the check, in a thread of its own
+        (work), and answers at once with the check's address: its progress, then the one place
+        where its preview is reviewed and, by another POST, applied. A confirmed check sent
+        twice (a double click, a resent form) opens the one that runs."""
         form = await read_form(request)
         if isinstance(form, Response):
             return form
@@ -721,35 +913,45 @@ def build_app(
         if len(targets[0]) > MAX_TARGETS:
             return page(request, "error.html", 400, project=found, section="updates",
                         message=TARGETS_TOO_LONG)  # fmt: skip
-        # Only the empty field of the button that previews everything means everything: blanks
-        # typed where names belong are no names, and never a preview of the whole project.
+        # Only the empty field of the button that checks everything means everything: blanks
+        # typed where names belong are no names, and never a check of the whole project.
         if targets[0] and not targets[0].split():
             return page(request, "error.html", 400, project=found, section="updates",
                         message=TARGETS_BLANK)  # fmt: skip
         if not _found(found["path"]):  # the registered path, checked as at registration
             return page(request, "error.html", 400, project=found, section="updates",
                         message=PROJECT_MISSING)  # fmt: skip
-        if not busy.acquire(blocking=False):
+        names = list(dict.fromkeys(targets[0].split()))  # a name given twice is one target
+        back = _back(form.get("back", []))
+        dependencies, problem = _dependencies(found["path"])
+        if form.get("confirm", []) != ["yes"]:
+            return page(request, "confirm.html", project=found, section="updates", back=back,
+                        busy=busy.locked(), underway=underway(found),
+                        **_intended(found["path"], names, dependencies, problem))  # fmt: skip
+        carried = "" if back is None else "?" + urlencode({"back": back})
+        hold = await begin(found["id"], found["generation"])
+        if hold == "gone":  # it left the list since this request read it
+            return _text(404, "등록된 프로젝트가 아닙니다.")
+        if hold == "busy":
+            same = next((preview_id for preview_id, kept in kept_of(found)
+                         if kept["state"] == "running" and kept["names"] == names), None)  # fmt: skip
+            if same is not None:
+                return RedirectResponse(f"/previews/{same}{carried}", 303)
             return stopped(request, 409, BUSY_TITLE, BUSY, BUSY_NOTE, found)
         try:
-            outcome = await run_in_threadpool(
-                _run_preview, Path(found["path"]), targets[0].split(), scan_options
-            )
-        finally:
-            busy.release()
-        if isinstance(outcome, str):
-            return page(request, "error.html", 400, project=found, section="updates",
-                        message=outcome)  # fmt: skip
-        result, new_package, new_lock, run_id = outcome
-        preview_id = secrets.token_urlsafe(16)
-        previews[preview_id] = {
-            "project_id": found["id"], "run_id": run_id, "result": result,
-            "new_package": new_package, "new_lock": new_lock, "created_at": _now(),
-        }  # fmt: skip
-        while len(previews) > KEPT_PREVIEWS:
-            previews.popitem(last=False)
-        back = _back(form.get("back", []))
-        carried = "" if back is None else "?" + urlencode({"back": back})
+            preview_id = secrets.token_urlsafe(16)
+            job = {"project_id": found["id"], "generation": found["generation"], "names": names,
+                   "created_at": _now(), "state": "running", "progress": None,
+                   "declared": _declared(found["path"], dependencies)}  # fmt: skip
+            previews[preview_id] = job
+            while len(previews) > KEPT_PREVIEWS:
+                previews.popitem(last=False)
+            threading.Thread(target=work, args=(job, Path(found["path"]), names, hold),
+                             name="depbee-update-check").start()  # fmt: skip
+        except BaseException:  # no thread took the lock and the hold over
+            previews.pop(preview_id, None)
+            finish(hold)
+            raise
         return RedirectResponse(f"/previews/{preview_id}{carried}", 303)
 
     async def scan(request: Request) -> Response:
@@ -764,12 +966,15 @@ def build_app(
         if not _found(found["path"]):  # the registered path, checked as at registration
             return page(request, "error.html", 400, project=found, section="updates",
                         message=PROJECT_MISSING, title=SCAN_TITLE)  # fmt: skip
-        if not busy.acquire(blocking=False):
+        hold = await begin(found["id"], found["generation"])
+        if hold == "gone":  # it left the list since this request read it
+            return _text(404, "등록된 프로젝트가 아닙니다.")
+        if hold == "busy":
             return stopped(request, 409, BUSY_TITLE, BUSY, BUSY_NOTE, found)
         try:
             outcome = await run_in_threadpool(_run_scan, Path(found["path"]), scan_options)
         finally:
-            busy.release()
+            finish(hold)
         if isinstance(outcome, str):
             return page(request, "error.html", 400, project=found, section="updates",
                         message=outcome, title=SCAN_TITLE)  # fmt: skip
@@ -782,8 +987,11 @@ def build_app(
     def show_preview(request: Request) -> Response:
         preview_id = request.path_params["preview_id"]
         kept = previews.get(preview_id)
-        if kept is None:
+        if kept is None or registered(preview_id, kept) is None:
             return stopped(request, 404, PREVIEW_GONE_TITLE, PREVIEW_GONE, None)
+        state = kept["state"]  # read once: the check's thread may end it meanwhile
+        if state != "done":
+            return check_page(request, kept, preview_id, state)
         return preview_page(request, kept, preview_id)
 
     async def apply(request: Request) -> Response:
@@ -794,8 +1002,10 @@ def build_app(
             return form
         preview_id = request.path_params["preview_id"]
         kept = previews.get(preview_id)
-        if kept is None:
+        if kept is None or registered(preview_id, kept) is None:
             return stopped(request, 404, PREVIEW_GONE_TITLE, PREVIEW_GONE, None)
+        if kept["state"] != "done":
+            return stopped(request, 409, PREVIEW_GONE_TITLE, CHECK_UNFINISHED, None)
         modes = form.get("mode", [])
         if len(modes) != 1 or modes[0] not in service.APPLY_MODES:
             return preview_page(request, kept, preview_id, 400, CHOOSE_MODE)
@@ -809,7 +1019,14 @@ def build_app(
         if found is None or not _found(found["path"]):
             return page(request, "error.html", 400, project=found, section="updates",
                         message=PROJECT_MISSING)  # fmt: skip
-        if not busy.acquire(blocking=False):
+        # The hold is asked for at the generation the preview was checked at, not the one the
+        # project has now: a project that left the list since is refused under the hold, also
+        # when the same folder is registered again.
+        hold = await begin(kept["project_id"], kept["generation"])
+        if hold == "gone":
+            previews.pop(preview_id, None)
+            return stopped(request, 404, PREVIEW_GONE_TITLE, PREVIEW_GONE, None)
+        if hold == "busy":
             return stopped(request, 409, BUSY_TITLE, BUSY, BUSY_NOTE, found)
         try:
             kept = previews.pop(preview_id, None)
@@ -818,7 +1035,7 @@ def build_app(
             outcome = await run_in_threadpool(_run_apply, Path(found["path"]), kept, mode,
                                               confirmed)  # fmt: skip
         finally:
-            busy.release()
+            finish(hold)
         if isinstance(outcome, str):  # the preview is used up: this page says to look at the files
             return finished(request, "error.html", found, 500, message=outcome)
         applied, recorded = outcome
@@ -878,6 +1095,7 @@ def build_app(
             Route("/projects/{project_id:int}", project),
             Route("/projects/{project_id:int}/updates", updates),
             Route("/projects/{project_id:int}/history", project_history),
+            Route("/projects/{project_id:int}/unregister", unregister, methods=["GET", "POST"]),
             Route("/projects/{project_id:int}/previews", check_update, methods=["POST"]),
             Route("/projects/{project_id:int}/scans", scan, methods=["POST"]),
             Route("/previews/{preview_id}", show_preview),
@@ -1522,8 +1740,9 @@ def _declared_as(row: dict) -> str | None:
     return name if row["direct"] and name != row["name"] else None
 
 
-def _preview_targets(path: str) -> set[str]:
-    """Peer-only entries in the lockfile cannot be targeted by npm update."""
+def _manifest_names(path: str, fields) -> set[str]:
+    """The names package.json declares in the dependency fields given, none when it cannot be
+    read."""
     try:
         manifest = mcp._unlinked(Path(path) / "package.json", "package.json")
         if manifest is None or not stat.S_ISREG(manifest.lstat().st_mode):
@@ -1531,13 +1750,113 @@ def _preview_targets(path: str) -> set[str]:
         package, _ = read_json(manifest)
     except (GuardError, OSError, ValueError, RecursionError):
         return set()
-    return {
-        name
-        for field in DEPENDENCY_FIELDS
-        if isinstance(package.get(field), dict)
-        for name in package[field]
-        if len(name) <= MAX_NAME_LENGTH and UPDATE_NAME.fullmatch(name)
-    }
+    return {name for field in fields if isinstance(package.get(field), dict)
+            for name in package[field] if isinstance(name, str)}  # fmt: skip
+
+
+def _preview_targets(path: str) -> set[str]:
+    """Peer-only entries in the lockfile cannot be targeted by npm update."""
+    return {name for name in _manifest_names(path, DEPENDENCY_FIELDS)
+            if len(name) <= MAX_NAME_LENGTH and UPDATE_NAME.fullmatch(name)}  # fmt: skip
+
+
+def _declared(path: str, dependencies: list[dict]) -> frozenset[str]:
+    """The lockfile locations the project's files declare as direct dependencies, as they are
+    now: the lockfile's direct entries (inputs.npm.read_dependencies) and node_modules/<name>
+    of every name package.json declares in a field the lockfile's root has (DECLARED_LABELS),
+    which covers a dependency package.json already names that the lockfile does not have yet
+    and an update adds."""
+    return frozenset({row["location"] for row in dependencies if row["direct"]}
+                     | {f"node_modules/{name}" for name in _manifest_names(path, DECLARED_LABELS)})  # fmt: skip
+
+
+def _lock_declared(lock_bytes: bytes) -> frozenset[str] | None:
+    """The locations a lockfile's root entry declares as direct, from the lockfile's bytes: the
+    new lockfile of an update check, whose root need not declare what the old one did. A name
+    is declared at node_modules/<name> alone, so an alias is declared under its alias and a
+    copy of the name under another package is not. None for bytes that are no such lockfile."""
+    try:
+        root = parse_json(lock_bytes, "package-lock.json")[0]["packages"][""]
+        return frozenset(f"node_modules/{name}" for field in DECLARED_LABELS
+                         if isinstance(root.get(field), dict) for name in root[field])  # fmt: skip
+    except (GuardError, ValueError, RecursionError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def _mark_direct(rows: list[dict], declared: frozenset[str]) -> None:
+    """Say of each changed lockfile entry (direct) whether the project's files declare it, as
+    the packages view says of its rows. declared: _declared of the files as they are."""
+    for row in rows:
+        row["direct"] = row["location"] in declared
+
+
+def _intended(path: str, names: list[str], dependencies: list[dict],
+              problem: str | None) -> dict:  # fmt: skip
+    """What an update check of names (none: everything) hands npm, from package.json as it is
+    now, for the confirmation before anything runs. It says what the npm call takes, not a
+    guess of what will change.
+
+    Without names npm update is given no name and goes through the whole lockfile within the
+    ranges, direct and indirect entries alike: direct_names are the names the lockfile's root
+    declares, one per direct entry (the name of its location, so an alias and the package it
+    stands for are two) and indirect_count the other entries; both None when the lockfile
+    cannot be read (problem), and an empty lockfile has none of either.
+    With names, targets are the names the call is given: those package.json declares in the
+    fields npm update takes (_preview_targets; npm_cli.DEPENDENCY_FIELDS, which leaves out
+    peerDependencies). absent: names it does not declare there, unnameable among them being
+    the ones package.json declares in peerDependencies alone (read from package.json as it is,
+    never from the lockfile, which may be older); invalid: text that
+    is no bare package name (a version, a range, a path). The service refuses a check with any
+    of those (npm_cli.check_names), so the confirmation sends on the targets alone. sent: the
+    field that starts the check; None when names were given and none is a target."""
+    direct = sorted(row["location"].removeprefix("node_modules/")
+                    for row in dependencies if row["direct"])  # fmt: skip
+    counts = {"direct_names": None if problem else direct,
+              "indirect_count": None if problem else len(dependencies) - len(direct)}  # fmt: skip
+    if not names:
+        return {"everything": True, "targets": [], "absent": [], "unnameable": [],
+                "invalid": [], "sent": "", **counts}  # fmt: skip
+    declared = _preview_targets(path)
+    plain = [name for name in names
+             if len(name) <= MAX_NAME_LENGTH and UPDATE_NAME.fullmatch(name)]  # fmt: skip
+    targets = [name for name in plain if name in declared]
+    absent = [name for name in plain if name not in declared]
+    peers = _manifest_names(path, ("peerDependencies",))
+    return {"everything": False, "targets": targets,
+            "absent": [name for name in absent if name not in peers],
+            "unnameable": [name for name in absent if name in peers],
+            "invalid": [name for name in names if name not in plain],
+            "sent": " ".join(targets) or None, **counts}  # fmt: skip
+
+
+def _scope(result: dict, before: frozenset[str], after: frozenset[str] | None) -> dict:
+    """What an update check was asked for next to what its new lockfile changes, which need not
+    be the same: a target may stay as it is, and npm also moves what the targets need.
+    everything: no target was named. asked: each named target with its change, None where the
+    lockfile keeps it as it is. direct and indirect: the changed entries that are declared and
+    those that are not, each {package, location, before, after}; a named target's own entry is
+    in asked and not listed again. total: every changed entry.
+
+    An entry the new lockfile has (changed or added) is direct when the root of that lockfile
+    declares it (after: the check's declared_new), whatever the files declared before: a
+    dependency that is no longer declared but stays installed for another one is indirect now.
+    A removed entry is in the old lockfile alone, so it is direct when the files declared it
+    when the check was asked for (before: the check's declared). before also stands in for a
+    new lockfile whose root could not be read (after None)."""
+    targets = result["preview"].get("targets")
+    names = [name for name in targets if isinstance(name, str)] if isinstance(targets, list) else []
+    kept = before if after is None else after
+    rows = [{"package": row["package"], "location": row["location"],
+             "before": row.get("before_version"), "after": row.get("after_version"),
+             "direct": row["location"] in (before if row.get("status") == "removed" else kept)}
+            for row in result["report"]["results"]]  # fmt: skip
+    at = {row["location"]: row for row in rows}
+    own = {f"node_modules/{name}" for name in names}
+    rest = [row for row in rows if row["location"] not in own]
+    return {"everything": not names, "total": len(rows),
+            "asked": [{"name": name, "change": at.get(f"node_modules/{name}")} for name in names],
+            "direct": [row for row in rest if row["direct"]],
+            "indirect": [row for row in rest if not row["direct"]]}  # fmt: skip
 
 
 def _run_row(run: dict) -> dict:
@@ -1875,12 +2194,17 @@ def serve(
         server = uvicorn.Server(config)
         # The console's first page, whatever is registered: it reads the history when opened.
         url = f"http://{HOST}:{actual}/"
-        if background is None:
-            print(url, flush=True)
-            print(STARTED, flush=True)
-        else:
+        if background is not None:
             background.publish(url, actual)
         try:
+            # A pipe or a file gets the two lines it always got, the address first. A person at
+            # a terminal gets the start as terminal.launch() draws it; Ctrl+C while it is being
+            # drawn ends as one during the serving does.
+            if background is None and terminal.interactive(sys.stdout):
+                terminal.launch(sys.stdout, "foreground", url)
+            elif background is None:
+                print(url, flush=True)
+                print(STARTED, flush=True)
             server.run(sockets=[sock])
         except KeyboardInterrupt:
             # After its graceful shutdown uvicorn re-raises the captured Ctrl+C (capture_signals).

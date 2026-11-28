@@ -6,33 +6,34 @@
 <title>{% block title %}depbee{% endblock %}</title>
 <link rel="stylesheet" href="/static/style.css">
 {% if section == "overview" %}<link rel="stylesheet" href="/static/overview.css">{% endif %}
+{# The update check's screens and its dialog, which a project's views open (project_head.html). #}
+{% if section in ("packages", "updates", "history") %}<link rel="stylesheet" href="/static/check.css">{% endif %}
 <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
 {# The one script: it marks a running request and moves the focus after a check. Every page
    works without it. #}
 <script src="/static/app.js" defer></script>
+{# head: what one page adds: a running update check's reload without the script (check.html). #}
+{% block head %}{% endblock %}
 </head>
 {# shell: a view with the inspector beside its list says class="split" (docs/dashboard-design.md). #}
 <body{% block shell %}{% endblock %}>
 <a class="skip" href="#main">본문으로 건너뛰기</a>
-{# The rail, a bar on a narrow screen: the brand, the theme, the overview, project management and
-   the model page, then the registered projects as tabs (links, the open one marked aria-current),
-   those that need a look first (app._rail). #}
+{# The rail, a bar on a narrow screen: the brand, the way home, project management and the model
+   page, the theme and what a verdict does not promise (at the rail's foot), then the registered
+   projects as tabs (links, the open one marked aria-current), those that need a look first
+   (app._rail). The icons are drawn here and coloured by the stylesheet; each control that is
+   only an icon has its name for a screen reader (aria-label) and under the pointer (title). #}
 <header class="masthead">
 <a class="brand" href="/"><span class="comb" aria-hidden="true"><span></span><span></span><span></span></span><span class="wordmark">depbee</span> <span class="brand-note">npm 업데이트 검사</span></a>
-{# The theme: the system's, or the one chosen here (theme.py), saved by a POST that comes back to
-   this page. Only on a page a GET opened (theme_back, app.page). #}
-{% if theme_back is not none %}
-<form class="theme" method="post" action="/theme">
-<input type="hidden" name="csrf" value="{{ csrf }}">
-<input type="hidden" name="back" value="{{ theme_back }}">
-<button type="submit" name="theme" value="{{ theme_next }}">화면: {{ theme_words[theme][0] }}<span class="visually-hidden">. {{ theme_words[theme_next][1] }}</span></button>
-</form>
-{% endif %}
 <nav class="aux" aria-label="관리와 정보">
-<a href="/"{% if section == "overview" %} aria-current="page"{% endif %}>프로젝트 현황판</a>
+{# Home is the overview of the registered projects. #}
+<a class="home" href="/" aria-label="홈: 프로젝트 현황판" title="홈: 프로젝트 현황판"{% if section == "overview" %} aria-current="page"{% endif %}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5M5.5 9.5V20h4.75v-5.5h3.5V20h4.75V9.5"/></svg></a>
 <a class="tab manage" href="/?manage=1"{% if section == "manage" %} aria-current="page"{% endif %}>프로젝트 관리</a>
 <a href="/model"{% if section == "model" %} aria-current="page"{% endif %}>모델 정보</a>
 </nav>
+<div class="rail-foot">
+{% include "foot.html" %}
+</div>
 {# A project on one line: its mark, its name (the whole path on hover), its state said for a
    screen reader, then in view its state in a word where the risk and hold counts of its newest
    run do not say it (hidden from a screen reader, which has the state already) and those
@@ -60,11 +61,6 @@
 <p class="warning">{{ rail_unread }}</p>{% endif %}
 {% block main %}{% endblock %}
 </main>
-<footer>
-{# What keeps a reader safe is in view; where the page opens is behind the question mark. #}
-<p class="note">{{ safety_note }} 이 PC의 다른 계정과 프로그램도 이 주소를 열 수 있습니다. <button type="button" class="help" popovertarget="help-where" aria-label="이 화면이 열리는 곳"><span aria-hidden="true">?</span></button></p>
-<div class="help-pop" id="help-where" popover><p>이 화면은 이 PC의 127.0.0.1에서만 열립니다.</p></div>
-</footer>
 {# What the script says while a request runs and after a check, for a screen reader. #}
 <p class="visually-hidden" id="live" role="status" aria-live="polite"></p>
 </body>

@@ -1275,8 +1275,13 @@ def _dashboard(args: argparse.Namespace) -> int:
 
     if args.background:
         state, started = lifecycle.start(port, **options)
-        print(state["url"])
-        print(BACKGROUND_STARTED if started else BACKGROUND_RUNNING)
+        # A person at a terminal gets the start drawn (terminal.launch); a pipe or a file the
+        # two lines it always got, the address first.
+        if terminal.interactive(sys.stdout):
+            terminal.launch(sys.stdout, "started" if started else "running", state["url"])
+        else:
+            print(state["url"])
+            print(BACKGROUND_STARTED if started else BACKGROUND_RUNNING)
         _warn_shared(config.user_dir())
         return 0
     if args.port is not None or any(options.values()):

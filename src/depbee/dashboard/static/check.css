@@ -1,0 +1,90 @@
+/* The update check's own screens (docs/dashboard-design.md 7): the confirmation before npm runs,
+   as a page or in the script's dialog, the progress of a running check, and what a finished one
+   was asked for next to what it changes. Colours are style.css's tokens, so both themes hold.
+   The one thing that moves is the bee of a running check, and only where motion is not to be
+   reduced (the last block of the progress rules). */
+
+/* The confirmation: one sheet with the ink border of a decision (the apply gate has the same). */
+.confirm-check { max-width: 46rem; padding: 1.1rem 1.25rem 1.2rem; border: 2px solid var(--ink); border-radius: 8px; background: var(--sheet); }
+.confirm-check h1 { margin: 0 0 .35rem; font-size: 1.3125rem; }
+.confirm-check h2 { margin: 1.1rem 0 .4rem; font-size: 1rem; }
+.confirm-project { margin: 0; }
+.confirm-project .path { margin-left: .4rem; color: var(--muted); font-size: .875rem; overflow-wrap: anywhere; }
+/* The names as npm is handed them. Many of them scroll inside the list, which the keyboard
+   reaches (tabindex), so the buttons stay in view. */
+.target-list { display: flex; flex-wrap: wrap; gap: .35rem .4rem; max-width: none; max-height: 11.5rem; margin: 0; padding: .55rem; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); list-style: none; }
+.target-list li { padding: .1rem .55rem; border: 1px solid var(--line-2); border-radius: 4px; background: var(--sheet); font-weight: 600; font-size: .9375rem; overflow-wrap: anywhere; }
+/* Left out of the check: the heading above says so and why; the dashed edge only repeats it. */
+.target-list.left-out li { border-style: dashed; background: transparent; color: var(--muted); }
+.confirm-facts { max-width: none; margin: 1.1rem 0 0; padding-left: 1.15rem; font-size: .9375rem; }
+.confirm-facts li + li { margin-top: .3rem; }
+.confirm-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin-top: 1.1rem; }
+.confirm-actions form { margin: 0; }
+.confirm-check > .note:last-child { margin-bottom: 0; }
+
+/* The same sheet in the script's dialog, over the page the check was asked from. */
+dialog.confirm-modal { width: min(46rem, calc(100vw - 1.5rem)); max-height: calc(100dvh - 1.5rem); padding: 0; overflow: auto; border: 0; border-radius: 10px; background: transparent; color: var(--ink); box-shadow: var(--shadow-pop); }
+dialog.confirm-modal::backdrop { background: rgba(20, 17, 10, .6); }
+dialog.confirm-modal .confirm-check { max-width: none; }
+
+/* A running check: the bee over the bar, at what the analyzer last reported. */
+.check-asked { max-width: none; margin: .25rem 0 0; overflow-wrap: anywhere; }
+.check-asked .note { margin-left: .5rem; white-space: nowrap; }
+.check-progress { max-width: 46rem; margin: 1rem 0; padding: 1.1rem 1.25rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow); }
+.check-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+.check-progress h2 { margin: 0; font-size: 1.125rem; }
+.check-count { margin: 0; color: var(--muted); font: 600 1rem/1 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.check-count b { color: var(--ink); font-size: 1.375rem; font-weight: 800; }
+/* The comb, the bar and the cell the bee ends on. The room above the bar is the bee's: it is
+   drawn outside the box of its own picture (.air), so nothing around it moves when it does. */
+.flight { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .7rem; margin: 3rem 0 .8rem; }
+/* The rail draws the comb on its dark ground; here it stands on the sheet. */
+.flight .comb span:nth-child(2), .flight .comb span:nth-child(3) { background: var(--ink); }
+.flight .comb span:nth-child(2)::after { background: var(--sheet); }
+/* Above the goal cell, which comes after it: the bee lands on the cell, not under it. */
+.flight .track { position: relative; z-index: 1; height: .75rem; }
+/* Both pictures count in CSS pixels (no viewBox), so a percentage is a part of the bar's width:
+   the fill's width and the bee's x are the same number, written by the server. */
+.flight .groove { display: block; width: 100%; height: 100%; border-radius: 999px; background: var(--head); box-shadow: inset 0 0 0 1px var(--line-2); }
+.flight .fill { fill: var(--honey); }
+.flight .tick { fill: var(--sheet); transform: translateX(-1px); }
+.flight .air { position: absolute; top: 0; left: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.bee { overflow: visible; }
+.bee .body { fill: var(--honey); stroke: var(--ink); stroke-width: 1.5; }
+.bee .ink { fill: none; stroke: var(--ink); stroke-width: 2.2; stroke-linecap: round; }
+.bee .thin { stroke-width: 1.6; }
+.bee .head { fill: var(--ink); }
+.bee .wing { fill: var(--sheet); stroke: var(--ink); stroke-width: 1.3; }
+.bee .wings { transform-box: fill-box; transform-origin: 50% 100%; }
+.flight .goal { position: relative; width: 1.5rem; height: 1.72rem; background: var(--muted); clip-path: var(--hex); }
+.flight .goal::after { content: ""; position: absolute; inset: 2px; background: var(--sheet); clip-path: var(--hex); }
+.check-done { max-width: none; margin: 0; color: var(--muted); font-size: .9375rem; }
+.check-current { max-width: none; margin: .2rem 0 0; overflow-wrap: anywhere; }
+/* The analysis ended and its result is about to be loaded (app.js): the bar is full, the bee is
+   on the goal cell and the heading says so. The two lines of the last report keep their room. */
+.landed .check-while { display: none; }
+.landed .check-after { display: inline; }
+.landed .check-done, .landed .check-current { visibility: hidden; }
+.landed .fill { width: 100%; }
+.landed .goal, .landed .goal::after { background: var(--honey); }
+.landed .bee-fly { transform: translate(1.45rem, .95rem); }
+@keyframes bee-bob { to { transform: translateY(-.3rem); } }
+@keyframes bee-flap { to { transform: scaleY(.35); } }
+@media (prefers-reduced-motion: no-preference) {
+  .flight .fill { transition: width .5s cubic-bezier(.3, .7, .3, 1); }
+  #check-progress:not(.landed) .bee-bob { animation: bee-bob 1.1s ease-in-out infinite alternate; }
+  #check-progress:not(.landed) .wings { animation: bee-flap .13s linear infinite alternate; }
+}
+.check-steps { max-width: 46rem; margin: 0 0 1rem; padding-left: 1.5rem; color: var(--muted); }
+.check-steps li + li { margin-top: .3rem; }
+.check-steps li[aria-current] { color: var(--ink); }
+.check-steps li[aria-current]::marker { font-weight: 800; }
+
+/* A finished check: what was asked for next to what the new lockfile changes. */
+.scope { max-width: 46rem; margin: 1rem 0; padding: .9rem 1.1rem 1rem; border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow); }
+.scope h2 { margin: 0 0 .5rem; font-size: 1.0625rem; }
+.scope h3 { margin: .9rem 0 .3rem; font-size: .9375rem; }
+.scope ul { max-width: none; margin: .3rem 0 0; }
+.scope li { overflow-wrap: anywhere; }
+.scope details > summary { min-height: 2.75rem; display: flex; align-items: center; font-weight: 700; cursor: pointer; }
+.scope .row-tags { margin-left: 0; margin-right: .4rem; }

@@ -780,7 +780,7 @@ class HistoryTests(ApplyFixture):
         self.assertEqual(apply["new_package_lock_sha256"], sha(self.head.read_bytes()))
         # Only hashes, never the new lockfile itself.
         self.assertNotIn(self.head.read_text(encoding="utf-8"), db.read_bytes().decode("latin-1"))
-        self.assertEqual(sql(db, "PRAGMA user_version"), [(3,)])
+        self.assertEqual(sql(db, "PRAGMA user_version"), [(4,)])
 
     def late(self, *args, parent=False):
         """Run the CLI with an --output that is free at the start and taken while the preview

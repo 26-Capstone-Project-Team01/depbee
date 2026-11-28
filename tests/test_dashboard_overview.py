@@ -317,9 +317,10 @@ class OverviewTests(test_dashboard.DashboardFixture):
             ("none", 1, "미검사", "1"), ("stale", 1, "파일 바뀜", "1"),
             ("gone", 1, "폴더 없음", "1")])  # fmt: skip
         self.assertEqual(chart.count("<li"), len(states))
-        # A chart of what is stored: no picture, no drawing, nothing fetched.
+        # A chart of what is stored: no picture, no drawing, nothing fetched. The rail's icons
+        # are the only drawings of the page.
         for absent in ("<svg", "<canvas", "<img", "<meter"):
-            self.assertNotIn(absent, html)
+            self.assertNotIn(absent, html.split("<main", 1)[1])
 
         # One line a project, seven columns.
         self.assertEqual(re.findall(r'<th role="columnheader" scope="col">([^<]*)</th>', html),
@@ -355,11 +356,11 @@ class OverviewTests(test_dashboard.DashboardFixture):
         # with the stored result spelled out.
         moved = "이 미리보기 뒤에 package.json이나 package-lock.json이 바뀌어 지금 파일의 결과가 아닙니다."
         found = cells("moved")
-        self.assertRegex(found[0], rf"^최근 검사 파일 바뀜, {re.escape(moved)} 업데이트 미리보기\(update\): 통과 "
+        self.assertRegex(found[0], rf"^최근 검사 파일 바뀜, {re.escape(moved)} 업데이트 검사\(update\): 통과 "
                                    rf"moved 최근 검사 보고서 #{stale}$")  # fmt: skip
-        self.assertIn(f'<span class="verdict stale" title="{moved} 업데이트 미리보기(update): 통과">', html)
+        self.assertIn(f'<span class="verdict stale" title="{moved} 업데이트 검사(update): 통과">', html)
         self.assertEqual(found[1:3], ["위험 0", "보류 0"])
-        gone = "폴더를 찾을 수 없습니다. 지난 기록은 그대로 열립니다. 업데이트 미리보기(update): 위험 판정 있음"
+        gone = "폴더를 찾을 수 없습니다. 지난 기록은 그대로 열립니다. 업데이트 검사(update): 위험 판정 있음"
         found = cells("gone")
         self.assertRegex(found[0], rf"^최근 검사 폴더 없음, {re.escape(gone)} gone 최근 검사 보고서 #{refused}$")
         self.assertIn(f'<span class="verdict gone" title="{gone}">', html)
@@ -639,9 +640,9 @@ class OverviewTests(test_dashboard.DashboardFixture):
             for url in (out.getvalue().splitlines()[0], background.publish.call_args.args[0]):
                 self.assertRegex(url, r"\Ahttp://127\.0\.0\.1:[1-9]\d*/\Z", count)
         self.assertEqual(set(hosts), {"127.0.0.1"})
-        # The two stylesheets and the one script, each as what it is.
+        # The stylesheets and the one script, each as what it is.
         self.assertEqual((self.app.STYLES, self.app.SCRIPT),
-                         (("style.css", "overview.css"), "app.js"))  # fmt: skip
+                         (("style.css", "overview.css", "check.css"), "app.js"))  # fmt: skip
         served = {**dict.fromkeys(self.app.STYLES, "text/css; charset=utf-8"),
                   self.app.SCRIPT: "text/javascript; charset=utf-8"}  # fmt: skip
         package = self.root / "package"

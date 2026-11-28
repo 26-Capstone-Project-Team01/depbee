@@ -80,7 +80,9 @@ class PickRouteTests(DashboardFixture):
         html = self.page("/")
         self.assertIn(f'{PICK_FORM}\n<input type="hidden" name="csrf" value="{CSRF}">\n'
                       '<button type="submit" ', html)  # fmt: skip
-        self.assertEqual((html.count("<form "), html.count("<button ")), (1, 1))
+        # The page's own content; after it comes the foot every page has (theme, question mark).
+        main = html.split("</main>", 1)[0]
+        self.assertEqual((main.count("<form "), main.count("<button ")), (1, 1))
         for absent in (*TYPED, "<details"):
             self.assertNotIn(absent, html)
         self.assertEqual(self.choose.call_count, 0)  # looking opens no dialog

@@ -89,12 +89,13 @@ class InspectorTests(test_dashboard.DashboardFixture):
         self.assertEqual([row["candidate"] is context["selected"] for row in context["rows"]],
                          [False, True, False])  # fmt: skip
         # The row says what the stored report says (app._result), the two versions, the run and
-        # position its item names, and what that report was checked with: nothing else.
+        # position its item names, what that report was checked with, and whether the lockfile's
+        # root declares it (direct, app._mark_direct): nothing else.
         row = self.selected(self.updates, self.keys["example"])
         self.assertEqual(row, {
             **self.app._result(self.report["results"][1], self.report), "before": "1.1.0",
             "after": "1.2.0", "run_id": self.checked, "position": 1, "model_id": "unit-test",
-            "threshold": 0.5, "list_as_of": KnownList.list_as_of})  # fmt: skip
+            "threshold": 0.5, "list_as_of": KnownList.list_as_of, "direct": True})  # fmt: skip
         self.assertEqual((row["compared"], row["evidence"], row["explanation"]),
                          (None, ["synthetic evidence"], []))  # fmt: skip
         # Each detector's own verdict stays apart from the item's and from the model's.
@@ -250,7 +251,7 @@ class InspectorTests(test_dashboard.DashboardFixture):
                             r"</span></h3>", html)  # fmt: skip
         self.assertEqual(groups, [("refused", "risk", "반영 거부", "1"), ("confirm", "hold", "확인 필요", "1"),
                                   ("free", "pass", "반영 가능", "1"), ("removed", "", "삭제", "1")])  # fmt: skip
-        listed = re.findall(r'<tr><th scope="row">([^<]*)<span class="where">', html)
+        listed = re.findall(r'<tr><th scope="row">([^<]*)<span class="row-tags">', html)
         self.assertEqual(listed, ["other", "example", "inner", "new"])
         # The view opens the first candidate it shows: the riskiest.
         self.assertEqual(self.selected(self.updates)["package"], "other")
@@ -269,7 +270,7 @@ class InspectorTests(test_dashboard.DashboardFixture):
             self.assertNotIn(absent, outside)
         # The named check is one line above, folded until it is opened.
         self.assertRegex(html, r'(?s)<div class="action-line">\s*<details class="named">\s*'
-                               r"<summary>패키지를 지정해 업데이트</summary>.*?"
+                               r"<summary>패키지를 지정해 업데이트 검사</summary>.*?"
                                rf'<form method="post" action="{self.packages}/previews"')  # fmt: skip
         self.assertIn('name="packages" type="text"', html)
 
@@ -291,7 +292,7 @@ class InspectorTests(test_dashboard.DashboardFixture):
         self.assertIn("기지 악성 목록 미확인", row)
         # The named preview updates what it names, with what that changes under it.
         self.assertNotIn("적은 이름만 계산", html)
-        self.assertIn("그 이름만 업데이트 대상으로 삼습니다(함께 바뀌는 하위 의존성 포함)", html)
+        self.assertIn("그 직접 의존성만 대상으로 삼고, 그것이 필요로 하는 간접 의존성은 npm이 함께 다시 계산합니다", html)
 
     def test_grouped_puts_what_needs_a_look_first(self):
         def row(key, status="flagged", n=0):

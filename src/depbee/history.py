@@ -7,9 +7,24 @@ apply (service.apply_update) is stored next to its update_preview run, or added 
 later with record_apply() (the dashboard); never the new lockfile. An update_preview run also
 has a previews row (the hashes of the two files it was made from and its targets), so that the
 previews of given files are found without reading the stored documents (list_previews()).
+
+A project leaves the list by unregister_project(), which only marks its row: its runs stay
+stored under it, nothing more is recorded for it, and registering the folder again brings it
+back with them. No projects row is ever deleted: SQLite gives the id of a deleted last row to
+the next project, which would then own the runs left behind. Each unregistration raises the
+row's generation, so that whoever kept something of the project (a dashboard, an update
+preview in its memory) can tell that the project left the list since, also once it is back.
+
+The dashboards of this computer share the file. What one of them runs on a project (a check, a
+scan, an apply) holds that project meanwhile (hold_project): a lock of the operating system on
+a file beside the history, never one of the database, which the system frees if the process
+dies. unregister_project() needs the same hold, so a project never leaves the list under work
+that runs on it, in this process or another.
 """
 
 import contextlib
+import errno
+import hashlib
 import json
 import os
 import sqlite3
@@ -20,9 +35,9 @@ from pathlib import Path
 from . import __version__
 
 # PRAGMA user_version of a depbee history database; separate from contracts.SCHEMA_VERSION.
-# 2 added the applies table and 3 the previews table; an older file is upgraded in the
-# transaction of its next write.
-USER_VERSION = 3
+# 2 added the applies table, 3 the previews table and 4 projects.unregistered_at and
+# projects.generation; an older file is upgraded in the transaction of its next write.
+USER_VERSION = 4
 # PRAGMA application_id ("DPBE"): marks the file as a depbee history; the version alone does not.
 APPLICATION_ID = 0x44504245
 TIMEOUT = 1.5  # seconds to wait for a lock; the CLI has already printed its report
@@ -124,6 +139,17 @@ CREATE INDEX previews_by_files
     ON previews (project_id, package_json_sha256, package_lock_sha256, run_id);
 CREATE INDEX runs_by_kind ON runs (project_id, kind, id);
 """
+# Version 4: when a project was taken off the list (unregister_project), NULL while it is
+# registered, and how many times it was (generation). Its row stays, so that its runs keep
+# their project and its id is never given to another one.
+SCHEMA_4 = """
+ALTER TABLE projects ADD COLUMN unregistered_at TEXT;
+ALTER TABLE projects ADD COLUMN generation INTEGER NOT NULL DEFAULT 0
+"""
+# In a query _read() runs: the condition that a projects row is registered, and its
+# generation. A file older than version 4 has neither column: every project in it is
+# registered, at generation 0.
+REGISTERED, GENERATION = "{registered}", "{generation}"
 INSERT_PREVIEW = (
     "INSERT INTO previews (run_id, project_id, created_at, package_json_sha256, "
     "package_lock_sha256, targets) VALUES (?, ?, ?, ?, ?, ?)"
@@ -132,6 +158,14 @@ INSERT_PREVIEW = (
 
 class HistoryError(Exception):
     """The file is not a history database this depbee can write (newer or not depbee's)."""
+
+
+class ProjectBusy(Exception):
+    """Another dashboard process, or another hold of this one, works on the project."""
+
+
+class ProjectGone(Exception):
+    """The project is not registered now, or left the list since the generation asked for."""
 
 
 def db_path() -> Path:
@@ -246,6 +280,7 @@ def _upgrade(connection, version: int) -> None:
         (SCHEMA if version == 0 else "")
         + (SCHEMA_2 if version < 2 else "")
         + (SCHEMA_3 if version < 3 else "")
+        + (SCHEMA_4 if version < 4 else "")
     )
     for statement in script.split(";"):
         if statement.strip():
@@ -263,13 +298,98 @@ def _upgrade(connection, version: int) -> None:
         connection.execute(f"PRAGMA user_version = {USER_VERSION}")
 
 
+class Hold:
+    """A project held for one piece of work (hold_project). release() frees it, once, from any
+    thread; the system frees it too when the process ends. Also a context manager."""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def release(self) -> None:
+        stream, self._stream = self._stream, None
+        if stream is None:
+            return
+        if os.name == "nt":
+            import msvcrt
+
+            with contextlib.suppress(OSError):
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        stream.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.release()
+
+
+def _lock_project(project_id: int) -> Hold:
+    """The system's lock on a file in locks/ beside the history file (the way of the install
+    lock, service._install_lock), without waiting: ProjectBusy while any other open file holds
+    it, in this process or another. Both the folder and the file's name come from the history
+    file's real path (case-folded on Windows for the name), so every path to one history file,
+    a link in another folder too, reaches one lock file; the name also has the project's id, so
+    project 1 of another history file in the same folder is another project. OSError if the
+    file cannot be opened or the file system has no locks."""
+    database = os.path.realpath(db_path())
+    key = hashlib.sha256(os.path.normcase(database).encode("utf-8", "replace")).hexdigest()[:32]
+    folder = Path(database).parent / "locks"
+    folder.mkdir(parents=True, exist_ok=True)
+    stream = open(folder / f"project-{key}-{project_id}.lock", "a+b")  # noqa: SIM115
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            stream.seek(0)
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        stream.close()
+        if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):  # held
+            raise ProjectBusy(project_id) from None
+        raise
+    return Hold(stream)
+
+
+def hold_project(project_id: int, generation: int) -> Hold:
+    """Hold a registered project for the whole of a check, a scan or an apply that a dashboard
+    runs on it, and return the hold to release() when that has ended. generation: the project's
+    as list_projects() gave it when the work, or the update preview it applies, was asked for.
+
+    Under the hold the registration is read afresh: ProjectGone unless the project is registered
+    now at that generation, so nothing starts on a project that left the list, and nothing kept
+    from before it left is used once it is back. ProjectBusy without waiting while another hold
+    has the project: no two pieces of work on one project, and none while it is unregistered
+    (unregister_project takes the same hold). No database lock is kept; the database is read
+    once. Raises sqlite3.Error, HistoryError or OSError if that or the lock file fails.
+    """
+    hold = _lock_project(project_id)
+    try:
+        found = _read(
+            f"SELECT {GENERATION} FROM projects WHERE id = ? AND {REGISTERED}", (project_id,)
+        )
+        if not found or found[0][0] != generation:
+            raise ProjectGone(project_id)
+    except BaseException:
+        hold.release()
+        raise
+    return hold
+
+
 def register_project(project: Path | str) -> int:
     """Register an existing project folder and return its id; creates the database if needed.
 
-    Registering again keeps the first registration. Web input checks (UNC, device paths,
-    reserved names, links) belong to the dashboard's boundary, not here. Without a home
-    directory (and no DEPBEE_HISTORY_DB) this and the read functions raise RuntimeError; only
-    record() skips.
+    Registering again keeps the first registration. A folder that was unregistered
+    (unregister_project) is registered anew under the id it had, with the runs stored for it and
+    at its old place in the list; registered_at is then the time of this call, and its
+    generation stays the one its unregistration gave it. Web input checks
+    (UNC, device paths, reserved names, links) belong to the dashboard's boundary, not here.
+    Without a home directory (and no DEPBEE_HISTORY_DB) this and the read functions raise
+    RuntimeError; only record() skips.
     """
     if not Path(project).is_dir():
         raise ValueError("The project must be an existing directory")
@@ -278,11 +398,57 @@ def register_project(project: Path | str) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     with _connect(path, create=True) as connection, _write(connection):
         _upgrade(connection, _check(connection, create=True))
+        now = _now()
         connection.execute(
             "INSERT OR IGNORE INTO projects (key, path, registered_at) VALUES (?, ?, ?)",
-            (key, display, _now()),
+            (key, display, now),
+        )
+        connection.execute(
+            "UPDATE projects SET unregistered_at = NULL, registered_at = ? "
+            "WHERE key = ? AND unregistered_at IS NOT NULL",
+            (now, key),
         )
         return connection.execute("SELECT id FROM projects WHERE key = ?", (key,)).fetchone()[0]
+
+
+def unregister_project(project_id: int) -> bool:
+    """Take a registered project off the list, and return whether this call did.
+
+    Only the project's row is marked, and its generation raised: its runs, results, applies and
+    previews stay stored under it, and nothing of its folder is read or written (the folder may
+    be gone). From then on list_projects() leaves it out, record() and record_apply() store
+    nothing for it, get_run() finds none of its runs and hold_project() refuses it, until
+    register_project() is given the same folder again; what was kept at the earlier generation
+    is refused for good.
+
+    Done under the project's hold (hold_project): ProjectBusy, with nothing changed, while a
+    dashboard of any process runs a check, a scan or an apply on it. False without touching
+    anything if there is no database file, no such project, or the project is already
+    unregistered. Raises sqlite3.Error, HistoryError or OSError if the database or the lock file
+    cannot be read or written, and RuntimeError without a home directory.
+    """
+    path = db_path()
+    if not path.exists():
+        return False
+    if not _read(f"SELECT 1 FROM projects WHERE id = ? AND {REGISTERED}", (project_id,)):
+        return False  # before any lock file is made for an id that is no project's
+    with _lock_project(project_id), _connect(path, create=False) as connection:
+        _check(connection)
+        with _write(connection):
+            version = _check(connection)
+            listed = "" if version < 4 else " AND unregistered_at IS NULL"
+            found = connection.execute(
+                f"SELECT 1 FROM projects WHERE id = ?{listed}", (project_id,)
+            ).fetchone()
+            if found is None:  # nothing to mark: an older file is left as it is
+                return False
+            _upgrade(connection, version)
+            connection.execute(
+                "UPDATE projects SET unregistered_at = ?, generation = generation + 1 "
+                "WHERE id = ?",
+                (_now(), project_id),
+            )
+            return True
 
 
 def record(
@@ -304,7 +470,8 @@ def record(
     ones of the files it replaced). An update preview also gets its previews row there (the
     hashes of the files it was made from and its targets), by which list_previews() finds it.
     Returns None without touching anything if there is no home directory, no database file or
-    the project is not registered. Raises sqlite3.Error, HistoryError, OSError or ValueError if
+    the project is not registered (never, or no longer: unregister_project). Raises
+    sqlite3.Error, HistoryError, OSError or ValueError if
     the database cannot be read or written; the caller decides how to report that.
     """
     if kind not in KINDS:
@@ -336,14 +503,19 @@ def record(
         for row in results
     ]
     with _connect(path, create=False) as connection:
-        _check(connection)
-        if connection.execute("SELECT 1 FROM projects WHERE key = ?", (key,)).fetchone() is None:
+        listed = "" if _check(connection) < 4 else " AND unregistered_at IS NULL"
+        registered = f"SELECT 1 FROM projects WHERE key = ?{listed}"
+        if connection.execute(registered, (key,)).fetchone() is None:
             return None
         with _write(connection):
             _upgrade(connection, _check(connection))
-            (project_id,) = connection.execute(
-                "SELECT id FROM projects WHERE key = ?", (key,)
+            # Asked again under the write lock: the project may have been unregistered since.
+            found = connection.execute(
+                "SELECT id FROM projects WHERE key = ? AND unregistered_at IS NULL", (key,)
             ).fetchone()
+            if found is None:
+                return None
+            (project_id,) = found
             run_id = connection.execute(
                 f"INSERT INTO runs (project_id, {', '.join(RUN_COLUMNS[2:])}, report, preview) "
                 f"VALUES (?, {', '.join('?' * (len(RUN_COLUMNS) - 2))}, ?, ?)",
@@ -388,8 +560,10 @@ def record_apply(run_id: int, preview: dict, apply: dict) -> int | None:
     its applies id: the dashboard applies a preview after recording it. Same columns as
     record()'s apply, in one BEGIN IMMEDIATE transaction that also upgrades a version 1 file.
 
-    Returns None without touching anything if there is no home directory, no database file or
-    no such run. Raises ValueError for a run that is not an update_preview or already has an
+    Returns None without touching anything if there is no home directory, no database file,
+    no such run, or the run's project is not registered any more (unregister_project): nothing
+    is added to what an unregistered project has stored. Raises ValueError for a run that is
+    not an update_preview or already has an
     apply (one apply per preview, applies.run_id UNIQUE), and sqlite3.Error, HistoryError or
     OSError if the database cannot be read or written.
     """
@@ -403,8 +577,14 @@ def record_apply(run_id: int, preview: dict, apply: dict) -> int | None:
         _check(connection)
         with _write(connection):
             version = _check(connection)
-            row = connection.execute("SELECT kind FROM runs WHERE id = ?", (run_id,)).fetchone()
+            row = connection.execute(
+                "SELECT kind, project_id FROM runs WHERE id = ?", (run_id,)
+            ).fetchone()
             if row is None:
+                return None
+            if version >= 4 and connection.execute(
+                "SELECT 1 FROM projects WHERE id = ? AND unregistered_at IS NOT NULL", (row[1],)
+            ).fetchone():
                 return None
             if row[0] != "update_preview":
                 raise ValueError("An apply is recorded with its update preview")
@@ -421,20 +601,33 @@ def record_apply(run_id: int, preview: dict, apply: dict) -> int | None:
 
 def _read(query: str, parameters: tuple = (), since: int = 1) -> list[sqlite3.Row]:
     """Rows of a read-only query; none if there is no database (it is not created) or it is
-    older than version since (a version 1 file has no applies table and is not upgraded here)."""
+    older than version since (a version 1 file has no applies table and is not upgraded here).
+    REGISTERED in the query is the condition that a projects row is registered, GENERATION
+    that row's generation."""
     path = db_path()
     if not path.exists():
         return []
     with _connect(path, create=False, read_only=True) as connection:
-        if _check(connection) < since:
+        version = _check(connection)
+        if version < since:
             return []
         connection.row_factory = sqlite3.Row
+        registered, generation = ("1", "0") if version < 4 else (
+            "unregistered_at IS NULL", "generation"
+        )  # fmt: skip
+        query = query.replace(REGISTERED, registered).replace(GENERATION, generation)
         return connection.execute(query, parameters).fetchall()
 
 
 def list_projects() -> list[dict]:
-    """Registered projects in registration order: {id, path, registered_at}."""
-    rows = _read("SELECT id, path, registered_at FROM projects ORDER BY id")
+    """Registered projects in registration order: {id, path, registered_at, generation}. One
+    that was unregistered is not listed; registered again, it is back at the place its id gives
+    it. generation: how many times the project was unregistered (0 in a file older than version
+    4). The same id at the same generation is a project that never left the list in between."""
+    rows = _read(
+        f"SELECT id, path, registered_at, {GENERATION} AS generation FROM projects "
+        f"WHERE {REGISTERED} ORDER BY id"
+    )
     return [dict(row) for row in rows]
 
 
@@ -598,9 +791,14 @@ def latest_applies(*, applied: bool = True) -> dict[int, dict]:
 
 def get_run(run_id: int) -> dict | None:
     """One run with its report, preview (None for a scan), result rows in report order and apply
-    (as in list_applies(), None if the run applied nothing)."""
-    runs = _read(f"SELECT {', '.join(RUN_COLUMNS)}, report, preview FROM runs WHERE id = ?",
-                 (run_id,))  # fmt: skip
+    (as in list_applies(), None if the run applied nothing). None too for a run of a project
+    that is unregistered: it stays stored, and is found again once its folder is registered
+    again."""
+    runs = _read(
+        f"SELECT {', '.join(RUN_COLUMNS)}, report, preview FROM runs WHERE id = ? "
+        f"AND project_id IN (SELECT id FROM projects WHERE {REGISTERED})",
+        (run_id,),
+    )
     if not runs:
         return None
     (row,) = runs

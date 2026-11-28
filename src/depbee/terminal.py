@@ -1,14 +1,15 @@
 """What a person at a terminal sees beyond the plain report: the bee mark, colors, the start
-screen and the next steps.
+screen, the next steps and the dashboard's start (launch()).
 
-The mark, the colors and the next steps are for an interactive terminal only (interactive()). A
-pipe, a file, JSON, Markdown, MCP stdio and the GitHub Action get the same bytes as without this
-module. Colors only repeat what the words already say ([위험], [보류], ...): they are never the
+The mark, the colors, the next steps and the dashboard's start are for an interactive terminal
+only (interactive()). A pipe, a file, JSON, Markdown, MCP stdio and the GitHub Action get the
+same bytes as without this module. Colors only repeat what the words already say ([위험], [보류], ...): they are never the
 only signal, and NO_COLOR, TERM=dumb or a console without ANSI support turns them off.
 """
 
 import os
 import shutil
+import time
 import unicodedata
 from collections import Counter
 
@@ -78,10 +79,50 @@ PLAN_STEP = (
     "바뀐 의존성 {count}개 중 분석할 수 있는 변경은 {analyzable}개입니다. 검사하려면 같은 "
     "프로젝트와 기준으로 depbee scan에 --extract를 붙여 실행하세요."
 )
-# ANSI SGR codes by tone: the report's statuses, plus mark, strong and dim.
+# The dashboard's start on an interactive terminal (launch()), by who started it: this terminal,
+# a background start, or a background start that found one running. First the steps, each a
+# thing the start had done before this is shown, with what is known of it ({address}: the host
+# and port of the dashboard's address); then what the reader can do next.
+LAUNCH_TITLE = "depbee 대시보드"
+LAUNCH = {
+    "foreground": (
+        (
+            ("포트 열기", "{address}"),
+            ("화면 준비", "이 PC에서만 열립니다"),
+            ("실행 중", "이 터미널 (포그라운드)"),
+        ),
+        ("브라우저에서 위 주소를 여세요.", "종료: Ctrl+C"),
+    ),
+    "started": (
+        (
+            ("실행 여부 확인", "실행 중인 대시보드 없음"),
+            ("백그라운드 시작", "터미널을 닫아도 계속 실행"),
+            ("응답 확인", "준비 완료"),
+        ),
+        (
+            "브라우저에서 위 주소를 여세요.",
+            "주소 다시 보기: depbee dashboard --status",
+            "종료: depbee dashboard --stop",
+        ),
+    ),
+    "running": (
+        (
+            ("실행 여부 확인", "이미 백그라운드에서 실행 중"),
+            ("새로 시작하지 않음", "옵션은 실행 중인 대시보드 그대로"),
+        ),
+        (
+            "브라우저에서 위 주소를 여세요.",
+            "옵션을 바꾸려면 depbee dashboard --stop 뒤에 다시 시작하세요.",
+        ),
+    ),
+}
+TRAIL = "- - - - - - -"  # the trail left behind the bee
+FLIGHT_SECONDS = 0.06  # a frame
+# ANSI SGR codes by tone: the report's statuses, plus mark, strong, dim and address.
 _SGR = {
     "flagged": "1;31", "incomplete": "1;33", "passed": "32", "not_flagged": "32",
     "removed": "2", "dim": "2", "strong": "1", "mark": "33",
+    "address": "30;43",  # dark on the mark's color; not bold, which some terminals draw gray
 }  # fmt: skip
 _VIRTUAL_TERMINAL = 0x0004  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
 
@@ -146,6 +187,59 @@ def head(version: str, stream) -> list[str]:
     paint = painter(stream)
     top, middle, bottom = (paint("mark", line) for line in STAMP)
     return [top, f"{middle}  depbee {version}", bottom, *TAGLINE]
+
+
+def launch(stream, kind: str, url: str, pause=time.sleep) -> None:
+    """Write the dashboard's start to stream, an interactive terminal: the bee stamp with its
+    trail to url, under it the steps of LAUNCH[kind] in the order they were done, then what to
+    do next as bullets(). ASCII and Korean only. Where stream is not interactive the callers
+    write their plain lines instead.
+
+    url is whole and once on the screen, on the mark's color where the terminal takes colors
+    (painter()). The three-line bee flies toward the fixed address for under half a second.
+    What stays is the last frame, which a terminal without colors gets at once, so NO_COLOR
+    and TERM=dumb turn the flight off too. A terminal too narrow for the trail gets the title
+    beside the bee and the address on the next line; a step that does not fit beside its name
+    goes under it.
+    pause: what waits between two frames (a test passes its own)."""
+    steps, notes = LAUNCH[kind]
+    paint = painter(stream)
+    columns, rows = shutil.get_terminal_size()
+    host = url.removeprefix("http://").rstrip("/")
+    steps = [(label, detail.format(address=host)) for label, detail in steps]
+    wings, bee, legs = (f" {paint('mark', line)}" for line in STAMP)
+    title = paint("strong", LAUNCH_TITLE)
+    # A space either side of the address is colored with it; uncolored, none is left at the end.
+    address = paint("address", f" {url} ").rstrip()
+    pad = max(_width(label) for label, _ in steps) + 2
+    beside = all(5 + pad + _width(detail) < columns for _, detail in steps)
+    under = []
+    for number, (label, detail) in enumerate(steps, 1):
+        name = f"  {paint('mark', f'{number}.')} {paint('strong', label)}"
+        if beside:
+            under.append(f"{name}{' ' * (pad - _width(label))}{paint('dim', detail)}")
+        else:
+            under += [name, f"     {paint('dim', detail)}"]
+    under += ["", *bullets(list(notes))]
+    if 1 + len(STAMP[1]) + 2 + len(TRAIL) + 2 + len(url) + 2 >= columns:  # no room for the trail
+        lines = ["", wings, f"{bee}  {title}", legs, f"  {address}", "", *under]
+        print("\n".join(lines), file=stream, flush=True)
+        return
+
+    def frame(distance: int) -> str:
+        shift = " " * distance
+        trail = paint("dim", TRAIL[:distance])
+        gap = " " * (len(TRAIL) - distance + 4)
+        return f"{shift}{wings}\n{trail}{bee}{gap}{address}\n{shift}{legs}"
+
+    print(file=stream)
+    if paint is not plain and rows >= len(STAMP):
+        for distance in range(0, len(TRAIL), 2):
+            stream.write(frame(distance))
+            stream.flush()
+            pause(FLIGHT_SECONDS)
+            stream.write("\r\x1b[2A")  # from the legs back to the start of the wings
+    print("\n".join([frame(len(TRAIL)), "", f"  {title}", *under]), file=stream, flush=True)
 
 
 def guide() -> list[str]:
