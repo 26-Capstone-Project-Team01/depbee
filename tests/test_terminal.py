@@ -291,10 +291,10 @@ class NextStepTests(FormatFixture):
 URL = "http://127.0.0.1:18765/"
 
 
-def launched(kind, columns=100, colors=True, url=URL):
+def launched(kind, columns=100, colors=True, url=URL, rows=24):
     """terminal.launch() on a terminal of that width: (what it wrote, the waits it made)."""
     stream, waits = Terminal(), []
-    size = os.terminal_size((columns, 24))
+    size = os.terminal_size((columns, rows))
     with mock.patch.object(terminal, "_colors", return_value=colors), \
             mock.patch("shutil.get_terminal_size", return_value=size):  # fmt: skip
         terminal.launch(stream, kind, url, pause=waits.append)
@@ -304,31 +304,28 @@ def launched(kind, columns=100, colors=True, url=URL):
 class LaunchTests(unittest.TestCase):
     """The dashboard's start on an interactive terminal (terminal.launch) and who calls it."""
 
-    def test_the_trail_is_drawn_to_the_address_and_what_stays_is_the_plain_screen(self):
+    def test_the_whole_bee_flies_to_the_fixed_address_and_lands_above_the_steps(self):
         moving, waits = launched("foreground")
         still, none = launched("foreground", colors=False)
         self.assertEqual((waits, none), ([terminal.FLIGHT_SECONDS] * 7, []))
         self.assertNotIn("\r", still)
         self.assertNotIn("\x1b", still)
-        # The bee stamp, its trail to the address, and only then the title: no box, no rule.
         wings, bee, legs = terminal.STAMP
-        pointing = f" {bee}  {terminal.TRAIL}   {URL}"
-        self.assertEqual(still.splitlines()[:6],
-                         ["", f" {wings}", pointing, f" {legs}", "", f"  {terminal.LAUNCH_TITLE}"])  # fmt: skip
         self.assertEqual(still.count(URL), 1)  # whole and once
-        # Every frame is the bee's line rewritten in place: the bee and the address stay where
-        # they are and the trail grows toward the address; the last frame stays.
-        before, *frames = moving.split("\r")
-        self.assertEqual(before, f"\n \x1b[33m{wings}\x1b[0m\n")
-        self.assertEqual(len(frames), 8)
-        frames[-1], after = frames[-1].split("\n", 1)
-        self.assertEqual([ANSI.sub("", frame) for frame in frames], [
-            f" {bee}  {terminal.TRAIL[:drawn]:<13}   {URL} " for drawn in (0, 2, 4, 6, 8, 10, 12, 13)
-        ])  # fmt: skip
-        for frame in frames:  # the address on its color, a space either side
-            self.assertTrue(frame.endswith(f"  \x1b[30;43m {URL} \x1b[0m"), frame)
-        self.assertEqual(ANSI.sub("", f"{before}{frames[-1]}\n{after}").replace(f"{URL} ", URL),
-                         still)  # fmt: skip
+        frames = moving.removeprefix("\n").split("\r\x1b[2A")
+        last, after = frames[-1].split("\n\n", 1)
+        frames[-1] = last
+        distances = (0, 2, 4, 6, 8, 10, 12, len(terminal.TRAIL))
+        url_column = still.splitlines()[2].index(URL)
+        for offset, frame in zip(distances, frames, strict=True):
+            top, middle, bottom = ANSI.sub("", frame).splitlines()
+            self.assertEqual(top, " " * (1 + offset) + wings)
+            self.assertTrue(middle.startswith(terminal.TRAIL[:offset] + " " + bee))
+            self.assertEqual(bottom, " " * (1 + offset) + legs)
+            self.assertEqual(middle.index(URL), url_column)
+            self.assertIn(f"\x1b[30;43m {URL} \x1b[0m", frame)
+        self.assertEqual(ANSI.sub("", f"\n{last}\n\n{after}").replace(f"{URL} ", URL), still)
+        self.assertEqual(launched("foreground", rows=2)[1], [])
         # The user's own switches, with nothing patched: the still screen at once.
         for environ in ({"NO_COLOR": "1", "TERM": "xterm"}, {"NO_COLOR": "", "TERM": "dumb"}):
             stream = Terminal()
@@ -376,7 +373,7 @@ class LaunchTests(unittest.TestCase):
                     out.encode("cp949")
         # The address as it is, whatever the port (--port): shorter here, so the trail still fits.
         out, _ = launched("foreground", columns=51, colors=False, url="http://127.0.0.1:80/")
-        self.assertIn(f"{terminal.MARK}  {terminal.TRAIL}   http://127.0.0.1:80/\n", out)
+        self.assertIn(f"{terminal.TRAIL}  {terminal.MARK}     http://127.0.0.1:80/\n", out)
         self.assertIn("  1. 포트 열기  127.0.0.1:80\n", out)
 
     def test_a_narrow_terminal_gets_the_title_beside_the_bee_and_the_address_under_it(self):
@@ -390,7 +387,7 @@ class LaunchTests(unittest.TestCase):
                                  (trail, trail, trail))  # fmt: skip
                 self.assertEqual(text.count(URL), 8 if trail else 1)
                 self.assertIn(f"\x1b[30;43m {URL} \x1b[0m", out)
-                for line in text.split("\r")[-1].splitlines():
+                for line in text.split("\r\x1b[2A")[-1].splitlines():
                     self.assertLess(terminal._width(line), columns, line)
         stacked = ANSI.sub("", launched("started", columns=40)[0]).splitlines()
         self.assertEqual(stacked[:12], [

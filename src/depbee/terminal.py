@@ -116,7 +116,7 @@ LAUNCH = {
         ),
     ),
 }
-TRAIL = "- - - - - - -"  # the bee's way to the address; in the flight, one more dash a frame
+TRAIL = "- - - - - - -"  # the trail left behind the bee
 FLIGHT_SECONDS = 0.06  # a frame
 # ANSI SGR codes by tone: the report's statuses, plus mark, strong, dim and address.
 _SGR = {
@@ -196,8 +196,7 @@ def launch(stream, kind: str, url: str, pause=time.sleep) -> None:
     write their plain lines instead.
 
     url is whole and once on the screen, on the mark's color where the terminal takes colors
-    (painter()). There the trail is also drawn toward it dash by dash: the bee's line is
-    rewritten in place a few times, with carriage returns only and for under half a second.
+    (painter()). The three-line bee flies toward the fixed address for under half a second.
     What stays is the last frame, which a terminal without colors gets at once, so NO_COLOR
     and TERM=dumb turn the flight off too. A terminal too narrow for the trail gets the title
     beside the bee and the address on the next line; a step that does not fit beside its name
@@ -205,7 +204,7 @@ def launch(stream, kind: str, url: str, pause=time.sleep) -> None:
     pause: what waits between two frames (a test passes its own)."""
     steps, notes = LAUNCH[kind]
     paint = painter(stream)
-    columns = shutil.get_terminal_size().columns
+    columns, rows = shutil.get_terminal_size()
     host = url.removeprefix("http://").rstrip("/")
     steps = [(label, detail.format(address=host)) for label, detail in steps]
     wings, bee, legs = (f" {paint('mark', line)}" for line in STAMP)
@@ -227,18 +226,20 @@ def launch(stream, kind: str, url: str, pause=time.sleep) -> None:
         print("\n".join(lines), file=stream, flush=True)
         return
 
-    def pointing(trail: str) -> str:
-        """The bee's line: the bee, as much of its trail as is drawn, the address."""
-        return f"{bee}  {paint('dim', trail.ljust(len(TRAIL)))}  {address}"
+    def frame(distance: int) -> str:
+        shift = " " * distance
+        trail = paint("dim", TRAIL[:distance])
+        gap = " " * (len(TRAIL) - distance + 4)
+        return f"{shift}{wings}\n{trail}{bee}{gap}{address}\n{shift}{legs}"
 
-    print(f"\n{wings}", file=stream)
-    if paint is not plain:
-        for drawn in range(0, len(TRAIL), 2):
-            stream.write("\r" + pointing(TRAIL[:drawn]))
+    print(file=stream)
+    if paint is not plain and rows >= len(STAMP):
+        for distance in range(0, len(TRAIL), 2):
+            stream.write(frame(distance))
             stream.flush()
             pause(FLIGHT_SECONDS)
-        stream.write("\r")
-    print("\n".join([pointing(TRAIL), legs, "", f"  {title}", *under]), file=stream, flush=True)
+            stream.write("\r\x1b[2A")  # from the legs back to the start of the wings
+    print("\n".join([frame(len(TRAIL)), "", f"  {title}", *under]), file=stream, flush=True)
 
 
 def guide() -> list[str]:
