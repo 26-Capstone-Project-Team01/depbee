@@ -143,9 +143,46 @@
       .finally(() => { asking = false; });
   });
 
-  /* A running check's page: this address is read again and what it says now replaces what the
+  /* A running check's page: this address is read again and what it says now is put into what the
      page shows, with nothing made up in between. A page without the progress is a check that
      ended, and the browser loads it. The words for a screen reader are said when they change. */
+
+  /* A part that says the same is left as it is, and one that differs only in its attributes
+     takes them: nothing that moves starts again, and the bee and the bar go on from where
+     they are. A part of another shape is replaced by the new one. */
+  const renew = (shown, next) => {
+    if (shown.isEqualNode(next)) return;
+    if (shown.nodeType !== 1 || next.nodeType !== 1 || shown.tagName !== next.tagName
+        || shown.childNodes.length !== next.childNodes.length) {
+      shown.replaceWith(document.adoptNode(next));
+      return;
+    }
+    [...shown.attributes].forEach(({ name }) => {
+      if (!next.hasAttribute(name)) shown.removeAttribute(name);
+    });
+    [...next.attributes].forEach(({ name, value }) => {
+      if (shown.getAttribute(name) !== value) shown.setAttribute(name, value);
+    });
+    const parts = [...next.childNodes];
+    [...shown.childNodes].forEach((part, at) => renew(part, parts[at]));
+  };
+
+  /* The bee's place is an attribute of the page (check.html), which no style can carry from
+     one value to the next. So the change is made at once, and where motion is not to be
+     reduced the bee is drawn from where it was to where it now belongs. */
+  const calm = matchMedia('(prefers-reduced-motion: reduce)');
+  const fly = (shown, change) => {
+    const bee = shown.querySelector('.bee-fly');
+    const from = bee && bee.getBoundingClientRect().left;
+    change();
+    if (!bee || !bee.isConnected || calm.matches) return;
+    const by = from - bee.getBoundingClientRect().left;
+    if (by) {
+      bee.animate([{ transform: `translateX(${by}px)`, offset: 0 }],
+        { duration: 500, easing: 'cubic-bezier(.3, .7, .3, 1)' });
+    }
+  };
+
   const watch = () => {
     const shown = document.getElementById('check-progress');
     if (!shown) return;
@@ -156,10 +193,21 @@
       .then((html) => {
         const answer = new DOMParser().parseFromString(html, 'text/html');
         const next = answer.getElementById('check-progress');
-        if (!next) { location.reload(); return; }
+        if (!next) {
+          /* The result of a check whose packages were being counted (templates/preview.html):
+             all of them are analyzed, so the bee ends on the goal cell before the result is
+             loaded (check.css .landed). Anything else, such as a failure, is loaded at once. */
+          const bee = answer.querySelector('section.preview')
+            && shown.querySelector('.groove + .air .bee');
+          if (!bee) { location.reload(); return; }
+          fly(shown, () => bee.setAttribute('x', '100%'));
+          shown.classList.add('landed');
+          setTimeout(() => location.reload(), 700);
+          return;
+        }
         const said = next.querySelector('#check-said').textContent;
         if (said !== shown.querySelector('#check-said').textContent) say(said);
-        shown.replaceWith(document.adoptNode(next));
+        fly(shown, () => renew(shown, next));
         if (lost) lost.hidden = true;
         wait();
       })

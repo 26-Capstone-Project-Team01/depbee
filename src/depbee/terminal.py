@@ -82,7 +82,7 @@ PLAN_STEP = (
 # The dashboard's start on an interactive terminal (launch()), by who started it: this terminal,
 # a background start, or a background start that found one running. First the steps, each a
 # thing the start had done before this is shown, with what is known of it ({address}: the host
-# and port of the dashboard's address); then the lines under the address.
+# and port of the dashboard's address); then what the reader can do next.
 LAUNCH_TITLE = "depbee 대시보드"
 LAUNCH = {
     "foreground": (
@@ -91,7 +91,7 @@ LAUNCH = {
             ("화면 준비", "이 PC에서만 열립니다"),
             ("실행 중", "이 터미널 (포그라운드)"),
         ),
-        ("브라우저에서 위 주소를 여세요.", "종료하려면 Ctrl+C를 누르세요."),
+        ("브라우저에서 위 주소를 여세요.", "종료: Ctrl+C"),
     ),
     "started": (
         (
@@ -116,20 +116,13 @@ LAUNCH = {
         ),
     ),
 }
-# What the steps and the address box are drawn with: line characters where the terminal draws
-# each in one column (_line_drawing), else ASCII. The box's corners and sides in reading order,
-# then a step's mark and the line between two steps.
-# The line characters are written as escapes: they are for a terminal and never on a page of
-# the dashboard, whose font test reads the characters of this package's sources.
-_DRAWN = ("\u250c", "\u2500", "\u2510", "\u2502", "\u2514", "\u2518", "\u25c6", "\u2502")
-_TYPED = ("+", "-", "+", "|", "+", "+", "*", "|")
-FLIGHT = 14  # columns the bee flies inside the address box; its trail fills them
-FLIGHT_STEP = 2  # columns a frame
+TRAIL = "- - - - - - -"  # the bee's way to the address; in the flight, one more dash a frame
 FLIGHT_SECONDS = 0.06  # a frame
-# ANSI SGR codes by tone: the report's statuses, plus mark, strong and dim.
+# ANSI SGR codes by tone: the report's statuses, plus mark, strong, dim and address.
 _SGR = {
     "flagged": "1;31", "incomplete": "1;33", "passed": "32", "not_flagged": "32",
     "removed": "2", "dim": "2", "strong": "1", "mark": "33",
+    "address": "30;43",  # dark on the mark's color; not bold, which some terminals draw gray
 }  # fmt: skip
 _VIRTUAL_TERMINAL = 0x0004  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
 
@@ -196,80 +189,56 @@ def head(version: str, stream) -> list[str]:
     return [top, f"{middle}  depbee {version}", bottom, *TAGLINE]
 
 
-def _line_drawing(stream) -> bool:
-    """Whether stream's terminal takes line characters and draws each in one column. They are
-    of ambiguous width: a Windows console window with a Korean font draws them two columns wide,
-    which breaks a box, so on Windows only a terminal that names itself (Windows Terminal, an
-    editor's terminal) gets them, and anywhere only a UTF-8 stream."""
-    if os.name == "nt" and not (os.environ.get("WT_SESSION") or os.environ.get("TERM_PROGRAM")):
-        return False
-    return "utf" in (getattr(stream, "encoding", None) or "").lower()
-
-
 def launch(stream, kind: str, url: str, pause=time.sleep) -> None:
-    """Write the dashboard's start to stream, an interactive terminal: the steps of LAUNCH[kind]
-    one under another, then url in a box, then what to do next as bullets(). Where stream is
-    not interactive the callers write their plain lines instead.
+    """Write the dashboard's start to stream, an interactive terminal: the bee stamp with its
+    trail to url, under it the steps of LAUNCH[kind] in the order they were done, then what to
+    do next as bullets(). ASCII and Korean only. Where stream is not interactive the callers
+    write their plain lines instead.
 
-    In a terminal wide enough the bee mark is inside the box and flies to the address. Where
-    the terminal takes colors (painter()) the box's middle line is rewritten in place a few
-    times, with carriage returns only and for under half a second; what stays is the last
-    frame, which a terminal without colors gets at once, so NO_COLOR and TERM=dumb turn the
-    flight off too. A narrower terminal gets the mark beside the title and the address alone
-    in the box, or with no box; a step that does not fit beside its name goes under it.
+    url is whole and once on the screen, on the mark's color where the terminal takes colors
+    (painter()). There the trail is also drawn toward it dash by dash: the bee's line is
+    rewritten in place a few times, with carriage returns only and for under half a second.
+    What stays is the last frame, which a terminal without colors gets at once, so NO_COLOR
+    and TERM=dumb turn the flight off too. A terminal too narrow for the trail gets the title
+    beside the bee and the address on the next line; a step that does not fit beside its name
+    goes under it.
     pause: what waits between two frames (a test passes its own)."""
     steps, notes = LAUNCH[kind]
     paint = painter(stream)
     columns = shutil.get_terminal_size().columns
-    corner, across, turn, side, foot, end, dot, rail = _DRAWN if _line_drawing(stream) else _TYPED
-    address = url.removeprefix("http://").rstrip("/")
-    steps = [(label, detail.format(address=address)) for label, detail in steps]
-
-    def fits(inner: int) -> bool:
-        return 2 + 1 + inner + 1 < columns  # the indent, a side, the inside, a side
-
-    flight = 2 + FLIGHT + len(MARK) + 2 + len(url) + 2
-    flies = fits(flight)
-    inner = flight if flies else len(url) + 4
+    host = url.removeprefix("http://").rstrip("/")
+    steps = [(label, detail.format(address=host)) for label, detail in steps]
+    wings, bee, legs = (f" {paint('mark', line)}" for line in STAMP)
     title = paint("strong", LAUNCH_TITLE)
-    lines = ["", f"  {title}" if flies else f"  {paint('mark', MARK)}  {title}", ""]
+    # A space either side of the address is colored with it; uncolored, none is left at the end.
+    address = paint("address", f" {url} ").rstrip()
     pad = max(_width(label) for label, _ in steps) + 2
     beside = all(5 + pad + _width(detail) < columns for _, detail in steps)
-    for index, (label, detail) in enumerate(steps):
-        last = index == len(steps) - 1
-        name = paint("strong", label)
+    under = []
+    for number, (label, detail) in enumerate(steps, 1):
+        name = f"  {paint('mark', f'{number}.')} {paint('strong', label)}"
         if beside:
-            gap = " " * (pad - _width(label))
-            lines.append(f"  {paint('mark', dot)}  {name}{gap}{paint('dim', detail)}")
-            if not last:
-                lines.append(f"  {paint('dim', rail)}")
+            under.append(f"{name}{' ' * (pad - _width(label))}{paint('dim', detail)}")
         else:
-            lines.append(f"  {paint('mark', dot)}  {name}")
-            lines.append(f"  {paint('dim', ' ' if last else rail)}  {paint('dim', detail)}")
-    lines.append("")
-    ending = ["", *bullets(list(notes))]
-    if not fits(inner):  # too narrow for any box: the address alone
-        print("\n".join([*lines, f"  {paint('strong', url)}", *ending]), file=stream, flush=True)
+            under += [name, f"     {paint('dim', detail)}"]
+    under += ["", *bullets(list(notes))]
+    if 1 + len(STAMP[1]) + 2 + len(TRAIL) + 2 + len(url) + 2 >= columns:  # no room for the trail
+        lines = ["", wings, f"{bee}  {title}", legs, f"  {address}", "", *under]
+        print("\n".join(lines), file=stream, flush=True)
         return
-    edge = paint("mark", side)
 
-    def middle(flown: int) -> str:
-        """The box's middle line, the bee flown columns along with its trail behind it."""
-        if not flies:
-            return f"  {edge}  {paint('strong', url)}  {edge}"
-        trail = paint("dim", ("- " * FLIGHT)[:flown])
-        ahead = " " * (FLIGHT - flown)
-        return f"  {edge}  {trail}{paint('mark', MARK)}{ahead}  {paint('strong', url)}  {edge}"
+    def pointing(trail: str) -> str:
+        """The bee's line: the bee, as much of its trail as is drawn, the address."""
+        return f"{bee}  {paint('dim', trail.ljust(len(TRAIL)))}  {address}"
 
-    print("\n".join([*lines, "  " + paint("mark", corner + across * inner + turn)]), file=stream)
-    if flies and paint is not plain:
-        for flown in range(0, FLIGHT, FLIGHT_STEP):
-            stream.write("\r" + middle(flown))
+    print(f"\n{wings}", file=stream)
+    if paint is not plain:
+        for drawn in range(0, len(TRAIL), 2):
+            stream.write("\r" + pointing(TRAIL[:drawn]))
             stream.flush()
             pause(FLIGHT_SECONDS)
         stream.write("\r")
-    bottom = "  " + paint("mark", foot + across * inner + end)
-    print("\n".join([middle(FLIGHT), bottom, *ending]), file=stream, flush=True)
+    print("\n".join([pointing(TRAIL), legs, "", f"  {title}", *under]), file=stream, flush=True)
 
 
 def guide() -> list[str]:

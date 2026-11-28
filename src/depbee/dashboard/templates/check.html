@@ -1,15 +1,21 @@
 {% extends "base.html" %}
 {% block title %}업데이트 검사 {{ "진행" if state == "running" else "오류" }} - depbee{% endblock %}
 {# Without the script a running check's page is loaded again by the browser; with it the script
-   reads this address and replaces #check-progress in place (static/app.js). #}
+   reads this address and puts what it says into #check-progress in place (static/app.js). #}
 {% block head %}{% if state == "running" %}<noscript><meta http-equiv="refresh" content="{{ refresh }}"></noscript>{% endif %}{% endblock %}
 {% block main %}
 {# An update check that is running or failed, at the address its preview will have
    (app.check_page). The numbers are the analyzer's own report before each package: packages
    done, packages in all and the one it is on. Before the first report nothing is known of how
    many there are (npm is still working out the new lockfile), and the page says so instead of
-   a number. No estimate, no clock, and the mark does not move. #check-said is what the script
-   has a screen reader told when it changes (the page's live line); it is not read as content. #}
+   a number. No estimate and no clock. The mark is the terminal's bee (terminal.py STAMP), drawn:
+   it stands over the bar at the part that is done, and while nothing is measured it stays by
+   the comb with no bar under it. Where it stands is an attribute the server writes, so the page
+   is right without the script; the script only lets it fly from one report's place to the next
+   (static/app.js), and check.css moves its wings where motion is not to be reduced.
+   #check-said is what the script has a screen reader told when it changes (the page's live
+   line); it is not read as content. The parts marked check-after are shown by the script for
+   the moment between the end of the analysis and the result page. #}
 {% set url = "/projects/" ~ project.id if project is not none else none %}
 {% with here = "업데이트 검사" %}{% include "trail.html" %}{% endwith %}
 {% if state == "running" %}
@@ -21,19 +27,32 @@
 {% if state == "running" %}
 <div id="check-progress" data-refresh="{{ refresh }}">
 <section class="check-progress" aria-labelledby="check-step">
-<span class="comb" aria-hidden="true"><span></span><span></span><span></span></span>
-<div class="check-now">
+{% set at = ((100 * done / total)|round(3) ~ "%") if analyzing and total else 0 %}
+<div class="check-head">
 {% if analyzing %}
-<h2 id="check-step">패키지 분석 중: 분석할 변경 {{ total }}개 가운데 {{ done }}개 완료</h2>
-<svg class="gauge" viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true"><rect class="track" width="100" height="10"/><rect class="fill" width="{{ width }}" height="10"/></svg>
+<h2 id="check-step"><span class="check-while">패키지 분석 중</span><span class="check-after" hidden>분석을 마쳤습니다. 결과 화면을 엽니다.</span></h2>
+<p class="check-count" aria-hidden="true"><b class="check-while">{{ done }}</b><b class="check-after" hidden>{{ total }}</b>/{{ total }}</p>
+{% else %}
+<h2 id="check-step">준비 중: npm이 새 lockfile을 계산하고 있습니다</h2>
+{% endif %}
+</div>
+{# One cell of the bar for each change while they are few enough to tell apart. #}
+<div class="flight">
+<span class="comb" aria-hidden="true"><span></span><span></span><span></span></span>
+<div class="track">
+{% if analyzing %}<svg class="groove" aria-hidden="true" focusable="false"><rect class="fill" width="{{ at }}" height="100%"/>{% if total <= 24 %}{% for cell in range(1, total) %}<rect class="tick" x="{{ (100 * cell / total)|round(3) }}%" width="2" height="100%"/>{% endfor %}{% endif %}</svg>
+{% endif %}<svg class="air" aria-hidden="true" focusable="false"><svg class="bee" x="{{ at }}"><g class="bee-fly"><g class="bee-bob"><g transform="translate(-28 -40.6) scale(1.2727)"><g class="wings"><ellipse class="wing" cx="17" cy="7" rx="3.6" ry="6.6" transform="rotate(-24 17 7)"/><ellipse class="wing" cx="25.5" cy="7" rx="3.6" ry="6.6" transform="rotate(24 25.5 7)"/></g><path class="ink thin" d="M8 17.5H3M16 24l-1 4M25 24l-1 4"/><rect class="body" x="8" y="11" width="24" height="13" rx="6.5"/><path class="ink" d="M14 12.6v9.8M18.5 12v11M23 12v11M27.5 12.6v9.8"/><circle class="head" cx="36.5" cy="17.5" r="4.6"/></g></g></g></svg></svg>
+</div>
+{% if analyzing %}<span class="goal" aria-hidden="true"></span>{% endif %}
+</div>
+{% if analyzing %}
+<p class="check-done">분석할 변경 {{ total }}개 가운데 {{ done }}개 완료</p>
 <p class="check-current">지금 분석하는 패키지: <strong>{{ current if current is not none else "이름 없음" }}</strong>{% if current_version is not none %} {{ current_version }}{% endif %}</p>
 <p id="check-said" hidden>분석할 변경 {{ total }}개 가운데 {{ done }}개 완료, 지금 {{ current if current is not none else "이름 없음" }}</p>
 {% else %}
-<h2 id="check-step">준비 중: npm이 새 lockfile을 계산하고 있습니다</h2>
 <p class="check-current">바뀌는 패키지가 몇 개인지는 이 단계가 끝나야 알 수 있어 아직 진행 수치가 없습니다. 바뀌는 항목이 없으면 분석 없이 바로 결과가 열립니다.</p>
 <p id="check-said" hidden>준비 중, npm이 새 lockfile을 계산하고 있습니다</p>
 {% endif %}
-</div>
 </section>
 <ol class="check-steps">
 <li{% if not analyzing %} aria-current="step"{% endif %}><strong>준비</strong> 임시 사본에서 npm이 새 lockfile을 계산합니다(설치 스크립트 끔).{% if analyzing %} <span class="note">끝남</span>{% endif %}</li>

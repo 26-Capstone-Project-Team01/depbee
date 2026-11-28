@@ -2596,6 +2596,49 @@ class CheckFlowTests(ScreenFixture):
     def words(self, html):
         return " ".join(unescape(re.sub(r"<[^>]+>", " ", html)).split())
 
+    def flight(self, html):
+        """Where a running check's page draws its progress: (the width of the bar's fill, the
+        bee's place, the place of each line between two cells of the bar)."""
+        (fill,) = re.findall(r'<rect class="fill" width="([^"]*)" height="100%"/>', html)
+        (bee,) = re.findall(r'<svg class="bee" x="([^"]*)">', html)
+        return fill, bee, re.findall(r'<rect class="tick" x="([^"]*)"', html)
+
+    def test_a_long_check_near_its_end_draws_the_bee_at_the_measured_part(self):
+        proceed, reached = queue.Queue(), queue.Queue()
+        name = "@a-rather-long-scope/" + "a-rather-long-package-name-" * 6 + "end"
+
+        def during(project, names, **options):
+            options["progress"](25, 25, {"after": {"name": name, "version": "10.20.30-beta.4"}})
+            reached.put(None)
+            proceed.get(timeout=60)
+            return self.fake_preview(project, names, **options)
+
+        self.preview_files.side_effect = during
+        preview_id = self.started("example")
+        try:
+            reached.get(timeout=60)
+            html = self.page(f"/previews/{preview_id}")
+            # The last of 25 is still analyzed: 24 of 25 and not the whole bar. More changes
+            # than the bar can show as cells are not drawn as cells.
+            self.assertEqual(self.flight(html), ("96.0%", "96.0%", []))
+            self.assertIn('<b class="check-while">24</b><b class="check-after" hidden>25</b>/25',
+                          html)  # fmt: skip
+            self.assertIn(f"<strong>{name}</strong> 10.20.30-beta.4", html)
+        finally:
+            proceed.put(None)
+        self.ended(preview_id)
+
+    def test_the_progress_moves_only_where_motion_is_not_to_be_reduced(self):
+        css = (Path(self.app.__file__).parent / "static" / "check.css").read_text("utf-8")
+        still, moving = css.split("@media (prefers-reduced-motion: no-preference) {")
+        self.assertIsNone(re.search(r"\b(animation|transition)\s*:", still))
+        self.assertEqual(len(re.findall(r"\banimation\s*:", moving)), 2)  # the bee, its wings
+        # The script draws the bee's way from one place to the next under the same condition.
+        script = (Path(self.app.__file__).parent / "static" / self.app.SCRIPT).read_text("utf-8")
+        self.assertIn("matchMedia('(prefers-reduced-motion: reduce)')", script)
+        self.assertEqual(script.count(".animate("), 1)
+        self.assertIn("calm.matches) return;", script.split(".animate(")[0])
+
     def test_a_check_is_confirmed_first_with_what_npm_is_given_and_runs_nothing(self):
         asked = self.check("example  nope other example peer lodash@4 ../x", confirm=False)
         self.assertEqual(asked.status_code, 200)
@@ -2675,9 +2718,12 @@ class CheckFlowTests(ScreenFixture):
             self.assertIn("<h1>업데이트 검사 진행 중</h1>", html)
             self.assertIn("요청한 대상: example", html)
             self.assertIn("준비 중: npm이 새 lockfile을 계산하고 있습니다", html)
-            # No number, no bar and no clock before the analyzer reports one.
-            for absent in ("가운데", '<svg class="gauge"', "남은 시간 약", "%"):
+            # No number, no bar, no goal and no clock before the analyzer reports one: the bee
+            # stays by the comb, at no part of anything.
+            for absent in ("가운데", 'class="groove"', 'class="goal"', "check-count",
+                           "남은 시간 약", "%"):  # fmt: skip
                 self.assertNotIn(absent, main_of(html))
+            self.assertIn('<svg class="bee" x="0">', html)
             # Without the script the browser loads the page again; with it the script does.
             self.assertIn('<noscript><meta http-equiv="refresh" content="3"></noscript>', html)
             self.assertIn('<div id="check-progress" data-refresh="3">', html)
@@ -2699,18 +2745,23 @@ class CheckFlowTests(ScreenFixture):
             proceed.put(None)
             self.assertEqual(reached.get(timeout=60), 1)
             html = self.page(url)
-            self.assertIn("패키지 분석 중: 분석할 변경 2개 가운데 0개 완료", html)
+            self.assertIn('<p class="check-done">분석할 변경 2개 가운데 0개 완료</p>', html)
             self.assertIn("지금 분석하는 패키지: <strong>example</strong> 1.2.0", html)
-            self.assertIn('<rect class="fill" width="0" height="10"/>', html)
+            # The bar's fill and the bee stand at the part that is done, and at nothing else:
+            # the same number, with one cell of the bar for each change.
+            self.assertEqual(self.flight(html), ("0.0%", "0.0%", ["50.0%"]))
             # Its second and last one: one is done, and the check is not said to be complete
             # while that one is still analyzed.
             proceed.put(None)
             self.assertEqual(reached.get(timeout=60), 2)
             html = self.page(url)
-            self.assertIn("패키지 분석 중: 분석할 변경 2개 가운데 1개 완료", html)
+            self.assertIn('<p class="check-done">분석할 변경 2개 가운데 1개 완료</p>', html)
             self.assertIn("지금 분석하는 패키지: <strong>inner</strong> 2.1.0", html)
-            self.assertIn('<rect class="fill" width="50" height="10"/>', html)
+            self.assertEqual(self.flight(html), ("50.0%", "50.0%", ["50.0%"]))
             self.assertNotIn("가운데 2개 완료", html)
+            # What the page shows between the end of the analysis and the result is not shown
+            # (and not read) while the check runs.
+            self.assertEqual(re.findall(r'class="check-after"( hidden)?>', html), [" hidden"] * 2)
             self.assertIn("삭제되는 항목, 분석하지 않고 보류하는 변경, 바뀌지 않는 설치 항목은 세지 "
                           "않습니다.", html)  # fmt: skip
             self.assertEqual(history.list_runs(self.project_id), [])
